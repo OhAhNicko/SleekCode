@@ -940,7 +940,7 @@ export default function TabBar() {
         <div style={{ width: 1, height: 16, backgroundColor: "var(--ezy-border-subtle)", alignSelf: "center", margin: "0 4px" }} />
 
         {/* Window controls (Warp style — subtle, integrated) */}
-        <div style={{ display: "flex", alignItems: "stretch", WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+        <div style={{ display: "flex", alignItems: "stretch" }}>
           {/* Minimize */}
           <div
             onClick={() => getCurrentWindow().minimize()}

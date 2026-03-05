@@ -97,8 +97,12 @@ body,
 .tab-bar {
   -webkit-app-region: drag;
 }
-.tab-bar button,
-.tab-bar [role="tab"] {
+/* All direct children of the tab-bar opt out of drag (they contain
+   interactive controls). Only the spacer div re-enables drag via
+   data-tauri-drag-region. This prevents clickable <div>s (window
+   controls, sidebar toggle, etc.) from being swallowed by the
+   drag region. */
+.tab-bar > * {
   -webkit-app-region: no-drag;
 }
 
