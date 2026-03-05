@@ -1,0 +1,133 @@
+@import "tailwindcss";
+@import "@xterm/xterm/css/xterm.css";
+
+@font-face {
+  font-family: "Geist Mono";
+  src: local("Geist Mono"), local("GeistMono");
+}
+
+:root {
+  --ezy-bg: #0d1117;
+  --ezy-surface: #161b22;
+  --ezy-surface-raised: #1c2128;
+  --ezy-border: #30363d;
+  --ezy-border-subtle: #21262d;
+  --ezy-border-light: #484f58;
+  --ezy-text: #e6edf3;
+  --ezy-text-secondary: #c9d1d9;
+  --ezy-text-muted: #8b949e;
+  --ezy-accent: #39d353;
+  --ezy-accent-hover: #2ea043;
+  --ezy-accent-dim: #238636;
+  --ezy-accent-glow: rgba(57, 211, 83, 0.15);
+  --ezy-red: #f85149;
+  --ezy-cyan: #58d5c1;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background-color: var(--ezy-bg);
+  color: var(--ezy-text);
+  font-family:
+    "Geist Mono",
+    "Cascadia Code",
+    "Fira Code",
+    "JetBrains Mono",
+    ui-monospace,
+    monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--ezy-border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ezy-border-light);
+}
+
+/* Pane resize handles */
+[data-panel-resize-handle-id] {
+  transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+}
+[data-panel-resize-handle-id]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: var(--ezy-accent);
+  transition: opacity 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+[data-panel-resize-handle-id]:hover::after,
+[data-panel-resize-handle-id][data-resize-handle-active]::after {
+  opacity: 1;
+}
+
+/* Terminal container */
+.terminal-pane .xterm {
+  padding: 4px 0 4px 8px;
+}
+.terminal-pane .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ezy-border) transparent;
+}
+
+/* Active pane glow */
+.pane-active {
+  box-shadow: inset 0 0 0 1px var(--ezy-accent-dim);
+}
+
+/* Tab bar drag region */
+.tab-bar {
+  -webkit-app-region: drag;
+}
+.tab-bar button,
+.tab-bar [role="tab"] {
+  -webkit-app-region: no-drag;
+}
+
+/* Pane drag cursor override — must use !important to override all child cursors */
+.ezy-dragging-pane,
+.ezy-dragging-pane * {
+  cursor: grabbing !important;
+}
+
+/* Dropdown animation */
+@keyframes dropdown-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.dropdown-enter {
+  animation: dropdown-in 150ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Fade transition for workspace switching */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.workspace-enter {
+  animation: fade-in 120ms ease-out;
+}

@@ -1,0 +1,37 @@
+# Session Prompts
+
+## 2026-03-04 — Initial Project Setup
+
+[AskUserQuestion] Q: What type of project is this? → A: Desktop app (Tauri)
+[AskUserQuestion] Q: Which frontend stack for the Tauri webview? → A: React + TypeScript + Vite (Recommended)
+[AskUserQuestion] Q: Do you need any backend/database for this MVP? → A: Local storage to start with, for MVP. But we have to prepare for backend syncing later down the road. Via either Supabase or Convex
+[AskUserQuestion] Q: Which terminal emulator library for the web frontend? → A: xterm.js (Recommended)
+
+1. Using Tauri, can you create a clone of the apps "Warp" and "BridgeSpace" (from "BridgeMind"). Lets start with a native Windows app. It has to contain a function to spawn different terminals/powershell in resizable pane grids and the user has to be able to choose between: "Claude Code", "Codex CLI", "Gemini CLI" in the MVP scope. There has to be different tabs in the top which acts as kind of a "project switcher". One special tab has to always be a "dev server" section for all the open tabs/projects. Make it suitable for mobile (like big screen Samsung Fold 7) with Tailscale and also a browser preview (switcher or split pane). Use the Frontend design skill to build the app.
+
+[AskUserQuestion] Q: Mobile access via Tailscale has a significant limitation: Tauri's IPC only works inside the native webview. How to handle? → A: Thinking a different native Android app is needed. Tauri v2 supports Android targets natively.
+[AskUserQuestion] Q: What should the app be called? → A: EzyDev
+[AskUserQuestion] Q: Desktop only for MVP or include Android scaffolding? → A: Desktop only for MVP (Recommended)
+
+[AskUserQuestion] Q: How do you want to access your Mac Mini projects from EzyDev? → A: Both — SSH + mount
+[AskUserQuestion] Q: How should EzyDev connect to the Mac Mini? → A: Configurable per-server settings panel with both Tailscale and local IP/hostname options
+[AskUserQuestion] Q: What aspects of Warp's design do you want to bring to EzyDev? → A: All of the above (Full Warp-inspired tab bar redesign: tabs + layout + spacing + window controls)
+[AskUserQuestion] Q: How do you want to approach these two features (dropdown + sidebar)? → A: Both now
+[AskUserQuestion] Q: For the tabbed file viewer, how should files get opened into it? → A: New separate pane (keep EditorPane as-is, add new FileViewer pane type)
+[AskUserQuestion] Q: Should the tabbed file viewer have a left sidebar file tree? → A: No sidebar, tabs only. The Warp screenshot doesnt even have a file tree.
+
+## 2026-03-06 — Code Review Pane + File Viewer + Browser Preview
+
+1. Implement the following plan: # Code Review Pane — Implementation Plan [detailed 8-step plan with Rust backend, TS types, diff parser, layout utils, React components, PaneGrid integration, App.tsx shortcuts, Tauri permissions]
+2. Is all done?
+3. 1. CTRL+SHIFT+G didnt work. 2. put a button in the top header on the right side
+4. Are you sure that the Warp code review is tied to Git? I dont think so... see image: [Warp Tabbed File Viewer screenshot]
+5. option 2 (keep code review + also build tabbed file viewer)
+6. Its not working, i cant open a file and when i click a file in the sidebar file tree the app crashes and become empty, like this -> [blank screenshot]
+7. The down chevron 'quick launch' dropdown should open a new pane in the current project - nothing else
+8. Why are the added icons so badly aligned vertically? Like top aligned? -> [screenshot of misaligned icons]
+9. What does the 'Code review' pane really do? I dont understand it
+10. Where is the browser preview button? I cant find it anymore
+11. Yes there was but in the pane header, not the TabBar. Can you check if 'browser preview' is still in the code?
+12. Yes add it back
+13. /end

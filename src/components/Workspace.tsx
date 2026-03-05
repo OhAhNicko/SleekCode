@@ -1,0 +1,341 @@
+import { useCallback, useState, useRef, useMemo, useEffect } from "react";
+import { createPortal } from "react-dom";
+import { open } from "@tauri-apps/plugin-dialog";
+import type { Tab, TerminalType, PaneLayout } from "../types";
+import { useAppStore } from "../store";
+import {
+  findAllTerminalIds,
+  findFirstLeafId,
+  findPaneIdForTerminal,
+  removePane,
+  splitPane,
+  swapPanes,
+  generatePaneId,
+  generateTerminalId,
+} from "../lib/layout-utils";
+import { getPtyWrite } from "../store/terminalSlice";
+import type { CommandBlock } from "../lib/command-block-parser";
+import PaneGrid from "./PaneGrid";
+import TerminalPane from "./TerminalPane";
+import ToolSelector from "./ToolSelector";
+
+interface WorkspaceProps {
+  tab: Tab;
+}
+
+export default function Workspace({ tab }: WorkspaceProps) {
+  const updateTabLayout = useAppStore((s) => s.updateTabLayout);
+  const addTerminal = useAppStore((s) => s.addTerminal);
+  const setActiveTerminal = useAppStore((s) => s.setActiveTerminal);
+  const terminals = useAppStore((s) => s.terminals);
+  const [activeTerminalId, setLocalActiveTerminal] = useState<string | null>(
+    null
+  );
+  const [showToolSelector, setShowToolSelector] = useState(false);
+
+  // Check if this is a fresh tab that needs its first terminal spawned
+  const layoutTerminalId =
+    tab.layout.type === "terminal" ? tab.layout.terminalId : null;
+  const needsInitialTerminal =
+    layoutTerminalId && !terminals[layoutTerminalId];
+
+  // Collect all terminal IDs in the current layout (sorted for stable portal order)
+  const allTerminalIds = useMemo(
+    () => findAllTerminalIds(tab.layout).sort(),
+    [tab.layout]
+  );
+
+  // Persistent slot divs per terminal — survive layout restructures
+  const slotMapRef = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // Create/get persistent slot element for a terminal
+  const getSlotEl = useCallback((terminalId: string): HTMLDivElement => {
+    let el = slotMapRef.current.get(terminalId);
+    if (!el) {
+      el = document.createElement("div");
+      el.style.width = "100%";
+      el.style.height = "100%";
+      slotMapRef.current.set(terminalId, el);
+    }
+    return el;
+  }, []);
+
+  // Cleanup slots for removed terminals
+  useEffect(() => {
+    const activeSet = new Set(allTerminalIds);
+    for (const [id, el] of slotMapRef.current) {
+      if (!activeSet.has(id)) {
+        el.remove();
+        slotMapRef.current.delete(id);
+      }
+    }
+  }, [allTerminalIds]);
+
+  const handleLayoutChange = useCallback(
+    (layout: PaneLayout) => {
+      updateTabLayout(tab.id, layout);
+    },
+    [tab.id, updateTabLayout]
+  );
+
+  const handleTerminalFocus = useCallback(
+    (terminalId: string) => {
+      setLocalActiveTerminal(terminalId);
+      setActiveTerminal(terminalId);
+    },
+    [setActiveTerminal]
+  );
+
+  const handleSpawnTerminal = useCallback(
+    (terminalId: string, type: TerminalType, serverId?: string) => {
+      addTerminal(terminalId, type, tab.workingDir, serverId ?? tab.serverId);
+    },
+    [addTerminal, tab.workingDir, tab.serverId]
+  );
+
+  const handleInitialSpawn = useCallback(
+    (type: TerminalType, serverId?: string) => {
+      if (!layoutTerminalId) return;
+      addTerminal(layoutTerminalId, type, tab.workingDir, serverId ?? tab.serverId);
+      setLocalActiveTerminal(layoutTerminalId);
+      setShowToolSelector(false);
+    },
+    [addTerminal, layoutTerminalId, tab.workingDir, tab.serverId]
+  );
+
+  // --- Terminal pane callbacks (used by portal-rendered TerminalPanes) ---
+
+  const handleTerminalClose = useCallback((termId: string) => {
+    const paneId = findPaneIdForTerminal(tab.layout, termId);
+    if (!paneId) return;
+    const newLayout = removePane(tab.layout, paneId);
+    handleLayoutChange(newLayout ?? tab.layout);
+  }, [tab.layout, handleLayoutChange]);
+
+  const handleTerminalSplit = useCallback((
+    termId: string,
+    direction: "horizontal" | "vertical",
+    type: TerminalType
+  ) => {
+    const paneId = findPaneIdForTerminal(tab.layout, termId);
+    if (!paneId) return;
+    const newTerminalId = generateTerminalId();
+    const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId };
+    handleSpawnTerminal(newTerminalId, type, tab.serverId);
+    handleLayoutChange(splitPane(tab.layout, paneId, direction, newLeaf));
+  }, [tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal]);
+
+  const handleTerminalOpenEditor = useCallback(async (termId: string) => {
+    try {
+      const selected = await open({ directory: false, multiple: false, title: "Open File in Editor" });
+      if (selected && typeof selected === "string") {
+        const paneId = findPaneIdForTerminal(tab.layout, termId);
+        if (!paneId) return;
+        const editorPane = { type: "editor" as const, id: generatePaneId(), filePath: selected };
+        handleLayoutChange(splitPane(tab.layout, paneId, "horizontal", editorPane));
+      }
+    } catch { /* User cancelled */ }
+  }, [tab.layout, handleLayoutChange]);
+
+  const handleTerminalOpenBrowser = useCallback((termId: string) => {
+    const paneId = findPaneIdForTerminal(tab.layout, termId);
+    if (!paneId) return;
+    const browserPane = { type: "browser" as const, id: generatePaneId(), url: "https://localhost:3000" };
+    handleLayoutChange(splitPane(tab.layout, paneId, "horizontal", browserPane));
+  }, [tab.layout, handleLayoutChange]);
+
+  const handleTerminalOpenTasks = useCallback((termId: string) => {
+    const paneId = findPaneIdForTerminal(tab.layout, termId);
+    if (!paneId) return;
+    const kanbanPane = { type: "kanban" as const, id: generatePaneId() };
+    handleLayoutChange(splitPane(tab.layout, paneId, "horizontal", kanbanPane));
+  }, [tab.layout, handleLayoutChange]);
+
+  const handleTerminalExplainError = useCallback((termId: string, block: CommandBlock) => {
+    const prompt = `Explain this error:\n\`\`\`\n${block.command}\n${block.outputText ?? ""}\n\`\`\`\nExit code: ${block.exitCode}\n`;
+
+    // Look for existing AI terminal in current tab layout
+    const allIds = findAllTerminalIds(tab.layout);
+    const terms = useAppStore.getState().terminals;
+    const aiTypes: TerminalType[] = ["claude", "codex", "gemini"];
+
+    for (const tid of allIds) {
+      const t = terms[tid];
+      if (t && aiTypes.includes(t.type)) {
+        const writeFn = getPtyWrite(tid);
+        if (writeFn) {
+          writeFn(prompt);
+          return;
+        }
+      }
+    }
+
+    // No AI terminal found — split source pane and spawn one
+    const paneId = findPaneIdForTerminal(tab.layout, termId);
+    if (!paneId) return;
+    const newTerminalId = generateTerminalId();
+    const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId };
+    handleSpawnTerminal(newTerminalId, "claude", tab.serverId);
+    handleLayoutChange(splitPane(tab.layout, paneId, "horizontal", newLeaf));
+
+    setTimeout(() => {
+      const writeFn = getPtyWrite(newTerminalId);
+      if (writeFn) writeFn(prompt);
+    }, 2000);
+  }, [tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal]);
+
+  const handleSwapPane = useCallback((fromTerminalId: string, toTerminalId: string) => {
+    const paneA = findPaneIdForTerminal(tab.layout, fromTerminalId);
+    const paneB = findPaneIdForTerminal(tab.layout, toTerminalId);
+    if (!paneA || !paneB) return;
+
+    // Swap slot elements in the DOM FIRST (atomic, avoids WebGL context loss)
+    const slotA = slotMapRef.current.get(fromTerminalId);
+    const slotB = slotMapRef.current.get(toTerminalId);
+    if (slotA && slotB && slotA.parentElement && slotB.parentElement) {
+      const parentA = slotA.parentElement;
+      const parentB = slotB.parentElement;
+      const placeholder = document.createElement("div");
+      parentA.replaceChild(placeholder, slotA);
+      parentB.replaceChild(slotA, slotB);
+      parentA.replaceChild(slotB, placeholder);
+    }
+
+    // Then update layout tree — React re-renders but ref callbacks
+    // find slots already in place (parentElement === el) and skip DOM work
+    handleLayoutChange(swapPanes(tab.layout, paneA, paneB));
+  }, [tab.layout, handleLayoutChange]);
+
+  const handleTerminalMarkDevServer = useCallback((termId: string) => {
+    const t = useAppStore.getState().terminals[termId];
+    if (!t) return;
+    useAppStore.getState().addDevServer({
+      id: `ds-${Date.now()}`,
+      terminalId: termId,
+      tabId: tab.id,
+      projectName: tab.workingDir.split("/").pop() || tab.workingDir.split("\\").pop() || "Unknown",
+      port: 3000,
+      status: "running",
+    });
+  }, [tab.id, tab.workingDir]);
+
+  // Listen for split-terminal events from the chevron dropdown
+  useEffect(() => {
+    const handler = (e: Event) => {
+      // Only respond if this tab is the active one
+      const activeId = useAppStore.getState().activeTabId;
+      if (activeId !== tab.id) return;
+
+      const type = (e as CustomEvent).detail?.type as TerminalType | undefined;
+      if (!type) return;
+
+      const firstPaneId = findFirstLeafId(tab.layout);
+      if (!firstPaneId) return;
+
+      const newTerminalId = generateTerminalId();
+      const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId };
+      handleSpawnTerminal(newTerminalId, type, tab.serverId);
+      handleLayoutChange(splitPane(tab.layout, firstPaneId, "horizontal", newLeaf));
+    };
+    window.addEventListener("ezydev:split-terminal", handler);
+    return () => window.removeEventListener("ezydev:split-terminal", handler);
+  }, [tab.id, tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal]);
+
+  // Show tool selector for brand new tab
+  if (needsInitialTerminal) {
+    return (
+      <div
+        className="h-full w-full flex items-center justify-center workspace-enter"
+        style={{ backgroundColor: "var(--ezy-bg)" }}
+      >
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => setShowToolSelector((v) => !v)}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "12px 24px",
+              backgroundColor: "var(--ezy-surface)",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: 8,
+              color: "var(--ezy-text)",
+              fontSize: 14,
+              fontFamily: "inherit",
+              cursor: "pointer",
+              transition: "all 150ms ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.borderColor = "var(--ezy-accent)";
+              e.currentTarget.style.backgroundColor = "var(--ezy-surface-raised)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = "var(--ezy-border)";
+              e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+            }}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="var(--ezy-accent)"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            >
+              <line x1="8" y1="3" x2="8" y2="13" />
+              <line x1="3" y1="8" x2="13" y2="8" />
+            </svg>
+            Open Terminal
+          </button>
+
+          {showToolSelector && (
+            <ToolSelector
+              onSelect={handleInitialSpawn}
+              onClose={() => setShowToolSelector(false)}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full w-full workspace-enter">
+      <PaneGrid
+        layout={tab.layout}
+        onLayoutChange={handleLayoutChange}
+        getTerminalSlot={getSlotEl}
+      />
+      {/* Render terminal panes via portals into persistent slot elements.
+          This keeps them mounted even when the layout tree restructures. */}
+      {allTerminalIds.map((termId) => {
+        const terminal = terminals[termId];
+        if (!terminal) return null;
+        const slotEl = getSlotEl(termId);
+        return createPortal(
+          <TerminalPane
+            terminalId={termId}
+            terminalType={terminal.type}
+            workingDir={tab.workingDir}
+            isActive={activeTerminalId === termId}
+            onClose={() => handleTerminalClose(termId)}
+            onSplit={(direction, type) => handleTerminalSplit(termId, direction, type)}
+            onChangeType={(type) => useAppStore.getState().changeTerminalType(termId, type)}
+            onFocus={() => handleTerminalFocus(termId)}
+            onSwapPane={handleSwapPane}
+            onMarkDevServer={() => handleTerminalMarkDevServer(termId)}
+            onOpenEditor={() => handleTerminalOpenEditor(termId)}
+            onOpenBrowser={() => handleTerminalOpenBrowser(termId)}
+            onOpenTasks={() => handleTerminalOpenTasks(termId)}
+            onExplainError={(block) => handleTerminalExplainError(termId, block)}
+            onOpenSnippets={() => window.dispatchEvent(new Event("ezydev:open-snippets"))}
+            serverId={terminal.serverId}
+          />,
+          slotEl,
+          termId
+        );
+      })}
+    </div>
+  );
+}
