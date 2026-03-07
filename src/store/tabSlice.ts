@@ -1,6 +1,46 @@
 import type { StateCreator } from "zustand";
-import type { Tab, PaneLayout } from "../types";
+import type { Tab, PaneLayout, DevServer } from "../types";
 import { generatePaneId, generateTerminalId } from "../lib/layout-utils";
+import { snapshotTab } from "./undoCloseStore";
+import { getPtyWrite } from "./terminalSlice";
+
+/** Pending dev server kills — delayed until undo window expires */
+const pendingServerKills = new Map<string, { timerId: ReturnType<typeof setTimeout>; serverIds: string[] }>();
+
+const UNDO_DELAY_MS = 5500; // slightly longer than toast (5000ms) to be safe
+
+/** Schedule dev server kills for a closed tab. Cancellable if tab is restored. */
+export function scheduleDeferredServerKill(tabId: string, servers: DevServer[]): void {
+  // Cancel any existing timer for this tab
+  cancelDeferredServerKill(tabId);
+  if (servers.length === 0) return;
+
+  const timerId = setTimeout(() => {
+    for (const ds of servers) {
+      const write = getPtyWrite(ds.terminalId);
+      if (write) write("\x03");
+    }
+    // Remove from devServers in store (dynamic import to avoid circular ref)
+    import("./index").then(({ useAppStore }) => {
+      const state = useAppStore.getState();
+      const currentServers = (state as unknown as { devServers: DevServer[] }).devServers ?? [];
+      const remaining = currentServers.filter((ds) => !servers.some((s) => s.id === ds.id));
+      useAppStore.setState({ devServers: remaining });
+    });
+    pendingServerKills.delete(tabId);
+  }, UNDO_DELAY_MS);
+
+  pendingServerKills.set(tabId, { timerId, serverIds: servers.map((s) => s.id) });
+}
+
+/** Cancel pending server kills when a tab is restored via undo. */
+export function cancelDeferredServerKill(tabId: string): void {
+  const pending = pendingServerKills.get(tabId);
+  if (pending) {
+    clearTimeout(pending.timerId);
+    pendingServerKills.delete(tabId);
+  }
+}
 
 export interface TabSlice {
   tabs: Tab[];
@@ -91,12 +131,19 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
     set((state) => {
       const tab = state.tabs.find((t) => t.id === tabId);
       if (tab?.isPinned) return state;
+      snapshotTab(tabId);
+
+      // Defer dev server kill — keep servers alive during undo window
+      const devServers = (state as unknown as { devServers: DevServer[] }).devServers ?? [];
+      const tabServers = devServers.filter((ds) => ds.tabId === tabId);
+      scheduleDeferredServerKill(tabId, tabServers);
+
       const remaining = state.tabs.filter((t) => t.id !== tabId);
       const newActiveId =
         state.activeTabId === tabId
           ? remaining[remaining.length - 1]?.id ?? DEV_SERVER_TAB_ID
           : state.activeTabId;
-      return { tabs: remaining, activeTabId: newActiveId };
+      return { tabs: remaining, activeTabId: newActiveId } as Partial<TabSlice>;
     });
   },
 

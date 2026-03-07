@@ -10,6 +10,8 @@ use tauri::Manager;
 mod win32_border {
     use std::ffi::c_void;
 
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWCP_ROUND: u32 = 2;
     const DWMWA_BORDER_COLOR: u32 = 34;
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     const WM_NCCALCSIZE: u32 = 0x0083;
@@ -74,7 +76,16 @@ mod win32_border {
 
     pub fn remove_border(hwnd: *mut c_void) {
         unsafe {
-            // 1) Remove DWM side/bottom border color
+            // 1) Enable rounded corners (Windows 11+)
+            let corner_pref = DWMWCP_ROUND;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &corner_pref as *const u32 as *const c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+
+            // 2) Remove DWM side/bottom border color
             let color = DWMWA_COLOR_NONE;
             DwmSetWindowAttribute(
                 hwnd,
@@ -83,10 +94,10 @@ mod win32_border {
                 std::mem::size_of::<u32>() as u32,
             );
 
-            // 2) Subclass the window to intercept WM_NCCALCSIZE and kill the top border
+            // 3) Subclass the window to intercept WM_NCCALCSIZE and kill the top border
             SetWindowSubclass(hwnd, Some(subclass_proc), 1, 0);
 
-            // 3) Force Windows to recalculate the frame
+            // 4) Force Windows to recalculate the frame
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
             SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME);
             SetWindowPos(

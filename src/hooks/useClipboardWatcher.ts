@@ -43,9 +43,19 @@ export function useClipboardWatcher() {
             result.seq
           );
 
-          // Auto-insert into active terminal if setting is enabled
+          // Auto-insert if setting is enabled
           if (useAppStore.getState().autoInsertClipboardImage) {
-            insertImagePath(result.image.path);
+            if (useAppStore.getState().promptComposerEnabled) {
+              // Attach to active EzyComposer instead of writing to terminal
+              const cs = useClipboardImageStore.getState();
+              const newImg = cs.images[0];
+              const activeId = cs.activeComposerTerminalId;
+              if (newImg && activeId) {
+                cs.setPendingComposerImage({ image: newImg, terminalId: activeId });
+              }
+            } else {
+              insertImagePath(result.image.path);
+            }
           }
         }
       } catch {

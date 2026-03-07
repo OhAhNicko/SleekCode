@@ -196,14 +196,15 @@ export default function CommandPalette({
         display: "flex",
         alignItems: "flex-start",
         justifyContent: "center",
-        paddingTop: 80,
+        paddingTop: "15vh",
         backgroundColor: "rgba(0,0,0,0.5)",
       }}
       onClick={onClose}
     >
       <div
         style={{
-          width: 520,
+          maxWidth: 448,
+          width: "100%",
           maxHeight: "60vh",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
@@ -219,8 +220,11 @@ export default function CommandPalette({
         {/* Search input */}
         <div
           style={{
-            padding: "12px 16px",
+            height: 32,
+            padding: "0 16px",
             borderBottom: "1px solid var(--ezy-border)",
+            display: "flex",
+            alignItems: "center",
           }}
         >
           <input

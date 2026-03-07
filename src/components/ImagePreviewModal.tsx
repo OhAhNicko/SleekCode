@@ -20,8 +20,9 @@ export default function ImagePreviewModal({
         inset: 0,
         zIndex: 200,
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "center",
+        paddingTop: "15vh",
         backgroundColor: "rgba(0,0,0,0.7)",
       }}
       onClick={onClose}
@@ -32,7 +33,8 @@ export default function ImagePreviewModal({
           border: "1px solid var(--ezy-border)",
           borderRadius: 8,
           padding: 16,
-          maxWidth: "80vw",
+          maxWidth: 448,
+          width: "100%",
           maxHeight: "80vh",
           display: "flex",
           flexDirection: "column",
@@ -43,10 +45,12 @@ export default function ImagePreviewModal({
         {/* Header */}
         <div
           style={{
+            height: 32,
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
             gap: 16,
+            flexShrink: 0,
           }}
         >
           <span

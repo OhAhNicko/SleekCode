@@ -173,6 +173,20 @@ body,
   animation: fade-in 120ms ease-out;
 }
 
+/* Dev server row — URL truncation at narrow widths */
+.devserver-url-port { display: none; }
+.devserver-url-full { display: inline; }
+
+@container (max-width: 480px) {
+  .devserver-url-port { display: inline; }
+  .devserver-url-full { display: none; }
+}
+
+/* Dev server command suggestion — show remove X on hover */
+*:has(> .devserver-cmd-remove):hover > .devserver-cmd-remove {
+  opacity: 1 !important;
+}
+
 /* File path link tooltip (Ctrl+Click to open) */
 .ezy-file-link-tooltip {
   display: inline-flex;

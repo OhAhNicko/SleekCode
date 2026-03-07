@@ -17,6 +17,7 @@ import {
   generateTerminalId,
 } from "../lib/layout-utils";
 import { getPtyWrite } from "../store/terminalSlice";
+import { snapshotPane } from "../store/undoCloseStore";
 import type { CommandBlock } from "../lib/command-block-parser";
 import PaneGrid from "./PaneGrid";
 import TerminalPane from "./TerminalPane";
@@ -117,9 +118,10 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const handleTerminalClose = useCallback((termId: string) => {
     const paneId = findPaneIdForTerminal(tab.layout, termId);
     if (!paneId) return;
+    snapshotPane(tab.id, tab.layout);
     const newLayout = removePane(tab.layout, paneId);
     handleLayoutChange(newLayout ?? tab.layout);
-  }, [tab.layout, handleLayoutChange]);
+  }, [tab.id, tab.layout, handleLayoutChange]);
 
   const handleTerminalSplit = useCallback((
     termId: string,
@@ -223,6 +225,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
       terminalId: termId,
       tabId: tab.id,
       projectName: tab.workingDir.split("/").pop() || tab.workingDir.split("\\").pop() || "Unknown",
+      command: "",
+      workingDir: t.workingDir,
       port: 3000,
       status: "running",
     });
@@ -329,6 +333,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
     <div className="h-full w-full workspace-enter">
       <PaneGrid
         layout={tab.layout}
+        tabId={tab.id}
         onLayoutChange={handleLayoutChange}
         getTerminalSlot={getSlotEl}
       />

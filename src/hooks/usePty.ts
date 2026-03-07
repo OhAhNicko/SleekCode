@@ -36,6 +36,22 @@ export function usePty({
   const sessionResumeIdRef = useRef(sessionResumeId);
   sessionResumeIdRef.current = sessionResumeId;
 
+  // Store stable config in refs so only terminalType triggers PTY restart.
+  // workingDir, serverId, and injectShellIntegration never change for an
+  // existing terminal — but parent re-renders could pass new references
+  // or subtly different values, causing spurious PTY restarts (Claude CLI
+  // would restart mid-session showing /remote-control banner again).
+  const workingDirRef = useRef(workingDir);
+  workingDirRef.current = workingDir;
+  const serverIdRef = useRef(serverId);
+  serverIdRef.current = serverId;
+  const injectShellIntegrationRef = useRef(injectShellIntegration);
+  injectShellIntegrationRef.current = injectShellIntegration;
+  const onDataRef = useRef(onData);
+  onDataRef.current = onData;
+  const onExitRef = useRef(onExit);
+  onExitRef.current = onExit;
+
   useEffect(() => {
     const thisSpawnId = ++spawnIdRef.current;
     let cancelled = false;
@@ -44,23 +60,30 @@ export function usePty({
     // mount->cleanup->remount cycle, the first mount's timer is
     // cancelled before it fires, so only ONE ConPTY is ever created.
     const timerId = setTimeout(async () => {
+      const currentWorkingDir = workingDirRef.current;
+      const currentServerId = serverIdRef.current;
+      const currentInjectShellIntegration = injectShellIntegrationRef.current;
+
+      // Bail-out helper: check if this spawn has been superseded
+      const isStale = () => cancelled || spawnIdRef.current !== thisSpawnId;
+
       // For resume spawns, wait for WSL to boot before invoking wsl.exe.
       // Fresh spawns can race ahead and use the pool (or start wsl.exe cold).
       if (isWslTerminal(terminalType) && sessionResumeIdRef.current) {
         await wslReady;
-        if (cancelled) return;
+        if (isStale()) return;
       }
       let command: string;
       let args: string[];
       let cwd: string | undefined;
 
-      if (serverId) {
-        const server = useAppStore.getState().servers.find((s) => s.id === serverId);
+      if (currentServerId) {
+        const server = useAppStore.getState().servers.find((s) => s.id === currentServerId);
         if (!server) {
-          onExit(1);
+          onExitRef.current(1);
           return;
         }
-        const remoteCwd = workingDir || server.defaultDirectory;
+        const remoteCwd = currentWorkingDir || server.defaultDirectory;
         const ssh = getSshCommand(server, terminalType, remoteCwd, sessionResumeIdRef.current);
         command = ssh.command;
         args = ssh.args;
@@ -71,7 +94,7 @@ export function usePty({
           extraArgs.push("--dangerously-skip-permissions");
         }
         const resumeId = sessionResumeIdRef.current;
-        cwd = workingDir || undefined;
+        cwd = currentWorkingDir || undefined;
         let wslCwd: string | undefined;
         if (cwd && isWslTerminal(terminalType)) {
           wslCwd = toWslPath(cwd);
@@ -92,14 +115,16 @@ export function usePty({
 
       const onDataChan = new Channel<number[]>();
       onDataChan.onmessage = (data) => {
-        onData(new Uint8Array(data));
+        // Guard: discard data from stale spawns (e.g. React StrictMode double-fire
+        // where the first PTY starts before cleanup cancels it)
+        if (spawnIdRef.current !== thisSpawnId) return;
+        onDataRef.current(new Uint8Array(data));
       };
 
       const onExitChan = new Channel<number>();
       onExitChan.onmessage = (code) => {
-        if (spawnIdRef.current === thisSpawnId) {
-          onExit(code);
-        }
+        if (spawnIdRef.current !== thisSpawnId) return;
+        onExitRef.current(code);
       };
 
       try {
@@ -109,8 +134,8 @@ export function usePty({
         // Skip pool for session resume — pooled bash uses --norc --noprofile
         // which may lack env setup that Claude needs for --resume.
         // The normal spawn path uses bash -lic (full login shell) for resume.
-        if (!serverId && isWslTerminal(terminalType) && !sessionResumeIdRef.current) {
-          const wslCwd = workingDir ? toWslPath(workingDir) : undefined;
+        if (!currentServerId && isWslTerminal(terminalType) && !sessionResumeIdRef.current) {
+          const wslCwd = currentWorkingDir ? toWslPath(currentWorkingDir) : undefined;
           const poolExtraArgs: string[] = [];
           if (terminalType === "claude" && useAppStore.getState().claudeYolo) {
             poolExtraArgs.push("--dangerously-skip-permissions");
@@ -149,14 +174,14 @@ export function usePty({
           });
         }
 
-        if (cancelled) {
+        if (isStale()) {
           invoke("pty_kill", { ptyId: id }).catch(() => {});
           return;
         }
 
         ptyIdRef.current = id;
 
-        if (injectShellIntegration) {
+        if (currentInjectShellIntegration) {
           setTimeout(() => {
             if (spawnIdRef.current === thisSpawnId && ptyIdRef.current !== null) {
               invoke("pty_write", {
@@ -168,8 +193,8 @@ export function usePty({
         }
       } catch (e) {
         console.error("Failed to spawn PTY:", e);
-        if (!cancelled) {
-          onExit(1);
+        if (!isStale()) {
+          onExitRef.current(1);
         }
       }
     }, 0);
@@ -183,8 +208,10 @@ export function usePty({
         ptyIdRef.current = null;
       }
     };
+    // Only terminalType should trigger a PTY restart (explicit CLI type switch).
+    // All other config is read from refs at spawn time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [terminalType, workingDir, serverId, injectShellIntegration]);
+  }, [terminalType]);
 
   const write = useCallback((data: string) => {
     if (ptyIdRef.current !== null) {

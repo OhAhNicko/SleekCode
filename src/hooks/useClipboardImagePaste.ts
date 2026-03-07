@@ -12,6 +12,7 @@ export interface PastedImage {
 
 interface UseClipboardImagePasteOptions {
   containerRef: React.RefObject<HTMLDivElement | null>;
+  terminalRef: React.RefObject<import("@xterm/xterm").Terminal | null>;
   terminalType: TerminalType;
   terminalId: string;
   write: (data: string) => void;
@@ -20,6 +21,7 @@ interface UseClipboardImagePasteOptions {
 
 export function useClipboardImagePaste({
   containerRef,
+  terminalRef,
   terminalType,
   terminalId,
   write,
@@ -38,6 +40,24 @@ export function useClipboardImagePaste({
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
+
+      // Ctrl+C — copy selection if any, otherwise let SIGINT through
+      if (e.key === "c" || e.key === "C") {
+        const term = terminalRef.current;
+        if (term) {
+          const selection = term.getSelection();
+          if (selection) {
+            e.preventDefault();
+            e.stopPropagation();
+            navigator.clipboard.writeText(selection);
+            term.clearSelection();
+            return;
+          }
+        }
+        // No selection — let xterm send \x03 (SIGINT)
+        return;
+      }
+
       if (exited || processingRef.current) return;
 
       // Ctrl+Z — undo last clipboard image insertion
@@ -79,7 +99,12 @@ export function useClipboardImagePaste({
         return;
       }
 
-      // No image in clipboard — let xterm handle normal text paste
+      // No image in clipboard — paste text from clipboard
+      e.preventDefault();
+      e.stopPropagation();
+      navigator.clipboard.readText().then((text) => {
+        if (text) write(text);
+      });
     };
 
     container.addEventListener("keydown", handleKeyDown, true);

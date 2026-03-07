@@ -21,9 +21,26 @@ export function getAllPtyWriteTerminalIds(): string[] {
   return Object.keys(ptyWriteCallbacks);
 }
 
+// Terminal data listeners — called when PTY output arrives.
+// Used by DevServerTerminalHost for port detection.
+const terminalDataListeners: Record<string, (data: Uint8Array) => void> = {};
+
+export function registerTerminalDataListener(terminalId: string, cb: (data: Uint8Array) => void): void {
+  terminalDataListeners[terminalId] = cb;
+}
+
+export function unregisterTerminalDataListener(terminalId: string): void {
+  delete terminalDataListeners[terminalId];
+}
+
+export function getTerminalDataListener(terminalId: string): ((data: Uint8Array) => void) | undefined {
+  return terminalDataListeners[terminalId];
+}
+
 export interface TerminalSlice {
   terminals: Record<string, TerminalInstance>;
   devServers: DevServer[];
+  expandedDevServerId: string | null;
   addTerminal: (id: string, type: TerminalType, workingDir: string, serverId?: string) => void;
   addTerminals: (batch: Array<{ id: string; type: TerminalType; workingDir: string; serverId?: string }>) => void;
   removeTerminal: (id: string) => void;
@@ -36,6 +53,10 @@ export interface TerminalSlice {
     serverId: string,
     status: DevServer["status"]
   ) => void;
+  updateDevServerCommand: (serverId: string, command: string) => void;
+  updateDevServerPort: (serverId: string, port: number) => void;
+  updateDevServerError: (serverId: string, errorMessage: string | undefined) => void;
+  setExpandedDevServerId: (id: string | null) => void;
 }
 
 export const createTerminalSlice: StateCreator<
@@ -46,6 +67,7 @@ export const createTerminalSlice: StateCreator<
 > = (set) => ({
   terminals: {},
   devServers: [],
+  expandedDevServerId: null,
 
   addTerminal: (id, type, workingDir, serverId?) => {
     set((state) => ({
@@ -126,5 +148,33 @@ export const createTerminalSlice: StateCreator<
         ds.id === serverId ? { ...ds, status } : ds
       ),
     }));
+  },
+
+  updateDevServerCommand: (serverId, command) => {
+    set((state) => ({
+      devServers: state.devServers.map((ds) =>
+        ds.id === serverId ? { ...ds, command } : ds
+      ),
+    }));
+  },
+
+  updateDevServerPort: (serverId, port) => {
+    set((state) => ({
+      devServers: state.devServers.map((ds) =>
+        ds.id === serverId ? { ...ds, port } : ds
+      ),
+    }));
+  },
+
+  updateDevServerError: (serverId, errorMessage) => {
+    set((state) => ({
+      devServers: state.devServers.map((ds) =>
+        ds.id === serverId ? { ...ds, errorMessage, status: errorMessage ? "error" : ds.status } : ds
+      ),
+    }));
+  },
+
+  setExpandedDevServerId: (id) => {
+    set({ expandedDevServerId: id });
   },
 });

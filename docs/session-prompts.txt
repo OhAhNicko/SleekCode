@@ -1,5 +1,17 @@
 # Session Prompts
 
+## 2026-03-07 — Standardize modal positioning
+
+1. Implement the following plan: [Standardize popup/modal positioning across all modals — TemplatePicker, CommandPalette, ImagePreviewModal to items-start + pt-[15vh], max-w-md, h-8 header]
+2. Where/how do I open the "CommandPalette"?
+3. /end
+
+## 2026-03-07 — Scroll-to-prompt always-on + composer fix
+
+1. What does the "Scroll to prompt" button do in the settings menu?
+2. Make it so these prompts are always enabled by default instead and remove the toggle only. Also, when the EzyComposer is active - the commands doesnt work unless the user clicks above the EzyComposer. Can you fix this?
+3. /end
+
 ## 2026-03-04 — Initial Project Setup
 
 [AskUserQuestion] Q: What type of project is this? → A: Desktop app (Tauri)
@@ -165,11 +177,29 @@
 9. finally it works!!
 10. Great! Now /end - and document this thoroughly if we need to revisit the topic in the future
 
-## 2026-03-07 — Scroll-to-prompt feature
+## 2026-03-07 — Scroll-to-prompt + Windows Terminal keybindings
 
 1. Can we add a feature that lets the user to scroll up to the most recent user prompt in the terminal window? For example with double tapping the up arrow on the keyboard or PGUP button. Make this a toggle in the settings
 [AskUserQuestion] Q: When PgUp is used with this feature enabled, should it replace the default PgUp behavior? → A: Replace PgUp (Recommended)
 [AskUserQuestion] Q: When you press the shortcut again and you're already viewing the most recent prompt, should it navigate to the previous prompt? → A: Navigate backwards (Recommended)
+2. And PgDwn already works like it automatically scrolls down to the bottom, as default?
+3. I want Windows Terminals behavior across the board. Also for CTRL+Backspace to remove the word that is the to left (as ALT+Backspace does in the terminal) and CTRL+DEL remove the word to the right (as ALT+DEL does in the terminal)
+4. I also want a "jump to the bottom of this block" button as Warp has when scrolled up. Warp has it in the bottom but I want it to be placed below the scrollbar position when the scrollbar is stale. Warp looks like this: (screenshot)
+5. My initial thought was that the down arrow only should show when no scrolling is being done, when the scrollbar is still. Is that a good idea or should we keep it as is?
+6. Okay. Now, I want to change the PgDn to jump to the previous user prompt instead, so the user can use PgUp and PgDn to jump between prompts. the END button should take the user to the bottom instead
+7. PgDN still jumps to the bottom only...
+8. Still the same... and - Ctrl+Backspace / Ctrl+Delete doesnt work at all...
+9. Now it works. Nice :)
+10. /end
+11. Is there more windows terminal commands that could be added? That doesnt overwrite the ones above
+12. Yes but, I didn't mention those since they already are working for some reason
+13. But the CTRL+HOME and CTRL+SHIFT+UP/DOWN can be added
+14. Also, make CTRL+C and CTRL+V to work flawlessly with text
+15. CTRL+C still doesnt work because it triggers "Exit" in Claude (CTRL+C two times exits claude)
+16. Nice! Also, is it possible to make the ai composer to act more like a normal windows text composer? I mean, so its possible to select text and hit Backspace or Del to remove text. Click anywhere with the mouse to move the cursor (instead of CTRL+LEFT for example)
+17. This is not working in Warp with Claude Code either, but it would be super nice and would speed up my work with a 1000%
+[AskUserQuestion] Q: Want me to build this prompt composer overlay? → A: Yes, build it and add it as a toggle button in the settings menu so I can test it out
+18. And it has to be seamless
 
 ## 2026-03-07 — Tab bar redesign (hover icons + pin stripes)
 
@@ -178,3 +208,80 @@
 3. The stripes has to be much thicker. Also, move the icons more right of the tab bar and there has to be more gap inbetween them
 4. They have still to be closer to the right border and more spacing in between the icons... see image: (screenshot)
 5. Better now. /end
+
+## 2026-03-07 — Undo close toast for tabs and panes
+
+1. Add "Undo" toast on closing both tabs and panes too
+2. Nice! When undoing a closed pane, try to resume the pane with resumeId (if available). Is this a good idea or is it not needed?
+3. Nice! Now /end
+
+## 2026-03-07 — Fix PTY double-spawn (MultiRemote)
+
+1. There's an issue where the claude panes reloads or something? Anyhow, the remote control loads again multiple times. It should not be like this. See image: [screenshot: Skarmbild 2026-03-07 042911.png]
+[AskUserQuestion] Q: When does the duplicate /remote-control appear — on app startup or during runtime? → A: During runtime
+2. Remove any debug if there is some. I will keep an eye on this going forward
+3. and revisit the topic if needed
+4. On restart the resume command seems to be ran 2 times because it reloads after the first time. this is causing this same issue of course with multiple "remote control" rows. Check why this is happening
+5. /end
+
+## 2026-03-07 — Pane count + AI activity indicator in tab labels
+
+1. In the project tab, show how many panes that are open like 'ttm5 3' if 3 panes are open. Also, I want to display how many panes are actively working that the user is waiting to finish, that has to be shown like (1).
+2. The producing output is a bit buggy. When only 1 pane was producing output, and I switched to another tab, it switched to (3) all of a sudden
+3. Still the same issue when switching tabs. Also, when I type something it shows as (1), I want it to only detect the AI work...
+[AskUserQuestion] Q: Should active detection apply only to AI terminals or all terminals? → A: AI terminals only
+4. Still gets 'false positive' when switching tab
+5. Now it detects my typing again...
+6. Still the same issue when switching tabs. Also, sometimes when switching back to a tab everything is scrolled up to the top in each pane.. fix this
+7. it still shows (1) indicating 1 active pane when its ME typing... not the AI working
+8. There's still issues when tabing out and back - a pane that the AI is working looks to be freezed until you click on it and the active count (1) is removed until then. Why? And when switching TO a pane all panes looks to be active for some seconds, like (4)...
+9. A pane can never freeze when switching tabs. Is this understood?
+10. Same issue still happens...
+11. Now its better. But when switching back to a tab, if there's active work in 1 tab all 4 tabs shows as active for a few seconds. How can we fix this when switching back? Also, sometimes when switching back to a tab everything is scrolled up to the top in each pane.. fix this
+12. Also, when typing several words I get the active indicator (1)
+13. it still happens
+14. Same issue still persists...
+15. WHAT AM I LOOKING FOR? (about debug console)
+16. (screenshot showing BURST START on idle pane not being typed in)
+17. Now the false positives are gone. The issue with scroll to top is still there and it only happens for the left side panes for some reason. also, when i switched tab the active indicator (1) disappeared once but came back when i switched back to the tab
+18. When AI is working in a pane '(1)' and I select another inactive pane -> then Switch tabs, i get (2) for several seconds indicating 2 active AI work panes. This is the last issue with the active pane feature.
+19. Also, when typing several words I get the active indicator (1)
+20. it still happens
+21. (screenshot showing BURST START on different terminal — the one NOT being typed in)
+22. Its good for now. Should we remove some debug or is all good?
+23. /end
+
+## 2026-03-07 — EzyComposer Image Autocomplete + Pane Isolation (session 2)
+
+1. Also wire the "Auto paste screenshots" toggle to work with the EzyComposer
+2. the auto completion has to work with tab to select image 2 or 3 if available too...
+3. Nope, it doesnt work with EzyComposer, nothing happens when tabbing. It works in the AI input composer tho
+4. That didnt solve anything. When I tab a second time after "im" it just goes to the next icon instead of entering [Img 2]
+5. Its completely incorrect. It has to work the same as the AI input composer........ now youre doing everything wrong
+6. when tabbing again ONLY [Img 2] has to be selected, right now it adds all images on every tab (screenshot)
+7. The thumbnails in the EzyComposer is also wrong. It can only show the ADDED thumbnails. In the tabbar all of the 3 latest thumbnails can be shown.. but in each pane in the EzyComposer - ONLY the added image
+8. It has to be pane specific too... right now when an image is chosen for pane 1 the thumbnail ends up in pane 1 and 2
+9. The images doesnt get added to the active pane always... HOW
+10. /end
+[AskUserQuestion] Q: What minimum width threshold should trigger the 2-column layout for Dev Server rows? → A: 800px
+[AskUserQuestion] Q: Is the issue that 2-column layout isn't showing, always 2 columns, or lower threshold? → A: The issue is that 1 server row spans over the whole viewport
+[AskUserQuestion] Q: What should the port edit do? → A: Restart with --port flag (editing the port restarts the server with a framework-specific port flag)
+[AskUserQuestion] Q: Where exactly should the Dev Servers icon go? → A: Left of tab bar, next to sidebar icon (fixed left area, before scrollable tabs)
+
+## 2026-03-07 — Dev server lock errors, port editing, deferred kill, icon redesign
+
+1. (continued from previous session — context restored)
+2. Still same issue... and the server shows as "green dot" when this error happens, even if the server isnt running. (screenshot)
+3. (screenshot showing lock error with shell prompt returned)
+4. Also, the edit to choose custom port doesnt seem to work at all. Is this even possible?
+5. Now, I want to change the "Dev servers" tab, remove the text and make it icon only next to the sidebar icon. Also, while doing this - change the Dev servers icon to something better
+6. Change the icon in the Dev servers tab header too
+7. /end
+
+## 2026-03-07 — TemplatePicker single-view UX + agent order
+
+1. When assigning agents when opening a new project/tab make "Claude" to be in the top and "Shell" in the bottom of the list. Also, show the "Assign agents" popup even if "Single pane" is chosen
+2. Default has to always be Claude that is on the top, not Shell
+3. When i chose "single pane", make it so all the other options still are available below in the "Assign agents" view. If the user gets second thoughts
+4. Thats bad UX, why not just show all at once and just add the "Choose an agent type for each pane slot:" when a choice has been made
+5. /end

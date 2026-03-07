@@ -28,9 +28,15 @@ interface ClipboardImageStore {
   lastImageSeq: number;
   /** Last path insertion (for undo) — cleared after 5 seconds or after undo */
   lastInsertion: LastInsertion | null;
+  /** Pending image for a specific EzyComposer to pick up (set by TabBar/auto-paste, consumed by composer) */
+  pendingComposerImage: { image: ClipboardImage; terminalId: string } | null;
+  /** Terminal ID of the last focused EzyComposer (set by composer on focus) */
+  activeComposerTerminalId: string | null;
   addImage: (image: Omit<ClipboardImage, "id" | "timestamp">, seq: number) => void;
   setLastSeq: (seq: number) => void;
   setLastInsertion: (insertion: LastInsertion | null) => void;
+  setPendingComposerImage: (pending: { image: ClipboardImage; terminalId: string } | null) => void;
+  setActiveComposerTerminalId: (id: string | null) => void;
 }
 
 /** Session-only store for clipboard images (not persisted across restarts) */
@@ -39,6 +45,8 @@ export const useClipboardImageStore = create<ClipboardImageStore>((set) => ({
   lastSeq: 0,
   lastImageSeq: 0,
   lastInsertion: null,
+  pendingComposerImage: null,
+  activeComposerTerminalId: null,
   addImage: (image, seq) =>
     set((state) => ({
       images: [
@@ -49,4 +57,6 @@ export const useClipboardImageStore = create<ClipboardImageStore>((set) => ({
     })),
   setLastSeq: (seq) => set({ lastSeq: seq }),
   setLastInsertion: (insertion) => set({ lastInsertion: insertion }),
+  setPendingComposerImage: (pending) => set({ pendingComposerImage: pending }),
+  setActiveComposerTerminalId: (id) => set({ activeComposerTerminalId: id }),
 }));

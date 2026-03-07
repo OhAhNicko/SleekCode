@@ -28,6 +28,12 @@ const TERMINAL_CONFIGS_BASE: Record<TerminalType, TerminalConfig> = {
     label: "PowerShell",
     description: "Windows PowerShell",
   },
+  devserver: {
+    command: "wsl.exe",
+    args: ["--", "bash", "-lic", "exec bash"],
+    label: "Dev Server",
+    description: "WSL bash for dev servers",
+  },
 };
 
 /**
@@ -37,7 +43,7 @@ const TERMINAL_CONFIGS_BASE: Record<TerminalType, TerminalConfig> = {
  */
 export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string): TerminalConfig {
   const base = TERMINAL_CONFIGS_BASE[type];
-  if (type === "shell") return base;
+  if (type === "shell" || type === "devserver") return base;
 
   const resumeArgs = sessionResumeId && supportsSessionResume(type)
     ? getResumeFlag(type, sessionResumeId).split(" ")
@@ -167,6 +173,8 @@ function getRemoteExecCommand(type: TerminalType, sessionResumeId?: string): str
     case "gemini":
       return `exec gemini${resumeSuffix}`;
     case "shell":
+      return "exec bash -l";
+    case "devserver":
       return "exec bash -l";
   }
 }

@@ -52,7 +52,12 @@ export const useAppStore = create<AppStore>()(
         autoInsertClipboardImage: state.autoInsertClipboardImage,
         cliFontSizes: state.cliFontSizes,
         claudeYolo: state.claudeYolo,
-        scrollToPromptEnabled: state.scrollToPromptEnabled,
+        promptComposerEnabled: state.promptComposerEnabled,
+        promptComposerAlwaysVisible: state.promptComposerAlwaysVisible,
+        promptHistory: state.promptHistory,
+        autoStartServerCommand: state.autoStartServerCommand,
+        previewInProjectTab: state.previewInProjectTab,
+        customServerCommands: state.customServerCommands,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;

@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { THEMES, getTheme } from "../lib/themes";
-import { buildLayoutFromTemplate, stampTerminalTypes, countLeafPanes, findAllTerminalIds } from "../lib/layout-utils";
+import { buildLayoutFromTemplate, stampTerminalTypes, countLeafPanes, findAllTerminalIds, generateTerminalId } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
@@ -38,8 +38,12 @@ export default function TabBar() {
   const setCliFontSize = useAppStore((s) => s.setCliFontSize);
   const claudeYolo = useAppStore((s) => s.claudeYolo);
   const setClaudeYolo = useAppStore((s) => s.setClaudeYolo);
-  const scrollToPromptEnabled = useAppStore((s) => s.scrollToPromptEnabled);
-  const setScrollToPromptEnabled = useAppStore((s) => s.setScrollToPromptEnabled);
+  const promptComposerEnabled = useAppStore((s) => s.promptComposerEnabled);
+  const setPromptComposerEnabled = useAppStore((s) => s.setPromptComposerEnabled);
+  const promptComposerAlwaysVisible = useAppStore((s) => s.promptComposerAlwaysVisible);
+  const setPromptComposerAlwaysVisible = useAppStore((s) => s.setPromptComposerAlwaysVisible);
+  const setAutoStartServerCommand = useAppStore((s) => s.setAutoStartServerCommand);
+  const devServers = useAppStore((s) => s.devServers);
 
   const [isMaximized, setIsMaximized] = useState(false);
   const [showNewTabMenu, setShowNewTabMenu] = useState(false);
@@ -92,8 +96,31 @@ export default function TabBar() {
     setPendingDir({ name, dir: remotePath, serverId: browsingServer.id });
   }, [browsingServer]);
 
+  const addTerminal = useAppStore((s) => s.addTerminal);
+  const addDevServer = useAppStore((s) => s.addDevServer);
+  const autoStartServerCommand = useAppStore((s) => s.autoStartServerCommand);
+
+  const spawnDevServer = useCallback(
+    (tabId: string, tabName: string, workingDir: string, command: string) => {
+      const terminalId = generateTerminalId();
+      addTerminal(terminalId, "devserver", workingDir);
+      addDevServer({
+        id: `ds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        terminalId,
+        tabId,
+        projectName: tabName,
+        command,
+        workingDir,
+        port: 0,
+        status: "running",
+      });
+      return terminalId;
+    },
+    [addTerminal, addDevServer]
+  );
+
   const handleTemplateSelected = useCallback(
-    (template: WorkspaceTemplate, slotTypes: TerminalType[]) => {
+    (template: WorkspaceTemplate, slotTypes: TerminalType[], serverCommand?: string) => {
       if (!pendingDir) return;
       const { layout, terminalIds } = buildLayoutFromTemplate(
         template.id,
@@ -112,17 +139,22 @@ export default function TabBar() {
         serverId: pendingDir.serverId,
       }));
       addTerminals(batch);
-      addTabWithLayout(pendingDir.name, pendingDir.dir, typedLayout, pendingDir.serverId);
+      const tabId = addTabWithLayout(pendingDir.name, pendingDir.dir, typedLayout, pendingDir.serverId);
       if (!pendingDir.serverId) {
         addRecentProject({
           path: pendingDir.dir,
           name: pendingDir.name,
           template: { templateId: template.id, cols: template.cols, rows: template.rows, slotTypes },
+          serverCommand,
         });
+      }
+      // Auto-start server command if provided and enabled
+      if (serverCommand && autoStartServerCommand) {
+        spawnDevServer(tabId, pendingDir.name, pendingDir.dir, serverCommand);
       }
       setPendingDir(null);
     },
-    [pendingDir, addTerminals, addTabWithLayout, addRecentProject]
+    [pendingDir, addTerminals, addTabWithLayout, addRecentProject, autoStartServerCommand, spawnDevServer]
   );
 
   // Track maximized state for window control icon
@@ -250,9 +282,54 @@ export default function TabBar() {
           </svg>
         </div>
 
+        {/* Dev Servers icon button */}
+        {(() => {
+          const isDevActive = activeTabId === "dev-server-tab";
+          const runningCount = devServers.filter((s) => s.status === "running").length;
+          return (
+            <div
+              title="Dev Servers"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 36,
+                flexShrink: 0,
+                cursor: "pointer",
+                backgroundColor: isDevActive ? "var(--ezy-surface)" : "transparent",
+                position: "relative",
+                borderRight: "1px solid var(--ezy-border-subtle)",
+              }}
+              onClick={() => { closeAllMenus(); setActiveTab("dev-server-tab"); }}
+              onMouseEnter={(e) => { if (!isDevActive) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
+              onMouseLeave={(e) => { if (!isDevActive) e.currentTarget.style.backgroundColor = "transparent"; }}
+            >
+              {/* Rocket/activity icon */}
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke={isDevActive ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 1c0 0-5 3-5 8l2 3h6l2-3c0-5-5-8-5-8z" />
+                <circle cx="8" cy="7" r="1.5" />
+                <path d="M5 12l-1.5 3" />
+                <path d="M11 12l1.5 3" />
+              </svg>
+              {runningCount > 0 && (
+                <span style={{
+                  position: "absolute",
+                  top: 5,
+                  right: 4,
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  backgroundColor: "var(--ezy-accent)",
+                  border: "1.5px solid var(--ezy-bg)",
+                }} />
+              )}
+            </div>
+          );
+        })()}
+
         {/* Tabs */}
         <div style={{ display: "flex", alignItems: "stretch", minWidth: 0, overflow: "hidden" }}>
-          {tabs.map((tab) => {
+          {tabs.filter((t) => !t.isDevServerTab).map((tab) => {
             const isActive = tab.id === activeTabId;
             const isSystemTab = tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab;
             const isUserPinned = !!tab.isPinned;
@@ -322,7 +399,6 @@ export default function TabBar() {
                     // activityTick is read to trigger re-render on poll
                     void activityTick;
                     const activeCount = termIds.filter((id) => isTerminalActive(id)).length;
-                    if (activeCount > 0) console.log(`[TabBar] tab="${tab.name}" panes=${paneCount} active=${activeCount} termIds=${termIds.join(",")}`);
                     return (
                       <>
                         <span>{tab.name}{paneCount > 1 ? ` ${paneCount}` : ""}</span>
@@ -496,8 +572,12 @@ export default function TabBar() {
                         workingDir: project.path,
                       }));
                       addTerminals(batch);
-                      addTabWithLayout(project.name, project.path, typedLayout);
+                      const tabId = addTabWithLayout(project.name, project.path, typedLayout);
                       addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate });
+                      // Auto-start saved server command
+                      if (project.serverCommand && autoStartServerCommand) {
+                        spawnDevServer(tabId, project.name, project.path, project.serverCommand);
+                      }
                     } else {
                       setPendingDir({ name: project.name, dir: project.path });
                     }
@@ -568,8 +648,8 @@ export default function TabBar() {
             </div>
           )}
 
-          {/* Chevron — opens dropdown menu */}
-          <div
+          {/* Chevron — opens dropdown menu (only when a project is open) */}
+          {tabs.some(t => !t.isKanbanTab && !t.isDevServerTab && !t.isServersTab) && <><div
             style={{
               display: "flex",
               alignItems: "center",
@@ -758,6 +838,7 @@ export default function TabBar() {
               </button>
             </div>
           )}
+          </>}
         </div>
 
         {/* Spacer — draggable region (disable drag when menu open so clicks close menus) */}
@@ -1043,12 +1124,12 @@ export default function TabBar() {
                   padding: "8px 10px",
                   cursor: "pointer",
                 }}
-                onClick={() => setScrollToPromptEnabled(!scrollToPromptEnabled)}
+                onClick={() => setPromptComposerEnabled(!promptComposerEnabled)}
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
               >
                 <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Scroll to prompt
+                  Prompt composer (Ctrl+I)
                 </span>
                 {/* Toggle switch */}
                 <div
@@ -1056,8 +1137,8 @@ export default function TabBar() {
                     width: 32,
                     height: 18,
                     borderRadius: 9,
-                    backgroundColor: scrollToPromptEnabled ? "var(--ezy-accent)" : "transparent",
-                    border: scrollToPromptEnabled ? "none" : "1px solid var(--ezy-border-light)",
+                    backgroundColor: promptComposerEnabled ? "var(--ezy-accent)" : "transparent",
+                    border: promptComposerEnabled ? "none" : "1px solid var(--ezy-border-light)",
                     position: "relative",
                     transition: "background-color 150ms ease",
                     flexShrink: 0,
@@ -1068,10 +1149,97 @@ export default function TabBar() {
                       width: 14,
                       height: 14,
                       borderRadius: "50%",
-                      backgroundColor: scrollToPromptEnabled ? "#fff" : "var(--ezy-text-muted)",
+                      backgroundColor: promptComposerEnabled ? "#fff" : "var(--ezy-text-muted)",
                       position: "absolute",
                       top: 2,
-                      left: scrollToPromptEnabled ? 16 : 2,
+                      left: promptComposerEnabled ? 16 : 2,
+                      transition: "left 150ms ease",
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Always-visible composer (sub-option, only when composer is enabled) */}
+              {promptComposerEnabled && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "8px 10px 8px 22px",
+                  cursor: "pointer",
+                }}
+                onClick={() => setPromptComposerAlwaysVisible(!promptComposerAlwaysVisible)}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  Always visible
+                </span>
+                <div
+                  style={{
+                    width: 32,
+                    height: 18,
+                    borderRadius: 9,
+                    backgroundColor: promptComposerAlwaysVisible ? "var(--ezy-accent)" : "transparent",
+                    border: promptComposerAlwaysVisible ? "none" : "1px solid var(--ezy-border-light)",
+                    position: "relative",
+                    transition: "background-color 150ms ease",
+                    flexShrink: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: "50%",
+                      backgroundColor: promptComposerAlwaysVisible ? "#fff" : "var(--ezy-text-muted)",
+                      position: "absolute",
+                      top: 2,
+                      left: promptComposerAlwaysVisible ? 16 : 2,
+                      transition: "left 150ms ease",
+                    }}
+                  />
+                </div>
+              </div>
+              )}
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                }}
+                onClick={() => setAutoStartServerCommand(!autoStartServerCommand)}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  Auto-start server cmd
+                </span>
+                <div
+                  style={{
+                    width: 32,
+                    height: 18,
+                    borderRadius: 9,
+                    backgroundColor: autoStartServerCommand ? "var(--ezy-accent)" : "transparent",
+                    border: autoStartServerCommand ? "none" : "1px solid var(--ezy-border-light)",
+                    position: "relative",
+                    transition: "background-color 150ms ease",
+                    flexShrink: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: "50%",
+                      backgroundColor: autoStartServerCommand ? "#fff" : "var(--ezy-text-muted)",
+                      position: "absolute",
+                      top: 2,
+                      left: autoStartServerCommand ? 16 : 2,
                       transition: "left 150ms ease",
                     }}
                   />
@@ -1424,6 +1592,11 @@ export default function TabBar() {
         <TemplatePicker
           onSelect={handleTemplateSelected}
           onClose={() => setPendingDir(null)}
+          initialServerCommand={
+            recentProjects.find(
+              (p) => p.path.replace(/\\/g, "/") === pendingDir.dir.replace(/\\/g, "/")
+            )?.serverCommand
+          }
         />
       )}
     </>

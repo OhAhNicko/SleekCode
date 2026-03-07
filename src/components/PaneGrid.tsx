@@ -7,6 +7,7 @@ import {
   generatePaneId,
   findFirstLeafId,
 } from "../lib/layout-utils";
+import { snapshotPane } from "../store/undoCloseStore";
 import BrowserPreview from "./BrowserPreview";
 import EditorPane from "./EditorPane";
 import KanbanBoard from "./KanbanBoard";
@@ -15,23 +16,26 @@ import FileViewerPane from "./FileViewerPane";
 
 interface PaneGridProps {
   layout: PaneLayout;
+  tabId: string;
   onLayoutChange: (layout: PaneLayout) => void;
   getTerminalSlot: (terminalId: string) => HTMLDivElement;
 }
 
 export default function PaneGrid({
   layout,
+  tabId,
   onLayoutChange,
   getTerminalSlot,
 }: PaneGridProps) {
   const handleClose = useCallback(
     (paneId: string) => {
+      snapshotPane(tabId, layout);
       const newLayout = removePane(layout, paneId);
       if (newLayout) {
         onLayoutChange(newLayout);
       }
     },
-    [layout, onLayoutChange]
+    [tabId, layout, onLayoutChange]
   );
 
   // Listen for sidebar file-open events — route to tabbed file viewer

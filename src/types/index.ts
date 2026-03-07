@@ -1,4 +1,4 @@
-export type TerminalType = "claude" | "codex" | "gemini" | "shell";
+export type TerminalType = "claude" | "codex" | "gemini" | "shell" | "devserver";
 
 export type AuthMethod = "ssh-key" | "password";
 
@@ -35,8 +35,11 @@ export interface DevServer {
   terminalId: string;
   tabId: string;
   projectName: string;
+  command: string;
+  workingDir: string;
   port: number;
   status: "running" | "stopped" | "error";
+  errorMessage?: string;
 }
 
 // Recursive pane layout tree

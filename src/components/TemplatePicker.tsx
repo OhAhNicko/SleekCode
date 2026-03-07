@@ -1,11 +1,13 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { WORKSPACE_TEMPLATES, type WorkspaceTemplate } from "../lib/workspace-templates";
 import { useAppStore } from "../store";
+import { getServerCommandSuggestions, BUILTIN_SERVER_COMMANDS } from "../lib/server-commands";
 import type { TerminalType } from "../types";
 
 interface TemplatePickerProps {
-  onSelect: (template: WorkspaceTemplate, slotTypes: TerminalType[]) => void;
+  onSelect: (template: WorkspaceTemplate, slotTypes: TerminalType[], serverCommand?: string) => void;
   onClose: () => void;
+  initialServerCommand?: string;
 }
 
 function GridPreview({ template }: { template: WorkspaceTemplate }) {
@@ -62,29 +64,30 @@ function GridPreview({ template }: { template: WorkspaceTemplate }) {
 }
 
 const TERMINAL_OPTIONS: { type: TerminalType; label: string }[] = [
-  { type: "shell", label: "Shell" },
   { type: "claude", label: "Claude" },
   { type: "codex", label: "Codex" },
   { type: "gemini", label: "Gemini" },
+  { type: "shell", label: "Shell" },
 ];
 
-export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProps) {
+
+export default function TemplatePicker({ onSelect, onClose, initialServerCommand }: TemplatePickerProps) {
   const claudeYolo = useAppStore((s) => s.claudeYolo);
-  const [step, setStep] = useState<1 | 2>(1);
+  const addCustomServerCommand = useAppStore((s) => s.addCustomServerCommand);
+  const removeCustomServerCommand = useAppStore((s) => s.removeCustomServerCommand);
   const [selectedTemplate, setSelectedTemplate] = useState<WorkspaceTemplate | null>(null);
   const [slotTypes, setSlotTypes] = useState<TerminalType[]>([]);
+  const [serverCommand, setServerCommand] = useState(initialServerCommand ?? "");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const cmdInputRef = useRef<HTMLInputElement>(null);
+
+  const suggestions = getServerCommandSuggestions(serverCommand.trim() || undefined);
 
   const handleTemplateSelect = useCallback((template: WorkspaceTemplate) => {
     setSelectedTemplate(template);
     const slotCount = template.id === "main-side" ? 3 : template.cols * template.rows;
-    setSlotTypes(Array(slotCount).fill("shell" as TerminalType));
-    // Single pane: skip step 2
-    if (slotCount === 1) {
-      onSelect(template, ["shell"]);
-      return;
-    }
-    setStep(2);
-  }, [onSelect]);
+    setSlotTypes(Array(slotCount).fill("claude" as TerminalType));
+  }, []);
 
   const handleSlotChange = useCallback((index: number, type: TerminalType) => {
     setSlotTypes((prev) => {
@@ -96,9 +99,12 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
 
   const handleCreate = useCallback(() => {
     if (selectedTemplate) {
-      onSelect(selectedTemplate, slotTypes);
+      if (serverCommand && !BUILTIN_SERVER_COMMANDS.includes(serverCommand.trim())) {
+        addCustomServerCommand(serverCommand.trim());
+      }
+      onSelect(selectedTemplate, slotTypes, serverCommand || undefined);
     }
-  }, [selectedTemplate, slotTypes, onSelect]);
+  }, [selectedTemplate, slotTypes, onSelect, serverCommand, addCustomServerCommand]);
 
   return (
     <div
@@ -107,15 +113,17 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
         inset: 0,
         backgroundColor: "rgba(0,0,0,0.6)",
         display: "flex",
-        alignItems: "center",
+        alignItems: "flex-start",
         justifyContent: "center",
+        paddingTop: "15vh",
         zIndex: 200,
       }}
       onClick={onClose}
     >
       <div
         style={{
-          width: step === 1 ? 480 : 400,
+          maxWidth: 448,
+          width: "100%",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
           borderRadius: 10,
@@ -127,7 +135,8 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
         {/* Header */}
         <div
           style={{
-            padding: "12px 16px",
+            height: 32,
+            padding: "0 16px",
             borderBottom: "1px solid var(--ezy-border)",
             backgroundColor: "var(--ezy-surface)",
             display: "flex",
@@ -136,7 +145,7 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
           }}
         >
           <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
-            {step === 1 ? "Choose Layout" : "Assign Agents"}
+            New Workspace
           </span>
           <svg
             width="14"
@@ -154,17 +163,130 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
           </svg>
         </div>
 
-        {step === 1 ? (
-          /* Step 1: Template selection */
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, 1fr)",
-              gap: 8,
-              padding: 16,
-            }}
-          >
-            {WORKSPACE_TEMPLATES.map((template) => (
+        {/* Server Command combobox */}
+        <div style={{ padding: "12px 16px 0", position: "relative" }}>
+          <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 4, fontWeight: 500 }}>
+            Server Command (optional)
+          </div>
+          <div style={{ position: "relative" }}>
+            <input
+              ref={cmdInputRef}
+              type="text"
+              value={serverCommand}
+              onChange={(e) => {
+                setServerCommand(e.target.value);
+                setShowSuggestions(true);
+              }}
+              onFocus={() => setShowSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+              placeholder="e.g. npm run dev"
+              style={{
+                width: "100%",
+                padding: "6px 28px 6px 10px",
+                backgroundColor: "var(--ezy-bg)",
+                border: "1px solid var(--ezy-border)",
+                borderRadius: 6,
+                color: "var(--ezy-text)",
+                fontSize: 12,
+                fontFamily: "inherit",
+                outline: "none",
+                boxSizing: "border-box",
+              }}
+            />
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              fill="none"
+              stroke="var(--ezy-text-muted)"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              style={{
+                position: "absolute",
+                right: 8,
+                top: "50%",
+                transform: "translateY(-50%)",
+                cursor: "pointer",
+              }}
+              onClick={() => {
+                setShowSuggestions((v) => !v);
+                cmdInputRef.current?.focus();
+              }}
+            >
+              <polyline points="2,4 6,8 10,4" />
+            </svg>
+            {showSuggestions && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 2px)",
+                  left: 0,
+                  right: 0,
+                  backgroundColor: "var(--ezy-surface-raised)",
+                  border: "1px solid var(--ezy-border)",
+                  borderRadius: 6,
+                  overflow: "hidden",
+                  zIndex: 10,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                }}
+              >
+                {suggestions.map(({ command: cmd, isCustom }) => (
+                    <div
+                      key={cmd}
+                      style={{
+                        padding: "6px 10px",
+                        fontSize: 12,
+                        color: "var(--ezy-text-secondary)",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setServerCommand(cmd);
+                        setShowSuggestions(false);
+                      }}
+                    >
+                      <span>{cmd}</span>
+                      {isCustom && (
+                        <svg
+                          width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round"
+                          className="devserver-cmd-remove"
+                          style={{ flexShrink: 0, opacity: 0, transition: "opacity 100ms ease", cursor: "pointer" }}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            removeCustomServerCommand(cmd);
+                          }}
+                        >
+                          <line x1="2" y1="2" x2="8" y2="8" />
+                          <line x1="8" y1="2" x2="2" y2="8" />
+                        </svg>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Layout selection — always visible */}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(3, 1fr)",
+            gap: 8,
+            padding: 16,
+            paddingBottom: selectedTemplate ? 8 : 16,
+          }}
+        >
+          {WORKSPACE_TEMPLATES.map((template) => {
+            const isSelected = selectedTemplate?.id === template.id;
+            return (
               <button
                 key={template.id}
                 style={{
@@ -173,20 +295,24 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
                   alignItems: "center",
                   gap: 6,
                   padding: "12px 8px",
-                  backgroundColor: "transparent",
-                  border: "1px solid var(--ezy-border)",
+                  backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "transparent",
+                  border: `1px solid ${isSelected ? "var(--ezy-accent)" : "var(--ezy-border)"}`,
                   borderRadius: 8,
                   cursor: "pointer",
                   transition: "all 150ms ease",
                   fontFamily: "inherit",
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.borderColor = "var(--ezy-accent)";
-                  e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
+                  if (!isSelected) {
+                    e.currentTarget.style.borderColor = "var(--ezy-accent)";
+                    e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
+                  }
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.borderColor = "var(--ezy-border)";
-                  e.currentTarget.style.backgroundColor = "transparent";
+                  if (!isSelected) {
+                    e.currentTarget.style.borderColor = "var(--ezy-border)";
+                    e.currentTarget.style.backgroundColor = "transparent";
+                  }
                 }}
                 onClick={() => handleTemplateSelect(template)}
               >
@@ -198,15 +324,17 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
                   {template.description}
                 </span>
               </button>
-            ))}
-          </div>
-        ) : (
-          /* Step 2: Assign agent types per slot */
-          <div style={{ padding: 16 }}>
-            <div style={{ marginBottom: 12, fontSize: 12, color: "var(--ezy-text-muted)" }}>
-              Choose an agent type for each pane slot:
+            );
+          })}
+        </div>
+
+        {/* Agent assignment — appears when a template is selected */}
+        {selectedTemplate && (
+          <div style={{ padding: "0 16px 16px" }}>
+            <div style={{ marginBottom: 8, fontSize: 11, color: "var(--ezy-text-muted)", fontWeight: 500 }}>
+              Assign agent per pane:
             </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {slotTypes.map((type, i) => (
                 <div
                   key={i}
@@ -214,7 +342,7 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
                     display: "flex",
                     alignItems: "center",
                     gap: 10,
-                    padding: "6px 10px",
+                    padding: "5px 10px",
                     backgroundColor: "var(--ezy-surface)",
                     borderRadius: 6,
                     border: "1px solid var(--ezy-border)",
@@ -273,24 +401,8 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
               ))}
             </div>
 
-            {/* Footer */}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-              <button
-                onClick={() => setStep(1)}
-                style={{
-                  padding: "6px 16px",
-                  backgroundColor: "transparent",
-                  border: "1px solid var(--ezy-border)",
-                  borderRadius: 6,
-                  color: "var(--ezy-text-muted)",
-                  fontSize: 12,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                  fontFamily: "inherit",
-                }}
-              >
-                Back
-              </button>
+            {/* Create button */}
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
               <button
                 onClick={handleCreate}
                 style={{

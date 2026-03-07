@@ -1,4 +1,4 @@
-import type { PaneLayout, PaneLeaf, PaneSplit, TerminalType } from "../types";
+import type { PaneLayout, PaneLeaf, PaneBrowser, PaneSplit, TerminalType } from "../types";
 
 let paneCounter = 0;
 export function generatePaneId(): string {
@@ -392,4 +392,33 @@ export function setTerminalTypeInLayout(
     };
   }
   return layout;
+}
+
+/** Find all browser panes in a layout tree */
+export function findAllBrowserPanes(layout: PaneLayout): PaneBrowser[] {
+  if (layout.type === "browser") return [layout];
+  if (layout.type === "split") {
+    return [
+      ...findAllBrowserPanes(layout.children[0]),
+      ...findAllBrowserPanes(layout.children[1]),
+    ];
+  }
+  return [];
+}
+
+/**
+ * Add a browser pane on the far right of the layout, taking full vertical height.
+ * Wraps the entire existing layout in a horizontal split with the browser on the right.
+ */
+export function addBrowserPaneRight(layout: PaneLayout, url: string, sizePercent = 35): { layout: PaneLayout; paneId: string } {
+  const paneId = generatePaneId();
+  const browserPane: PaneBrowser = { type: "browser", id: paneId, url };
+  const newLayout: PaneSplit = {
+    type: "split",
+    id: generatePaneId(),
+    direction: "horizontal",
+    children: [layout, browserPane],
+    sizes: [100 - sizePercent, sizePercent],
+  };
+  return { layout: newLayout, paneId };
 }

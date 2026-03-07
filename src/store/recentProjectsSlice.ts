@@ -15,6 +15,7 @@ export interface RecentProject {
   lastOpenedAt: number;
   openCount: number;
   lastTemplate?: RecentProjectTemplate;
+  serverCommand?: string;
 }
 
 const MAX_RECENT_PROJECTS = 15;
@@ -34,8 +35,13 @@ export interface RecentProjectsSlice {
   autoInsertClipboardImage: boolean;
   cliFontSizes: CliFontSizes;
   claudeYolo: boolean;
-  scrollToPromptEnabled: boolean;
-  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate }) => void;
+  promptComposerEnabled: boolean;
+  promptComposerAlwaysVisible: boolean;
+  promptHistory: string[];
+  autoStartServerCommand: boolean;
+  previewInProjectTab: boolean;
+  customServerCommands: string[];
+  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string }) => void;
   removeRecentProject: (path: string) => void;
   clearRecentProjects: () => void;
   setAlwaysShowTemplatePicker: (value: boolean) => void;
@@ -43,7 +49,14 @@ export interface RecentProjectsSlice {
   setAutoInsertClipboardImage: (value: boolean) => void;
   setCliFontSize: (type: TerminalType, size: number) => void;
   setClaudeYolo: (value: boolean) => void;
-  setScrollToPromptEnabled: (value: boolean) => void;
+  setPromptComposerEnabled: (value: boolean) => void;
+  setPromptComposerAlwaysVisible: (value: boolean) => void;
+  addPromptHistory: (text: string) => void;
+  setAutoStartServerCommand: (value: boolean) => void;
+  setPreviewInProjectTab: (value: boolean) => void;
+  addCustomServerCommand: (command: string) => void;
+  removeCustomServerCommand: (command: string) => void;
+  updateProjectServerCommand: (path: string, command: string) => void;
 }
 
 export const createRecentProjectsSlice: StateCreator<
@@ -58,9 +71,14 @@ export const createRecentProjectsSlice: StateCreator<
   autoInsertClipboardImage: false,
   cliFontSizes: {},
   claudeYolo: false,
-  scrollToPromptEnabled: true,
+  promptComposerEnabled: false,
+  promptComposerAlwaysVisible: false,
+  promptHistory: [],
+  autoStartServerCommand: true,
+  previewInProjectTab: true,
+  customServerCommands: [],
 
-  addRecentProject: ({ path, name, template }) => {
+  addRecentProject: ({ path, name, template, serverCommand }) => {
     const normalized = normalizePath(path);
     set((state) => {
       const existing = state.recentProjects.find(
@@ -69,10 +87,10 @@ export const createRecentProjectsSlice: StateCreator<
       const now = Date.now();
       let updated: RecentProject[];
       if (existing) {
-        // Update existing: bump timestamp, count, template
+        // Update existing: bump timestamp, count, template, serverCommand
         updated = state.recentProjects.map((p) =>
           normalizePath(p.path) === normalized
-            ? { ...p, lastOpenedAt: now, openCount: p.openCount + 1, lastTemplate: template ?? p.lastTemplate, name }
+            ? { ...p, lastOpenedAt: now, openCount: p.openCount + 1, lastTemplate: template ?? p.lastTemplate, name, serverCommand: serverCommand ?? p.serverCommand }
             : p
         );
       } else {
@@ -84,6 +102,7 @@ export const createRecentProjectsSlice: StateCreator<
           lastOpenedAt: now,
           openCount: 1,
           lastTemplate: template,
+          serverCommand,
         };
         updated = [newEntry, ...state.recentProjects];
       }
@@ -131,7 +150,54 @@ export const createRecentProjectsSlice: StateCreator<
     set({ claudeYolo: value });
   },
 
-  setScrollToPromptEnabled: (value) => {
-    set({ scrollToPromptEnabled: value });
+  setPromptComposerEnabled: (value) => {
+    set({ promptComposerEnabled: value });
+  },
+
+  setPromptComposerAlwaysVisible: (value) => {
+    set({ promptComposerAlwaysVisible: value });
+  },
+
+  addPromptHistory: (text) => {
+    set((state) => {
+      // Avoid consecutive duplicates
+      if (state.promptHistory[0] === text) return state;
+      const updated = [text, ...state.promptHistory];
+      if (updated.length > 50) updated.length = 50;
+      return { promptHistory: updated };
+    });
+  },
+
+  setAutoStartServerCommand: (value) => {
+    set({ autoStartServerCommand: value });
+  },
+
+  setPreviewInProjectTab: (value) => {
+    set({ previewInProjectTab: value });
+  },
+
+  addCustomServerCommand: (command) => {
+    set((state) => {
+      const trimmed = command.trim();
+      if (!trimmed || state.customServerCommands.includes(trimmed)) return state;
+      return { customServerCommands: [...state.customServerCommands, trimmed] };
+    });
+  },
+
+  removeCustomServerCommand: (command) => {
+    set((state) => ({
+      customServerCommands: state.customServerCommands.filter((c) => c !== command),
+    }));
+  },
+
+  updateProjectServerCommand: (path, command) => {
+    const normalized = normalizePath(path);
+    set((state) => ({
+      recentProjects: state.recentProjects.map((p) =>
+        normalizePath(p.path) === normalized
+          ? { ...p, serverCommand: command }
+          : p
+      ),
+    }));
   },
 });

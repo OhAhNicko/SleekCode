@@ -7,7 +7,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { getTheme } from "../lib/themes";
 import { usePty } from "../hooks/usePty";
 import { useAppStore } from "../store";
-import { registerPtyWrite, unregisterPtyWrite } from "../store/terminalSlice";
+import { registerPtyWrite, unregisterPtyWrite, getTerminalDataListener } from "../store/terminalSlice";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import type { TerminalType } from "../types";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
@@ -17,11 +17,12 @@ import { supportsSessionResume } from "../lib/session-resume";
 import { createFilePathLinkProvider } from "../lib/file-link-provider";
 import { invoke } from "@tauri-apps/api/core";
 import { toWslPath } from "../lib/terminal-config";
-import { recordTerminalActivity, recordTerminalWrite, clearTerminalActivity } from "../lib/terminal-activity";
+import { recordTerminalActivity, recordTerminalWrite, recordTerminalResize, clearTerminalActivity } from "../lib/terminal-activity";
 import TerminalHeader from "./TerminalHeader";
 import CommandBlockOverlay from "./CommandBlockOverlay";
 import ClipboardImagePreview from "./ClipboardImagePreview";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
+import PromptComposer from "./PromptComposer";
 import hackRegularUrl from "../fonts/hack-regular.woff2?url";
 import hackBoldUrl from "../fonts/hack-bold.woff2?url";
 
@@ -59,6 +60,9 @@ interface TerminalPaneProps {
   onOpenTasks?: () => void;
   onExplainError?: (block: CommandBlock) => void;
   onOpenSnippets?: () => void;
+  onPtyReady?: () => void;
+  onPtyExit?: (exitCode: number) => void;
+  hideChrome?: boolean;
   serverId?: string;
   sessionResumeId?: string;
   onSessionResumeId?: (id: string) => void;
@@ -80,6 +84,9 @@ export default function TerminalPane({
   onOpenTasks,
   onExplainError,
   onOpenSnippets,
+  onPtyReady,
+  onPtyExit,
+  hideChrome,
   serverId,
   sessionResumeId,
   onSessionResumeId,
@@ -99,10 +106,14 @@ export default function TerminalPane({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [launchedWithYolo] = useState(() => terminalType === "claude" && useAppStore.getState().claudeYolo);
   const [exited, setExited] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(false);
   const [commandBlocks, setCommandBlocks] = useState<CommandBlock[]>([]);
   const blockParserRef = useRef<CommandBlockParser | null>(null);
   const recordedBlocksRef = useRef<Set<string>>(new Set());
   const initialDims = useRef({ cols: 80, rows: 24 });
+  const jumpBtnRef = useRef<HTMLDivElement>(null);
+  const scrollToPromptRef = useRef<() => void>(() => {});
+  const scrollToNextPromptRef = useRef<() => void>(() => {});
   const cleanupRef = useRef<(() => void) | null>(null);
   const paneCountRef = useRef(paneCount);
   paneCountRef.current = paneCount;
@@ -124,6 +135,8 @@ export default function TerminalPane({
   const handlePtyData = useCallback((data: Uint8Array) => {
     terminalRef.current?.write(new Uint8Array(data));
     recordTerminalActivity(terminalId, terminalTypeRef.current, data.length);
+    // Notify external data listeners (e.g. port detection for dev servers)
+    getTerminalDataListener(terminalId)?.(data);
 
     // On first data from a resumable CLI, look up session ID from disk after a short delay.
     // Skip if this pane already has a session ID (restored from persist).
@@ -157,10 +170,14 @@ export default function TerminalPane({
     }
   }, []);
 
-  const handlePtyExit = useCallback((_exitCode: number) => {
+  const onPtyExitRef = useRef(onPtyExit);
+  onPtyExitRef.current = onPtyExit;
+
+  const handlePtyExit = useCallback((exitCode: number) => {
     setExited(true);
     clearTerminalActivity(terminalId);
     terminalRef.current?.write("\r\n\x1b[38;2;139;148;158m[Process exited]\x1b[0m\r\n");
+    onPtyExitRef.current?.(exitCode);
   }, [terminalId]);
 
   const { write, resize, kill } = usePty({
@@ -305,6 +322,45 @@ export default function TerminalPane({
       }
     }
 
+    function scrollToNextPrompt() {
+      const buf = term.buffer.active;
+      const viewportTop = buf.viewportY;
+
+      const parser = blockParserRef.current;
+      if (parser) {
+        const blocks = parser.getBlocks();
+        const completed = blocks.filter(b => b.exitCode !== null);
+        if (completed.length > 0) {
+          // Find the first completed prompt below the current viewport
+          // Use viewportTop + 2 to skip the prompt we're currently viewing
+          const threshold = viewportTop + 2;
+          for (let i = 0; i < completed.length; i++) {
+            if (completed[i].promptLine >= threshold) {
+              term.scrollToLine(completed[i].promptLine);
+              return;
+            }
+          }
+        }
+      }
+
+      // Fallback: scan buffer forwards for prompt-like lines
+      const maxLine = buf.baseY + term.rows;
+      for (let i = viewportTop + 2; i < maxLine; i++) {
+        const line = buf.getLine(i);
+        if (!line) continue;
+        const text = line.translateToString().trimEnd();
+        if (/[$#❯]\s/.test(text)) {
+          term.scrollToLine(i);
+          return;
+        }
+      }
+      // No next prompt found — scroll to bottom
+      term.scrollToBottom();
+    }
+
+    scrollToPromptRef.current = scrollToPrompt;
+    scrollToNextPromptRef.current = scrollToNextPrompt;
+
     // IMG TAB autocomplete — type "img" then press TAB to insert [Img 1],
     // press TAB again to cycle through [Img 2], [Img 3].
     const imgRecentChars = { current: "" };
@@ -352,14 +408,52 @@ export default function TerminalPane({
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== "keydown") return true;
 
-      // Scroll-to-prompt: PgUp or double-tap Up Arrow; PgDn scrolls to bottom
-      if (useAppStore.getState().scrollToPromptEnabled && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+      // Ctrl+I — toggle prompt composer
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key === "i" || e.key === "I")) {
+        const enabled = useAppStore.getState().promptComposerEnabled;
+        if (enabled) {
+          setComposerOpen((v) => {
+            composerDismissedRef.current = v; // closing → dismissed; opening → clear
+            return !v;
+          });
+          return false;
+        }
+      }
+
+      // Windows Terminal keybindings
+      if (e.key === "End" && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        term.scrollToBottom();
+        return false;
+      }
+      if (e.key === "Home" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        term.scrollToTop();
+        return false;
+      }
+      if (e.key === "ArrowUp" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+        term.scrollLines(-1);
+        return false;
+      }
+      if (e.key === "ArrowDown" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
+        term.scrollLines(1);
+        return false;
+      }
+      if (e.key === "Backspace" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        write("\x1b\x7f"); // backward-kill-word (same as Alt+Backspace)
+        return false;
+      }
+      if (e.key === "Delete" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        write("\x1b[3;3~"); // kill-word forward (same as Alt+Delete)
+        return false;
+      }
+
+      // Scroll-to-prompt: PgUp/PgDn jump between prompts, double-tap Up Arrow
+      if (!e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
         if (e.key === "PageUp") {
           scrollToPrompt();
           return false;
         }
         if (e.key === "PageDown") {
-          term.scrollToBottom();
+          scrollToNextPrompt();
           return false;
         }
         if (e.key === "ArrowUp") {
@@ -430,6 +524,11 @@ export default function TerminalPane({
         return true; // Let shell handle normal TAB completion
       }
 
+      // Mark real user keystrokes for activity tracking (not TUI control sequences)
+      if (!e.ctrlKey && !e.altKey && !e.metaKey && (e.key.length === 1 || e.key === "Enter" || e.key === "Backspace")) {
+        recordTerminalWrite(terminalId);
+      }
+
       // Track typed characters for autocomplete detection
       if (!e.ctrlKey && !e.altKey && !e.metaKey) {
         if (e.key.length === 1) {
@@ -463,13 +562,11 @@ export default function TerminalPane({
 
     // Wire terminal input to PTY
     const dataDisposable = term.onData((data) => {
-      if (!exited) {
-        recordTerminalWrite(terminalId);
-        write(data);
-      }
+      if (!exited) write(data);
     });
 
     const resizeDisposable = term.onResize((e) => {
+      recordTerminalResize(terminalId);
       resize(e.cols, e.rows);
     });
 
@@ -483,6 +580,9 @@ export default function TerminalPane({
       clearTimeout(fitTimer);
       fitTimer = setTimeout(() => {
         try {
+          // Skip fit when container is hidden (display:none → 0×0).
+          // Fitting to zero dimensions corrupts xterm scroll position.
+          if (el.clientWidth === 0 || el.clientHeight === 0) return;
           const w = entries[0]?.contentRect.width ?? el.clientWidth;
           const targetSize = w < 300 ? Math.max(baseFontSize - 3, 10) : w < 450 ? Math.max(baseFontSize - 2, 11) : w < 600 ? Math.max(baseFontSize - 1, 12) : baseFontSize;
           if (targetSize !== currentFontSize) {
@@ -497,6 +597,25 @@ export default function TerminalPane({
     });
     observer.observe(el);
 
+    // "Jump to bottom" button — positioned below the scrollbar thumb when scrolled up
+    function updateJumpBtn() {
+      const btn = jumpBtnRef.current;
+      if (!btn) return;
+      const buf = term.buffer.active;
+      if (buf.viewportY >= buf.baseY) {
+        btn.style.display = "none";
+      } else {
+        const totalLines = buf.baseY + term.rows;
+        const thumbBottom = (buf.viewportY + term.rows) / totalLines;
+        const containerH = el.clientHeight;
+        const y = Math.min(Math.round(thumbBottom * containerH) + 6, containerH - 28);
+        btn.style.display = "flex";
+        btn.style.top = `${y}px`;
+      }
+    }
+    const scrollDisposable = term.onScroll(updateJumpBtn);
+    const renderDisposable = term.onRender(updateJumpBtn);
+
     cleanupRef.current = () => {
       disposed = true;
       clearInlineHint();
@@ -506,6 +625,8 @@ export default function TerminalPane({
       fileLinkDisposable.dispose();
       dataDisposable.dispose();
       resizeDisposable.dispose();
+      scrollDisposable.dispose();
+      renderDisposable.dispose();
       blockParserRef.current?.dispose();
       blockParserRef.current = null;
       clearTerminalActivity(terminalId);
@@ -525,8 +646,9 @@ export default function TerminalPane({
   // Register PTY write callback for external access (AI explain, snippets)
   useEffect(() => {
     registerPtyWrite(terminalId, write);
+    onPtyReady?.();
     return () => unregisterPtyWrite(terminalId);
-  }, [terminalId, write]);
+  }, [terminalId, write]); // onPtyReady intentionally omitted — fire once on PTY init
 
   // Feed completed command blocks into history store
   useEffect(() => {
@@ -568,12 +690,46 @@ export default function TerminalPane({
     }
   }, [terminalType]);
 
-  // Focus management
+  // Focus the active pane
   useEffect(() => {
     if (isActive && terminalRef.current) {
       terminalRef.current.focus();
     }
   }, [isActive]);
+
+  // Force repaint when container becomes visible (tab switch).
+  // xterm.js doesn't render while display:none — IntersectionObserver
+  // detects visibility changes and triggers a refresh.
+  // Does NOT call fit() — the ResizeObserver already handles that.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && terminalRef.current) {
+          // Set resize lockout BEFORE any reflow output arrives — prevents
+          // idle AI panes from briefly showing as "active" on tab switch.
+          // This covers the case where terminal dimensions didn't change
+          // (same window size) so term.onResize never fires.
+          recordTerminalResize(terminalId);
+          terminalRef.current.refresh(0, terminalRef.current.rows - 1);
+        }
+      },
+      { threshold: 0.01 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [terminalId]);
+
+  // Auto-open composer when "always visible" is enabled.
+  // composerDismissedRef tracks manual Ctrl+I dismiss so we don't re-open immediately.
+  const composerAlwaysVisible = useAppStore((s) => s.promptComposerEnabled && s.promptComposerAlwaysVisible);
+  const composerDismissedRef = useRef(false);
+  useEffect(() => {
+    if (composerAlwaysVisible && !composerDismissedRef.current) {
+      setComposerOpen(true);
+    }
+  }, [composerAlwaysVisible]);
 
   // Theme hot-swap
   useEffect(() => {
@@ -597,6 +753,7 @@ export default function TerminalPane({
   // Clipboard image paste detection
   const { pastedImage, dismissPreview } = useClipboardImagePaste({
     containerRef,
+    terminalRef,
     terminalType,
     terminalId,
     write,
@@ -610,6 +767,29 @@ export default function TerminalPane({
     return () => clearTimeout(timer);
   }, [pastedImage, dismissPreview]);
 
+  const handleComposerSubmit = useCallback((text: string) => {
+    if (text.includes("\n")) {
+      // Multi-line: use bracketed paste so Claude CLI treats it as one input,
+      // then send Enter after a short delay (immediate \r gets swallowed)
+      write("\x1b[200~" + text + "\x1b[201~");
+      setTimeout(() => write("\r"), 50);
+    } else {
+      // Single-line: write directly (no bracketed paste needed)
+      write(text + "\r");
+    }
+    // Don't steal focus from textarea when always-visible — the composer handles its own focus
+    const alwaysOn = useAppStore.getState().promptComposerEnabled && useAppStore.getState().promptComposerAlwaysVisible;
+    if (!alwaysOn) {
+      terminalRef.current?.focus();
+    }
+  }, [write]);
+
+  const handleComposerClose = useCallback(() => {
+    composerDismissedRef.current = true;
+    setComposerOpen(false);
+    terminalRef.current?.focus();
+  }, []);
+
   const handleClose = useCallback(() => {
     kill();
     onClose();
@@ -622,22 +802,24 @@ export default function TerminalPane({
       data-terminal-id={terminalId}
       onClick={onFocus}
     >
-      <TerminalHeader
-        terminalId={terminalId}
-        terminalType={terminalType}
-        isActive={isActive}
-        onSplit={onSplit}
-        onChangeType={onChangeType}
-        onClose={handleClose}
-        onSwapPane={onSwapPane}
-        onMarkDevServer={onMarkDevServer}
-        onOpenEditor={onOpenEditor}
-        onOpenBrowser={onOpenBrowser}
-        onOpenTasks={onOpenTasks}
-        onOpenSnippets={onOpenSnippets}
-        serverName={serverName}
-        isYolo={launchedWithYolo}
-      />
+      {!hideChrome && (
+        <TerminalHeader
+          terminalId={terminalId}
+          terminalType={terminalType}
+          isActive={isActive}
+          onSplit={onSplit}
+          onChangeType={onChangeType}
+          onClose={handleClose}
+          onSwapPane={onSwapPane}
+          onMarkDevServer={onMarkDevServer}
+          onOpenEditor={onOpenEditor}
+          onOpenBrowser={onOpenBrowser}
+          onOpenTasks={onOpenTasks}
+          onOpenSnippets={onOpenSnippets}
+          serverName={serverName}
+          isYolo={launchedWithYolo}
+        />
+      )}
       <div className="flex-1 min-h-0 relative" style={{ backgroundColor: "var(--ezy-bg)" }}>
         <div
           ref={containerRef}
@@ -658,6 +840,52 @@ export default function TerminalPane({
             onDismiss={dismissPreview}
           />
         )}
+        {composerOpen && !hideChrome && (
+          <PromptComposer
+            onSubmit={handleComposerSubmit}
+            onClose={handleComposerClose}
+            write={write}
+            alwaysVisible={composerAlwaysVisible}
+            terminalBg={theme.terminal.background ?? "#0d1117"}
+            terminalFg={theme.terminal.foreground ?? "#e6edf3"}
+            terminalCursor={theme.terminal.cursor ?? "#58a6ff"}
+            fontSize={cliFontSize}
+            containerRef={containerRef}
+            terminal={terminalRef.current}
+            terminalId={terminalId}
+            scrollToPrompt={() => scrollToPromptRef.current()}
+            scrollToNextPrompt={() => scrollToNextPromptRef.current()}
+          />
+        )}
+        {/* Jump-to-bottom button — appears below scrollbar thumb when scrolled up */}
+        <div
+          ref={jumpBtnRef}
+          style={{
+            display: "none",
+            position: "absolute",
+            right: 4,
+            width: 22,
+            height: 22,
+            borderRadius: 4,
+            backgroundColor: "var(--ezy-surface-raised)",
+            border: "1px solid var(--ezy-border)",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            zIndex: 10,
+            opacity: 0.85,
+            transition: "opacity 120ms ease",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.85"; }}
+          onClick={() => terminalRef.current?.scrollToBottom()}
+          title="Jump to bottom"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="2,3 6,7 10,3" />
+            <line x1="3" y1="9.5" x2="9" y2="9.5" />
+          </svg>
+        </div>
       </div>
     </div>
   );

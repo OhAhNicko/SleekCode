@@ -15,6 +15,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
 import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
 import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
+import UndoCloseToast from "./components/UndoCloseToast";
+import DevServerTerminalHost from "./components/DevServerTerminalHost";
 
 export default function App() {
   const tabs = useAppStore((s) => s.tabs);
@@ -250,6 +252,8 @@ export default function App() {
       {showSnippets && <SnippetPanel onClose={() => setShowSnippets(false)} />}
       {showHistory && <CommandHistory onClose={() => setShowHistory(false)} />}
       <ImageInsertUndoToast />
+      <UndoCloseToast />
+      <DevServerTerminalHost />
     </div>
   );
 }

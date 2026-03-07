@@ -2,11 +2,15 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import { insertImagePath } from "../lib/clipboard-insert";
+import { useAppStore } from "../store";
 import ImagePreviewModal from "./ImagePreviewModal";
 
 /** Shows a snip button + the 3 most recent session clipboard images in the TabBar. */
 export default function ClipboardImageStrip() {
   const images = useClipboardImageStore((s) => s.images);
+  const setPendingComposerImage = useClipboardImageStore((s) => s.setPendingComposerImage);
+  const composerEnabled = useAppStore((s) => s.promptComposerEnabled);
+  const activeComposerId = useClipboardImageStore((s) => s.activeComposerTerminalId);
   const [previewImage, setPreviewImage] = useState<{
     dataUri: string;
     winPath: string;
@@ -81,8 +85,14 @@ export default function ClipboardImageStrip() {
               border: "1px solid var(--ezy-border)",
               flexShrink: 0,
             }}
-            title="Click to insert path into active terminal"
-            onClick={() => insertImagePath(img.winPath)}
+            title={composerEnabled ? "Click to attach to prompt" : "Click to insert path into active terminal"}
+            onClick={() => {
+              if (composerEnabled && activeComposerId) {
+                setPendingComposerImage({ image: img, terminalId: activeComposerId });
+              } else {
+                insertImagePath(img.winPath);
+              }
+            }}
           >
             <img
               src={img.dataUri}
@@ -168,7 +178,12 @@ export default function ClipboardImageStrip() {
           dataUri={previewImage.dataUri}
           winPath={previewImage.winPath}
           onInsert={() => {
-            insertImagePath(previewImage.winPath);
+            if (composerEnabled) {
+              const img = images.find((i) => i.winPath === previewImage.winPath);
+              if (img && activeComposerId) setPendingComposerImage({ image: img, terminalId: activeComposerId });
+            } else {
+              insertImagePath(previewImage.winPath);
+            }
             setPreviewImage(null);
           }}
           onClose={() => setPreviewImage(null)}
