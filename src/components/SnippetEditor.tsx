@@ -81,7 +81,7 @@ export default function SnippetEditor({ snippet, onSave, onCancel }: SnippetEdit
           style={{
             ...inputStyle,
             resize: "vertical",
-            fontFamily: "'Geist Mono', 'Cascadia Code', monospace",
+            fontFamily: "'Hack', 'Geist Mono', 'Cascadia Code', monospace",
           }}
           placeholder={"git checkout $BRANCH_NAME\nnpm install\nnpm run dev -- --port $PORT"}
         />

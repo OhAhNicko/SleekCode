@@ -3,12 +3,15 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { THEMES, getTheme } from "../lib/themes";
-import { buildLayoutFromTemplate } from "../lib/layout-utils";
+import { buildLayoutFromTemplate, stampTerminalTypes, countLeafPanes, findAllTerminalIds } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
+import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
+import { isTerminalActive } from "../lib/terminal-activity";
 import type { RemoteServer, TerminalType } from "../types";
 import type { WorkspaceTemplate } from "../lib/workspace-templates";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import TemplatePicker from "./TemplatePicker";
+import ClipboardImageStrip from "./ClipboardImageStrip";
 
 export default function TabBar() {
   const tabs = useAppStore((s) => s.tabs);
@@ -27,15 +30,35 @@ export default function TabBar() {
   const removeRecentProject = useAppStore((s) => s.removeRecentProject);
   const alwaysShowTemplatePicker = useAppStore((s) => s.alwaysShowTemplatePicker);
   const setAlwaysShowTemplatePicker = useAppStore((s) => s.setAlwaysShowTemplatePicker);
+  const restoreLastSession = useAppStore((s) => s.restoreLastSession);
+  const setRestoreLastSession = useAppStore((s) => s.setRestoreLastSession);
+  const autoInsertClipboardImage = useAppStore((s) => s.autoInsertClipboardImage);
+  const setAutoInsertClipboardImage = useAppStore((s) => s.setAutoInsertClipboardImage);
+  const cliFontSizes = useAppStore((s) => s.cliFontSizes);
+  const setCliFontSize = useAppStore((s) => s.setCliFontSize);
+  const claudeYolo = useAppStore((s) => s.claudeYolo);
+  const setClaudeYolo = useAppStore((s) => s.setClaudeYolo);
+  const scrollToPromptEnabled = useAppStore((s) => s.scrollToPromptEnabled);
+  const setScrollToPromptEnabled = useAppStore((s) => s.setScrollToPromptEnabled);
 
+  const [isMaximized, setIsMaximized] = useState(false);
   const [showNewTabMenu, setShowNewTabMenu] = useState(false);
   const [showRecentMenu, setShowRecentMenu] = useState(false);
   const [browsingServer, setBrowsingServer] = useState<RemoteServer | null>(null);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [pendingDir, setPendingDir] = useState<{ name: string; dir: string; serverId?: string } | null>(null);
+  const [expandedCli, setExpandedCli] = useState<Record<string, boolean>>({});
+  const [themeExpanded, setThemeExpanded] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const recentMenuRef = useRef<HTMLDivElement>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
+
+  // Poll terminal activity every 1s to update active pane counts
+  const [activityTick, setActivityTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setActivityTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const anyMenuOpen = showNewTabMenu || showRecentMenu || showSettingsMenu;
   const closeAllMenus = useCallback(() => {
@@ -78,6 +101,9 @@ export default function TabBar() {
         template.rows
       );
 
+      // Stamp terminal types into layout tree for session restore
+      const typedLayout = stampTerminalTypes(layout, terminalIds, slotTypes);
+
       // Batch-create all terminals
       const batch = terminalIds.map((id, i) => ({
         id,
@@ -86,7 +112,7 @@ export default function TabBar() {
         serverId: pendingDir.serverId,
       }));
       addTerminals(batch);
-      addTabWithLayout(pendingDir.name, pendingDir.dir, layout, pendingDir.serverId);
+      addTabWithLayout(pendingDir.name, pendingDir.dir, typedLayout, pendingDir.serverId);
       if (!pendingDir.serverId) {
         addRecentProject({
           path: pendingDir.dir,
@@ -98,6 +124,20 @@ export default function TabBar() {
     },
     [pendingDir, addTerminals, addTabWithLayout, addRecentProject]
   );
+
+  // Track maximized state for window control icon
+  useEffect(() => {
+    const win = getCurrentWindow();
+    win.isMaximized().then(setIsMaximized);
+    let unlisten: (() => void) | undefined;
+    const setup = async () => {
+      unlisten = await win.onResized(async () => {
+        setIsMaximized(await win.isMaximized());
+      });
+    };
+    setup();
+    return () => { unlisten?.(); };
+  }, []);
 
   // Listen for Ctrl+Shift+T event from App.tsx
   useEffect(() => {
@@ -216,7 +256,6 @@ export default function TabBar() {
             const isActive = tab.id === activeTabId;
             const isSystemTab = tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab;
             const isUserPinned = !!tab.isPinned;
-            const isUnclosable = isSystemTab || isUserPinned;
 
             return (
               <button
@@ -232,6 +271,9 @@ export default function TabBar() {
                   padding: "0 12px",
                   position: "relative",
                   backgroundColor: isActive ? "var(--ezy-surface)" : "transparent",
+                  backgroundImage: isUserPinned
+                    ? "repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(255,255,255,0.05) 4px, rgba(255,255,255,0.05) 8px)"
+                    : undefined,
                   border: "none",
                   cursor: "pointer",
                   fontSize: 12,
@@ -258,85 +300,99 @@ export default function TabBar() {
                   }
                 }}
               >
-                {/* Tab icon */}
-                {renderTabIcon(tab, isActive)}
+                {/* Tab icon (special tabs only — no icon for regular project tabs) */}
+                {(tab.isKanbanTab || tab.isServersTab || tab.isDevServerTab || tab.serverId) && renderTabIcon(tab, isActive)}
 
-                {/* Label */}
+                {/* Label with pane count and activity indicator */}
                 <span
                   style={{
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     whiteSpace: "nowrap",
-                    maxWidth: 120,
+                    flex: 1,
+                    minWidth: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 4,
                   }}
                 >
-                  {tab.name}
+                  {(() => {
+                    const paneCount = countLeafPanes(tab.layout);
+                    const termIds = findAllTerminalIds(tab.layout);
+                    // activityTick is read to trigger re-render on poll
+                    void activityTick;
+                    const activeCount = termIds.filter((id) => isTerminalActive(id)).length;
+                    if (activeCount > 0) console.log(`[TabBar] tab="${tab.name}" panes=${paneCount} active=${activeCount} termIds=${termIds.join(",")}`);
+                    return (
+                      <>
+                        <span>{tab.name}{paneCount > 1 ? ` ${paneCount}` : ""}</span>
+                        {activeCount > 0 && (
+                          <span style={{ opacity: 0.6, fontSize: "0.85em" }}>({activeCount})</span>
+                        )}
+                      </>
+                    );
+                  })()}
                 </span>
 
-                {/* Pin indicator (pinned tabs only, always visible) */}
-                {!isSystemTab && isUserPinned && (
-                  <svg
-                    width="11"
-                    height="11"
-                    viewBox="0 0 16 16"
-                    fill="var(--ezy-accent)"
-                    stroke="var(--ezy-accent)"
-                    strokeWidth="1.3"
-                    style={{ flexShrink: 0, cursor: "pointer", opacity: 0.7 }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      togglePinTab(tab.id);
-                    }}
-                  >
-                    <path d="M9.828 1.172a1 1 0 0 1 1.414 0l3.586 3.586a1 1 0 0 1 0 1.414L12 9l-1 5-3-3-4.293 4.293a.5.5 0 0 1-.707-.707L7 10.293l-3-3 5-1 2.828-2.828Z" />
-                  </svg>
-                )}
-
-                {/* Close button — show on hover for closable tabs, or pin toggle for unpinned */}
-                {!isUnclosable && (
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                    className={isActive ? "opacity-50 hover:opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100"}
+                {/* Right column: close (top) + pin (bottom) — hover reveal */}
+                {!isSystemTab && (
+                  <div
                     style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 6,
                       flexShrink: 0,
-                      cursor: "pointer",
-                      transition: "opacity 120ms ease",
-                      marginLeft: -2,
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeTab(tab.id);
+                      marginLeft: 8,
+                      marginRight: -6,
                     }}
                   >
-                    <line x1="5" y1="5" x2="11" y2="11" />
-                    <line x1="11" y1="5" x2="5" y2="11" />
-                  </svg>
-                )}
-
-                {/* Pin toggle on hover (non-pinned, non-system tabs — only when no close button visible) */}
-                {!isSystemTab && !isUserPinned && isUnclosable && (
-                  <svg
-                    width="11"
-                    height="11"
-                    viewBox="0 0 16 16"
-                    fill="none"
-                    stroke="var(--ezy-border-light)"
-                    strokeWidth="1.3"
-                    className="opacity-0 group-hover:opacity-100"
-                    style={{ flexShrink: 0, cursor: "pointer", transition: "opacity 120ms ease" }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      togglePinTab(tab.id);
-                    }}
-                  >
-                    <path d="M9.828 1.172a1 1 0 0 1 1.414 0l3.586 3.586a1 1 0 0 1 0 1.414L12 9l-1 5-3-3-4.293 4.293a.5.5 0 0 1-.707-.707L7 10.293l-3-3 5-1 2.828-2.828Z" />
-                  </svg>
+                    {/* Close button — small X, only for unpinned tabs, hover only */}
+                    {!isUserPinned && (
+                      <svg
+                        width="10"
+                        height="10"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        className="opacity-0 group-hover:opacity-40 hover:!opacity-100"
+                        style={{
+                          cursor: "pointer",
+                          transition: "opacity 120ms ease",
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeTab(tab.id);
+                        }}
+                      >
+                        <line x1="4" y1="4" x2="12" y2="12" />
+                        <line x1="12" y1="4" x2="4" y2="12" />
+                      </svg>
+                    )}
+                    {/* Pin toggle — hover only for both states */}
+                    <svg
+                      width="10"
+                      height="10"
+                      viewBox="0 0 16 16"
+                      fill={isUserPinned ? "var(--ezy-accent)" : "none"}
+                      stroke={isUserPinned ? "var(--ezy-accent)" : "currentColor"}
+                      strokeWidth="1.3"
+                      className="opacity-0 group-hover:opacity-40 hover:!opacity-100"
+                      style={{
+                        cursor: "pointer",
+                        transition: "opacity 120ms ease",
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        togglePinTab(tab.id);
+                      }}
+                    >
+                      <path d="M9.828 1.172a1 1 0 0 1 1.414 0l3.586 3.586a1 1 0 0 1 0 1.414L12 9l-1 5-3-3-4.293 4.293a.5.5 0 0 1-.707-.707L7 10.293l-3-3 5-1 2.828-2.828Z" />
+                    </svg>
+                  </div>
                 )}
               </button>
             );
@@ -433,13 +489,14 @@ export default function TabBar() {
                     if (!alwaysShowTemplatePicker && project.lastTemplate) {
                       const { templateId, cols, rows, slotTypes } = project.lastTemplate;
                       const { layout, terminalIds } = buildLayoutFromTemplate(templateId, cols, rows);
+                      const typedLayout = stampTerminalTypes(layout, terminalIds, slotTypes);
                       const batch = terminalIds.map((id, i) => ({
                         id,
                         type: slotTypes[i] ?? ("shell" as TerminalType),
                         workingDir: project.path,
                       }));
                       addTerminals(batch);
-                      addTabWithLayout(project.name, project.path, layout);
+                      addTabWithLayout(project.name, project.path, typedLayout);
                       addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate });
                     } else {
                       setPendingDir({ name: project.name, dir: project.path });
@@ -597,6 +654,23 @@ export default function TabBar() {
                   <path d="M5.5 8.5L7 10l3.5-4" stroke="#e87b35" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
                 {TERMINAL_CONFIGS.claude.label}
+                {claudeYolo && (
+                  <span
+                    style={{
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing: "0.06em",
+                      lineHeight: 1,
+                      padding: "1px 4px",
+                      borderRadius: 3,
+                      backgroundColor: "var(--ezy-red, #e55)",
+                      color: "#fff",
+                      marginLeft: "auto",
+                    }}
+                  >
+                    YOLO
+                  </span>
+                )}
               </button>
               {/* Codex CLI */}
               <button
@@ -693,6 +767,9 @@ export default function TabBar() {
           onMouseDown={anyMenuOpen ? closeAllMenus : undefined}
           style={anyMenuOpen ? { cursor: "default" } : undefined}
         />
+
+        {/* Clipboard image thumbnails */}
+        <ClipboardImageStrip />
 
         {/* Code Review */}
         <div
@@ -808,75 +885,16 @@ export default function TabBar() {
                 right: 0,
                 marginTop: 6,
                 width: 220,
+                maxHeight: "calc(100vh - 60px)",
+                overflowY: "auto",
                 backgroundColor: "var(--ezy-surface-raised)",
                 border: "1px solid var(--ezy-border)",
                 borderRadius: 8,
-                overflow: "hidden",
                 boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
                 zIndex: 100,
               }}
             >
-              {/* Theme section */}
-              <div
-                style={{
-                  padding: "6px 10px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                  borderBottom: "1px solid var(--ezy-border)",
-                }}
-              >
-                Theme
-              </div>
-              {THEMES.map((t) => {
-                const isSelected = t.id === themeId;
-                return (
-                  <button
-                    key={t.id}
-                    className="w-full text-left"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "7px 10px",
-                      backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "transparent",
-                      border: "none",
-                      cursor: "pointer",
-                      fontSize: 13,
-                      fontWeight: isSelected ? 600 : 400,
-                      color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
-                      fontFamily: "inherit",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isSelected) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
-                    }}
-                    onClick={() => {
-                      setTheme(t.id);
-                    }}
-                  >
-                    {/* Color swatch */}
-                    <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
-                      <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.bg }} />
-                      <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.accent }} />
-                      <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.cyan }} />
-                    </div>
-                    <span>{t.name}</span>
-                    {isSelected && (
-                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={theme.surface.accent} strokeWidth="2" strokeLinecap="round" style={{ marginLeft: "auto" }}>
-                        <polyline points="2,8 6,12 14,4" />
-                      </svg>
-                    )}
-                  </button>
-                );
-              })}
-
               {/* Behavior section */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
               <div
                 style={{
                   padding: "6px 10px",
@@ -932,6 +950,375 @@ export default function TabBar() {
                   />
                 </div>
               </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                }}
+                onClick={() => setRestoreLastSession(!restoreLastSession)}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  Restore last session
+                </span>
+                {/* Toggle switch */}
+                <div
+                  style={{
+                    width: 32,
+                    height: 18,
+                    borderRadius: 9,
+                    backgroundColor: restoreLastSession ? "var(--ezy-accent)" : "transparent",
+                    border: restoreLastSession ? "none" : "1px solid var(--ezy-border-light)",
+                    position: "relative",
+                    transition: "background-color 150ms ease",
+                    flexShrink: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: "50%",
+                      backgroundColor: restoreLastSession ? "#fff" : "var(--ezy-text-muted)",
+                      position: "absolute",
+                      top: 2,
+                      left: restoreLastSession ? 16 : 2,
+                      transition: "left 150ms ease",
+                    }}
+                  />
+                </div>
+              </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                }}
+                onClick={() => setAutoInsertClipboardImage(!autoInsertClipboardImage)}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  Auto-paste screenshots
+                </span>
+                {/* Toggle switch */}
+                <div
+                  style={{
+                    width: 32,
+                    height: 18,
+                    borderRadius: 9,
+                    backgroundColor: autoInsertClipboardImage ? "var(--ezy-accent)" : "transparent",
+                    border: autoInsertClipboardImage ? "none" : "1px solid var(--ezy-border-light)",
+                    position: "relative",
+                    transition: "background-color 150ms ease",
+                    flexShrink: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: "50%",
+                      backgroundColor: autoInsertClipboardImage ? "#fff" : "var(--ezy-text-muted)",
+                      position: "absolute",
+                      top: 2,
+                      left: autoInsertClipboardImage ? 16 : 2,
+                      transition: "left 150ms ease",
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                }}
+                onClick={() => setScrollToPromptEnabled(!scrollToPromptEnabled)}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  Scroll to prompt
+                </span>
+                {/* Toggle switch */}
+                <div
+                  style={{
+                    width: 32,
+                    height: 18,
+                    borderRadius: 9,
+                    backgroundColor: scrollToPromptEnabled ? "var(--ezy-accent)" : "transparent",
+                    border: scrollToPromptEnabled ? "none" : "1px solid var(--ezy-border-light)",
+                    position: "relative",
+                    transition: "background-color 150ms ease",
+                    flexShrink: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: "50%",
+                      backgroundColor: scrollToPromptEnabled ? "#fff" : "var(--ezy-text-muted)",
+                      position: "absolute",
+                      top: 2,
+                      left: scrollToPromptEnabled ? 16 : 2,
+                      transition: "left 150ms ease",
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* CLI Options section */}
+              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
+              <div
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--ezy-text-muted)",
+                  borderBottom: "1px solid var(--ezy-border)",
+                }}
+              >
+                CLI Options
+              </div>
+              {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
+                const isExpanded = !!expandedCli[cliType];
+                const currentSize = cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE;
+                const label = TERMINAL_CONFIGS[cliType].label;
+                return (
+                  <div key={cliType}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "7px 10px",
+                        cursor: "pointer",
+                      }}
+                      onClick={() => setExpandedCli((prev) => ({ ...prev, [cliType]: !prev[cliType] }))}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                    >
+                      <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>{label}</span>
+                      <svg
+                        width="10"
+                        height="10"
+                        viewBox="0 0 10 10"
+                        fill="none"
+                        stroke="var(--ezy-text-muted)"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{ transition: "transform 150ms ease", transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)" }}
+                      >
+                        <polyline points="2,3.5 5,6.5 8,3.5" />
+                      </svg>
+                    </div>
+                    {isExpanded && (
+                      <div style={{ padding: "4px 10px 8px 10px", display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                          <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>Font size</span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <div
+                              onClick={() => setCliFontSize(cliType, Math.max(10, currentSize - 1))}
+                              style={{
+                                width: 20,
+                                height: 20,
+                                borderRadius: 4,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                cursor: currentSize <= 10 ? "default" : "pointer",
+                                opacity: currentSize <= 10 ? 0.3 : 1,
+                                backgroundColor: "transparent",
+                                border: "1px solid var(--ezy-border-light)",
+                                color: "var(--ezy-text-secondary)",
+                                fontSize: 13,
+                                lineHeight: 1,
+                                transition: "background-color 120ms ease",
+                              }}
+                              onMouseEnter={(e) => { if (currentSize > 10) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                            >
+                              -
+                            </div>
+                            <span style={{ fontSize: 12, color: "var(--ezy-text)", minWidth: 20, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
+                              {currentSize}
+                            </span>
+                            <div
+                              onClick={() => setCliFontSize(cliType, Math.min(24, currentSize + 1))}
+                              style={{
+                                width: 20,
+                                height: 20,
+                                borderRadius: 4,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                cursor: currentSize >= 24 ? "default" : "pointer",
+                                opacity: currentSize >= 24 ? 0.3 : 1,
+                                backgroundColor: "transparent",
+                                border: "1px solid var(--ezy-border-light)",
+                                color: "var(--ezy-text-secondary)",
+                                fontSize: 13,
+                                lineHeight: 1,
+                                transition: "background-color 120ms ease",
+                              }}
+                              onMouseEnter={(e) => { if (currentSize < 24) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                            >
+                              +
+                            </div>
+                          </div>
+                        </div>
+                        {cliType === "claude" && (
+                          <div
+                            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
+                            onClick={() => setClaudeYolo(!claudeYolo)}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                              {claudeYolo ? (
+                                <span
+                                  style={{
+                                    fontSize: 9,
+                                    fontWeight: 700,
+                                    padding: "1px 4px",
+                                    borderRadius: 3,
+                                    backgroundColor: "var(--ezy-red, #e55)",
+                                    color: "#fff",
+                                    lineHeight: 1,
+                                    letterSpacing: "0.06em",
+                                  }}
+                                >
+                                  YOLO
+                                </span>
+                              ) : (
+                                <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>YOLO</span>
+                              )}
+                              <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>mode</span>
+                            </div>
+                            <div
+                              style={{
+                                width: 28,
+                                height: 16,
+                                borderRadius: 8,
+                                backgroundColor: claudeYolo ? "var(--ezy-red, #e55)" : "transparent",
+                                border: claudeYolo ? "none" : "1px solid var(--ezy-border-light)",
+                                position: "relative",
+                                transition: "background-color 150ms ease",
+                                flexShrink: 0,
+                              }}
+                            >
+                              <div
+                                style={{
+                                  width: 12,
+                                  height: 12,
+                                  borderRadius: "50%",
+                                  backgroundColor: claudeYolo ? "#fff" : "var(--ezy-text-muted)",
+                                  position: "absolute",
+                                  top: 2,
+                                  left: claudeYolo ? 14 : 2,
+                                  transition: "left 150ms ease",
+                                }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Theme section */}
+              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "6px 10px",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--ezy-text-muted)",
+                  borderBottom: themeExpanded ? "1px solid var(--ezy-border)" : "none",
+                  cursor: "pointer",
+                }}
+                onClick={() => setThemeExpanded((v) => !v)}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <span>Theme</span>
+                <svg
+                  width="10"
+                  height="10"
+                  viewBox="0 0 10 10"
+                  fill="none"
+                  stroke="var(--ezy-text-muted)"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{ transition: "transform 150ms ease", transform: themeExpanded ? "rotate(180deg)" : "rotate(0deg)" }}
+                >
+                  <polyline points="2,3.5 5,6.5 8,3.5" />
+                </svg>
+              </div>
+              {themeExpanded && THEMES.map((t) => {
+                const isSelected = t.id === themeId;
+                return (
+                  <button
+                    key={t.id}
+                    className="w-full text-left"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "7px 10px",
+                      backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: isSelected ? 600 : 400,
+                      color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
+                      fontFamily: "inherit",
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
+                    }}
+                    onClick={() => {
+                      setTheme(t.id);
+                    }}
+                  >
+                    <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.bg }} />
+                      <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.accent }} />
+                      <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.cyan }} />
+                    </div>
+                    <span>{t.name}</span>
+                    {isSelected && (
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke={theme.surface.accent} strokeWidth="2" strokeLinecap="round" style={{ marginLeft: "auto" }}>
+                        <polyline points="2,8 6,12 14,4" />
+                      </svg>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
@@ -981,9 +1368,16 @@ export default function TabBar() {
             onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)"}
             onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1">
-              <rect x="1" y="1" width="8" height="8" />
-            </svg>
+            {isMaximized ? (
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1">
+                <rect x="0.5" y="2.5" width="7" height="7" />
+                <polyline points="2.5,2.5 2.5,0.5 9.5,0.5 9.5,7.5 7.5,7.5" />
+              </svg>
+            ) : (
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1">
+                <rect x="1" y="1" width="8" height="8" />
+              </svg>
+            )}
           </div>
 
           {/* Close */}

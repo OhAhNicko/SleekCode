@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import { WORKSPACE_TEMPLATES, type WorkspaceTemplate } from "../lib/workspace-templates";
+import { useAppStore } from "../store";
 import type { TerminalType } from "../types";
 
 interface TemplatePickerProps {
@@ -68,6 +69,7 @@ const TERMINAL_OPTIONS: { type: TerminalType; label: string }[] = [
 ];
 
 export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProps) {
+  const claudeYolo = useAppStore((s) => s.claudeYolo);
   const [step, setStep] = useState<1 | 2>(1);
   const [selectedTemplate, setSelectedTemplate] = useState<WorkspaceTemplate | null>(null);
   const [slotTypes, setSlotTypes] = useState<TerminalType[]>([]);
@@ -246,10 +248,27 @@ export default function TemplatePicker({ onSelect, onClose }: TemplatePickerProp
                   >
                     {TERMINAL_OPTIONS.map((opt) => (
                       <option key={opt.type} value={opt.type}>
-                        {opt.label}
+                        {opt.label}{opt.type === "claude" && claudeYolo ? " (YOLO)" : ""}
                       </option>
                     ))}
                   </select>
+                  {type === "claude" && claudeYolo && (
+                    <span
+                      style={{
+                        fontSize: 9,
+                        fontWeight: 700,
+                        letterSpacing: "0.06em",
+                        lineHeight: 1,
+                        padding: "1px 4px",
+                        borderRadius: 3,
+                        backgroundColor: "var(--ezy-red, #e55)",
+                        color: "#fff",
+                        flexShrink: 0,
+                      }}
+                    >
+                      YOLO
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

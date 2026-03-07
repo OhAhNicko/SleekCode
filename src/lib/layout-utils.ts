@@ -1,4 +1,4 @@
-import type { PaneLayout, PaneLeaf, PaneSplit } from "../types";
+import type { PaneLayout, PaneLeaf, PaneSplit, TerminalType } from "../types";
 
 let paneCounter = 0;
 export function generatePaneId(): string {
@@ -218,4 +218,178 @@ export function buildLayoutFromTemplate(
     columns.push(buildColumn(rows));
   }
   return { layout: buildBinaryTree(columns, "horizontal"), terminalIds };
+}
+
+/** Stamp terminalType onto each terminal leaf, matching by terminalId order */
+export function stampTerminalTypes(
+  layout: PaneLayout,
+  terminalIds: string[],
+  types: TerminalType[]
+): PaneLayout {
+  let result = layout;
+  for (let i = 0; i < terminalIds.length; i++) {
+    result = setTerminalTypeInLayout(result, terminalIds[i], types[i] ?? "shell");
+  }
+  return result;
+}
+
+/** Collect all terminal leaf nodes from a layout tree */
+export function findAllTerminalLeaves(layout: PaneLayout): PaneLeaf[] {
+  if (layout.type === "terminal") return [layout];
+  if (layout.type === "split") {
+    return [
+      ...findAllTerminalLeaves(layout.children[0]),
+      ...findAllTerminalLeaves(layout.children[1]),
+    ];
+  }
+  return [];
+}
+
+/**
+ * Extract top-level columns from a layout.
+ * Recursively flattens horizontal splits at the root level.
+ * Non-horizontal nodes (leaves, vertical splits) are returned as single columns.
+ */
+function getTopLevelColumns(layout: PaneLayout): PaneLayout[] {
+  if (layout.type === "split" && layout.direction === "horizontal") {
+    return [
+      ...getTopLevelColumns(layout.children[0]),
+      ...getTopLevelColumns(layout.children[1]),
+    ];
+  }
+  return [layout];
+}
+
+/**
+ * Extract leaf-level rows from a single column.
+ * Recursively flattens vertical splits; non-vertical nodes are opaque cells.
+ */
+function extractColumnLeaves(column: PaneLayout): PaneLayout[] {
+  if (column.type === "split" && column.direction === "vertical") {
+    return [
+      ...extractColumnLeaves(column.children[0]),
+      ...extractColumnLeaves(column.children[1]),
+    ];
+  }
+  return [column];
+}
+
+/**
+ * Build a balanced binary tree where ALL splits use the same direction.
+ * Sizes are proportional so each node gets equal space.
+ */
+function buildBalancedSameDir(
+  nodes: PaneLayout[],
+  direction: "horizontal" | "vertical"
+): PaneLayout {
+  if (nodes.length === 1) return nodes[0];
+  if (nodes.length === 2) {
+    return {
+      type: "split",
+      id: generatePaneId(),
+      direction,
+      children: [nodes[0], nodes[1]] as [PaneLayout, PaneLayout],
+      sizes: [50, 50],
+    };
+  }
+  // Split at midpoint; use proportional sizes so each leaf gets equal width/height
+  const mid = Math.ceil(nodes.length / 2);
+  const leftPct = (mid / nodes.length) * 100;
+  const left = buildBalancedSameDir(nodes.slice(0, mid), direction);
+  const right = buildBalancedSameDir(nodes.slice(mid), direction);
+  return {
+    type: "split",
+    id: generatePaneId(),
+    direction,
+    children: [left, right] as [PaneLayout, PaneLayout],
+    sizes: [leftPct, 100 - leftPct],
+  };
+}
+
+const MAX_PANES = 16;
+
+/**
+ * Add a new leaf pane to the layout in a smart grid pattern.
+ * Extracts the current column structure, decides placement, and rebuilds.
+ * Caps at MAX_PANES (4x4 grid).
+ */
+export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout): PaneLayout {
+  const columns = getTopLevelColumns(layout);
+  const columnLeaves = columns.map(extractColumnLeaves);
+
+  // Enforce max pane limit
+  const totalLeaves = columnLeaves.reduce((sum, col) => sum + col.length, 0);
+  if (totalLeaves >= MAX_PANES) return layout;
+  const rowCounts = columnLeaves.map((col) => col.length);
+  const maxRows = Math.max(...rowCounts);
+
+  // Find the first column that has fewer rows than the tallest
+  const shortIdx = rowCounts.findIndex((count) => count < maxRows);
+
+  if (shortIdx !== -1) {
+    // Fill the short column
+    columnLeaves[shortIdx].push(newLeaf);
+  } else if (columns.length > maxRows) {
+    // More columns than rows — start a new row in first column
+    columnLeaves[0].push(newLeaf);
+  } else {
+    // Add a new column
+    columnLeaves.push([newLeaf]);
+  }
+
+  // Rebuild: each column is a vertical tree, then combine horizontally
+  const rebuiltColumns = columnLeaves.map((leaves) =>
+    buildBalancedSameDir(leaves, "vertical")
+  );
+  return buildBalancedSameDir(rebuiltColumns, "horizontal");
+}
+
+/** Count all leaf panes (terminal, browser, editor, kanban, codereview, fileviewer) in a layout. */
+export function countLeafPanes(layout: PaneLayout): number {
+  if (layout.type === "split") {
+    return countLeafPanes(layout.children[0]) + countLeafPanes(layout.children[1]);
+  }
+  return 1;
+}
+
+/** Walk the layout tree and set sessionResumeId on the matching terminal leaf */
+export function setSessionResumeIdInLayout(
+  layout: PaneLayout,
+  terminalId: string,
+  sessionResumeId: string | undefined
+): PaneLayout {
+  if (layout.type === "terminal" && layout.terminalId === terminalId) {
+    return { ...layout, sessionResumeId };
+  }
+  if (layout.type === "split") {
+    return {
+      ...layout,
+      children: [
+        setSessionResumeIdInLayout(layout.children[0], terminalId, sessionResumeId),
+        setSessionResumeIdInLayout(layout.children[1], terminalId, sessionResumeId),
+      ] as [PaneLayout, PaneLayout],
+    };
+  }
+  return layout;
+}
+
+/** Walk the layout tree and set terminalType on the matching terminal leaf */
+export function setTerminalTypeInLayout(
+  layout: PaneLayout,
+  terminalId: string,
+  terminalType: TerminalType
+): PaneLayout {
+  if (layout.type === "terminal" && layout.terminalId === terminalId) {
+    return { ...layout, terminalType };
+  }
+  if (layout.type === "split") {
+    return {
+      ...layout,
+      children: [
+        setTerminalTypeInLayout(layout.children[0], terminalId, terminalType),
+        setTerminalTypeInLayout(layout.children[1], terminalId, terminalType),
+      ] as [PaneLayout, PaneLayout],
+    };
+  }
+  return layout;
 }

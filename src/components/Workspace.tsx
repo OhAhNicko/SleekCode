@@ -4,10 +4,13 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { Tab, TerminalType, PaneLayout } from "../types";
 import { useAppStore } from "../store";
 import {
+  addPaneAsGrid,
   findAllTerminalIds,
-  findFirstLeafId,
+  findAllTerminalLeaves,
   findPaneIdForTerminal,
   removePane,
+  setSessionResumeIdInLayout,
+  setTerminalTypeInLayout,
   splitPane,
   swapPanes,
   generatePaneId,
@@ -26,6 +29,7 @@ interface WorkspaceProps {
 export default function Workspace({ tab }: WorkspaceProps) {
   const updateTabLayout = useAppStore((s) => s.updateTabLayout);
   const addTerminal = useAppStore((s) => s.addTerminal);
+  const addTerminals = useAppStore((s) => s.addTerminals);
   const setActiveTerminal = useAppStore((s) => s.setActiveTerminal);
   const terminals = useAppStore((s) => s.terminals);
   const [activeTerminalId, setLocalActiveTerminal] = useState<string | null>(
@@ -34,10 +38,13 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const [showToolSelector, setShowToolSelector] = useState(false);
 
   // Check if this is a fresh tab that needs its first terminal spawned
+  // (skip if the leaf has a persisted terminalType — that means it's being restored)
   const layoutTerminalId =
     tab.layout.type === "terminal" ? tab.layout.terminalId : null;
+  const isRestoredLeaf =
+    tab.layout.type === "terminal" && !!tab.layout.terminalType;
   const needsInitialTerminal =
-    layoutTerminalId && !terminals[layoutTerminalId];
+    layoutTerminalId && !terminals[layoutTerminalId] && !isRestoredLeaf;
 
   // Collect all terminal IDs in the current layout (sorted for stable portal order)
   const allTerminalIds = useMemo(
@@ -89,18 +96,20 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const handleSpawnTerminal = useCallback(
     (terminalId: string, type: TerminalType, serverId?: string) => {
       addTerminal(terminalId, type, tab.workingDir, serverId ?? tab.serverId);
+      updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, terminalId, type));
     },
-    [addTerminal, tab.workingDir, tab.serverId]
+    [addTerminal, tab.workingDir, tab.serverId, tab.id, tab.layout, updateTabLayout]
   );
 
   const handleInitialSpawn = useCallback(
     (type: TerminalType, serverId?: string) => {
       if (!layoutTerminalId) return;
       addTerminal(layoutTerminalId, type, tab.workingDir, serverId ?? tab.serverId);
+      updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, layoutTerminalId, type));
       setLocalActiveTerminal(layoutTerminalId);
       setShowToolSelector(false);
     },
-    [addTerminal, layoutTerminalId, tab.workingDir, tab.serverId]
+    [addTerminal, layoutTerminalId, tab.workingDir, tab.serverId, tab.id, tab.layout, updateTabLayout]
   );
 
   // --- Terminal pane callbacks (used by portal-rendered TerminalPanes) ---
@@ -120,7 +129,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
     const paneId = findPaneIdForTerminal(tab.layout, termId);
     if (!paneId) return;
     const newTerminalId = generateTerminalId();
-    const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId };
+    const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type };
     handleSpawnTerminal(newTerminalId, type, tab.serverId);
     handleLayoutChange(splitPane(tab.layout, paneId, direction, newLeaf));
   }, [tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal]);
@@ -174,7 +183,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
     const paneId = findPaneIdForTerminal(tab.layout, termId);
     if (!paneId) return;
     const newTerminalId = generateTerminalId();
-    const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId };
+    const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: "claude" as const };
     handleSpawnTerminal(newTerminalId, "claude", tab.serverId);
     handleLayoutChange(splitPane(tab.layout, paneId, "horizontal", newLeaf));
 
@@ -229,17 +238,33 @@ export default function Workspace({ tab }: WorkspaceProps) {
       const type = (e as CustomEvent).detail?.type as TerminalType | undefined;
       if (!type) return;
 
-      const firstPaneId = findFirstLeafId(tab.layout);
-      if (!firstPaneId) return;
-
       const newTerminalId = generateTerminalId();
-      const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId };
+      const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type };
       handleSpawnTerminal(newTerminalId, type, tab.serverId);
-      handleLayoutChange(splitPane(tab.layout, firstPaneId, "horizontal", newLeaf));
+      handleLayoutChange(addPaneAsGrid(tab.layout, newLeaf));
     };
     window.addEventListener("ezydev:split-terminal", handler);
     return () => window.removeEventListener("ezydev:split-terminal", handler);
   }, [tab.id, tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal]);
+
+  // Auto-spawn terminals for restored tabs (session restore)
+  const hasAutoSpawned = useRef(false);
+  useEffect(() => {
+    if (hasAutoSpawned.current) return;
+    const currentTerminals = useAppStore.getState().terminals;
+    const leaves = findAllTerminalLeaves(tab.layout);
+    const toSpawn = leaves.filter((leaf) => !currentTerminals[leaf.terminalId]);
+    if (toSpawn.length === 0) return;
+    hasAutoSpawned.current = true;
+    addTerminals(
+      toSpawn.map((leaf) => ({
+        id: leaf.terminalId,
+        type: leaf.terminalType ?? "shell",
+        workingDir: tab.workingDir,
+        serverId: tab.serverId,
+      }))
+    );
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Show tool selector for brand new tab
   if (needsInitialTerminal) {
@@ -313,15 +338,23 @@ export default function Workspace({ tab }: WorkspaceProps) {
         const terminal = terminals[termId];
         if (!terminal) return null;
         const slotEl = getSlotEl(termId);
+        const leaf = findAllTerminalLeaves(tab.layout).find((l) => l.terminalId === termId);
         return createPortal(
           <TerminalPane
             terminalId={termId}
             terminalType={terminal.type}
             workingDir={tab.workingDir}
             isActive={activeTerminalId === termId}
+            paneCount={allTerminalIds.length}
             onClose={() => handleTerminalClose(termId)}
             onSplit={(direction, type) => handleTerminalSplit(termId, direction, type)}
-            onChangeType={(type) => useAppStore.getState().changeTerminalType(termId, type)}
+            onChangeType={(type) => {
+              useAppStore.getState().changeTerminalType(termId, type);
+              // Clear session resume ID when switching terminal types
+              let newLayout = setTerminalTypeInLayout(tab.layout, termId, type);
+              newLayout = setSessionResumeIdInLayout(newLayout, termId, undefined);
+              updateTabLayout(tab.id, newLayout);
+            }}
             onFocus={() => handleTerminalFocus(termId)}
             onSwapPane={handleSwapPane}
             onMarkDevServer={() => handleTerminalMarkDevServer(termId)}
@@ -331,6 +364,14 @@ export default function Workspace({ tab }: WorkspaceProps) {
             onExplainError={(block) => handleTerminalExplainError(termId, block)}
             onOpenSnippets={() => window.dispatchEvent(new Event("ezydev:open-snippets"))}
             serverId={terminal.serverId}
+            sessionResumeId={leaf?.sessionResumeId}
+            onSessionResumeId={(id) => {
+              // Read current layout from store to avoid stale closure
+              const currentTab = useAppStore.getState().tabs.find(t => t.id === tab.id);
+              if (currentTab) {
+                updateTabLayout(tab.id, setSessionResumeIdInLayout(currentTab.layout, termId, id));
+              }
+            }}
           />,
           slotEl,
           termId

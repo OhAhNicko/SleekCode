@@ -1,4 +1,7 @@
+mod pty;
+
 use std::process::Command;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Serialize;
 use tauri::Manager;
 
@@ -513,9 +516,267 @@ async fn git_discard_file(directory: String, file_path: String, is_untracked: bo
     Ok(())
 }
 
+#[derive(Serialize)]
+struct ClipboardImageResult {
+    path: String,
+    data_uri: String,
+}
+
+#[derive(Serialize)]
+struct ClipboardPollResult {
+    seq: u32,
+    image: Option<ClipboardImageResult>,
+}
+
+#[cfg(target_os = "windows")]
+extern "system" {
+    fn GetClipboardSequenceNumber() -> u32;
+}
+
+/// Fast clipboard poll: check if clipboard changed since `last_seq`.
+/// Only reads the image (slow PowerShell call) when the sequence number changes.
+/// Returns the current sequence number and optionally the new image.
+#[tauri::command]
+async fn poll_clipboard_image(last_seq: u32) -> Result<ClipboardPollResult, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let seq = unsafe { GetClipboardSequenceNumber() };
+        if seq == last_seq {
+            return Ok(ClipboardPollResult { seq, image: None });
+        }
+
+        // Clipboard changed — try to read image
+        match save_clipboard_image().await {
+            Ok(result) => Ok(ClipboardPollResult {
+                seq,
+                image: Some(result),
+            }),
+            Err(_) => {
+                // Clipboard changed but no image (e.g. text was copied)
+                Ok(ClipboardPollResult { seq, image: None })
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = last_seq;
+        Err("Clipboard polling only supported on Windows".to_string())
+    }
+}
+
+/// Launch the Windows Snipping Tool region-select overlay (Win+Shift+S).
+#[tauri::command]
+async fn launch_snipping_tool() -> Result<(), String> {
+    // Start the Screen Sketch / Snip & Sketch overlay directly.
+    // This opens the region-selection UI (same as Win+Shift+S).
+    let _ = Command::new("cmd.exe")
+        .args(["/C", "start", "ms-screenclip:"])
+        .output();
+    Ok(())
+}
+
+/// Read image from the Windows clipboard via PowerShell, save as PNG.
+/// Returns the file path and a data URI for thumbnail preview.
+/// This avoids web Clipboard API permission prompts.
+#[tauri::command]
+async fn save_clipboard_image() -> Result<ClipboardImageResult, String> {
+    let dir = std::env::temp_dir().join("ezydev");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let filename = format!("clipboard-{}.png", timestamp);
+    let path = dir.join(&filename);
+    let path_str = path.to_string_lossy().to_string();
+
+    // Use PowerShell to read image from Windows clipboard and save as PNG.
+    // Single-quoted paths in PS: double the single-quotes to escape.
+    let ps_path = path_str.replace('\'', "''");
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; \
+         $img = [System.Windows.Forms.Clipboard]::GetImage(); \
+         if ($img) {{ $img.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png) }} \
+         else {{ exit 1 }}",
+        ps_path
+    );
+
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
+
+    if !output.status.success() || !path.exists() {
+        return Err("No image in clipboard".to_string());
+    }
+
+    // Read the saved PNG and encode as data URI for frontend thumbnail
+    let png_bytes = std::fs::read(&path)
+        .map_err(|e| format!("Failed to read saved image: {}", e))?;
+
+    // Enforce 20MB limit
+    if png_bytes.len() > 20 * 1024 * 1024 {
+        let _ = std::fs::remove_file(&path);
+        return Err("Image too large (max 20MB)".to_string());
+    }
+
+    let b64 = STANDARD.encode(&png_bytes);
+    let data_uri = format!("data:image/png;base64,{}", b64);
+
+    Ok(ClipboardImageResult {
+        path: path_str,
+        data_uri,
+    })
+}
+
+/// Clean up old clipboard images from the ezydev temp directory.
+#[tauri::command]
+async fn cleanup_clipboard_images(max_age_secs: Option<u64>) -> Result<(), String> {
+    let max_age = std::time::Duration::from_secs(max_age_secs.unwrap_or(86400));
+    let dir = std::env::temp_dir().join("ezydev");
+
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(()), // Dir doesn't exist yet — nothing to clean
+    };
+
+    let now = std::time::SystemTime::now();
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("clipboard-") || !name.ends_with(".png") {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata() {
+            if let Ok(modified) = meta.modified() {
+                if let Ok(age) = now.duration_since(modified) {
+                    if age > max_age {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Simple shell escaping for paths (wraps in single quotes)
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Resolve CLI paths and PATH inside WSL in one shot.
+/// Returns a JSON-like map: { "PATH": "/usr/local/bin:...", "claude": "/home/.../.npm/bin/claude", ... }
+///
+/// NOTE: nvm can cause the exported PATH (seen by child processes) to differ from
+/// bash's internal $PATH variable. Using `$()` subshells inherits the wrong PATH,
+/// so `which` inside `$()` fails to find nvm-installed binaries. We avoid this by
+/// running `which` as direct commands and using `env` to read the exported PATH.
+#[tauri::command]
+async fn wsl_resolve_cli_env(cli_names: Vec<String>) -> Result<std::collections::BTreeMap<String, String>, String> {
+    // Use a unique delimiter to parse multi-line output without $() subshells.
+    // $() subshells inherit bash's internal $PATH which may lack nvm entries,
+    // while direct child processes get the correct exported PATH.
+    let delim = "___EZYDEV_DELIM___";
+    let mut script_parts: Vec<String> = Vec::new();
+
+    // Get the EXPORTED PATH via env (direct command, no $() subshell).
+    // Using sed directly in pipeline avoids the subshell PATH problem.
+    script_parts.push("env | sed -n 's/^PATH=/PATH=/p'".to_string());
+    script_parts.push("echo \"DISTRO=$WSL_DISTRO_NAME\"".to_string());
+
+    // Run each `which` as a direct command, separated by delimiters
+    for name in &cli_names {
+        script_parts.push(format!("echo \"{delim}{name}\""));
+        script_parts.push(format!("which {} 2>/dev/null || true", name));
+    }
+
+    let script = script_parts.join("; ");
+
+    let output = Command::new("wsl.exe")
+        .args(["--", "bash", "-lic", &script])
+        .output()
+        .map_err(|e| format!("Failed to run wsl: {}", e))?;
+
+    if !output.status.success() {
+        return Err("WSL command failed".to_string());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut result = std::collections::BTreeMap::new();
+
+    // Parse key=value lines (PATH, DISTRO)
+    // Then parse delimited which output
+    let mut current_cli: Option<String> = None;
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with(delim) {
+            current_cli = Some(line[delim.len()..].to_string());
+        } else if let Some(ref cli) = current_cli {
+            // This line is the output of `which <cli>` — an absolute path
+            if line.starts_with('/') {
+                result.insert(cli.clone(), line.to_string());
+            }
+            current_cli = None;
+        } else if let Some((key, value)) = line.split_once('=') {
+            let value = value.trim();
+            if !value.is_empty() {
+                result.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Find the most recent Claude Code session ID for a given project.
+/// Claude stores sessions at ~/.claude/projects/<encoded-path>/<uuid>.jsonl
+/// where <encoded-path> replaces '/' with '-' in the absolute project path.
+#[tauri::command]
+async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    let encoded = project_path.replace('/', "-");
+
+    // Use bash -lic (login shell) to match wsl_resolve_cli_env pattern.
+    // List ALL session files sorted by modification time (newest first).
+    // We pick the first one not in the exclude list on the Rust side.
+    let script = format!(
+        "ls -1t ~/.claude/projects/{}/*.jsonl 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'",
+        encoded
+    );
+
+    let output = Command::new("wsl.exe")
+        .args(["--", "bash", "-lic", &script])
+        .output()
+        .map_err(|e| format!("Failed to query Claude sessions: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    if stdout.is_empty() {
+        return Ok(None);
+    }
+
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    // Return the first valid UUID that isn't in the exclude list
+    for line in stdout.lines() {
+        let id = line.trim();
+        if is_valid_uuid(id) && !exclude_ids.iter().any(|ex| ex == id) {
+            return Ok(Some(id.to_string()));
+        }
+    }
+
+    Ok(None)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -524,14 +785,27 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_pty::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_revert_hunk, git_discard_file])
+        .plugin(tauri_plugin_window_state::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_revert_hunk, git_discard_file, wsl_resolve_cli_env, get_claude_session_id, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {
                 let window = app.get_webview_window("main").expect("main window not found");
                 let hwnd = window.hwnd().expect("failed to get HWND");
                 win32_border::remove_border(hwnd.0);
+
+                // Keep a persistent WSL process alive — boots the WSL VM and
+                // keeps it warm so subsequent wsl.exe calls are fast.
+                // Uses /bin/cat which blocks on stdin indefinitely.
+                // The child process is killed when the app exits (handle dropped).
+                std::thread::spawn(|| {
+                    let _ = Command::new("wsl.exe")
+                        .args(["-e", "/bin/cat"])
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                });
             }
             Ok(())
         })

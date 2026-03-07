@@ -19,6 +19,7 @@ interface TerminalHeaderProps {
   onOpenTasks?: () => void;
   onOpenSnippets?: () => void;
   serverName?: string;
+  isYolo?: boolean;
 }
 
 function TerminalIcon({ type }: { type: TerminalType }) {
@@ -193,6 +194,7 @@ export default function TerminalHeader({
   onOpenTasks,
   onOpenSnippets,
   serverName,
+  isYolo = false,
 }: TerminalHeaderProps) {
   const config = TERMINAL_CONFIGS[terminalType];
   const [splitPicker, setSplitPicker] = useState<"horizontal" | "vertical" | null>(null);
@@ -303,6 +305,22 @@ export default function TerminalHeader({
               </span>
             )}
           </span>
+          {isYolo && (
+            <span
+              style={{
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                lineHeight: 1,
+                padding: "1px 4px",
+                borderRadius: 3,
+                backgroundColor: "var(--ezy-red, #e55)",
+                color: "#fff",
+              }}
+            >
+              YOLO
+            </span>
+          )}
           <svg width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="1,2.5 4,5.5 7,2.5" />
           </svg>

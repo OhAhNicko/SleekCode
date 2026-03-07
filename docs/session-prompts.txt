@@ -35,3 +35,146 @@
 11. Yes there was but in the pane header, not the TabBar. Can you check if 'browser preview' is still in the code?
 12. Yes add it back
 13. /end
+
+## 2026-03-06 — xterm.js emoji spacing fix
+
+1. There's no spacing after emojis? -> [screenshot: Skarmbild 2026-03-06 180025.png]
+2. [screenshot: Skarmbild 2026-03-06 180457.png] — This screenshot shows the whole picture
+3. Its from this project..
+4. Still same issue, even after restart
+5. Its not possible to open a project now. The app turns empty (the terminals doesnt load)
+6. [screenshot: Skarmbild 2026-03-06 182344.png] (DevTools console showing errors)
+7. There is spacing in other terminals
+8. Now its better
+9. /end
+
+## 2026-03-06 — Window resize fix (decorations: false)
+
+1. its not possible to resize the app window from all sides, only the top border can be dragged to resize
+2. Still not working
+3. Now its working
+4. /end
+
+## 2026-03-06 — Process exited on new CLI pane
+
+1. Why do I get "Process exited" when opening a new CLI pane? [screenshot: Skarmbild 2026-03-06 183542.png]
+[AskUserQuestion] Q: Does this happen for all CLI types (Claude, Shell, etc.) or only for specific ones? And does it happen every time or intermittently? → A: All CLI types, every time
+[AskUserQuestion] Q: Which approach do you want for faster CLI startup? → A: Both (Pre-warm WSL + cache PATH)
+
+## 2026-03-06 — Clipboard Image Paste for Terminal Panes
+
+[AskUserQuestion] Q: How should clicking a thumbnail in the strip work? → A: Insert path + preview popup
+[AskUserQuestion] Q: Should the strip be always visible or only appear after the first image is pasted? → A: Always visible after an image have been snipped with the snipping tool during that session. Add it to the top TabBar instead - the three latest thumbnails in small format. Clicking one thumbnail pastes path into the active pane. Also needs a button to open the image in a popup to view it.
+[AskUserQuestion] Q: Should the image strip be shared across all terminal panes or per-pane? → A: Shared across all panes (Recommended)
+[AskUserQuestion] Q: Which approach for the snip button? → A: Launch Windows Snipping Tool (Recommended)
+[AskUserQuestion] Q: Which undo approach for wrong image paste? → A: Both — toast with Undo button AND Ctrl+Z keybinding
+
+## 2026-03-06 — Restore Last Session feature
+
+1. Implement the following plan: # Plan: "Restore Last Session" Setting [detailed 6-step plan: PaneLeaf terminalType, layout helpers, restoreLastSession setting, store persistence, auto-spawn terminals, toggle UI]
+2. On restart just "Powershell" are loading, not the respective CLI's that were open before closing the app last time -> [screenshot: Skarmbild 2026-03-06 185833.png]
+3. /end
+
+## 2026-03-07 — Channel-based PTY + WSL pool
+
+1. Implement the following plan: [Replace tauri-plugin-pty with Channel-based PTY — custom pty.rs with pty_spawn/pty_write/pty_resize/pty_kill using portable-pty + Tauri v2 Channels]
+2. Now I cant run the app... Some errors have detailed explanations: E0282, E0599
+3. IT feels like the time to open a new claude code window is still 5 seconds
+4. [screenshot: console timing logs showing PTY transport is 31ms]
+5. Is every terminal window loading wsl separately?
+6. Do you want to know my exact wezterm workflow?
+7. [screenshot: WezTerm project picker, explaining 1-2s Claude Code load]
+8. [screenshot: WezTerm without WSL in title at first]
+9. Can we create the same functionality to reduce the 3s gap?
+[AskUserQuestion] Q: Pre-warm WSL pool approach? → A: WSL pool (Recommended)
+
+## 2026-03-07 — Add Gruvbox Dark & Solarized Dark Themes
+
+1. Implement the following plan: # Plan: Add Gruvbox Dark & Solarized Dark Themes [detailed plan with exact color palettes for both themes, terminal colors + surface colors, THEMES array update]
+2. /end
+
+## 2026-03-07 — Window State Persistence + Maximize Icon Toggle
+
+1. I want it so the app remembers the last window size and position, from when the app was closed
+2. Nice! Also, when maximizing the window. The tabbar button should change from maximize to minimize
+3. /end
+
+## 2026-03-07 — Fix Gemini CLI pool resolution (nvm PATH bug)
+
+1. [Continued from previous session — debugging why Gemini CLI is slow to open (~10s)]
+2. What was the fix?
+3. Okay now Gemini was 8s.. so better but not good
+4. "using pool for gemini" was used
+5. It's 6.8s in WezTerm, Claude is 1.5s. In our app Claude is 5s and Gemini 8s
+6. "using pool for claude" was used, but i see it's 1-2 sec now to open a new claude pane when the app is running, so thats nice!
+7. /end
+
+## 2026-03-07 — Per-CLI Settings & YOLO Mode
+
+1. I want to add options per CLI in the settings dropdown. To start with, add a font size selector per CLI. So the user can change the font size for Claude, Codex, Gemini separately. Make each of them to be expand and collapsable. Collapsed state has to be default
+2. Make the "Theme" section to be expand/collapsable too
+3. Move "Theme" to the bottom of the dropdown list
+4. Now, add a setting for Claude called "YOLO" which adds "--dangerously-skip-permissions" on startup to put it in "bypass permissions" mode. It should have a "YOLO" badge when opening a new Claude pane if enabled
+5. As I told you, the YOLO tag should be visible on the Claude row in the "Add new pane" dropdown
+6. Also add it to the "assign agents" popup when opening a new project.
+7. In the settings dropdown, move the red "YOLO" badge to be to the left of its row replacing the plain text "YOLO"
+8. When not enabled, just show "YOLO" in plain text instead
+9. The YOLO mode badge has to only be visible in the Claude panes that was initiated with the dangerously skip permissions tag. Remember that! I dont think thats the case right now
+10. /end
+
+## 2026-03-07 — Warp-Style File Path Links in Terminal
+
+1. Implement the following plan: # Plan: Warp-Style File Path Links in Terminal [detect file paths in xterm.js output, show hover tooltip "Open in EzyDev [Ctrl+Click]", open in FileViewerPane on Ctrl+Click, using registerLinkProvider API]
+2. /end
+
+## 2026-03-07 — Claude Code Session Resume on App Restart
+
+1. Implement the following plan: # Plan: Claude Code Session Resume on App Restart [7-file plan: parse session ID, persist on PaneLeaf, pass --resume on spawn, support Codex/Gemini extension]
+2. It didnt work. The panes arent opening at all now on startup
+3. Should it work now?
+4. No sessions resume on start up still. Just empty panes
+5. Can we fetch the ids in some other way?
+6. Thats because I closed two panes, ignore the codex one
+7. Just focus on the fact that the sessionId is always empty
+8. Sadly, still not working. How can we debug this?
+9. resumeId is always '=none'
+10. resumeId is still 'None'
+11. I get this: [screenshot showing disk lookup for /home/nicko/projects/code-X returning null]
+12. the folder does exist and the .jsonl files too... see image: [screenshot showing session files in -home-nicko-projects-code-X]
+13. Now the UUID is fetched before exiting the app, but the resume on startup still doesnt work
+14. still doesnt work to resume on restart.. but the resumId=<uuid> does work before closing
+15. [screenshot: console logs showing TerminalPane mount with resumeIds, restore logs, disk lookup]
+16. [screenshot: PTY pool command showing --resume flag, then normal spawn fallback]
+17. When I typed this in manually in wsl (from powershell), it worked........ "claude --dangerously-skip-permissions --resume eb99b603-5c4a-4188-9a84-bb1e66735641"
+18. But manually it works EVERY TIME
+19. Still not loading on startup....
+20. Now it finally loaded!!!! But there's one issue. Now the same "resume" was loaded in both panes. We have to remember both panes uuid and resume the correct session in the correct pane. Do you understand what I mean?
+21. Thus far it looks to be working!
+22. Great! Now /end - and document this thoroughly if we need to revisit the topic in the future
+
+## 2026-03-07 — Ghost Text & TAB Autocomplete Fixes (continued)
+
+1. (continued from previous session — ghost text and TAB autocomplete for clipboard images)
+2. now the ghost text stopped working
+3. Ghost text is still gone
+4. (screenshot of console showing [ImgTrack] and [Ghost] trigger="im" NOT found in buffer)
+5. its in the wrong position AGAIN, this was solved like 4 prompts ago but now the issue is back. HOW???
+6. There's nothing in the console
+7. I just restarted. ITS NOT WORKING!
+8. (screenshot of console showing all buffer lines empty, then full dump showing line[9] text="> im" contains=true)
+9. finally it works!!
+10. Great! Now /end - and document this thoroughly if we need to revisit the topic in the future
+
+## 2026-03-07 — Scroll-to-prompt feature
+
+1. Can we add a feature that lets the user to scroll up to the most recent user prompt in the terminal window? For example with double tapping the up arrow on the keyboard or PGUP button. Make this a toggle in the settings
+[AskUserQuestion] Q: When PgUp is used with this feature enabled, should it replace the default PgUp behavior? → A: Replace PgUp (Recommended)
+[AskUserQuestion] Q: When you press the shortcut again and you're already viewing the most recent prompt, should it navigate to the previous prompt? → A: Navigate backwards (Recommended)
+
+## 2026-03-07 — Tab bar redesign (hover icons + pin stripes)
+
+1. I want to rework the tab design. Only show the X-button as a small X-button in the top right corner of the tab on hover. Add the "pin" button below it, they have to be in the same column on the far right of the tab. Also, remove the "code" icon on the left of the tab
+2. To show that the tab has been pinned, make the tab background to be diagonal stripes instead. dont show the pin icon as green all the time, only on hover! Also, the X-button should also be visible on hover only.
+3. The stripes has to be much thicker. Also, move the icons more right of the tab bar and there has to be more gap inbetween them
+4. They have still to be closer to the right border and more spacing in between the icons... see image: (screenshot)
+5. Better now. /end

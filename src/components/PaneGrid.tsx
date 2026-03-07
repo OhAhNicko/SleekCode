@@ -41,7 +41,7 @@ export default function PaneGrid({
       if (!detail?.filePath) return;
       // Route to the file viewer (creates one or adds to existing)
       window.dispatchEvent(
-        new CustomEvent("ezydev:open-fileviewer", { detail: { filePath: detail.filePath } })
+        new CustomEvent("ezydev:open-fileviewer", { detail: { filePath: detail.filePath, lineNumber: detail.lineNumber } })
       );
     };
     window.addEventListener("ezydev:open-file", handler);

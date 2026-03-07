@@ -10,10 +10,11 @@
     "core:window:allow-unmaximize",
     "core:window:allow-close",
     "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
     "core:window:allow-is-maximized",
     "opener:default",
     "dialog:default",
     "os:default",
-    "pty:default"
+    "window-state:default"
   ]
 }

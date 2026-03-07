@@ -48,14 +48,21 @@ export const useAppStore = create<AppStore>()(
         expandedDirs: state.expandedDirs,
         recentProjects: state.recentProjects,
         alwaysShowTemplatePicker: state.alwaysShowTemplatePicker,
+        restoreLastSession: state.restoreLastSession,
+        autoInsertClipboardImage: state.autoInsertClipboardImage,
+        cliFontSizes: state.cliFontSizes,
+        claudeYolo: state.claudeYolo,
+        scrollToPromptEnabled: state.scrollToPromptEnabled,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;
         if (!state) return current;
 
-        // Filter tabs: keep system tabs + pinned user tabs, drop the rest
+        // When restoreLastSession is on, keep ALL tabs; otherwise only system + pinned
         const filteredTabs = state.tabs
-          ? state.tabs.filter((tab) => isSystemTab(tab) || tab.isPinned)
+          ? state.restoreLastSession
+            ? state.tabs
+            : state.tabs.filter((tab) => isSystemTab(tab) || tab.isPinned)
           : current.tabs;
 
         // Fix activeTabId if it pointed to a dropped tab

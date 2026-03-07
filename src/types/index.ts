@@ -46,6 +46,8 @@ export interface PaneLeaf {
   type: "terminal";
   id: string;
   terminalId: string;
+  terminalType?: TerminalType;
+  sessionResumeId?: string;
 }
 
 export interface PaneBrowser {

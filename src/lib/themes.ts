@@ -368,6 +368,104 @@ const monokaiTheme: EzyDevTheme = {
   },
 };
 
+// ─── Gruvbox Dark ───────────────────────────────────────────────────
+
+const gruvboxDarkTheme: EzyDevTheme = {
+  id: "gruvbox-dark",
+  name: "Gruvbox Dark",
+  terminal: {
+    background: "#282828",
+    foreground: "#ebdbb2",
+    cursor: "#ebdbb2",
+    cursorAccent: "#282828",
+    selectionBackground: "#504945",
+    selectionForeground: "#ebdbb2",
+    selectionInactiveBackground: "#50494588",
+    black: "#282828",
+    red: "#cc241d",
+    green: "#98971a",
+    yellow: "#d79921",
+    blue: "#458588",
+    magenta: "#b16286",
+    cyan: "#689d6a",
+    white: "#a89984",
+    brightBlack: "#928374",
+    brightRed: "#fb4934",
+    brightGreen: "#b8bb26",
+    brightYellow: "#fabd2f",
+    brightBlue: "#83a598",
+    brightMagenta: "#d3869b",
+    brightCyan: "#8ec07c",
+    brightWhite: "#ebdbb2",
+  },
+  surface: {
+    bg: "#282828",
+    surface: "#1d2021",
+    surfaceRaised: "#3c3836",
+    border: "#504945",
+    borderSubtle: "#3c3836",
+    borderLight: "#665c54",
+    text: "#ebdbb2",
+    textSecondary: "#d5c4a1",
+    textMuted: "#928374",
+    accent: "#b8bb26",
+    accentHover: "#98971a",
+    accentDim: "#79740e",
+    accentGlow: "rgba(184, 187, 38, 0.15)",
+    red: "#fb4934",
+    cyan: "#8ec07c",
+  },
+};
+
+// ─── Solarized Dark ────────────────────────────────────────────────
+
+const solarizedDarkTheme: EzyDevTheme = {
+  id: "solarized-dark",
+  name: "Solarized Dark",
+  terminal: {
+    background: "#002b36",
+    foreground: "#839496",
+    cursor: "#839496",
+    cursorAccent: "#002b36",
+    selectionBackground: "#073642",
+    selectionForeground: "#93a1a1",
+    selectionInactiveBackground: "#07364288",
+    black: "#073642",
+    red: "#dc322f",
+    green: "#859900",
+    yellow: "#b58900",
+    blue: "#268bd2",
+    magenta: "#d33682",
+    cyan: "#2aa198",
+    white: "#eee8d5",
+    brightBlack: "#586e75",
+    brightRed: "#cb4b16",
+    brightGreen: "#586e75",
+    brightYellow: "#657b83",
+    brightBlue: "#839496",
+    brightMagenta: "#6c71c4",
+    brightCyan: "#93a1a1",
+    brightWhite: "#fdf6e3",
+  },
+  surface: {
+    bg: "#002b36",
+    surface: "#073642",
+    surfaceRaised: "#0a4050",
+    border: "#1a5468",
+    borderSubtle: "#0a4050",
+    borderLight: "#586e75",
+    text: "#93a1a1",
+    textSecondary: "#839496",
+    textMuted: "#586e75",
+    accent: "#2aa198",
+    accentHover: "#35bdb3",
+    accentDim: "#1a7a73",
+    accentGlow: "rgba(42, 161, 152, 0.15)",
+    red: "#dc322f",
+    cyan: "#268bd2",
+  },
+};
+
 // ─── Exports ─────────────────────────────────────────────────────────
 
 export const THEMES: EzyDevTheme[] = [
@@ -378,6 +476,8 @@ export const THEMES: EzyDevTheme[] = [
   oceanTheme,
   auroraTheme,
   monokaiTheme,
+  gruvboxDarkTheme,
+  solarizedDarkTheme,
 ];
 
 export const THEMES_MAP: Record<string, EzyDevTheme> = Object.fromEntries(

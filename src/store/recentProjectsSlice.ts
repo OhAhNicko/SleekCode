@@ -23,13 +23,27 @@ function normalizePath(p: string): string {
   return p.replace(/\\/g, "/");
 }
 
+export type CliFontSizes = Partial<Record<TerminalType, number>>;
+
+export const DEFAULT_CLI_FONT_SIZE = 15;
+
 export interface RecentProjectsSlice {
   recentProjects: RecentProject[];
   alwaysShowTemplatePicker: boolean;
+  restoreLastSession: boolean;
+  autoInsertClipboardImage: boolean;
+  cliFontSizes: CliFontSizes;
+  claudeYolo: boolean;
+  scrollToPromptEnabled: boolean;
   addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate }) => void;
   removeRecentProject: (path: string) => void;
   clearRecentProjects: () => void;
   setAlwaysShowTemplatePicker: (value: boolean) => void;
+  setRestoreLastSession: (value: boolean) => void;
+  setAutoInsertClipboardImage: (value: boolean) => void;
+  setCliFontSize: (type: TerminalType, size: number) => void;
+  setClaudeYolo: (value: boolean) => void;
+  setScrollToPromptEnabled: (value: boolean) => void;
 }
 
 export const createRecentProjectsSlice: StateCreator<
@@ -40,6 +54,11 @@ export const createRecentProjectsSlice: StateCreator<
 > = (set) => ({
   recentProjects: [],
   alwaysShowTemplatePicker: false,
+  restoreLastSession: false,
+  autoInsertClipboardImage: false,
+  cliFontSizes: {},
+  claudeYolo: false,
+  scrollToPromptEnabled: true,
 
   addRecentProject: ({ path, name, template }) => {
     const normalized = normalizePath(path);
@@ -92,5 +111,27 @@ export const createRecentProjectsSlice: StateCreator<
 
   setAlwaysShowTemplatePicker: (value) => {
     set({ alwaysShowTemplatePicker: value });
+  },
+
+  setRestoreLastSession: (value) => {
+    set({ restoreLastSession: value });
+  },
+
+  setAutoInsertClipboardImage: (value) => {
+    set({ autoInsertClipboardImage: value });
+  },
+
+  setCliFontSize: (type, size) => {
+    set((state) => ({
+      cliFontSizes: { ...state.cliFontSizes, [type]: size },
+    }));
+  },
+
+  setClaudeYolo: (value) => {
+    set({ claudeYolo: value });
+  },
+
+  setScrollToPromptEnabled: (value) => {
+    set({ scrollToPromptEnabled: value });
   },
 });

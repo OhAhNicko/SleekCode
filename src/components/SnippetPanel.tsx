@@ -248,7 +248,7 @@ export default function SnippetPanel({ onClose }: SnippetPanelProps) {
                     {snippet.description}
                   </div>
                 )}
-                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, fontFamily: "'Geist Mono', monospace" }}>
+                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, fontFamily: "'Hack', 'Geist Mono', monospace" }}>
                   {snippet.commands.slice(0, 2).join(" && ")}
                   {snippet.commands.length > 2 && " ..."}
                 </div>

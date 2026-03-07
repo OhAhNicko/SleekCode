@@ -14,7 +14,7 @@ export function buildEditorTheme(theme: EzyDevTheme): Extension {
       "&": {
         backgroundColor: s.bg,
         color: s.text,
-        fontFamily: "'Geist Mono', 'Cascadia Code', 'Fira Code', monospace",
+        fontFamily: "'Hack', 'Geist Mono', 'Cascadia Code', 'Fira Code', monospace",
         fontSize: "13px",
       },
       ".cm-content": {

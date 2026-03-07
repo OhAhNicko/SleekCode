@@ -3,21 +3,51 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { getTheme } from "../lib/themes";
 import { usePty } from "../hooks/usePty";
 import { useAppStore } from "../store";
 import { registerPtyWrite, unregisterPtyWrite } from "../store/terminalSlice";
+import { useClipboardImageStore } from "../store/clipboardImageStore";
 import type { TerminalType } from "../types";
+import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { CommandBlockParser, type CommandBlock } from "../lib/command-block-parser";
 import { shouldInjectShellIntegration } from "../lib/shell-integration";
+import { supportsSessionResume } from "../lib/session-resume";
+import { createFilePathLinkProvider } from "../lib/file-link-provider";
+import { invoke } from "@tauri-apps/api/core";
+import { toWslPath } from "../lib/terminal-config";
+import { recordTerminalActivity, recordTerminalWrite, clearTerminalActivity } from "../lib/terminal-activity";
 import TerminalHeader from "./TerminalHeader";
 import CommandBlockOverlay from "./CommandBlockOverlay";
+import ClipboardImagePreview from "./ClipboardImagePreview";
+import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
+import hackRegularUrl from "../fonts/hack-regular.woff2?url";
+import hackBoldUrl from "../fonts/hack-bold.woff2?url";
+
+// Track session IDs already claimed by panes in this app instance.
+// Prevents multiple panes from claiming the same session file during disk lookup.
+const claimedSessionIds = new Set<string>();
+
+// Load Hack font via JS FontFace API — bypasses CSS @font-face which
+// can fail silently in Tauri's WebView due to URL resolution issues.
+let hackFontReady: Promise<void> | null = null;
+function ensureHackFont(): Promise<void> {
+  if (hackFontReady) return hackFontReady;
+  const regular = new FontFace("Hack", `url(${hackRegularUrl})`, { weight: "400", style: "normal" });
+  const bold = new FontFace("Hack", `url(${hackBoldUrl})`, { weight: "700", style: "normal" });
+  document.fonts.add(regular);
+  document.fonts.add(bold);
+  hackFontReady = Promise.all([regular.load(), bold.load()]).then(() => {});
+  return hackFontReady;
+}
 
 interface TerminalPaneProps {
   terminalId: string;
   terminalType: TerminalType;
   workingDir: string;
   isActive: boolean;
+  paneCount?: number;
   onClose: () => void;
   onSplit: (direction: "horizontal" | "vertical", type: TerminalType) => void;
   onChangeType: (type: TerminalType) => void;
@@ -30,6 +60,8 @@ interface TerminalPaneProps {
   onExplainError?: (block: CommandBlock) => void;
   onOpenSnippets?: () => void;
   serverId?: string;
+  sessionResumeId?: string;
+  onSessionResumeId?: (id: string) => void;
 }
 
 export default function TerminalPane({
@@ -49,31 +81,87 @@ export default function TerminalPane({
   onExplainError,
   onOpenSnippets,
   serverId,
+  sessionResumeId,
+  onSessionResumeId,
+  paneCount = 1,
 }: TerminalPaneProps) {
+  // Seed claimed set with persisted IDs so new panes don't steal them
+  if (sessionResumeId) claimedSessionIds.add(sessionResumeId);
   const serverName = useAppStore((s) => {
     if (!serverId) return undefined;
     return s.servers.find((srv) => srv.id === serverId)?.name;
   });
   const themeId = useAppStore((s) => s.themeId);
   const theme = getTheme(themeId);
+  const cliFontSize = useAppStore((s) => s.cliFontSizes[terminalType] ?? DEFAULT_CLI_FONT_SIZE);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const [launchedWithYolo] = useState(() => terminalType === "claude" && useAppStore.getState().claudeYolo);
   const [exited, setExited] = useState(false);
   const [commandBlocks, setCommandBlocks] = useState<CommandBlock[]>([]);
   const blockParserRef = useRef<CommandBlockParser | null>(null);
   const recordedBlocksRef = useRef<Set<string>>(new Set());
   const initialDims = useRef({ cols: 80, rows: 24 });
+  const cleanupRef = useRef<(() => void) | null>(null);
+  const paneCountRef = useRef(paneCount);
+  paneCountRef.current = paneCount;
+  const cliFontSizeRef = useRef(cliFontSize);
+  cliFontSizeRef.current = cliFontSize;
   const useShellIntegration = shouldInjectShellIntegration(terminalType);
+
+  // Session resume: look up session ID from Claude's local storage on disk
+  const onSessionResumeIdRef = useRef(onSessionResumeId);
+  onSessionResumeIdRef.current = onSessionResumeId;
+  const terminalTypeRef = useRef(terminalType);
+  terminalTypeRef.current = terminalType;
+  const workingDirRef = useRef(workingDir);
+  workingDirRef.current = workingDir;
+  const sessionResumeIdPropRef = useRef(sessionResumeId);
+  sessionResumeIdPropRef.current = sessionResumeId;
+  const sessionLookupDone = useRef(false);
 
   const handlePtyData = useCallback((data: Uint8Array) => {
     terminalRef.current?.write(new Uint8Array(data));
+    recordTerminalActivity(terminalId, terminalTypeRef.current, data.length);
+
+    // On first data from a resumable CLI, look up session ID from disk after a short delay.
+    // Skip if this pane already has a session ID (restored from persist).
+    if (!sessionLookupDone.current && supportsSessionResume(terminalTypeRef.current) && !sessionResumeIdPropRef.current) {
+      sessionLookupDone.current = true;
+
+      const lookupSession = async (): Promise<boolean> => {
+        try {
+          const wslCwd = toWslPath(workingDirRef.current);
+          if (!wslCwd) return false;
+          // Exclude IDs already claimed by other panes (prevents duplicates)
+          const excludeIds = [...claimedSessionIds];
+          const id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
+          if (id) {
+            claimedSessionIds.add(id);
+            onSessionResumeIdRef.current?.(id);
+            return true;
+          }
+        } catch (e) {
+          console.error(`[SessionResume] disk lookup failed:`, e);
+        }
+        return false;
+      };
+
+      // First attempt after 5s, retry at 20s if session file wasn't created yet
+      setTimeout(async () => {
+        if (!(await lookupSession())) {
+          setTimeout(lookupSession, 15000);
+        }
+      }, 5000);
+    }
   }, []);
 
   const handlePtyExit = useCallback((_exitCode: number) => {
     setExited(true);
+    clearTerminalActivity(terminalId);
     terminalRef.current?.write("\r\n\x1b[38;2;139;148;158m[Process exited]\x1b[0m\r\n");
-  }, []);
+  }, [terminalId]);
 
   const { write, resize, kill } = usePty({
     terminalType,
@@ -83,41 +171,88 @@ export default function TerminalPane({
     onData: handlePtyData,
     onExit: handlePtyExit,
     serverId,
+    sessionResumeId,
     injectShellIntegration: useShellIntegration,
   });
 
-  // Initialize xterm.js
+  // Initialize xterm.js (waits for Hack font to load — canvas renderer
+  // only uses fonts available at init time, unlike DOM text which auto-swaps)
   useEffect(() => {
     if (!containerRef.current) return;
+    let cancelled = false;
+
+    // Ensure Hack font is loaded before creating the terminal.
+    // Canvas/WebGL renderers snapshot the font at init — late-loading fonts are ignored.
+    const container = containerRef.current;
+    ensureHackFont()
+      .catch(() => {}) // font load failed — proceed with fallback fonts
+      .then(() => {
+        if (cancelled || !container.isConnected) return;
+        initTerminal(container);
+      });
+
+    function initTerminal(el: HTMLElement) {
+
+    const manyPanes = paneCountRef.current > 6;
+    const baseFontSize = cliFontSizeRef.current;
 
     const term = new Terminal({
       theme: theme.terminal,
       cursorBlink: true,
       cursorStyle: "bar",
       cursorWidth: 2,
-      fontFamily: "'Geist Mono', 'Cascadia Code', 'Fira Code', monospace",
-      fontSize: 13,
-      lineHeight: 1.35,
-      letterSpacing: 0,
+      fontFamily: "Hack, monospace",
+      fontSize: baseFontSize,
+      fontWeight: "normal",
+      fontWeightBold: "bold",
+      lineHeight: 1.2,
+      letterSpacing: 1,
       allowTransparency: true,
-      scrollback: 10000,
+      allowProposedApi: true,
+      scrollback: manyPanes ? 2000 : 10000,
       convertEol: true,
+      minimumContrastRatio: 1,
     });
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
 
-    term.open(containerRef.current);
+    // File path link provider — Ctrl+Click to open in FileViewerPane
+    const fileLinkDisposable = term.registerLinkProvider(
+      createFilePathLinkProvider(term, workingDir)
+    );
 
-    // Try WebGL, fall back to canvas
+    let disposed = false;
+    term.open(el);
+
+    // Unicode 11 for correct emoji widths — must load after open()
     try {
-      term.loadAddon(new WebglAddon());
+      const unicode11 = new Unicode11Addon();
+      term.loadAddon(unicode11);
+      term.unicode.activeVersion = "11";
     } catch {
-      // Canvas renderer is the default fallback
+      // Fall back to default unicode handling
     }
 
     fitAddon.fit();
+
+    // Defer WebGL addon — GPU context init is expensive and blocks first paint.
+    // Skip entirely when many panes are open (Chrome caps at ~16 WebGL contexts,
+    // and context thrashing kills performance). Canvas renderer is fine for small panes.
+    const webglTimer = !manyPanes ? setTimeout(() => {
+      try {
+        if (!disposed && el.offsetHeight) {
+          const webgl = new WebglAddon();
+          term.loadAddon(webgl);
+          // Force WebGL to rebuild glyph atlas with the correct font
+          term.options.fontFamily = "Hack, monospace";
+          term.options.fontSize = baseFontSize;
+        }
+      } catch {
+        // Canvas renderer is the default fallback
+      }
+    }, 200) : undefined;
     initialDims.current = { cols: term.cols, rows: term.rows };
 
     terminalRef.current = term;
@@ -130,36 +265,259 @@ export default function TerminalPane({
       blockParserRef.current = parser;
     }
 
+    // Scroll-to-prompt — double-tap Up Arrow or PgUp jumps to the last prompt.
+    // Repeated presses navigate backwards through earlier prompts.
+    let lastUpArrowTime = 0;
+
+    function scrollToPrompt() {
+      const buf = term.buffer.active;
+      const viewportTop = buf.viewportY;
+
+      // Try command blocks first (shell integration provides precise prompt lines)
+      const parser = blockParserRef.current;
+      if (parser) {
+        const blocks = parser.getBlocks();
+        const completed = blocks.filter(b => b.exitCode !== null);
+        if (completed.length > 0) {
+          // Find the last prompt line above the current viewport top
+          for (let i = completed.length - 1; i >= 0; i--) {
+            if (completed[i].promptLine < viewportTop) {
+              term.scrollToLine(completed[i].promptLine);
+              return;
+            }
+          }
+          // All prompts are at or below viewport — scroll to the last one
+          term.scrollToLine(completed[completed.length - 1].promptLine);
+          return;
+        }
+      }
+
+      // Fallback: scan buffer backwards for prompt-like lines ($ , # , ❯ )
+      const startLine = Math.max(0, viewportTop - 1);
+      for (let i = startLine; i >= 0; i--) {
+        const line = buf.getLine(i);
+        if (!line) continue;
+        const text = line.translateToString().trimEnd();
+        if (/[$#❯]\s/.test(text)) {
+          term.scrollToLine(i);
+          return;
+        }
+      }
+    }
+
+    // IMG TAB autocomplete — type "img" then press TAB to insert [Img 1],
+    // press TAB again to cycle through [Img 2], [Img 3].
+    const imgRecentChars = { current: "" };
+    const imgCycle = { current: null as { num: number } | null };
+
+    // Inline ghost text — written directly to xterm via ANSI escape sequences.
+    // We search the buffer for the trigger text ("im"/"img") because TUI apps
+    // like Claude CLI hide the real cursor and draw their own, so cursorY is
+    // unreliable for positioning.
+    let hintTimer: ReturnType<typeof setTimeout> | undefined;
+    let ghostInfo: { row: number; col: number; len: number } | null = null;
+
+    function showInlineHint(text: string, trigger: string) {
+      clearInlineHint();
+      hintTimer = setTimeout(() => {
+        if (disposed) return;
+        const buf = term.buffer.active;
+        // Search ALL buffer lines — TUI apps like Claude CLI render near the
+        // top of the screen, so searching only the last N lines misses them.
+        for (let i = buf.length - 1; i >= 0; i--) {
+          const line = buf.getLine(i);
+          if (!line) continue;
+          const lineText = line.translateToString().trimEnd();
+          if (lineText.toLowerCase().endsWith(trigger)) {
+            const row = i - buf.baseY + 1;
+            const col = lineText.length + 1;
+            term.write(`\x1b7\x1b[${row};${col}H\x1b[90m${text}\x1b[0m\x1b8`);
+            ghostInfo = { row, col, len: text.length };
+            return;
+          }
+        }
+      }, 300);
+    }
+
+    function clearInlineHint() {
+      clearTimeout(hintTimer);
+      if (ghostInfo) {
+        const { row, col, len } = ghostInfo;
+        // Save cursor, move to ghost position, overwrite with spaces, restore
+        term.write(`\x1b7\x1b[${row};${col}H${" ".repeat(len)}\x1b8`);
+        ghostInfo = null;
+      }
+    }
+
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (e.type !== "keydown") return true;
+
+      // Scroll-to-prompt: PgUp or double-tap Up Arrow; PgDn scrolls to bottom
+      if (useAppStore.getState().scrollToPromptEnabled && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        if (e.key === "PageUp") {
+          scrollToPrompt();
+          return false;
+        }
+        if (e.key === "PageDown") {
+          term.scrollToBottom();
+          return false;
+        }
+        if (e.key === "ArrowUp") {
+          const now = Date.now();
+          if (now - lastUpArrowTime < 350) {
+            lastUpArrowTime = 0;
+            scrollToPrompt();
+            return false;
+          }
+          lastUpArrowTime = now;
+        }
+      }
+
+      // TAB without modifiers — check for img autocomplete
+      if (e.key === "Tab" && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        const clipStore = useClipboardImageStore.getState();
+        const imageCount = Math.min(clipStore.images.length, 3);
+
+        if (imgCycle.current && imageCount > 0) {
+          // Cycling — erase current label, insert next
+          e.preventDefault();
+          const prevLabel = `[Img ${imgCycle.current.num}]`;
+          const nextNum = (imgCycle.current.num % imageCount) + 1;
+          const nextLabel = `[Img ${nextNum}]`;
+          imgCycle.current = { num: nextNum };
+          clipStore.setLastInsertion({ text: nextLabel, terminalId, timestamp: Date.now() });
+          clearInlineHint();
+          // Defer write — synchronous invoke during xterm key processing can be swallowed
+          setTimeout(() => {
+            write("\x7f".repeat(prevLabel.length));
+            setTimeout(() => write(nextLabel), 5);
+          }, 0);
+          return false;
+        }
+
+        if (imgRecentChars.current.toLowerCase().endsWith("img") && imageCount > 0) {
+          // First TAB — erase "img", insert [Img 1]
+          e.preventDefault();
+          const label = "[Img 1]";
+          imgRecentChars.current = "";
+          imgCycle.current = { num: 1 };
+          clipStore.setLastInsertion({ text: label, terminalId, timestamp: Date.now() });
+          clearInlineHint();
+          // Defer write — synchronous invoke during xterm key processing can be swallowed
+          setTimeout(() => {
+            write("\x7f".repeat(3));
+            setTimeout(() => write(label), 5);
+          }, 0);
+          return false;
+        }
+
+        if (imgRecentChars.current.toLowerCase().endsWith("im") && imageCount > 0) {
+          // First TAB from "im" — erase "im", insert [Img 1]
+          e.preventDefault();
+          const label = "[Img 1]";
+          imgRecentChars.current = "";
+          imgCycle.current = { num: 1 };
+          clipStore.setLastInsertion({ text: label, terminalId, timestamp: Date.now() });
+          clearInlineHint();
+          setTimeout(() => {
+            write("\x7f".repeat(2));
+            setTimeout(() => write(label), 5);
+          }, 0);
+          return false;
+        }
+
+        clearInlineHint();
+        return true; // Let shell handle normal TAB completion
+      }
+
+      // Track typed characters for autocomplete detection
+      if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+        if (e.key.length === 1) {
+          imgRecentChars.current = (imgRecentChars.current + e.key).slice(-3);
+          imgCycle.current = null;
+
+          // Show inline ghost text for partial/full "img" match
+          const clipStore = useClipboardImageStore.getState();
+          const imageCount = Math.min(clipStore.images.length, 3);
+          const buf = imgRecentChars.current.toLowerCase();
+          if (buf === "img" && imageCount > 0) {
+            showInlineHint(" 1]", "img");
+          } else if (buf.endsWith("im") && imageCount > 0) {
+            showInlineHint("g 1]", "im");
+          } else {
+            clearInlineHint();
+          }
+        } else if (e.key === "Backspace") {
+          imgRecentChars.current = imgRecentChars.current.slice(0, -1);
+          imgCycle.current = null;
+          clearInlineHint();
+        } else if (!["Shift", "CapsLock"].includes(e.key)) {
+          imgRecentChars.current = "";
+          imgCycle.current = null;
+          clearInlineHint();
+        }
+      }
+
+      return true; // Let xterm handle all other keys
+    });
+
     // Wire terminal input to PTY
     const dataDisposable = term.onData((data) => {
-      if (!exited) write(data);
+      if (!exited) {
+        recordTerminalWrite(terminalId);
+        write(data);
+      }
     });
 
     const resizeDisposable = term.onResize((e) => {
       resize(e.cols, e.rows);
     });
 
-    // ResizeObserver for auto-fit
-    const observer = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
+    // Debounced ResizeObserver for auto-fit + dynamic font scaling.
+    // Without debounce, N panes × 60fps = N×60 fit() calls/sec during window resize,
+    // each doing synchronous DOM measurement + PTY resize IPC → blocks main thread.
+    // 100ms debounce: fit() fires once after resize stops. Zero work during drag.
+    let fitTimer: ReturnType<typeof setTimeout> | undefined;
+    let currentFontSize = baseFontSize;
+    const observer = new ResizeObserver((entries) => {
+      clearTimeout(fitTimer);
+      fitTimer = setTimeout(() => {
         try {
+          const w = entries[0]?.contentRect.width ?? el.clientWidth;
+          const targetSize = w < 300 ? Math.max(baseFontSize - 3, 10) : w < 450 ? Math.max(baseFontSize - 2, 11) : w < 600 ? Math.max(baseFontSize - 1, 12) : baseFontSize;
+          if (targetSize !== currentFontSize) {
+            currentFontSize = targetSize;
+            term.options.fontSize = targetSize;
+          }
           fitAddon.fit();
         } catch {
           // Container may be detached
         }
-      });
+      }, 100);
     });
-    observer.observe(containerRef.current);
+    observer.observe(el);
 
-    return () => {
+    cleanupRef.current = () => {
+      disposed = true;
+      clearInlineHint();
+      clearTimeout(webglTimer);
+      clearTimeout(fitTimer);
       observer.disconnect();
+      fileLinkDisposable.dispose();
       dataDisposable.dispose();
       resizeDisposable.dispose();
       blockParserRef.current?.dispose();
       blockParserRef.current = null;
+      clearTerminalActivity(terminalId);
       term.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+    };
+    } // end initTerminal
+
+    return () => {
+      cancelled = true;
+      cleanupRef.current?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terminalId]);
@@ -206,6 +564,7 @@ export default function TerminalPane({
       }
       setExited(false);
       setCommandBlocks([]);
+      sessionLookupDone.current = false;
     }
   }, [terminalType]);
 
@@ -223,9 +582,33 @@ export default function TerminalPane({
     }
   }, [theme]);
 
+  // Live font-size update when user changes CLI font size in settings
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.options.fontSize = cliFontSize;
+      fitAddonRef.current?.fit();
+    }
+  }, [cliFontSize]);
+
   const handleToggleCollapse = useCallback((blockId: string) => {
     blockParserRef.current?.toggleCollapse(blockId);
   }, []);
+
+  // Clipboard image paste detection
+  const { pastedImage, dismissPreview } = useClipboardImagePaste({
+    containerRef,
+    terminalType,
+    terminalId,
+    write,
+    exited,
+  });
+
+  // Auto-dismiss image preview after 8 seconds
+  useEffect(() => {
+    if (!pastedImage) return;
+    const timer = setTimeout(dismissPreview, 8000);
+    return () => clearTimeout(timer);
+  }, [pastedImage, dismissPreview]);
 
   const handleClose = useCallback(() => {
     kill();
@@ -253,6 +636,7 @@ export default function TerminalPane({
         onOpenTasks={onOpenTasks}
         onOpenSnippets={onOpenSnippets}
         serverName={serverName}
+        isYolo={launchedWithYolo}
       />
       <div className="flex-1 min-h-0 relative" style={{ backgroundColor: "var(--ezy-bg)" }}>
         <div
@@ -265,6 +649,13 @@ export default function TerminalPane({
             blocks={commandBlocks}
             onToggleCollapse={handleToggleCollapse}
             onExplainError={onExplainError}
+          />
+        )}
+        {pastedImage && (
+          <ClipboardImagePreview
+            thumbnailUrl={pastedImage.thumbnailUrl}
+            filePath={pastedImage.filePath}
+            onDismiss={dismissPreview}
           />
         )}
       </div>

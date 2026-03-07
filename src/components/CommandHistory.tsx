@@ -189,7 +189,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
                       style={{
                         fontSize: 13,
                         color: "var(--ezy-text)",
-                        fontFamily: "'Geist Mono', 'Cascadia Code', monospace",
+                        fontFamily: "'Hack', 'Geist Mono', 'Cascadia Code', monospace",
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",

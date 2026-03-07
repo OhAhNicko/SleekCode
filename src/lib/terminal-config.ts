@@ -1,9 +1,9 @@
 import type { TerminalConfig, TerminalType } from "../types";
+import { getCachedWslPath, getCachedCliPath, getCachedDistro } from "./wsl-cache";
+import { getResumeFlag, supportsSessionResume } from "./session-resume";
 
-// Tauri PTY uses Windows ConPTY. AI CLIs are installed in WSL,
-// so they must be launched via wsl.exe with a login shell (to get PATH).
-// `bash -lic "exec <cmd>"` sources .bashrc/.profile then replaces bash with the command.
-export const TERMINAL_CONFIGS: Record<TerminalType, TerminalConfig> = {
+// Base configs for each terminal type.
+const TERMINAL_CONFIGS_BASE: Record<TerminalType, TerminalConfig> = {
   claude: {
     command: "wsl.exe",
     args: ["--", "bash", "-lic", "exec claude"],
@@ -29,6 +29,65 @@ export const TERMINAL_CONFIGS: Record<TerminalType, TerminalConfig> = {
     description: "Windows PowerShell",
   },
 };
+
+/**
+ * Get terminal config for a given type.
+ * Uses cached PATH + absolute CLI path when available (fast path),
+ * falls back to bash -lic (slow path) otherwise.
+ */
+export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string): TerminalConfig {
+  const base = TERMINAL_CONFIGS_BASE[type];
+  if (type === "shell") return base;
+
+  const resumeArgs = sessionResumeId && supportsSessionResume(type)
+    ? getResumeFlag(type, sessionResumeId).split(" ")
+    : [];
+  const extra = extraArgs ?? [];
+
+  const cachedPath = getCachedWslPath();
+  const cliPath = getCachedCliPath(type);
+  const distro = getCachedDistro();
+
+  // When resuming a session, always use bash -lic (slow path).
+  // wsl.exe -e /usr/bin/env passes --resume as separate args which can get
+  // mangled by wsl.exe's argument parser. bash -lic wraps everything in a
+  // single shell command string, matching manual `claude --resume <uuid>`.
+  if (cachedPath && cliPath && resumeArgs.length === 0) {
+    // Fast path: skip bash entirely, use dash (sh) for env + exec.
+    const distroArgs = distro ? ["-d", distro] : [];
+    return {
+      ...base,
+      args: [
+        ...distroArgs, "-e", "/usr/bin/env",
+        `PATH=${cachedPath}`,
+        "TERM=xterm-256color",
+        "COLORTERM=truecolor",
+        cliPath,
+        ...extra,
+      ],
+    };
+  }
+
+  // Resume / slow path: bash -lic — bake cd + exec into a single shell string.
+  // This matches the manual `cd /path && claude --resume <uuid>` that works.
+  // When wslCwd is provided, cd is inside bash (no wsl.exe --cd flag needed).
+  const suffixParts = [...extra, ...resumeArgs];
+  if (suffixParts.length > 0 || (cachedPath && cliPath)) {
+    const execCmd = cliPath ?? base.args[base.args.length - 1];
+    const fullCmd = [execCmd, ...suffixParts].join(" ");
+    const distroArgs = distro ? ["-d", distro] : [];
+    const cdPart = wslCwd ? `cd '${wslCwd}' && ` : "";
+    return {
+      ...base,
+      args: [...distroArgs, "--", "bash", "-lic", `${cdPart}exec ${fullCmd}`],
+    };
+  }
+
+  return base;
+}
+
+// For label/description lookups (non-spawn uses)
+export const TERMINAL_CONFIGS = TERMINAL_CONFIGS_BASE;
 
 /**
  * Convert a Windows path to a WSL Linux path.
@@ -58,20 +117,55 @@ export function toWslPath(winPath: string): string {
     .replace(/\\/g, "/");
 }
 
+/**
+ * Build the shell command to send to a pre-warmed WSL bash session.
+ * Returns null if we don't have the absolute CLI path cached
+ * (pooled bash has --norc --noprofile, so it can't resolve CLI names).
+ */
+export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessionResumeId?: string, extraArgs?: string[]): string | null {
+  if (type === "shell") return null;
+
+  const cachedPath = getCachedWslPath();
+  const cliPath = getCachedCliPath(type);
+
+  // Require both — pooled bash has no profile, can't find CLIs by name
+  if (!cachedPath || !cliPath) return null;
+
+  const extraSuffix = extraArgs?.length ? ` ${extraArgs.join(" ")}` : "";
+  const resumeSuffix = sessionResumeId && supportsSessionResume(type)
+    ? ` ${getResumeFlag(type, sessionResumeId)}`
+    : "";
+
+  const parts: string[] = [];
+  parts.push(`export PATH='${cachedPath}'`);
+  parts.push("export TERM=xterm-256color COLORTERM=truecolor");
+
+  if (wslCwd) {
+    parts.push(`cd '${wslCwd}'`);
+  }
+
+  parts.push(`exec ${cliPath}${extraSuffix}${resumeSuffix}`);
+
+  return parts.join("; ");
+}
+
 /** Returns true if the terminal type runs inside WSL */
 export function isWslTerminal(type: TerminalType): boolean {
   return type !== "shell";
 }
 
 /** Map terminal type to the remote command to exec over SSH */
-function getRemoteExecCommand(type: TerminalType): string {
+function getRemoteExecCommand(type: TerminalType, sessionResumeId?: string): string {
+  const resumeSuffix = sessionResumeId && supportsSessionResume(type)
+    ? ` ${getResumeFlag(type, sessionResumeId)}`
+    : "";
   switch (type) {
     case "claude":
-      return "exec claude";
+      return `exec claude${resumeSuffix}`;
     case "codex":
-      return "exec codex";
+      return `exec codex${resumeSuffix}`;
     case "gemini":
-      return "exec gemini";
+      return `exec gemini${resumeSuffix}`;
     case "shell":
       return "exec bash -l";
   }
@@ -84,7 +178,8 @@ function getRemoteExecCommand(type: TerminalType): string {
 export function getSshCommand(
   server: { username: string; localIp: string; tailscaleHostname: string; preferTailscale: boolean; authMethod: string; sshKeyPath?: string },
   terminalType: TerminalType,
-  remoteCwd?: string
+  remoteCwd?: string,
+  sessionResumeId?: string
 ): { command: string; args: string[] } {
   const host = server.preferTailscale ? server.tailscaleHostname : server.localIp;
   const userHost = `${server.username}@${host}`;
@@ -102,7 +197,7 @@ export function getSshCommand(
   args.push(userHost);
 
   // Build the remote command: cd to dir (if specified) then exec the tool
-  const remoteCmd = getRemoteExecCommand(terminalType);
+  const remoteCmd = getRemoteExecCommand(terminalType, sessionResumeId);
   if (remoteCwd) {
     args.push(`cd ${remoteCwd} && ${remoteCmd}`);
   } else {

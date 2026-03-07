@@ -10,6 +10,11 @@ import CommandPalette, { type PaletteAction } from "./components/CommandPalette"
 import SnippetPanel from "./components/SnippetPanel";
 import CommandHistory from "./components/CommandHistory";
 import Sidebar from "./components/Sidebar";
+import WindowResizeHandles from "./components/WindowResizeHandles";
+import { invoke } from "@tauri-apps/api/core";
+import { resolveWslCliPaths } from "./lib/wsl-cache";
+import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
+import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
 
 export default function App() {
   const tabs = useAppStore((s) => s.tabs);
@@ -89,6 +94,16 @@ export default function App() {
 
     return actions;
   }, [launchConfigs, loadLaunchConfig, snippets]);
+
+  // Pre-warm WSL and resolve CLI paths at startup (background)
+  useEffect(() => {
+    resolveWslCliPaths();
+    // Clean up clipboard images older than 24h
+    invoke("cleanup_clipboard_images", { maxAgeSecs: 86400 }).catch(() => {});
+  }, []);
+
+  // Watch Windows clipboard for new images (adds to TabBar strip automatically)
+  useClipboardWatcher();
 
   // Inject theme CSS variables into :root
   useEffect(() => {
@@ -192,6 +207,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
+      <WindowResizeHandles />
       <TabBar />
       <div className="flex-1 min-h-0 flex">
         {sidebarOpen && (
@@ -233,6 +249,7 @@ export default function App() {
       />
       {showSnippets && <SnippetPanel onClose={() => setShowSnippets(false)} />}
       {showHistory && <CommandHistory onClose={() => setShowHistory(false)} />}
+      <ImageInsertUndoToast />
     </div>
   );
 }

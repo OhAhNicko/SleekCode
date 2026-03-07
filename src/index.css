@@ -2,6 +2,35 @@
 @import "@xterm/xterm/css/xterm.css";
 
 @font-face {
+  font-family: "Hack";
+  font-weight: 400;
+  font-style: normal;
+  src: url("./fonts/hack-regular.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Hack";
+  font-weight: 700;
+  font-style: normal;
+  src: url("./fonts/hack-bold.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Hack";
+  font-weight: 400;
+  font-style: italic;
+  src: url("./fonts/hack-italic.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face {
+  font-family: "Hack";
+  font-weight: 700;
+  font-style: italic;
+  src: url("./fonts/hack-bolditalic.woff2") format("woff2");
+  font-display: swap;
+}
+
+@font-face {
   font-family: "Geist Mono";
   src: local("Geist Mono"), local("GeistMono");
 }
@@ -35,6 +64,7 @@ body,
   background-color: var(--ezy-bg);
   color: var(--ezy-text);
   font-family:
+    "Hack",
     "Geist Mono",
     "Cascadia Code",
     "Fira Code",
@@ -43,6 +73,8 @@ body,
     monospace;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern" 1, "liga" 1;
 }
 
 /* Scrollbar styling */
@@ -81,11 +113,16 @@ body,
 
 /* Terminal container */
 .terminal-pane .xterm {
-  padding: 4px 0 4px 8px;
+  padding: 6px 0 6px 10px;
 }
 .terminal-pane .xterm-viewport {
   scrollbar-width: thin;
   scrollbar-color: var(--ezy-border) transparent;
+}
+/* Let browser use default bicubic interpolation for text scaling */
+/* Force text sharpness on the xterm helper/measurement elements */
+.terminal-pane .xterm-char-measure-element {
+  font-family: Hack, monospace !important;
 }
 
 /* Active pane glow */
@@ -134,4 +171,32 @@ body,
 }
 .workspace-enter {
   animation: fade-in 120ms ease-out;
+}
+
+/* File path link tooltip (Ctrl+Click to open) */
+.ezy-file-link-tooltip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: var(--ezy-surface-raised);
+  border: 1px solid var(--ezy-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  white-space: nowrap;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+.ezy-flt-label {
+  font-size: 12px;
+  color: var(--ezy-text-secondary);
+}
+.ezy-flt-kbd {
+  font-size: 11px;
+  padding: 1px 5px;
+  background: var(--ezy-surface);
+  border: 1px solid var(--ezy-border);
+  border-radius: 3px;
+  color: var(--ezy-text-muted);
+  font-family: system-ui, -apple-system, sans-serif;
 }
