@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
+@import "@fontsource-variable/inter";
 
 @font-face {
   font-family: "Hack";
@@ -64,13 +65,11 @@ body,
   background-color: var(--ezy-bg);
   color: var(--ezy-text);
   font-family:
-    "Hack",
-    "Geist Mono",
-    "Cascadia Code",
-    "Fira Code",
-    "JetBrains Mono",
-    ui-monospace,
-    monospace;
+    "Inter Variable",
+    "Inter",
+    system-ui,
+    -apple-system,
+    sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -177,7 +176,7 @@ body,
 .devserver-url-port { display: none; }
 .devserver-url-full { display: inline; }
 
-@container (max-width: 480px) {
+@container (max-width: 450px) {
   .devserver-url-port { display: inline; }
   .devserver-url-full { display: none; }
 }

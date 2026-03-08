@@ -11,9 +11,11 @@ const COLUMNS: { key: TaskCardType["status"]; label: string }[] = [
 
 interface KanbanBoardProps {
   onClose?: () => void;
+  initialVertical?: boolean;
+  onReposition?: (vertical: boolean) => void;
 }
 
-export default function KanbanBoard({ onClose }: KanbanBoardProps) {
+export default function KanbanBoard({ onClose, initialVertical = false, onReposition }: KanbanBoardProps) {
   const tasks = useAppStore((s) => s.tasks);
   const addTask = useAppStore((s) => s.addTask);
   const moveTask = useAppStore((s) => s.moveTask);
@@ -23,7 +25,7 @@ export default function KanbanBoard({ onClose }: KanbanBoardProps) {
   const [newDesc, setNewDesc] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [dragOverCol, setDragOverCol] = useState<TaskCardType["status"] | null>(null);
-  const [vertical, setVertical] = useState(false);
+  const [vertical, setVertical] = useState(initialVertical);
   const dragItemId = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -113,7 +115,14 @@ export default function KanbanBoard({ onClose }: KanbanBoardProps) {
         <div className="flex items-center gap-1">
           {/* Layout toggle */}
           <button
-            onClick={() => setVertical((v) => !v)}
+            onClick={() => {
+              const next = !vertical;
+              if (onReposition) {
+                onReposition(next);
+              } else {
+                setVertical(next);
+              }
+            }}
             title={vertical ? "Horizontal layout" : "Vertical layout"}
             style={{
               display: "flex",

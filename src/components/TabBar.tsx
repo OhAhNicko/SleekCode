@@ -3,14 +3,14 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { THEMES, getTheme } from "../lib/themes";
-import { buildLayoutFromTemplate, stampTerminalTypes, countLeafPanes, findAllTerminalIds, generateTerminalId } from "../lib/layout-utils";
+import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, removePane, generatePaneId, generateTerminalId, findKanbanPaneId, addKanbanPane } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import type { RemoteServer, TerminalType } from "../types";
 import type { WorkspaceTemplate } from "../lib/workspace-templates";
 import RemoteFileBrowser from "./RemoteFileBrowser";
-import TemplatePicker from "./TemplatePicker";
+import TemplatePicker, { type ExtraPaneType } from "./TemplatePicker";
 import ClipboardImageStrip from "./ClipboardImageStrip";
 
 export default function TabBar() {
@@ -50,6 +50,7 @@ export default function TabBar() {
   const [showRecentMenu, setShowRecentMenu] = useState(false);
   const [browsingServer, setBrowsingServer] = useState<RemoteServer | null>(null);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [showServersTab, setShowServersTab] = useState(false);
   const [pendingDir, setPendingDir] = useState<{ name: string; dir: string; serverId?: string } | null>(null);
   const [expandedCli, setExpandedCli] = useState<Record<string, boolean>>({});
   const [themeExpanded, setThemeExpanded] = useState(false);
@@ -114,22 +115,66 @@ export default function TabBar() {
         port: 0,
         status: "running",
       });
+      // Persist server command on the tab for session restore
+      useAppStore.setState((state) => ({
+        tabs: state.tabs.map((t) =>
+          t.id === tabId ? { ...t, serverCommand: command } : t
+        ),
+      }));
       return terminalId;
     },
     [addTerminal, addDevServer]
   );
 
   const handleTemplateSelected = useCallback(
-    (template: WorkspaceTemplate, slotTypes: TerminalType[], serverCommand?: string) => {
+    (template: WorkspaceTemplate, slotTypes: TerminalType[], serverCommand?: string, extraPanes?: ExtraPaneType[]) => {
       if (!pendingDir) return;
       const { layout, terminalIds } = buildLayoutFromTemplate(
         template.id,
         template.cols,
-        template.rows
+        template.rows,
+        template.paneCount
       );
 
       // Stamp terminal types into layout tree for session restore
       const typedLayout = stampTerminalTypes(layout, terminalIds, slotTypes);
+
+      // Append extra panes (code review, browser, etc.) as horizontal splits
+      let finalLayout: import("../types").PaneLayout = typedLayout;
+      if (extraPanes && extraPanes.length > 0) {
+        for (const extra of extraPanes) {
+          // Kanban uses smart placement (bottom or right depending on row count)
+          if (extra === "kanban") {
+            const kanbanLayout = addKanbanPane(finalLayout);
+            if (kanbanLayout) finalLayout = kanbanLayout;
+            continue;
+          }
+
+          let extraNode: import("../types").PaneLayout;
+          switch (extra) {
+            case "codereview":
+              extraNode = { type: "codereview" as const, id: generatePaneId() };
+              break;
+            case "fileviewer":
+              extraNode = { type: "fileviewer" as const, id: generatePaneId(), files: [], activeFile: "" };
+              break;
+            case "browser":
+              extraNode = { type: "browser" as const, id: generatePaneId(), url: "about:blank" };
+              break;
+            default:
+              continue;
+          }
+          // Wrap current layout + extra pane in a horizontal split
+          // Give the terminal layout 70% and the extra pane 30%
+          finalLayout = {
+            type: "split" as const,
+            id: generatePaneId(),
+            direction: "horizontal" as const,
+            children: [finalLayout, extraNode] as [import("../types").PaneLayout, import("../types").PaneLayout],
+            sizes: [70, 30] as [number, number],
+          };
+        }
+      }
 
       // Batch-create all terminals
       const batch = terminalIds.map((id, i) => ({
@@ -139,12 +184,12 @@ export default function TabBar() {
         serverId: pendingDir.serverId,
       }));
       addTerminals(batch);
-      const tabId = addTabWithLayout(pendingDir.name, pendingDir.dir, typedLayout, pendingDir.serverId);
+      const tabId = addTabWithLayout(pendingDir.name, pendingDir.dir, finalLayout, pendingDir.serverId);
       if (!pendingDir.serverId) {
         addRecentProject({
           path: pendingDir.dir,
           name: pendingDir.name,
-          template: { templateId: template.id, cols: template.cols, rows: template.rows, slotTypes },
+          template: { templateId: template.id, cols: template.cols, rows: template.rows, paneCount: template.paneCount, slotTypes },
           serverCommand,
         });
       }
@@ -285,7 +330,7 @@ export default function TabBar() {
         {/* Dev Servers icon button */}
         {(() => {
           const isDevActive = activeTabId === "dev-server-tab";
-          const runningCount = devServers.filter((s) => s.status === "running").length;
+          const runningCount = devServers.filter((s) => s.status === "running" || s.status === "starting").length;
           return (
             <div
               title="Dev Servers"
@@ -314,14 +359,24 @@ export default function TabBar() {
               {runningCount > 0 && (
                 <span style={{
                   position: "absolute",
-                  top: 5,
-                  right: 4,
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
+                  top: 4,
+                  right: 3,
+                  minWidth: 12,
+                  height: 12,
+                  borderRadius: 6,
                   backgroundColor: "var(--ezy-accent)",
-                  border: "1.5px solid var(--ezy-bg)",
-                }} />
+                  border: "1px solid var(--ezy-bg)",
+                  fontSize: 7,
+                  fontWeight: 700,
+                  color: "#fff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  lineHeight: 1,
+                  padding: "0 2px",
+                }}>
+                  {runningCount}
+                </span>
               )}
             </div>
           );
@@ -329,7 +384,7 @@ export default function TabBar() {
 
         {/* Tabs */}
         <div style={{ display: "flex", alignItems: "stretch", minWidth: 0, overflow: "hidden" }}>
-          {tabs.filter((t) => !t.isDevServerTab).map((tab) => {
+          {tabs.filter((t) => !t.isDevServerTab && !t.isKanbanTab && (!t.isServersTab || showServersTab)).map((tab) => {
             const isActive = tab.id === activeTabId;
             const isSystemTab = tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab;
             const isUserPinned = !!tab.isPinned;
@@ -381,6 +436,7 @@ export default function TabBar() {
                 {(tab.isKanbanTab || tab.isServersTab || tab.isDevServerTab || tab.serverId) && renderTabIcon(tab, isActive)}
 
                 {/* Label with pane count and activity indicator */}
+                {!tab.isServersTab && (
                 <span
                   style={{
                     overflow: "hidden",
@@ -394,14 +450,14 @@ export default function TabBar() {
                   }}
                 >
                   {(() => {
-                    const paneCount = countLeafPanes(tab.layout);
                     const termIds = findAllTerminalIds(tab.layout);
+                    const cliCount = termIds.length;
                     // activityTick is read to trigger re-render on poll
                     void activityTick;
                     const activeCount = termIds.filter((id) => isTerminalActive(id)).length;
                     return (
                       <>
-                        <span>{tab.name}{paneCount > 1 ? ` ${paneCount}` : ""}</span>
+                        <span>{tab.name}{cliCount > 1 ? ` ${cliCount}` : ""}</span>
                         {activeCount > 0 && (
                           <span style={{ opacity: 0.6, fontSize: "0.85em" }}>({activeCount})</span>
                         )}
@@ -409,6 +465,7 @@ export default function TabBar() {
                     );
                   })()}
                 </span>
+                )}
 
                 {/* Right column: close (top) + pin (bottom) — hover reveal */}
                 {!isSystemTab && (
@@ -563,8 +620,8 @@ export default function TabBar() {
                   onClick={() => {
                     setShowRecentMenu(false);
                     if (!alwaysShowTemplatePicker && project.lastTemplate) {
-                      const { templateId, cols, rows, slotTypes } = project.lastTemplate;
-                      const { layout, terminalIds } = buildLayoutFromTemplate(templateId, cols, rows);
+                      const { templateId, cols, rows, slotTypes, paneCount } = project.lastTemplate;
+                      const { layout, terminalIds } = buildLayoutFromTemplate(templateId, cols, rows, paneCount);
                       const typedLayout = stampTerminalTypes(layout, terminalIds, slotTypes);
                       const batch = terminalIds.map((id, i) => ({
                         id,
@@ -708,134 +765,108 @@ export default function TabBar() {
                 Add pane
               </div>
               {/* Claude Code */}
-              <button
-                className="w-full text-left"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "7px 12px",
-                  backgroundColor: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  color: "var(--ezy-text-secondary)",
-                  fontFamily: "inherit",
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                onClick={() => {
-                  setShowNewTabMenu(false);
-                  window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "claude" } }));
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <circle cx="8" cy="8" r="6" stroke="#e87b35" strokeWidth="1.3" />
-                  <path d="M5.5 8.5L7 10l3.5-4" stroke="#e87b35" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                {TERMINAL_CONFIGS.claude.label}
-                {claudeYolo && (
-                  <span
+              {[
+                { type: "claude" as const, icon: (
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <circle cx="8" cy="8" r="6" stroke="#e87b35" strokeWidth="1.3" />
+                    <path d="M5.5 8.5L7 10l3.5-4" stroke="#e87b35" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )},
+                { type: "codex" as const, icon: (
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <rect x="3" y="3" width="10" height="10" rx="2" stroke="#10b981" strokeWidth="1.3" />
+                    <path d="M6 8h4" stroke="#10b981" strokeWidth="1.3" strokeLinecap="round" />
+                  </svg>
+                )},
+                { type: "gemini" as const, icon: (
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 2L4 6l4 4-4 4" stroke="#a78bfa" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M12 6l-4 4" stroke="#a78bfa" strokeWidth="1.3" strokeLinecap="round" />
+                  </svg>
+                )},
+                { type: "shell" as const, icon: (
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4,4 8,8 4,12" />
+                    <line x1="9" y1="12" x2="13" y2="12" />
+                  </svg>
+                )},
+              ].map(({ type, icon }) => (
+                <div
+                  key={type}
+                  className="flex items-center"
+                  style={{ padding: "0 0 0 0" }}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                >
+                  <button
+                    className="text-left"
                     style={{
-                      fontSize: 9,
-                      fontWeight: 700,
-                      letterSpacing: "0.06em",
-                      lineHeight: 1,
-                      padding: "1px 4px",
-                      borderRadius: 3,
-                      backgroundColor: "var(--ezy-red, #e55)",
-                      color: "#fff",
-                      marginLeft: "auto",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      padding: "7px 12px",
+                      flex: 1,
+                      backgroundColor: "transparent",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      color: "var(--ezy-text-secondary)",
+                      fontFamily: "inherit",
+                    }}
+                    onClick={() => {
+                      setShowNewTabMenu(false);
+                      window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type } }));
                     }}
                   >
-                    YOLO
-                  </span>
-                )}
-              </button>
-              {/* Codex CLI */}
-              <button
-                className="w-full text-left"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "7px 12px",
-                  backgroundColor: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  color: "var(--ezy-text-secondary)",
-                  fontFamily: "inherit",
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                onClick={() => {
-                  setShowNewTabMenu(false);
-                  window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "codex" } }));
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <rect x="3" y="3" width="10" height="10" rx="2" stroke="#10b981" strokeWidth="1.3" />
-                  <path d="M6 8h4" stroke="#10b981" strokeWidth="1.3" strokeLinecap="round" />
-                </svg>
-                {TERMINAL_CONFIGS.codex.label}
-              </button>
-              {/* Gemini CLI */}
-              <button
-                className="w-full text-left"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "7px 12px",
-                  backgroundColor: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  color: "var(--ezy-text-secondary)",
-                  fontFamily: "inherit",
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                onClick={() => {
-                  setShowNewTabMenu(false);
-                  window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "gemini" } }));
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                  <path d="M8 2L4 6l4 4-4 4" stroke="#a78bfa" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M12 6l-4 4" stroke="#a78bfa" strokeWidth="1.3" strokeLinecap="round" />
-                </svg>
-                {TERMINAL_CONFIGS.gemini.label}
-              </button>
-              {/* Shell */}
-              <button
-                className="w-full text-left"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "7px 12px",
-                  backgroundColor: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  color: "var(--ezy-text-secondary)",
-                  fontFamily: "inherit",
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                onClick={() => {
-                  setShowNewTabMenu(false);
-                  window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "shell" } }));
-                }}
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="4,4 8,8 4,12" />
-                  <line x1="9" y1="12" x2="13" y2="12" />
-                </svg>
-                {TERMINAL_CONFIGS.shell.label}
-              </button>
+                    {icon}
+                    {TERMINAL_CONFIGS[type].label}
+                    {type === "claude" && claudeYolo && (
+                      <span
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: "0.06em",
+                          lineHeight: 1,
+                          padding: "1px 4px",
+                          borderRadius: 3,
+                          backgroundColor: "var(--ezy-red, #e55)",
+                          color: "#fff",
+                          marginLeft: "auto",
+                        }}
+                      >
+                        YOLO
+                      </span>
+                    )}
+                  </button>
+                  {/* Split Down */}
+                  <div
+                    title="Split Down"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 28,
+                      height: 28,
+                      cursor: "pointer",
+                      borderRadius: 4,
+                      flexShrink: 0,
+                      marginRight: 4,
+                    }}
+                    onMouseEnter={(e) => { e.stopPropagation(); e.currentTarget.style.backgroundColor = "var(--ezy-border)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowNewTabMenu(false);
+                      window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type, direction: "vertical" } }));
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3">
+                      <rect x="1" y="2" width="14" height="12" rx="1" />
+                      <line x1="1" y1="8" x2="15" y2="8" />
+                    </svg>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
           </>}
@@ -851,6 +882,48 @@ export default function TabBar() {
 
         {/* Clipboard image thumbnails */}
         <ClipboardImageStrip />
+
+        {/* Tasks */}
+        <div
+          onClick={() => {
+            const store = useAppStore.getState();
+            const tab = store.tabs.find((t) => t.id === activeTabId);
+            if (!tab || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab) return;
+
+            // Toggle: if kanban already exists, remove it
+            const existingId = findKanbanPaneId(tab.layout);
+            if (existingId) {
+              const newLayout = removePane(tab.layout, existingId);
+              if (newLayout) store.updateTabLayout(tab.id, newLayout);
+              return;
+            }
+
+            // Smart add: placement depends on row count
+            const newLayout = addKanbanPane(tab.layout);
+            if (newLayout) store.updateTabLayout(tab.id, newLayout);
+          }}
+          title="Tasks"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            alignSelf: "center",
+            width: 34,
+            height: 26,
+            cursor: "pointer",
+            borderRadius: 4,
+            backgroundColor: "transparent",
+            transition: "background-color 120ms ease",
+          }}
+          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+        >
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3">
+            <rect x="1" y="2" width="4" height="12" rx="1" />
+            <rect x="6" y="4" width="4" height="10" rx="1" />
+            <rect x="11" y="1" width="4" height="13" rx="1" />
+          </svg>
+        </div>
 
         {/* Code Review */}
         <div
@@ -881,47 +954,59 @@ export default function TabBar() {
           </svg>
         </div>
 
-        {/* File Viewer */}
-        <div
-          onClick={() => {
-            // Open file dialog, then open selected file in viewer
-            import("@tauri-apps/plugin-dialog").then(({ open: openDialog }) => {
-              openDialog({ multiple: true, title: "Open files in viewer" }).then((selected) => {
-                if (!selected) return;
-                const paths = Array.isArray(selected) ? selected : [selected];
-                for (const p of paths) {
-                  if (typeof p === "string") {
-                    window.dispatchEvent(
-                      new CustomEvent("ezydev:open-fileviewer", { detail: { filePath: p } })
-                    );
-                  }
+        {/* Browser Preview — only for project tabs */}
+        {(() => {
+          const at = tabs.find((t) => t.id === activeTabId);
+          return at && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab;
+        })() && (
+          <div
+            onClick={() => {
+              const store = useAppStore.getState();
+              const tab = store.tabs.find((t) => t.id === store.activeTabId);
+              if (!tab || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab) return;
+
+              // If browser pane already exists, remove it (toggle off)
+              const existing = findAllBrowserPanes(tab.layout);
+              if (existing.length > 0) {
+                let newLayout = tab.layout;
+                for (const bp of existing) {
+                  const result = removePane(newLayout, bp.id);
+                  if (result) newLayout = result;
                 }
-              });
-            });
-          }}
-          title="Open File Viewer"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            alignSelf: "center",
-            width: 34,
-            height: 26,
-            cursor: "pointer",
-            borderRadius: 4,
-            backgroundColor: "transparent",
-            transition: "background-color 120ms ease",
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
-          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="2" y="2" width="12" height="12" rx="1.5" />
-            <line x1="2" y1="5.5" x2="14" y2="5.5" />
-            <line x1="5.5" y1="2" x2="5.5" y2="5.5" />
-            <line x1="9" y1="2" x2="9" y2="5.5" />
-          </svg>
-        </div>
+                store.updateTabLayout(tab.id, newLayout);
+                return;
+              }
+
+              // Otherwise open a new browser preview
+              const ds = store.devServers.find((s) => s.tabId === tab.id && s.port > 0);
+              const url = ds ? `http://localhost:${ds.port}` : "http://localhost:3000";
+              const { layout } = addBrowserPaneRight(tab.layout, url, 35);
+              store.updateTabLayout(tab.id, layout);
+            }}
+            title="Browser Preview"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              alignSelf: "center",
+              width: 34,
+              height: 26,
+              cursor: "pointer",
+              borderRadius: 4,
+              backgroundColor: "transparent",
+              transition: "background-color 120ms ease",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="1" y="2" width="14" height="12" rx="1.5" />
+              <line x1="1" y1="5.5" x2="15" y2="5.5" />
+              <circle cx="3.5" cy="3.8" r="0.7" fill="var(--ezy-text-muted)" stroke="none" />
+              <circle cx="5.8" cy="3.8" r="0.7" fill="var(--ezy-text-muted)" stroke="none" />
+            </svg>
+          </div>
+        )}
 
         {/* Settings */}
         <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
@@ -1487,6 +1572,65 @@ export default function TabBar() {
                   </button>
                 );
               })}
+
+              {/* Remote Servers */}
+              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  setShowSettingsMenu(false);
+                  if (showServersTab) {
+                    setShowServersTab(false);
+                    const other = tabs.find((t) => !t.isServersTab && !t.isKanbanTab && !t.isDevServerTab);
+                    if (other) setActiveTab(other.id);
+                  } else {
+                    setShowServersTab(true);
+                    const srv = tabs.find((t) => t.isServersTab);
+                    if (srv) setActiveTab(srv.id);
+                  }
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-cyan)" strokeWidth="1.3">
+                  <rect x="2" y="1" width="12" height="6" rx="1.5" />
+                  <rect x="2" y="9" width="12" height="6" rx="1.5" />
+                  <circle cx="5" cy="4" r="1" fill="var(--ezy-cyan)" stroke="none" />
+                  <circle cx="5" cy="12" r="1" fill="var(--ezy-cyan)" stroke="none" />
+                </svg>
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>Remote Servers</span>
+              </div>
+
+              {/* Snippets */}
+              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  setShowSettingsMenu(false);
+                  window.dispatchEvent(new Event("ezydev:open-snippets"));
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round">
+                  <path d="M5.5 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1h-2.5" />
+                  <path d="M5 5l2 2-2 2" />
+                  <line x1="8" y1="10" x2="12" y2="10" />
+                </svg>
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>Snippets</span>
+              </div>
             </div>
           )}
         </div>

@@ -64,11 +64,18 @@ export const useAppStore = create<AppStore>()(
         if (!state) return current;
 
         // When restoreLastSession is on, keep ALL tabs; otherwise only system + pinned
-        const filteredTabs = state.tabs
+        let filteredTabs = state.tabs
           ? state.restoreLastSession
             ? state.tabs
             : state.tabs.filter((tab) => isSystemTab(tab) || tab.isPinned)
           : current.tabs;
+
+        // Ensure system tabs always exist (may be missing from old persisted state)
+        for (const sysTab of current.tabs.filter(isSystemTab)) {
+          if (!filteredTabs.some((t) => t.id === sysTab.id)) {
+            filteredTabs = [sysTab, ...filteredTabs];
+          }
+        }
 
         // Fix activeTabId if it pointed to a dropped tab
         const tabIds = new Set(filteredTabs.map((t) => t.id));

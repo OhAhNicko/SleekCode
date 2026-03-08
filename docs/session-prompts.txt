@@ -1,5 +1,12 @@
 # Session Prompts
 
+## 2026-03-08 — Fix dev server lock error loop + premature green dot
+
+1. There's a big issue in the dev server startup. sometimes we still get "Unable to acquire lock at /home/nicko/projects/nano/.next/dev/lock, is another instance of next dev running?" if an instance was opened before. Right now we just try again and again which turns it in to a loop, and the server row shows a green dot like its started. we can only show that when the server is confirmed started and stable, until then show an empty or yellow dot. We need to change the port or close the previous instances before we proceed to start the server again. Fix this!!
+2. [screenshot] still same loop
+3. Now it seems to work, nice!
+4. /end
+
 ## 2026-03-07 — Standardize modal positioning
 
 1. Implement the following plan: [Standardize popup/modal positioning across all modals — TemplatePicker, CommandPalette, ImagePreviewModal to items-start + pt-[15vh], max-w-md, h-8 header]
@@ -285,3 +292,105 @@
 3. When i chose "single pane", make it so all the other options still are available below in the "Assign agents" view. If the user gets second thoughts
 4. Thats bad UX, why not just show all at once and just add the "Choose an agent type for each pane slot:" when a choice has been made
 5. /end
+[AskUserQuestion] Q: How should dev servers be restored on app restart? → A: Auto-restart servers — persist server metadata on Tab, automatically re-spawn and re-run the server command on restore.
+
+## 2026-03-07 — Fix terminal pane dimensions on multi-pane open
+
+1. Implement the following plan: # Fix: Terminal panes render with wrong dimensions on multi-pane project open [3-edit plan for TerminalPane.tsx: settle re-fit, WebGL fit, timer cleanup]
+2. It's not working well at all. Still same issue. To fix it you have to resize the window and then back again.. very bad
+3. Can we debug it somehow?
+4. It looks like this - [screenshot: Skarmbild 2026-03-07 233302.png]
+5. No, the same issue is there
+6. Nice, now its better
+7. /end
+
+## 2026-03-08 — BridgeSpace-style AI Agent Fleet picker
+
+1. I want to change the "Assign agent per pane" when opening a new project tab. Make it more like the "BridgeSpace" app. Keep the grid selector and add the new agent picker below. See screenshot from BridgeSpace.
+[AskUserQuestion] Q: Should I add OpenCode + Cursor agents or keep current set? → A: Make it 3 only. Remove "Shell" completely.
+[AskUserQuestion] Q: Should the fleet picker include a 'SKIP AGENTS' button? → A: No skip, require assignment (Recommended).
+
+[AskUserQuestion] Q: What font do you want for the app UI (everything except terminal panes)? → A: Inter
+[AskUserQuestion] Q: Extra panes (code review, browser, etc.) — add beyond grid or take from agent slots? → A: Add extra panes (grid stays for CLI agents, extras appended as additional splits)
+
+## 2026-03-08 — Dev server URL container query fix
+
+1. why is the url gone from the server row in the dev servers tab?
+2. It hides "http://localhost:" too early, the viewport can be like 30px smaller and the url would fit
+3. /end
+
+## 2026-03-08 — TabBar button migration, dev server restore, UI declutter
+
+1. When starting the app, only the last opened projects are re-opened but not the servers. This has to be fixed
+2. (Selected "Auto-restart servers (Recommended)" for restore mode)
+3. I just restarted the app but no dev server are starting on startup...
+4. Now its working! Okay, now lets do some bug fixes
+5. When opening the browser preview in the project (from the pane header) the url is 'https' instead of 'http' (like it is from the server tab). So the preview doesnt open. Fix this!
+6. In the tabbar tabs, we display open tabs. the pane counter in the tab should only be for CLI panes, not browser preview or code/file viewer panes
+7. In the server tab, replace the dot for an 'active server' counter in the top right above the icon (same spot)
+8. Make it smaller, its overflowing the right tab border
+9. make it 8 px
+10. now it looks smaller? i wanted it bigger
+11. ah, make the pill 12 px instead
+12. Perfect
+13. Move the 'open browser preview' button from the pane header to the tabbar header, to the left of the settings icon. as the browser preview is per project/tab it doesnt make sense to have it in the pane header
+14. Now, remove the 'Mark as dev server' button in the pane header. Its not needed anymore, right?
+15. can you explain 'Snippets'?
+16. Is it a good addition to the app? I mean, should we keep it?
+17. Keep it for now but put it in the bottom of the settings dropdown only
+18. and the 'open editor' button in the pane header, why keep that when we have a sidebar browser and an editor button in the tabbar?
+19. And the 'Open tasks' button in the pane header, move that to the tabbar as well - as its per projekt - not per pane
+20. The tasks button is now broken, everything goes blank when clicking on it
+21. The issue is still there? I just told you to move the button. How can it break? (with screenshot)
+22. How did you fuck this up? Tasks are not its own tab??????????????? Its a pane, one per project
+23. I just told you to move the button and you change the whole functionality...
+24. Can you close the "Tasks" tab now? There's no X-button so i cant get fucking rid of it
+25. im talking about the incorrect tab that you added
+26. It was added in the same time as the kanban tab
+27. It was just made visible. It wasnt visible before
+28. Now, keep the "Remote server" but put it as a toggle in the settings dropdown, also remove the "Server" text from the tab
+29. Explain the remote server functionality
+30. When clicking the remote server button in the settings, a tab has to open and it has to be possible to close the tab with an X-button, same X-button as in the CLI tabs
+31. remove the x-button from it the remote servers tab. it can only be closed by clicking the toggle button again in the settings dropdown
+32. When opening the preview browser, it has to be able to click the same button again to close it
+33. In the pane header we have "split right" and "split down" buttons which essentialy is "Add pane" as we have in the tabbar down chevron button. We need to remove these "split" buttons and add a "split down" button to each CLI row of the add pane drop down, because the default add pane is "split right" anyway
+34. /end
+
+## 2026-03-08 — Kanban pane singleton + smart placement + layout toggle reposition
+
+1. The kanban pane is broken. 1. Only ONE per project/tab can be open. 2. We have to set rules from when the kanban pane is opened. Make it default to be "split down horizontal", with several columns. If there's already more than 2 rows of CLI panes, add it to the right (like the browser preview) and change it to ONE column with multiple rows instead - it suits vertical kanban better
+2. When kanban is horizontal and user clicks the "vertical layout" the layout has to change to 1 column multiple rows (as it does now) AND the whole pane has to move to be placed on the right instead as a vertical pane.
+3. /end
+
+## 2026-03-08 — Fleet picker, Inter font, extra panes, toggle buttons
+
+1. Implement the following plan: # Plan: BridgeSpace-Style AI Agent Fleet Picker [detailed plan for count-based stepper UI, quick actions, fleet utilization panel, expand modal width]
+2. Now, don't call it "agent fleet", we dont have to copy that. Also, dont preselect claude. Nothing can be selected from the start.
+3. What font does bridgespace use?
+4. [screenshot: Skarmbild 2026-03-08 005637.png] - i thought you remembered the screenshot
+5. Are the font in "new workspace" popup "Hack"? Also, the "Launch workspace" button is conflicting with the design rules of the app... [screenshot: Skarmbild 2026-03-08 012218.png]
+6. I only want Hack to be used in the CLI terminals, not in the rest of the app...
+[AskUserQuestion] Q: What font do you want for the app UI (everything except terminal panes)? → A: Inter
+7. When a user picks "side by side" (1x1), chooses two CLI's to launch.. but then changes its mind and change the grid to "triple", the previous choices has to stay - just expand the slots from 2-3 so the user can make one more choice
+8. Now, add tick boxes for the other panes (code review, file viewer, browser preview, tasks) in between the assign agents cards and the "Launch workspace" button, so the user can choose to open those directly as well (outside of the CLI agents)
+[AskUserQuestion] Q: Extra panes (code review, browser, etc.) — add beyond grid or take from agent slots? → A: Add extra panes
+9. [screenshot: Skarmbild 2026-03-08 014945.png] - i think its kind of "double up" with info on the additional panes cards. Just keep the description that is now below the subject line, to keep it descriptive (for example, keep "Git diff viewer")
+10. They have to fit side by side in the same row
+11. Now, is it true that the default opening spot for the browser preview is far right, always?
+12. I want to set the same rule for the "git diff viewer"
+13. You are wrong, the code reviewer opens in the middle. not far right. STOP GUESSING
+14. Yes, it has to be a pane placed on the right
+15. Nice! Now, regarding the "file viewer" button in the tabbar. Should we remove it? Since the file pane can be opened from clicking files in the sidebar file browser
+16. Right now it doesnt open an empty file viewer pane, it opens a dialogue to select a file...
+17. Yes remove it
+18. Also remove it from the assign agents/new workspace popup
+19. Now, when clicking the "code review" button in the tabbar to open the pane, clicking the button again has to close the pane. This has to be the standard behavior for panes that opens from the right side tabbar section
+20. /end
+
+## 2026-03-08 — Workspace template grid → session counts
+
+1. Now, I want to change the grid layout in the "new workspace" popup. Keep the "Single" title and make the rest to show sessions instead, like "2 Sessions" instead of "Side by Side" and so on... we have to show these pane variations - 1, 2, 4, 6, 8, 10, 12, 14, 16. Remember that 4 panes per column and row is the max.
+2. Im thinking that we shouldnt show the grid explanations?
+[AskUserQuestion] Q: Remove the description line under each grid button? → A: Remove descriptions
+3. The thumbnail and title should be enough. Right?
+4. /end

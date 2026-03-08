@@ -16,7 +16,7 @@ function StatusDot({ status }: { status: DevServer["status"] }) {
         ? "var(--ezy-red)"
         : status === "stopped"
           ? "var(--ezy-red)"
-          : "var(--ezy-text-muted)";
+          : "var(--ezy-text-muted)"; // "starting"
   return (
     <span
       style={{
@@ -25,6 +25,7 @@ function StatusDot({ status }: { status: DevServer["status"] }) {
         borderRadius: "50%",
         backgroundColor: color,
         flexShrink: 0,
+        opacity: status === "starting" ? 0.6 : 1,
       }}
     />
   );
@@ -118,9 +119,10 @@ function DevServerRow({ server, onPreview }: { server: DevServer; onPreview: (ur
         write(server.command + "\r");
       }, 1500);
     }
-    updateDevServerStatus(server.id, "running");
+    updateDevServerStatus(server.id, "starting");
+    updateDevServerPort(server.id, 0);
     updateDevServerError(server.id, undefined);
-  }, [server, updateDevServerStatus, updateDevServerError]);
+  }, [server, updateDevServerStatus, updateDevServerPort, updateDevServerError]);
 
   const handleStop = useCallback(() => {
     const write = getPtyWrite(server.terminalId);
@@ -135,9 +137,10 @@ function DevServerRow({ server, onPreview }: { server: DevServer; onPreview: (ur
     if (write) {
       write(server.command + "\r");
     }
-    updateDevServerStatus(server.id, "running");
+    updateDevServerStatus(server.id, "starting");
+    updateDevServerPort(server.id, 0);
     updateDevServerError(server.id, undefined);
-  }, [server, updateDevServerStatus, updateDevServerError]);
+  }, [server, updateDevServerStatus, updateDevServerPort, updateDevServerError]);
 
   const handleSaveEdit = useCallback(() => {
     const trimmed = editValue.trim();
@@ -163,7 +166,7 @@ function DevServerRow({ server, onPreview }: { server: DevServer; onPreview: (ur
         setTimeout(() => write("\x03"), 100);
         setTimeout(() => write(cmdWithPort + "\r"), 1500);
       }
-      updateDevServerStatus(server.id, "running");
+      updateDevServerStatus(server.id, "starting");
       updateDevServerError(server.id, undefined);
     }
 
@@ -369,7 +372,7 @@ function DevServerRow({ server, onPreview }: { server: DevServer; onPreview: (ur
         </IconButton>
 
         {/* Stop / Play */}
-        {server.status === "running" ? (
+        {server.status === "running" || server.status === "starting" ? (
           <IconButton title="Stop" onClick={handleStop} danger>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="var(--ezy-text-muted)">
               <rect x="1" y="1" width="10" height="10" rx="1.5" />
@@ -487,7 +490,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
       command: trimmed,
       workingDir: selectedPath,
       port: 0,
-      status: "running",
+      status: "starting",
     });
     onClose();
   }, [selectedPath, selectedName, command, addTerminal, addDevServer, addCustomServerCommand, onClose]);

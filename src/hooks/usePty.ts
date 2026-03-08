@@ -16,6 +16,10 @@ interface UsePtyOptions {
   serverId?: string;
   sessionResumeId?: string;
   injectShellIntegration?: boolean;
+  /** When false, PTY spawn is deferred until the terminal has measured
+   *  its real dimensions via fitAddon.fit(). This prevents spawning at
+   *  the default 80×24 and racing with TUI apps that draw immediately. */
+  ready?: boolean;
 }
 
 export function usePty({
@@ -28,9 +32,14 @@ export function usePty({
   serverId,
   sessionResumeId,
   injectShellIntegration = false,
+  ready = true,
 }: UsePtyOptions) {
   const ptyIdRef = useRef<number | null>(null);
   const spawnIdRef = useRef(0);
+  // Buffer the latest resize request when PTY hasn't spawned yet.
+  // fitAddon.fit() fires before the async PTY spawn completes, so
+  // resize() silently drops the IPC.  We replay after spawn.
+  const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
   // Capture resume ID via ref — read once at spawn time, never triggers re-spawn.
   // The ID is persisted to localStorage on exit and used on next app restart.
   const sessionResumeIdRef = useRef(sessionResumeId);
@@ -51,8 +60,16 @@ export function usePty({
   onDataRef.current = onData;
   const onExitRef = useRef(onExit);
   onExitRef.current = onExit;
+  // Read latest cols/rows at spawn time (updated by setTermReady re-render)
+  const colsRef = useRef(cols);
+  colsRef.current = cols;
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
 
   useEffect(() => {
+    // Don't spawn until the terminal has measured real dimensions
+    if (!ready) return;
+
     const thisSpawnId = ++spawnIdRef.current;
     let cancelled = false;
 
@@ -146,8 +163,8 @@ export function usePty({
             try {
               id = await invoke<number>("pty_spawn_pooled", {
                 initCommand: initCmd,
-                cols: Math.max(cols, 2),
-                rows: Math.max(rows, 2),
+                cols: Math.max(colsRef.current, 2),
+                rows: Math.max(rowsRef.current, 2),
                 onData: onDataChan,
                 onExit: onExitChan,
               });
@@ -181,6 +198,14 @@ export function usePty({
 
         ptyIdRef.current = id;
 
+        // Replay buffered resize — fitAddon.fit() likely fired before
+        // spawn completed, so the PTY has stale 80×24 dimensions.
+        if (pendingResizeRef.current) {
+          const { cols: pc, rows: pr } = pendingResizeRef.current;
+          pendingResizeRef.current = null;
+          invoke("pty_resize", { ptyId: id, cols: pc, rows: pr });
+        }
+
         if (currentInjectShellIntegration) {
           setTimeout(() => {
             if (spawnIdRef.current === thisSpawnId && ptyIdRef.current !== null) {
@@ -208,10 +233,11 @@ export function usePty({
         ptyIdRef.current = null;
       }
     };
-    // Only terminalType should trigger a PTY restart (explicit CLI type switch).
+    // terminalType triggers PTY restart (explicit CLI type switch).
+    // ready gates first spawn until terminal has real dimensions.
     // All other config is read from refs at spawn time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [terminalType]);
+  }, [terminalType, ready]);
 
   const write = useCallback((data: string) => {
     if (ptyIdRef.current !== null) {
@@ -222,6 +248,9 @@ export function usePty({
   const resize = useCallback((newCols: number, newRows: number) => {
     if (ptyIdRef.current !== null) {
       invoke("pty_resize", { ptyId: ptyIdRef.current, cols: newCols, rows: newRows });
+    } else {
+      // PTY not spawned yet — buffer for replay after spawn
+      pendingResizeRef.current = { cols: newCols, rows: newRows };
     }
   }, []);
 

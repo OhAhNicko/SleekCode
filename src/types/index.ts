@@ -38,7 +38,7 @@ export interface DevServer {
   command: string;
   workingDir: string;
   port: number;
-  status: "running" | "stopped" | "error";
+  status: "starting" | "running" | "stopped" | "error";
   errorMessage?: string;
 }
 
@@ -77,6 +77,7 @@ export interface PaneSplit {
 export interface PaneKanban {
   type: "kanban";
   id: string;
+  vertical?: boolean;
 }
 
 export interface PaneCodeReview {
@@ -101,6 +102,7 @@ export interface Tab {
   isKanbanTab?: boolean;
   isPinned?: boolean;
   serverId?: string;
+  serverCommand?: string;
 }
 
 export interface TaskCard {

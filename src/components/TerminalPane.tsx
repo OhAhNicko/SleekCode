@@ -50,16 +50,10 @@ interface TerminalPaneProps {
   isActive: boolean;
   paneCount?: number;
   onClose: () => void;
-  onSplit: (direction: "horizontal" | "vertical", type: TerminalType) => void;
   onChangeType: (type: TerminalType) => void;
   onFocus: () => void;
   onSwapPane?: (fromTerminalId: string, toTerminalId: string) => void;
-  onMarkDevServer?: () => void;
-  onOpenEditor?: () => void;
-  onOpenBrowser?: () => void;
-  onOpenTasks?: () => void;
   onExplainError?: (block: CommandBlock) => void;
-  onOpenSnippets?: () => void;
   onPtyReady?: () => void;
   onPtyExit?: (exitCode: number) => void;
   hideChrome?: boolean;
@@ -74,16 +68,10 @@ export default function TerminalPane({
   workingDir,
   isActive,
   onClose,
-  onSplit,
   onChangeType,
   onFocus,
   onSwapPane,
-  onMarkDevServer,
-  onOpenEditor,
-  onOpenBrowser,
-  onOpenTasks,
   onExplainError,
-  onOpenSnippets,
   onPtyReady,
   onPtyExit,
   hideChrome,
@@ -111,6 +99,7 @@ export default function TerminalPane({
   const blockParserRef = useRef<CommandBlockParser | null>(null);
   const recordedBlocksRef = useRef<Set<string>>(new Set());
   const initialDims = useRef({ cols: 80, rows: 24 });
+  const [termReady, setTermReady] = useState(false);
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const scrollToPromptRef = useRef<() => void>(() => {});
   const scrollToNextPromptRef = useRef<() => void>(() => {});
@@ -190,6 +179,7 @@ export default function TerminalPane({
     serverId,
     sessionResumeId,
     injectShellIntegration: useShellIntegration,
+    ready: termReady,
   });
 
   // Initialize xterm.js (waits for Hack font to load — canvas renderer
@@ -254,6 +244,28 @@ export default function TerminalPane({
 
     fitAddon.fit();
 
+    // Re-fit after browser layout settles — the initial fit() runs in a
+    // microtask where react-resizable-panels may not have final panel sizes.
+    // Double-rAF ensures one full layout+paint cycle has completed.
+    let settleRaf2 = 0;
+    const settleRaf1 = requestAnimationFrame(() => {
+      settleRaf2 = requestAnimationFrame(() => {
+        try {
+          if (!disposed && el.clientWidth > 0 && el.clientHeight > 0) {
+            fitAddon.fit();
+          }
+        } catch { /* container may be detached */ }
+      });
+    });
+    // Safety net for late layout shifts (autoSaveId restoring panel sizes)
+    const settleTimer = setTimeout(() => {
+      try {
+        if (!disposed && el.clientWidth > 0 && el.clientHeight > 0) {
+          fitAddon.fit();
+        }
+      } catch { /* container may be detached */ }
+    }, 300);
+
     // Defer WebGL addon — GPU context init is expensive and blocks first paint.
     // Skip entirely when many panes are open (Chrome caps at ~16 WebGL contexts,
     // and context thrashing kills performance). Canvas renderer is fine for small panes.
@@ -265,12 +277,16 @@ export default function TerminalPane({
           // Force WebGL to rebuild glyph atlas with the correct font
           term.options.fontFamily = "Hack, monospace";
           term.options.fontSize = baseFontSize;
+          fitAddon.fit();
         }
       } catch {
         // Canvas renderer is the default fallback
       }
     }, 200) : undefined;
     initialDims.current = { cols: term.cols, rows: term.rows };
+    // Signal that the terminal has real dimensions — PTY can now spawn
+    // with correct cols/rows instead of the default 80×24.
+    setTermReady(true);
 
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
@@ -620,6 +636,9 @@ export default function TerminalPane({
       disposed = true;
       clearInlineHint();
       clearTimeout(webglTimer);
+      cancelAnimationFrame(settleRaf1);
+      cancelAnimationFrame(settleRaf2);
+      clearTimeout(settleTimer);
       clearTimeout(fitTimer);
       observer.disconnect();
       fileLinkDisposable.dispose();
@@ -807,15 +826,9 @@ export default function TerminalPane({
           terminalId={terminalId}
           terminalType={terminalType}
           isActive={isActive}
-          onSplit={onSplit}
           onChangeType={onChangeType}
           onClose={handleClose}
           onSwapPane={onSwapPane}
-          onMarkDevServer={onMarkDevServer}
-          onOpenEditor={onOpenEditor}
-          onOpenBrowser={onOpenBrowser}
-          onOpenTasks={onOpenTasks}
-          onOpenSnippets={onOpenSnippets}
           serverName={serverName}
           isYolo={launchedWithYolo}
         />

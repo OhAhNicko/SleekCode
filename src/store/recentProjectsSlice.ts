@@ -5,6 +5,7 @@ export interface RecentProjectTemplate {
   templateId: string;
   cols: number;
   rows: number;
+  paneCount?: number;
   slotTypes: TerminalType[];
 }
 

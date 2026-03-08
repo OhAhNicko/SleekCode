@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useAppStore } from "../store";
 import { getPtyWrite, registerTerminalDataListener, unregisterTerminalDataListener } from "../store/terminalSlice";
+import { injectPort } from "../lib/server-commands";
 import TerminalPane from "./TerminalPane";
 
 // Regex to detect common dev server port patterns in terminal output
@@ -29,6 +30,35 @@ const LOCK_ERROR_PATTERNS = [
   /EEXIST.*\.lock/i,
 ];
 
+/** Guess the default port a framework uses based on the command string. */
+function guessDefaultPort(command: string): number {
+  if (/\bnext\b/.test(command)) return 3000;
+  if (/\bvite\b/.test(command)) return 5173;
+  if (/\breact-scripts\b/.test(command)) return 3000;
+  if (/\bng\s+serve\b|\bangular\b/.test(command)) return 4200;
+  if (/\bgatsby\b/.test(command)) return 8000;
+  return 3000;
+}
+
+/** Build a shell one-liner that kills old processes and removes framework lock files. */
+function buildCleanupPrefix(command: string, detectedPort: number): string {
+  const parts: string[] = [];
+  const defaultPort = guessDefaultPort(command);
+
+  // Always kill the default port first — the stale instance is typically here
+  parts.push(`fuser -k ${defaultPort}/tcp 2>/dev/null`);
+  // Also kill the detected port if it differs (auto-incremented by framework)
+  if (detectedPort > 0 && detectedPort !== defaultPort) {
+    parts.push(`fuser -k ${detectedPort}/tcp 2>/dev/null`);
+  }
+  // Remove framework lock files
+  if (/\bnext\b/.test(command)) {
+    parts.push("rm -f .next/dev/lock 2>/dev/null");
+  }
+  parts.push("sleep 1");
+  return parts.join("; ");
+}
+
 /**
  * Renders TerminalPanes for all dev servers so PTYs stay alive.
  * All terminals live in one container that is always sized.
@@ -40,6 +70,7 @@ export default function DevServerTerminalHost() {
   const expandedDevServerId = useAppStore((s) => s.expandedDevServerId);
   const setExpandedDevServerId = useAppStore((s) => s.setExpandedDevServerId);
   const updateDevServerStatus = useAppStore((s) => s.updateDevServerStatus);
+  const updateDevServerPort = useAppStore((s) => s.updateDevServerPort);
   const updateDevServerError = useAppStore((s) => s.updateDevServerError);
 
   // Track which servers have had their command written
@@ -94,11 +125,12 @@ export default function DevServerTerminalHost() {
       // Re-enable detection
       resolvedRef.current.delete(serverId);
       portDetectedRef.current.delete(serverId);
-      updateDevServerStatus(serverId, "running");
+      updateDevServerStatus(serverId, "starting");
+      updateDevServerPort(serverId, 0);
       updateDevServerError(serverId, undefined);
       setTimeout(() => write(command + "\r"), delayMs);
     },
-    [updateDevServerStatus, updateDevServerError]
+    [updateDevServerStatus, updateDevServerPort, updateDevServerError]
   );
 
   // Timers for grace-period unregistration after port detection
@@ -138,8 +170,29 @@ export default function DevServerTerminalHost() {
               lockRetryRef.current.set(ds.id, attempts + 1);
               resolvedRef.current.delete(ds.id);
               unregisterTerminalDataListener(ds.terminalId);
-              const delay = 2000 + attempts * 1500; // 2s, then 3.5s
-              restartServer(ds.id, ds.terminalId, ds.command, delay);
+
+              const write = getPtyWrite(ds.terminalId);
+              if (!write) return;
+              write("\x03");
+              setTimeout(() => write("\x03"), 100);
+
+              updateDevServerStatus(ds.id, "starting");
+              updateDevServerPort(ds.id, 0);
+              updateDevServerError(ds.id, undefined);
+
+              const cleanup = buildCleanupPrefix(ds.command, ds.port);
+
+              if (attempts === 0) {
+                // First retry: kill old process on default port + remove lock, then same command
+                const delay = 2500;
+                setTimeout(() => write(`${cleanup}; ${ds.command}\r`), delay);
+              } else {
+                // Second retry: try on a different port (default + 1)
+                const fallbackPort = guessDefaultPort(ds.command) + 1;
+                const cmdWithPort = injectPort(ds.command, fallbackPort);
+                const delay = 2500;
+                setTimeout(() => write(`${cleanup}; ${cmdWithPort}\r`), delay);
+              }
               return;
             }
             // Max retries exhausted — show error
@@ -207,7 +260,7 @@ export default function DevServerTerminalHost() {
         unregisterTerminalDataListener(ds.terminalId);
       }
     };
-  }, [devServers, updateDevServerStatus, updateDevServerError, restartServer]);
+  }, [devServers, updateDevServerStatus, updateDevServerPort, updateDevServerError, restartServer]);
 
   // Clean up tracked state when servers are removed, or re-enable detection
   // when a server is restarted (status changed back to "running" without a port)
@@ -233,7 +286,7 @@ export default function DevServerTerminalHost() {
     }
     // Re-enable detection for servers that were restarted
     for (const ds of devServers) {
-      if (ds.status === "running" && !ds.errorMessage && ds.port === 0) {
+      if (ds.status === "starting" && !ds.errorMessage) {
         resolvedRef.current.delete(ds.id);
         portDetectedRef.current.delete(ds.id);
         const graceTimer = graceTimersRef.current.get(ds.id);
@@ -327,7 +380,10 @@ export default function DevServerTerminalHost() {
                   backgroundColor:
                     expandedServer.status === "running"
                       ? "var(--ezy-accent)"
-                      : "var(--ezy-red)",
+                      : expandedServer.status === "starting"
+                        ? "var(--ezy-text-muted)"
+                        : "var(--ezy-red)",
+                  opacity: expandedServer.status === "starting" ? 0.6 : 1,
                   flexShrink: 0,
                 }}
               />
@@ -365,7 +421,7 @@ export default function DevServerTerminalHost() {
               </div>
 
               {/* Stop / Play */}
-              {expandedServer.status === "running" ? (
+              {expandedServer.status === "running" || expandedServer.status === "starting" ? (
                 <div
                   title="Stop"
                   style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
@@ -388,7 +444,8 @@ export default function DevServerTerminalHost() {
                   onClick={() => {
                     const write = getPtyWrite(expandedServer.terminalId);
                     if (write) write(expandedServer.command + "\r");
-                    updateDevServerStatus(expandedServer.id, "running");
+                    updateDevServerStatus(expandedServer.id, "starting");
+                    updateDevServerPort(expandedServer.id, 0);
                     updateDevServerError(expandedServer.id, undefined);
                   }}
                   onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
@@ -423,7 +480,6 @@ export default function DevServerTerminalHost() {
                 paneCount={99}
                 hideChrome
                 onClose={() => {}}
-                onSplit={() => {}}
                 onChangeType={() => {}}
                 onFocus={() => {}}
                 onPtyReady={() => handlePtyReady(ds.id, ds.terminalId, ds.command)}

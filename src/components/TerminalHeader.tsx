@@ -9,15 +9,9 @@ interface TerminalHeaderProps {
   terminalId: string;
   terminalType: TerminalType;
   isActive: boolean;
-  onSplit: (direction: "horizontal" | "vertical", type: TerminalType) => void;
   onChangeType: (type: TerminalType) => void;
   onClose: () => void;
   onSwapPane?: (fromTerminalId: string, toTerminalId: string) => void;
-  onMarkDevServer?: () => void;
-  onOpenEditor?: () => void;
-  onOpenBrowser?: () => void;
-  onOpenTasks?: () => void;
-  onOpenSnippets?: () => void;
   serverName?: string;
   isYolo?: boolean;
 }
@@ -184,20 +178,13 @@ export default function TerminalHeader({
   terminalId,
   terminalType,
   isActive,
-  onSplit,
   onChangeType,
   onClose,
   onSwapPane,
-  onMarkDevServer,
-  onOpenEditor,
-  onOpenBrowser,
-  onOpenTasks,
-  onOpenSnippets,
   serverName,
   isYolo = false,
 }: TerminalHeaderProps) {
   const config = TERMINAL_CONFIGS[terminalType];
-  const [splitPicker, setSplitPicker] = useState<"horizontal" | "vertical" | null>(null);
   const [showTypePicker, setShowTypePicker] = useState(false);
   return (
     <div
@@ -338,193 +325,6 @@ export default function TerminalHeader({
 
       {/* Right: actions */}
       <div className="flex items-center gap-0.5">
-        {onMarkDevServer && (
-          <button
-            onClick={onMarkDevServer}
-            title="Mark as Dev Server"
-            className="p-1 rounded transition-colors"
-            style={{ backgroundColor: "transparent" }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
-            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="var(--ezy-text-muted)"
-              strokeWidth="1.3"
-            >
-              <rect x="2" y="3" width="12" height="10" rx="1" />
-              <circle cx="5" cy="8" r="1" fill="var(--ezy-accent)" stroke="none" />
-              <line x1="7.5" y1="8" x2="12" y2="8" strokeLinecap="round" />
-            </svg>
-          </button>
-        )}
-        {onOpenTasks && (
-          <button
-            onClick={onOpenTasks}
-            title="Open Tasks"
-            className="p-1 rounded transition-colors"
-            style={{ backgroundColor: "transparent", border: "none", cursor: "pointer" }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
-            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="var(--ezy-text-muted)"
-              strokeWidth="1.3"
-            >
-              <rect x="1" y="2" width="4" height="12" rx="1" />
-              <rect x="6" y="4" width="4" height="10" rx="1" />
-              <rect x="11" y="1" width="4" height="13" rx="1" />
-            </svg>
-          </button>
-        )}
-        {onOpenSnippets && (
-          <button
-            onClick={onOpenSnippets}
-            title="Snippets"
-            className="p-1 rounded transition-colors"
-            style={{ backgroundColor: "transparent", border: "none", cursor: "pointer" }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
-            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="var(--ezy-text-muted)"
-              strokeWidth="1.3"
-              strokeLinecap="round"
-            >
-              <path d="M5.5 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1h-2.5" />
-              <path d="M5 5l2 2-2 2" />
-              <line x1="8" y1="10" x2="12" y2="10" />
-            </svg>
-          </button>
-        )}
-        {onOpenEditor && (
-          <button
-            onClick={onOpenEditor}
-            title="Open Editor"
-            className="p-1 rounded transition-colors"
-            style={{ backgroundColor: "transparent", border: "none", cursor: "pointer" }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
-            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="var(--ezy-text-muted)"
-              strokeWidth="1.3"
-              strokeLinecap="round"
-            >
-              <rect x="2" y="1" width="12" height="14" rx="1" />
-              <line x1="5" y1="4" x2="11" y2="4" />
-              <line x1="5" y1="7" x2="11" y2="7" />
-              <line x1="5" y1="10" x2="9" y2="10" />
-            </svg>
-          </button>
-        )}
-        {onOpenBrowser && (
-          <button
-            onClick={onOpenBrowser}
-            title="Browser Preview"
-            className="p-1 rounded transition-colors"
-            style={{ backgroundColor: "transparent", border: "none", cursor: "pointer" }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
-            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="var(--ezy-text-muted)"
-              strokeWidth="1.3"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <rect x="1" y="2" width="14" height="12" rx="1.5" />
-              <line x1="1" y1="5.5" x2="15" y2="5.5" />
-              <circle cx="3.5" cy="3.8" r="0.7" fill="var(--ezy-text-muted)" stroke="none" />
-              <circle cx="5.8" cy="3.8" r="0.7" fill="var(--ezy-text-muted)" stroke="none" />
-            </svg>
-          </button>
-        )}
-        {/* Split Right */}
-        <div style={{ position: "relative" }}>
-          <button
-            onClick={() => setSplitPicker((v) => v === "horizontal" ? null : "horizontal")}
-            title="Split Right"
-            className="p-1 rounded transition-colors"
-            style={{ backgroundColor: splitPicker === "horizontal" ? "var(--ezy-border)" : "transparent" }}
-            onMouseEnter={(e) => {
-              if (splitPicker !== "horizontal") e.currentTarget.style.backgroundColor = "var(--ezy-border)";
-            }}
-            onMouseLeave={(e) => {
-              if (splitPicker !== "horizontal") e.currentTarget.style.backgroundColor = "transparent";
-            }}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="var(--ezy-text-muted)"
-              strokeWidth="1.3"
-            >
-              <rect x="1" y="2" width="14" height="12" rx="1" />
-              <line x1="8" y1="2" x2="8" y2="14" />
-            </svg>
-          </button>
-          {splitPicker === "horizontal" && (
-            <CliPicker
-              onSelect={(type) => onSplit("horizontal", type)}
-              onClose={() => setSplitPicker(null)}
-            />
-          )}
-        </div>
-        {/* Split Down */}
-        <div style={{ position: "relative" }}>
-          <button
-            onClick={() => setSplitPicker((v) => v === "vertical" ? null : "vertical")}
-            title="Split Down"
-            className="p-1 rounded transition-colors"
-            style={{ backgroundColor: splitPicker === "vertical" ? "var(--ezy-border)" : "transparent" }}
-            onMouseEnter={(e) => {
-              if (splitPicker !== "vertical") e.currentTarget.style.backgroundColor = "var(--ezy-border)";
-            }}
-            onMouseLeave={(e) => {
-              if (splitPicker !== "vertical") e.currentTarget.style.backgroundColor = "transparent";
-            }}
-          >
-            <svg
-              width="12"
-              height="12"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="var(--ezy-text-muted)"
-              strokeWidth="1.3"
-            >
-              <rect x="1" y="2" width="14" height="12" rx="1" />
-              <line x1="1" y1="8" x2="15" y2="8" />
-            </svg>
-          </button>
-          {splitPicker === "vertical" && (
-            <CliPicker
-              onSelect={(type) => onSplit("vertical", type)}
-              onClose={() => setSplitPicker(null)}
-            />
-          )}
-        </div>
         <button
           onClick={onClose}
           title="Close Pane (Ctrl+Shift+W)"

@@ -2,10 +2,9 @@ import { useCallback, useEffect } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import type { PaneLayout } from "../types";
 import {
-  splitPane,
   removePane,
   generatePaneId,
-  findFirstLeafId,
+  repositionKanbanPane,
 } from "../lib/layout-utils";
 import { snapshotPane } from "../store/undoCloseStore";
 import BrowserPreview from "./BrowserPreview";
@@ -38,6 +37,16 @@ export default function PaneGrid({
     [tabId, layout, onLayoutChange]
   );
 
+  const handleKanbanReposition = useCallback(
+    (vertical: boolean) => {
+      const newLayout = repositionKanbanPane(layout, vertical);
+      if (newLayout) {
+        onLayoutChange(newLayout);
+      }
+    },
+    [layout, onLayoutChange]
+  );
+
   // Listen for sidebar file-open events — route to tabbed file viewer
   useEffect(() => {
     const handler = (e: Event) => {
@@ -52,28 +61,36 @@ export default function PaneGrid({
     return () => window.removeEventListener("ezydev:open-file", handler);
   }, [layout, onLayoutChange]);
 
-  // Listen for code review open events
+  // Toggle code review pane (open on right / close if already open)
   useEffect(() => {
     const handler = () => {
-      // Check if a codereview pane already exists
-      const hasCodeReview = (node: PaneLayout): boolean => {
-        if (node.type === "codereview") return true;
+      const findCodeReviewId = (node: PaneLayout): string | null => {
+        if (node.type === "codereview") return node.id;
         if (node.type === "split") {
-          return hasCodeReview(node.children[0]) || hasCodeReview(node.children[1]);
+          return findCodeReviewId(node.children[0]) ?? findCodeReviewId(node.children[1]);
         }
-        return false;
+        return null;
       };
-      if (hasCodeReview(layout)) return;
-
+      const existingId = findCodeReviewId(layout);
+      if (existingId) {
+        // Close it
+        const newLayout = removePane(layout, existingId);
+        if (newLayout) onLayoutChange(newLayout);
+        return;
+      }
+      // Open on far right
       const codeReviewPane = {
         type: "codereview" as const,
         id: generatePaneId(),
       };
-      const firstPaneId = findFirstLeafId(layout);
-      if (firstPaneId) {
-        const newLayout = splitPane(layout, firstPaneId, "horizontal", codeReviewPane);
-        onLayoutChange(newLayout);
-      }
+      const newLayout: PaneLayout = {
+        type: "split",
+        id: generatePaneId(),
+        direction: "horizontal",
+        children: [layout, codeReviewPane],
+        sizes: [70, 30],
+      };
+      onLayoutChange(newLayout);
     };
     window.addEventListener("ezydev:open-codereview", handler);
     return () => window.removeEventListener("ezydev:open-codereview", handler);
@@ -106,18 +123,21 @@ export default function PaneGrid({
         return;
       }
 
-      // Create new file viewer pane
+      // Create new file viewer pane on the far right
       const viewerPane = {
         type: "fileviewer" as const,
         id: generatePaneId(),
         files: [filePath],
         activeFile: filePath,
       };
-      const firstPaneId = findFirstLeafId(layout);
-      if (firstPaneId) {
-        const newLayout = splitPane(layout, firstPaneId, "horizontal", viewerPane);
-        onLayoutChange(newLayout);
-      }
+      const newLayout: PaneLayout = {
+        type: "split",
+        id: generatePaneId(),
+        direction: "horizontal",
+        children: [layout, viewerPane],
+        sizes: [70, 30],
+      };
+      onLayoutChange(newLayout);
     };
     window.addEventListener("ezydev:open-fileviewer", handler);
     return () => window.removeEventListener("ezydev:open-fileviewer", handler);
@@ -165,7 +185,14 @@ export default function PaneGrid({
     }
 
     if (node.type === "kanban") {
-      return <KanbanBoard key={node.id} onClose={() => handleClose(node.id)} />;
+      return (
+        <KanbanBoard
+          key={node.id}
+          onClose={() => handleClose(node.id)}
+          initialVertical={node.vertical}
+          onReposition={handleKanbanReposition}
+        />
+      );
     }
 
     if (node.type === "codereview") {

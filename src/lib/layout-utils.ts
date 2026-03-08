@@ -1,4 +1,4 @@
-import type { PaneLayout, PaneLeaf, PaneBrowser, PaneSplit, TerminalType } from "../types";
+import type { PaneLayout, PaneLeaf, PaneBrowser, PaneKanban, PaneSplit, TerminalType } from "../types";
 
 let paneCounter = 0;
 export function generatePaneId(): string {
@@ -95,11 +95,6 @@ export function findPaneIdForTerminal(layout: PaneLayout, terminalId: string): s
   return null;
 }
 
-/**
- * Build a PaneLayout tree from a workspace template grid spec.
- * Converts cols x rows → nested PaneSplit tree.
- * "main-side" is a special case: 1 big left + 2 stacked right.
- */
 /** Swap two leaf panes by their IDs in the layout tree */
 export function swapPanes(layout: PaneLayout, idA: string, idB: string): PaneLayout {
   // First pass: find the two nodes
@@ -129,12 +124,30 @@ export function swapPanes(layout: PaneLayout, idA: string, idB: string): PaneLay
   return replace(layout);
 }
 
+/**
+ * Distribute `count` panes across `cols` columns.
+ * Returns an array of per-column row counts (taller columns first).
+ */
+function distributeColumns(count: number, cols: number): number[] {
+  if (cols <= 0) return [count];
+  const base = Math.floor(count / cols);
+  const remainder = count % cols;
+  return Array.from({ length: cols }, (_, i) => base + (i < remainder ? 1 : 0));
+}
+
+/**
+ * Build a PaneLayout tree from a workspace template.
+ * Supports both rectangular (cols*rows) and non-rectangular (paneCount < cols*rows) grids.
+ * `paneCount` overrides `cols * rows` when provided (for 10, 14 session layouts).
+ */
 export function buildLayoutFromTemplate(
-  templateId: string,
+  _templateId: string,
   cols: number,
-  rows: number
+  rows: number,
+  paneCount?: number
 ): { layout: PaneLayout; terminalIds: string[] } {
   const terminalIds: string[] = [];
+  const count = paneCount ?? cols * rows;
 
   function makeLeaf(): PaneLeaf {
     const terminalId = generateTerminalId();
@@ -142,82 +155,24 @@ export function buildLayoutFromTemplate(
     return { type: "terminal", id: generatePaneId(), terminalId };
   }
 
-  // Special case: main + side (1 big + 2 stacked)
-  if (templateId === "main-side") {
-    const main = makeLeaf();
-    const top = makeLeaf();
-    const bottom = makeLeaf();
-    const rightSplit: PaneSplit = {
-      type: "split",
-      id: generatePaneId(),
-      direction: "vertical",
-      children: [top, bottom],
-      sizes: [50, 50],
-    };
-    const layout: PaneSplit = {
-      type: "split",
-      id: generatePaneId(),
-      direction: "horizontal",
-      children: [main, rightSplit],
-      sizes: [60, 40],
-    };
-    return { layout, terminalIds };
+  // Single pane
+  if (count === 1) {
+    return { layout: makeLeaf(), terminalIds };
   }
 
-  // Build a single column (stack rows vertically)
+  // Compute per-column row counts
+  const colHeights = distributeColumns(count, cols);
+
+  // Build each column as a vertical stack
   function buildColumn(rowCount: number): PaneLayout {
     if (rowCount === 1) return makeLeaf();
     const leaves: PaneLeaf[] = [];
     for (let i = 0; i < rowCount; i++) leaves.push(makeLeaf());
-    return buildBinaryTree(leaves, "vertical");
+    return buildBalancedSameDir(leaves, "vertical");
   }
 
-  // Build a balanced binary tree from an array of nodes
-  function buildBinaryTree(
-    nodes: PaneLayout[],
-    direction: "horizontal" | "vertical"
-  ): PaneLayout {
-    if (nodes.length === 1) return nodes[0];
-    if (nodes.length === 2) {
-      return {
-        type: "split",
-        id: generatePaneId(),
-        direction,
-        children: [nodes[0], nodes[1]] as [PaneLayout, PaneLayout],
-        sizes: [50, 50],
-      };
-    }
-    // Split into two halves
-    const mid = Math.ceil(nodes.length / 2);
-    const left = buildBinaryTree(nodes.slice(0, mid), direction === "horizontal" ? "vertical" : "horizontal");
-    const right = buildBinaryTree(nodes.slice(mid), direction === "horizontal" ? "vertical" : "horizontal");
-    return {
-      type: "split",
-      id: generatePaneId(),
-      direction,
-      children: [left, right] as [PaneLayout, PaneLayout],
-      sizes: [50, 50],
-    };
-  }
-
-  // Single pane
-  if (cols === 1 && rows === 1) {
-    return { layout: makeLeaf(), terminalIds };
-  }
-
-  // Single row, multiple cols
-  if (rows === 1) {
-    const columns: PaneLayout[] = [];
-    for (let c = 0; c < cols; c++) columns.push(makeLeaf());
-    return { layout: buildBinaryTree(columns, "horizontal"), terminalIds };
-  }
-
-  // Multiple rows and cols: build columns, then combine horizontally
-  const columns: PaneLayout[] = [];
-  for (let c = 0; c < cols; c++) {
-    columns.push(buildColumn(rows));
-  }
-  return { layout: buildBinaryTree(columns, "horizontal"), terminalIds };
+  const builtColumns = colHeights.map((h) => buildColumn(h));
+  return { layout: buildBalancedSameDir(builtColumns, "horizontal"), terminalIds };
 }
 
 /** Stamp terminalType onto each terminal leaf, matching by terminalId order */
@@ -307,13 +262,58 @@ function buildBalancedSameDir(
 }
 
 const MAX_PANES = 16;
+const MAX_PANES_WITH_KANBAN = 12;
+
+/** Find the kanban pane node in the layout, or null if none */
+function findKanbanNode(layout: PaneLayout): PaneKanban | null {
+  if (layout.type === "kanban") return layout;
+  if (layout.type === "split") {
+    return findKanbanNode(layout.children[0]) ?? findKanbanNode(layout.children[1]);
+  }
+  return null;
+}
 
 /**
  * Add a new leaf pane to the layout in a smart grid pattern.
  * Extracts the current column structure, decides placement, and rebuilds.
- * Caps at MAX_PANES (4x4 grid).
+ * Caps at MAX_PANES (4x4 grid), or MAX_PANES_WITH_KANBAN (4x3) when kanban is open.
+ *
+ * When a kanban pane exists, it is stripped before grid placement and re-attached
+ * afterward so the kanban always spans its full row/column.
  */
 export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout): PaneLayout {
+  // If kanban exists, strip it, add pane to the grid only, then re-attach
+  const kanban = findKanbanNode(layout);
+  if (kanban) {
+    const stripped = removePane(layout, kanban.id);
+    if (!stripped) return layout;
+
+    // Enforce lower pane limit when kanban occupies a full row/column
+    if (countLeafPanes(stripped) >= MAX_PANES_WITH_KANBAN) return layout;
+
+    const newGrid = addPaneAsGrid(stripped, newLeaf);
+    // If grid didn't change (hit inner max), return original layout
+    if (newGrid === stripped) return layout;
+
+    // Re-attach kanban in its original position
+    if (kanban.vertical) {
+      return {
+        type: "split",
+        id: generatePaneId(),
+        direction: "horizontal",
+        children: [newGrid, { ...kanban, id: generatePaneId() }],
+        sizes: [70, 30],
+      };
+    }
+    return {
+      type: "split",
+      id: generatePaneId(),
+      direction: "vertical",
+      children: [newGrid, { ...kanban, id: generatePaneId() }],
+      sizes: [65, 35],
+    };
+  }
+
   const columns = getTopLevelColumns(layout);
   const columnLeaves = columns.map(extractColumnLeaves);
 
@@ -404,6 +404,93 @@ export function findAllBrowserPanes(layout: PaneLayout): PaneBrowser[] {
     ];
   }
   return [];
+}
+
+/** Check if a kanban pane already exists anywhere in the layout tree */
+export function hasKanbanPane(layout: PaneLayout): boolean {
+  if (layout.type === "kanban") return true;
+  if (layout.type === "split") {
+    return hasKanbanPane(layout.children[0]) || hasKanbanPane(layout.children[1]);
+  }
+  return false;
+}
+
+/** Find the ID of the kanban pane in the layout, or null if none */
+export function findKanbanPaneId(layout: PaneLayout): string | null {
+  if (layout.type === "kanban") return layout.id;
+  if (layout.type === "split") {
+    return findKanbanPaneId(layout.children[0]) ?? findKanbanPaneId(layout.children[1]);
+  }
+  return null;
+}
+
+/**
+ * Add a kanban pane with smart placement rules:
+ * - If kanban already exists: returns null (caller should toggle/remove)
+ * - If ≤2 rows of panes: split down (bottom pane), horizontal kanban columns
+ * - If >2 rows: add to the right (like browser preview), vertical kanban layout
+ */
+export function addKanbanPane(layout: PaneLayout): PaneLayout | null {
+  if (hasKanbanPane(layout)) return null;
+
+  const columns = getTopLevelColumns(layout);
+  const columnLeaves = columns.map(extractColumnLeaves);
+  const maxRows = Math.max(...columnLeaves.map((col) => col.length), 0);
+
+  if (maxRows > 2) {
+    // Many rows — add to the right, vertical kanban (1 column, multiple rows)
+    const kanbanPane: PaneKanban = { type: "kanban", id: generatePaneId(), vertical: true };
+    return {
+      type: "split",
+      id: generatePaneId(),
+      direction: "horizontal",
+      children: [layout, kanbanPane],
+      sizes: [70, 30],
+    };
+  }
+
+  // Few rows — add at the bottom, horizontal kanban (several columns side by side)
+  const kanbanPane: PaneKanban = { type: "kanban", id: generatePaneId(), vertical: false };
+  return {
+    type: "split",
+    id: generatePaneId(),
+    direction: "vertical",
+    children: [layout, kanbanPane],
+    sizes: [65, 35],
+  };
+}
+
+/**
+ * Reposition an existing kanban pane: remove it and re-add with forced placement.
+ * - vertical=true → move to the right, 1-column layout
+ * - vertical=false → move to the bottom, multi-column layout
+ */
+export function repositionKanbanPane(layout: PaneLayout, vertical: boolean): PaneLayout | null {
+  const kanbanId = findKanbanPaneId(layout);
+  if (!kanbanId) return null;
+
+  const stripped = removePane(layout, kanbanId);
+  if (!stripped) return null;
+
+  if (vertical) {
+    const kanbanPane: PaneKanban = { type: "kanban", id: generatePaneId(), vertical: true };
+    return {
+      type: "split",
+      id: generatePaneId(),
+      direction: "horizontal",
+      children: [stripped, kanbanPane],
+      sizes: [70, 30],
+    };
+  }
+
+  const kanbanPane: PaneKanban = { type: "kanban", id: generatePaneId(), vertical: false };
+  return {
+    type: "split",
+    id: generatePaneId(),
+    direction: "vertical",
+    children: [stripped, kanbanPane],
+    sizes: [65, 35],
+  };
 }
 
 /**

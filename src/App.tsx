@@ -13,6 +13,7 @@ import Sidebar from "./components/Sidebar";
 import WindowResizeHandles from "./components/WindowResizeHandles";
 import { invoke } from "@tauri-apps/api/core";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
+import { generateTerminalId } from "./lib/layout-utils";
 import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
 import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
 import UndoCloseToast from "./components/UndoCloseToast";
@@ -102,6 +103,55 @@ export default function App() {
     resolveWslCliPaths();
     // Clean up clipboard images older than 24h
     invoke("cleanup_clipboard_images", { maxAgeSecs: 86400 }).catch(() => {});
+  }, []);
+
+  // Restore dev servers from persisted tabs on app startup
+  useEffect(() => {
+    const state = useAppStore.getState();
+    if (!state.autoStartServerCommand) return;
+    // Skip if dev servers already exist (not a fresh restore)
+    if (state.devServers.length > 0) return;
+
+    // Build a lookup from workingDir → serverCommand using recentProjects as fallback
+    const recentByPath = new Map<string, string>();
+    for (const rp of state.recentProjects) {
+      if (rp.serverCommand) {
+        recentByPath.set(rp.path.replace(/\\/g, "/"), rp.serverCommand);
+      }
+    }
+
+    const projectTabs = state.tabs.filter(
+      (t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && t.workingDir
+    );
+
+    for (const tab of projectTabs) {
+      const command =
+        tab.serverCommand ||
+        recentByPath.get(tab.workingDir.replace(/\\/g, "/"));
+      if (!command) continue;
+
+      // Backfill serverCommand on the tab if it was only in recentProjects
+      if (!tab.serverCommand) {
+        useAppStore.setState((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id === tab.id ? { ...t, serverCommand: command } : t
+          ),
+        }));
+      }
+
+      const terminalId = generateTerminalId();
+      state.addTerminal(terminalId, "devserver", tab.workingDir);
+      state.addDevServer({
+        id: `ds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        terminalId,
+        tabId: tab.id,
+        projectName: tab.name,
+        command,
+        workingDir: tab.workingDir,
+        port: 0,
+        status: "running",
+      });
+    }
   }, []);
 
   // Watch Windows clipboard for new images (adds to TabBar strip automatically)

@@ -1,6 +1,5 @@
 import { useCallback, useState, useRef, useMemo, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { open } from "@tauri-apps/plugin-dialog";
 import type { Tab, TerminalType, PaneLayout } from "../types";
 import { useAppStore } from "../store";
 import {
@@ -123,44 +122,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
     handleLayoutChange(newLayout ?? tab.layout);
   }, [tab.id, tab.layout, handleLayoutChange]);
 
-  const handleTerminalSplit = useCallback((
-    termId: string,
-    direction: "horizontal" | "vertical",
-    type: TerminalType
-  ) => {
-    const paneId = findPaneIdForTerminal(tab.layout, termId);
-    if (!paneId) return;
-    const newTerminalId = generateTerminalId();
-    const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type };
-    handleSpawnTerminal(newTerminalId, type, tab.serverId);
-    handleLayoutChange(splitPane(tab.layout, paneId, direction, newLeaf));
-  }, [tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal]);
 
-  const handleTerminalOpenEditor = useCallback(async (termId: string) => {
-    try {
-      const selected = await open({ directory: false, multiple: false, title: "Open File in Editor" });
-      if (selected && typeof selected === "string") {
-        const paneId = findPaneIdForTerminal(tab.layout, termId);
-        if (!paneId) return;
-        const editorPane = { type: "editor" as const, id: generatePaneId(), filePath: selected };
-        handleLayoutChange(splitPane(tab.layout, paneId, "horizontal", editorPane));
-      }
-    } catch { /* User cancelled */ }
-  }, [tab.layout, handleLayoutChange]);
-
-  const handleTerminalOpenBrowser = useCallback((termId: string) => {
-    const paneId = findPaneIdForTerminal(tab.layout, termId);
-    if (!paneId) return;
-    const browserPane = { type: "browser" as const, id: generatePaneId(), url: "https://localhost:3000" };
-    handleLayoutChange(splitPane(tab.layout, paneId, "horizontal", browserPane));
-  }, [tab.layout, handleLayoutChange]);
-
-  const handleTerminalOpenTasks = useCallback((termId: string) => {
-    const paneId = findPaneIdForTerminal(tab.layout, termId);
-    if (!paneId) return;
-    const kanbanPane = { type: "kanban" as const, id: generatePaneId() };
-    handleLayoutChange(splitPane(tab.layout, paneId, "horizontal", kanbanPane));
-  }, [tab.layout, handleLayoutChange]);
 
   const handleTerminalExplainError = useCallback((termId: string, block: CommandBlock) => {
     const prompt = `Explain this error:\n\`\`\`\n${block.command}\n${block.outputText ?? ""}\n\`\`\`\nExit code: ${block.exitCode}\n`;
@@ -217,21 +179,6 @@ export default function Workspace({ tab }: WorkspaceProps) {
     handleLayoutChange(swapPanes(tab.layout, paneA, paneB));
   }, [tab.layout, handleLayoutChange]);
 
-  const handleTerminalMarkDevServer = useCallback((termId: string) => {
-    const t = useAppStore.getState().terminals[termId];
-    if (!t) return;
-    useAppStore.getState().addDevServer({
-      id: `ds-${Date.now()}`,
-      terminalId: termId,
-      tabId: tab.id,
-      projectName: tab.workingDir.split("/").pop() || tab.workingDir.split("\\").pop() || "Unknown",
-      command: "",
-      workingDir: t.workingDir,
-      port: 3000,
-      status: "running",
-    });
-  }, [tab.id, tab.workingDir]);
-
   // Listen for split-terminal events from the chevron dropdown
   useEffect(() => {
     const handler = (e: Event) => {
@@ -239,12 +186,21 @@ export default function Workspace({ tab }: WorkspaceProps) {
       const activeId = useAppStore.getState().activeTabId;
       if (activeId !== tab.id) return;
 
-      const type = (e as CustomEvent).detail?.type as TerminalType | undefined;
+      const detail = (e as CustomEvent).detail;
+      const type = detail?.type as TerminalType | undefined;
       if (!type) return;
 
       const newTerminalId = generateTerminalId();
       const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type };
       handleSpawnTerminal(newTerminalId, type, tab.serverId);
+
+      if (detail?.direction === "vertical" && activeTerminalId) {
+        const paneId = findPaneIdForTerminal(tab.layout, activeTerminalId);
+        if (paneId) {
+          handleLayoutChange(splitPane(tab.layout, paneId, "vertical", newLeaf));
+          return;
+        }
+      }
       handleLayoutChange(addPaneAsGrid(tab.layout, newLeaf));
     };
     window.addEventListener("ezydev:split-terminal", handler);
@@ -352,7 +308,6 @@ export default function Workspace({ tab }: WorkspaceProps) {
             isActive={activeTerminalId === termId}
             paneCount={allTerminalIds.length}
             onClose={() => handleTerminalClose(termId)}
-            onSplit={(direction, type) => handleTerminalSplit(termId, direction, type)}
             onChangeType={(type) => {
               useAppStore.getState().changeTerminalType(termId, type);
               // Clear session resume ID when switching terminal types
@@ -362,12 +317,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
             }}
             onFocus={() => handleTerminalFocus(termId)}
             onSwapPane={handleSwapPane}
-            onMarkDevServer={() => handleTerminalMarkDevServer(termId)}
-            onOpenEditor={() => handleTerminalOpenEditor(termId)}
-            onOpenBrowser={() => handleTerminalOpenBrowser(termId)}
-            onOpenTasks={() => handleTerminalOpenTasks(termId)}
             onExplainError={(block) => handleTerminalExplainError(termId, block)}
-            onOpenSnippets={() => window.dispatchEvent(new Event("ezydev:open-snippets"))}
             serverId={terminal.serverId}
             sessionResumeId={leaf?.sessionResumeId}
             onSessionResumeId={(id) => {
