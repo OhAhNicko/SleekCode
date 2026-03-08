@@ -4,6 +4,25 @@ import { promptify } from "../lib/promptify";
 import { useAppStore } from "../store";
 import { useClipboardImageStore, type ClipboardImage } from "../store/clipboardImageStore";
 import { getImageLabel } from "../lib/clipboard-insert";
+import type { TerminalType } from "../types";
+
+/** Lighten a hex color by a fixed amount (0-255 per channel). */
+function lightenHex(hex: string, amount: number): string {
+  const h = hex.replace("#", "");
+  const r = Math.min(255, parseInt(h.substring(0, 2), 16) + amount);
+  const g = Math.min(255, parseInt(h.substring(2, 4), 16) + amount);
+  const b = Math.min(255, parseInt(h.substring(4, 6), 16) + amount);
+  return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
+
+/** Convert hex to rgba. */
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.substring(0, 2), 16);
+  const g = parseInt(h.substring(2, 4), 16);
+  const b = parseInt(h.substring(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
 
 interface PromptComposerProps {
   onSubmit: (text: string) => void;
@@ -17,6 +36,7 @@ interface PromptComposerProps {
   containerRef: React.RefObject<HTMLDivElement | null>;
   terminal: Terminal | null;
   terminalId: string;
+  terminalType: TerminalType;
   scrollToPrompt: () => void;
   scrollToNextPrompt: () => void;
 }
@@ -33,6 +53,7 @@ export default function PromptComposer({
   containerRef,
   terminal,
   terminalId,
+  terminalType,
   scrollToPrompt,
   scrollToNextPrompt,
 }: PromptComposerProps) {
@@ -42,6 +63,7 @@ export default function PromptComposer({
   const [value, setValue] = useState("");
   // Start offscreen (-9999) until first valid prompt is found; avoids flash at top
   const [topOffset, setTopOffset] = useState<number>(-9999);
+  const [cellHeight, setCellHeight] = useState(0);
   const didStealText = useRef(false);
   // History navigation: -1 = composing new text, 0 = most recent, 1 = second most recent, etc.
   const [historyIdx, setHistoryIdx] = useState(-1);
@@ -55,7 +77,7 @@ export default function PromptComposer({
   // Scan viewport for the prompt line and return its pixel offset (or null).
   // Extracted as a plain function so it can be called from both the initial
   // effect and the continuous onRender listener.
-  function scanPromptPosition(): { offset: number; existing: string } | null {
+  function scanPromptPosition(): { offset: number; existing: string; cellHeight: number } | null {
     const container = containerRef.current;
     if (!container || !terminal) return null;
     const screen = container.querySelector(".xterm-screen") as HTMLElement | null;
@@ -79,7 +101,7 @@ export default function PromptComposer({
       const m = text.match(/^([>❯›»])\s?(.*)/);
       if (m) {
         const row = i - vpStart;
-        return { offset: Math.round(screenTopPx + row * cellHeight), existing: (m[2] ?? "").trimEnd() };
+        return { offset: Math.round(screenTopPx + row * cellHeight), existing: (m[2] ?? "").trimEnd(), cellHeight };
       }
     }
 
@@ -90,7 +112,7 @@ export default function PromptComposer({
       const text = line.translateToString().trim();
       if (/[>$❯]\s*$/.test(text) && text.length < 80) {
         const row = i - vpStart;
-        return { offset: Math.round(screenTopPx + row * cellHeight), existing: "" };
+        return { offset: Math.round(screenTopPx + row * cellHeight), existing: "", cellHeight };
       }
     }
 
@@ -100,7 +122,7 @@ export default function PromptComposer({
       if (!line) continue;
       if (line.translateToString().trim().length > 0) {
         const row = i - vpStart;
-        return { offset: Math.round(screenTopPx + row * cellHeight), existing: "" };
+        return { offset: Math.round(screenTopPx + row * cellHeight), existing: "", cellHeight };
       }
     }
     return null;
@@ -115,6 +137,7 @@ export default function PromptComposer({
       if (result) {
         foundPromptRef.current = true;
         setTopOffset(result.offset);
+        setCellHeight(result.cellHeight);
         if (result.existing && !didStealText.current) {
           didStealText.current = true;
           setValue(result.existing);
@@ -143,6 +166,7 @@ export default function PromptComposer({
       const result = scanPromptPosition();
       if (!result) return;
       setTopOffset(result.offset);
+      setCellHeight(result.cellHeight);
       // Position changed → new prompt appeared (e.g. after Claude finished or ESC cancel)
       if (result.offset !== lastOffsetRef.current) {
         lastOffsetRef.current = result.offset;
@@ -369,19 +393,45 @@ export default function PromptComposer({
     }
   }
 
+  const useCard = terminalType === "codex" || terminalType === "gemini";
+  const isGemini = terminalType === "gemini";
+  const isCodex = terminalType === "codex";
+
+  // Codex: extend 1 full row up to cover its tall bordered input
+  // Gemini: extend half a row up to cover its compact input area, inset sides
+  const cardTop = isCodex
+    ? topOffset - cellHeight
+    : isGemini
+      ? topOffset - Math.round(cellHeight * 0.4) - 2
+      : topOffset;
+  const cardLeft = useCard ? 8 : 0;
+  const cardRight = useCard ? 17 : 14;
+  const cardPadding = isCodex
+    ? `${Math.round((cellHeight + 12) / 2)}px 10px ${Math.round((cellHeight + 12) / 2)}px 10px`
+    : isGemini
+      ? "0 10px"
+      : "0 10px 2px 10px";
+
   return (
     <div
       style={{
         position: "absolute",
-        top: topOffset,
-        left: 0,
-        right: 14,
+        top: cardTop,
+        left: cardLeft,
+        right: cardRight,
         zIndex: 20,
-        backgroundColor: terminalBg,
-        padding: "0 10px 2px 10px",
+        backgroundColor: useCard ? lightenHex(terminalBg, 20) : terminalBg,
+        padding: cardPadding,
         display: "flex",
-        alignItems: "flex-start",
+        alignItems: useCard ? "center" : "flex-start",
         gap: 8,
+        ...(useCard
+          ? {
+              border: `1px solid ${hexToRgba(terminalCursor, 0.25)}`,
+              borderRadius: 6,
+              boxShadow: `0 2px 8px rgba(0,0,0,0.35), 0 0 0 1px rgba(0,0,0,0.15)`,
+            }
+          : {}),
       }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -524,7 +574,7 @@ export default function PromptComposer({
         }}
         style={{
           flexShrink: 0,
-          marginTop: 1,
+          marginTop: useCard ? 0 : 1,
           cursor: value.trim() && !promptifying ? "pointer" : "default",
           opacity: promptifying ? 1 : value.trim() ? 0.6 : 0.2,
           transition: "opacity 120ms ease",
@@ -557,7 +607,7 @@ export default function PromptComposer({
         onClick={submit}
         style={{
           flexShrink: 0,
-          marginTop: 2,
+          marginTop: useCard ? 0 : 2,
           cursor: value.trim() ? "pointer" : "default",
           opacity: value.trim() ? 0.8 : 0.25,
           transition: "opacity 120ms ease",

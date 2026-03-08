@@ -787,11 +787,19 @@ export default function TerminalPane({
   }, [pastedImage, dismissPreview]);
 
   const handleComposerSubmit = useCallback((text: string) => {
+    // Codex/Gemini TUI editors process keystrokes asynchronously — sending text+\r
+    // in one write causes \r to arrive before the editor finishes ingesting text.
+    // Split into text first, then Enter after a delay.
+    const needsDelayedEnter = terminalType === "codex" || terminalType === "gemini";
+
     if (text.includes("\n")) {
-      // Multi-line: use bracketed paste so Claude CLI treats it as one input,
+      // Multi-line: use bracketed paste so the CLI treats it as one input,
       // then send Enter after a short delay (immediate \r gets swallowed)
       write("\x1b[200~" + text + "\x1b[201~");
       setTimeout(() => write("\r"), 50);
+    } else if (needsDelayedEnter) {
+      write(text);
+      setTimeout(() => write("\r"), 80);
     } else {
       // Single-line: write directly (no bracketed paste needed)
       write(text + "\r");
@@ -801,7 +809,7 @@ export default function TerminalPane({
     if (!alwaysOn) {
       terminalRef.current?.focus();
     }
-  }, [write]);
+  }, [write, terminalType]);
 
   const handleComposerClose = useCallback(() => {
     composerDismissedRef.current = true;
@@ -866,6 +874,7 @@ export default function TerminalPane({
             containerRef={containerRef}
             terminal={terminalRef.current}
             terminalId={terminalId}
+            terminalType={terminalType}
             scrollToPrompt={() => scrollToPromptRef.current()}
             scrollToNextPrompt={() => scrollToNextPromptRef.current()}
           />

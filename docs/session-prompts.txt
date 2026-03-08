@@ -394,3 +394,24 @@
 [AskUserQuestion] Q: Remove the description line under each grid button? → A: Remove descriptions
 3. The thumbnail and title should be enough. Right?
 4. /end
+
+## 2026-03-08 — Kanban pane grid overlap fix
+
+1. When opening a new pane when the kanban pane is open horizontally, it takes over the right side of the kanban pane. That cannot happen. The horizontal kanban has to always span over the whole bottom row and when it's open, only 4x3 grid should be allowed because the kanban pane takes up a whole row
+2. It looks like this: [screenshot of kanban being split by new pane]
+3. In the "New workspace" popup - gray the 4 row grid presets out when "Kanban task board" ticker is ticked. Since we only allow 3 rows with the kanban pane
+4. /ship
+5. /end
+
+## 2026-03-08 — EzyComposer visual design for Codex/Gemini
+
+1. Implement the following plan: # Plan: Improve EzyComposer visual design for Codex and Gemini [pass terminalType prop, add card container for codex/gemini with raised bg, border, radius, shadow]
+2. Can we remove the background colors in the Codex CLI behind the EzyComposer? Just visually get rid of it
+3. Revert that (cover strip approach)
+4. Instead, make the EzyComposer in Codex CLI to be as vertically big as the Codex input composer
+5. Needs to be like 50% bigger vertically to cover the input composer below it
+6. It doesnt span horizontally now, and put the "type your prompt" text in the middle of the composer
+7. In the Codex CLI, when sending a prompt from EzyComposer, it only goes to the Codex input composer - its not sent like in Claude Code
+[AskUserQuestion] Q: How does the Codex CLI submit prompts? → A: Enter submits
+8. It worked in Codex and Gemini. But the composer in Gemini is too big, make it smaller
+[AskUserQuestion] Q: How should the Gemini composer be sized? → A: Same as Claude (flat) — remove Gemini from the card treatment entirely
