@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { BiScreenshot } from "react-icons/bi";
+import { FaExpand } from "react-icons/fa";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import { insertImagePath } from "../lib/clipboard-insert";
 import { useAppStore } from "../store";
@@ -53,22 +55,7 @@ export default function ClipboardImageStrip() {
             (e.currentTarget.style.backgroundColor = "transparent")
           }
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="var(--ezy-text-muted)"
-            strokeWidth="1.3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <rect x="3" y="3" width="10" height="10" rx="1" strokeDasharray="2.5 2" />
-            <path d="M1 5V2a1 1 0 0 1 1-1h3" />
-            <path d="M11 1h3a1 1 0 0 1 1 1v3" />
-            <path d="M15 11v3a1 1 0 0 1-1 1h-3" />
-            <path d="M5 15H2a1 1 0 0 1-1-1v-3" />
-          </svg>
+          <BiScreenshot size={14} color="var(--ezy-text-muted)" />
         </div>
 
         {/* Thumbnails */}
@@ -156,18 +143,7 @@ export default function ClipboardImageStrip() {
                 e.currentTarget.style.opacity = "0";
               }}
             >
-              <svg
-                width="8"
-                height="8"
-                viewBox="0 0 12 12"
-                fill="none"
-                stroke="white"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              >
-                <path d="M1 11L5 7M1 11V7.5M1 11H4.5" />
-                <path d="M11 1L7 5M11 1V4.5M11 1H7.5" />
-              </svg>
+              <FaExpand size={8} color="white" />
             </div>
           </div>
         ))}

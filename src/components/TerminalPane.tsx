@@ -1,10 +1,10 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
-import { getTheme } from "../lib/themes";
+import { getTheme, getEffectiveTerminalTheme } from "../lib/themes";
 import { usePty } from "../hooks/usePty";
 import { useAppStore } from "../store";
 import { registerPtyWrite, unregisterPtyWrite, getTerminalDataListener } from "../store/terminalSlice";
@@ -87,8 +87,13 @@ export default function TerminalPane({
     return s.servers.find((srv) => srv.id === serverId)?.name;
   });
   const themeId = useAppStore((s) => s.themeId);
+  const vibrantColors = useAppStore((s) => s.vibrantColors);
   const theme = getTheme(themeId);
+  const effectiveTerminalTheme = useMemo(() => getEffectiveTerminalTheme(themeId, vibrantColors), [themeId, vibrantColors]);
   const cliFontSize = useAppStore((s) => s.cliFontSizes[terminalType] ?? DEFAULT_CLI_FONT_SIZE);
+  const copyOnSelect = useAppStore((s) => s.copyOnSelect);
+  const copyOnSelectRef = useRef(copyOnSelect);
+  useEffect(() => { copyOnSelectRef.current = copyOnSelect; }, [copyOnSelect]);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -138,7 +143,15 @@ export default function TerminalPane({
           if (!wslCwd) return false;
           // Exclude IDs already claimed by other panes (prevents duplicates)
           const excludeIds = [...claimedSessionIds];
-          const id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
+          const type = terminalTypeRef.current;
+          let id: string | null = null;
+          if (type === "claude") {
+            id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
+          } else if (type === "codex") {
+            id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
+          } else if (type === "gemini") {
+            id = await invoke<string | null>("get_gemini_session_id", { excludeIds });
+          }
           if (id) {
             claimedSessionIds.add(id);
             onSessionResumeIdRef.current?.(id);
@@ -200,11 +213,11 @@ export default function TerminalPane({
 
     function initTerminal(el: HTMLElement) {
 
-    const manyPanes = paneCountRef.current > 6;
+    const manyPanes = paneCountRef.current > 6; // used for scrollback budget
     const baseFontSize = cliFontSizeRef.current;
 
     const term = new Terminal({
-      theme: theme.terminal,
+      theme: effectiveTerminalTheme,
       cursorBlink: true,
       cursorStyle: "bar",
       cursorWidth: 2,
@@ -232,6 +245,12 @@ export default function TerminalPane({
 
     let disposed = false;
     term.open(el);
+
+    term.onSelectionChange(() => {
+      if (!copyOnSelectRef.current) return;
+      const sel = term.getSelection();
+      if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+    });
 
     // Unicode 11 for correct emoji widths — must load after open()
     try {
@@ -267,9 +286,13 @@ export default function TerminalPane({
     }, 300);
 
     // Defer WebGL addon — GPU context init is expensive and blocks first paint.
-    // Skip entirely when many panes are open (Chrome caps at ~16 WebGL contexts,
-    // and context thrashing kills performance). Canvas renderer is fine for small panes.
-    const webglTimer = !manyPanes ? setTimeout(() => {
+    // Always try WebGL (DOM renderer applies letterSpacing as CSS letter-spacing,
+    // creating 1px gaps between box-drawing chars → dashed appearance).
+    // Stagger delay for many panes to reduce peak concurrent GPU context requests.
+    // Chrome caps at ~16 WebGL contexts = MAX_PANES, so all panes should get one.
+    // Try/catch handles failures gracefully (falls back to canvas/DOM renderer).
+    const webglDelay = manyPanes ? 200 + Math.floor(Math.random() * 800) : 200;
+    const webglTimer = setTimeout(() => {
       try {
         if (!disposed && el.offsetHeight) {
           const webgl = new WebglAddon();
@@ -280,9 +303,9 @@ export default function TerminalPane({
           fitAddon.fit();
         }
       } catch {
-        // Canvas renderer is the default fallback
+        // Context limit exceeded — canvas/DOM renderer is the fallback
       }
-    }, 200) : undefined;
+    }, webglDelay);
     initialDims.current = { cols: term.cols, rows: term.rows };
     // Signal that the terminal has real dimensions — PTY can now spawn
     // with correct cols/rows instead of the default 80×24.
@@ -592,24 +615,46 @@ export default function TerminalPane({
     // 100ms debounce: fit() fires once after resize stops. Zero work during drag.
     let fitTimer: ReturnType<typeof setTimeout> | undefined;
     let currentFontSize = baseFontSize;
-    const observer = new ResizeObserver((entries) => {
-      clearTimeout(fitTimer);
-      fitTimer = setTimeout(() => {
-        try {
-          // Skip fit when container is hidden (display:none → 0×0).
-          // Fitting to zero dimensions corrupts xterm scroll position.
-          if (el.clientWidth === 0 || el.clientHeight === 0) return;
-          const w = entries[0]?.contentRect.width ?? el.clientWidth;
-          const targetSize = w < 300 ? Math.max(baseFontSize - 3, 10) : w < 450 ? Math.max(baseFontSize - 2, 11) : w < 600 ? Math.max(baseFontSize - 1, 12) : baseFontSize;
-          if (targetSize !== currentFontSize) {
-            currentFontSize = targetSize;
-            term.options.fontSize = targetSize;
-          }
-          fitAddon.fit();
-        } catch {
-          // Container may be detached
+    let lastWidth = el.clientWidth;
+    let lastHeight = el.clientHeight;
+    function doFit() {
+      try {
+        if (el.clientWidth === 0 || el.clientHeight === 0) return;
+        const w = el.clientWidth;
+        const targetSize = w < 300 ? Math.max(baseFontSize - 3, 10) : w < 450 ? Math.max(baseFontSize - 2, 11) : w < 600 ? Math.max(baseFontSize - 1, 12) : baseFontSize;
+        if (targetSize !== currentFontSize) {
+          currentFontSize = targetSize;
+          term.options.fontSize = targetSize;
         }
-      }, 100);
+        // Preserve scroll position across fit — layout changes (e.g. browser
+        // preview toggle) resize the container, and fit() can reset viewport.
+        const buf = term.buffer.active;
+        const wasAtBottom = buf.viewportY >= buf.baseY;
+        const savedViewport = buf.viewportY;
+        fitAddon.fit();
+        if (wasAtBottom) {
+          term.scrollToBottom();
+        } else {
+          const target = Math.min(savedViewport, buf.baseY);
+          term.scrollToLine(target);
+        }
+        lastWidth = el.clientWidth;
+        lastHeight = el.clientHeight;
+      } catch {
+        // Container may be detached
+      }
+    }
+    const observer = new ResizeObserver(() => {
+      clearTimeout(fitTimer);
+      // Large jump (pane added/removed) → fit immediately to prevent scroll drift.
+      // Small incremental changes (window drag) → debounce.
+      const dw = Math.abs(el.clientWidth - lastWidth);
+      const dh = Math.abs(el.clientHeight - lastHeight);
+      if (dw > 50 || dh > 50) {
+        doFit();
+      } else {
+        fitTimer = setTimeout(doFit, 100);
+      }
     });
     observer.observe(el);
 
@@ -753,9 +798,9 @@ export default function TerminalPane({
   // Theme hot-swap
   useEffect(() => {
     if (terminalRef.current) {
-      terminalRef.current.options.theme = theme.terminal;
+      terminalRef.current.options.theme = effectiveTerminalTheme;
     }
-  }, [theme]);
+  }, [effectiveTerminalTheme]);
 
   // Live font-size update when user changes CLI font size in settings
   useEffect(() => {
@@ -875,6 +920,7 @@ export default function TerminalPane({
             terminal={terminalRef.current}
             terminalId={terminalId}
             terminalType={terminalType}
+            workingDir={workingDir}
             scrollToPrompt={() => scrollToPromptRef.current()}
             scrollToNextPrompt={() => scrollToNextPromptRef.current()}
           />

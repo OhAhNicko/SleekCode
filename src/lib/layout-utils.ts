@@ -274,12 +274,37 @@ function findKanbanNode(layout: PaneLayout): PaneKanban | null {
 }
 
 /**
+ * Find a browser/codereview/fileviewer pane that is a direct child of the root
+ * horizontal split (i.e., a full-column pane wrapping the terminal grid).
+ * Returns the pane, which side it's on, and its size percentage.
+ */
+function findRootSpecialColumnPane(layout: PaneLayout): {
+  pane: PaneLayout;
+  side: "left" | "right";
+  sizePercent: number;
+} | null {
+  if (layout.type !== "split" || layout.direction !== "horizontal") return null;
+  const sizes = layout.sizes ?? [50, 50];
+  const isSpecial = (p: PaneLayout) =>
+    p.type === "browser" || p.type === "codereview" || p.type === "fileviewer";
+  if (isSpecial(layout.children[0])) {
+    return { pane: layout.children[0], side: "left", sizePercent: sizes[0] };
+  }
+  if (isSpecial(layout.children[1])) {
+    return { pane: layout.children[1], side: "right", sizePercent: sizes[1] };
+  }
+  return null;
+}
+
+/**
  * Add a new leaf pane to the layout in a smart grid pattern.
  * Extracts the current column structure, decides placement, and rebuilds.
  * Caps at MAX_PANES (4x4 grid), or MAX_PANES_WITH_KANBAN (4x3) when kanban is open.
  *
  * When a kanban pane exists, it is stripped before grid placement and re-attached
  * afterward so the kanban always spans its full row/column.
+ * When a browser/codereview/fileviewer pane wraps the layout as a full column,
+ * it is similarly stripped and re-attached so new terminals stay in the terminal grid.
  */
 export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout): PaneLayout {
   // If kanban exists, strip it, add pane to the grid only, then re-attach
@@ -312,6 +337,52 @@ export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout): PaneLayo
       children: [newGrid, { ...kanban, id: generatePaneId() }],
       sizes: [65, 35],
     };
+  }
+
+  // If a full-column special pane (browser/codereview/fileviewer) wraps the layout,
+  // strip it, add to the inner terminal grid only, then re-attach on the same side.
+  const rootSpecial = findRootSpecialColumnPane(layout);
+  if (rootSpecial) {
+    const stripped = removePane(layout, rootSpecial.pane.id);
+    if (!stripped) return layout;
+
+    let newGrid: PaneLayout;
+    const strippedCols = getTopLevelColumns(stripped);
+    // When the terminal grid has only 1 column with 1 row (single pane), force a
+    // vertical split so the new pane stacks below instead of creating an awkward
+    // middle column sandwiched between the terminal and the browser.
+    if (strippedCols.length === 1 && extractColumnLeaves(strippedCols[0]).length === 1) {
+      if (countLeafPanes(stripped) >= MAX_PANES) return layout;
+      newGrid = {
+        type: "split",
+        id: generatePaneId(),
+        direction: "vertical",
+        children: [stripped, newLeaf] as [PaneLayout, PaneLayout],
+        sizes: [50, 50],
+      };
+    } else {
+      newGrid = addPaneAsGrid(stripped, newLeaf);
+      if (newGrid === stripped) return layout;
+    }
+
+    const sz = rootSpecial.sizePercent;
+    if (rootSpecial.side === "left") {
+      return {
+        type: "split",
+        id: generatePaneId(),
+        direction: "horizontal",
+        children: [rootSpecial.pane, newGrid] as [PaneLayout, PaneLayout],
+        sizes: [sz, 100 - sz],
+      };
+    } else {
+      return {
+        type: "split",
+        id: generatePaneId(),
+        direction: "horizontal",
+        children: [newGrid, rootSpecial.pane] as [PaneLayout, PaneLayout],
+        sizes: [100 - sz, sz],
+      };
+    }
   }
 
   const columns = getTopLevelColumns(layout);
@@ -506,6 +577,23 @@ export function addBrowserPaneRight(layout: PaneLayout, url: string, sizePercent
     direction: "horizontal",
     children: [layout, browserPane],
     sizes: [100 - sizePercent, sizePercent],
+  };
+  return { layout: newLayout, paneId };
+}
+
+/**
+ * Add a browser pane on the far left of the layout, taking full vertical height.
+ * Wraps the entire existing layout in a horizontal split with the browser on the left.
+ */
+export function addBrowserPaneLeft(layout: PaneLayout, url: string, sizePercent = 35): { layout: PaneLayout; paneId: string } {
+  const paneId = generatePaneId();
+  const browserPane: PaneBrowser = { type: "browser", id: paneId, url };
+  const newLayout: PaneSplit = {
+    type: "split",
+    id: generatePaneId(),
+    direction: "horizontal",
+    children: [browserPane, layout],
+    sizes: [sizePercent, 100 - sizePercent],
   };
   return { layout: newLayout, paneId };
 }

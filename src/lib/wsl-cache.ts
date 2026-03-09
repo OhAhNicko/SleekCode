@@ -60,7 +60,7 @@ export async function resolveWslCliPaths(): Promise<void> {
     console.log("[wsl-cache] resolved:", Object.keys(resolvedPaths).join(", "), distro ? `(${distro})` : "");
     // Pre-warm the WSL pool now that WSL VM is booted and cache is ready.
     // Await so that wslReady consumers can use the pooled spawn path.
-    await invoke("pty_pool_warm", { count: 3, distro: distro || null }).catch(() => {});
+    await invoke("pty_pool_warm", { count: 16, distro: distro || null }).catch(() => {});
   } catch (e) {
     console.error("[wsl-cache] Resolution failed:", e);
   } finally {

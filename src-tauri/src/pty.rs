@@ -68,11 +68,17 @@ struct PooledWsl {
     child: Box<dyn portable_pty::Child + Send + Sync>,
 }
 
-const WSL_POOL_MAX: usize = 5;
+const WSL_POOL_MAX: usize = 16;
 
 fn wsl_pool() -> &'static Mutex<Vec<PooledWsl>> {
     static POOL: OnceLock<Mutex<Vec<PooledWsl>>> = OnceLock::new();
     POOL.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Stores the distro used for pooled sessions so auto-replenishment knows what to spawn.
+fn pool_distro() -> &'static Mutex<Option<String>> {
+    static DISTRO: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    DISTRO.get_or_init(|| Mutex::new(None))
 }
 
 fn spawn_one_wsl(distro: Option<String>) -> Result<PooledWsl, String> {
@@ -96,14 +102,32 @@ fn spawn_one_wsl(distro: Option<String>) -> Result<PooledWsl, String> {
     // After eval, exec replaces bash with the target CLI.
     cmd.args([
         "-e", "bash", "--norc", "--noprofile", "-c",
-        "stty -echo 2>/dev/null; IFS= read -r cmd; stty echo 2>/dev/null; eval \"$cmd\"",
+        // \x01 signals that stty -echo has run and read is waiting.
+        // We drain this byte before pushing to pool so callers never race with echo.
+        // No stty echo restore — the exec'd CLI sets its own terminal mode.
+        "stty -echo 2>/dev/null; printf '\\001'; IFS= read -r cmd; eval \"$cmd\"",
     ]);
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
 
-    let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+
+    // Drain until the ready signal (\x01) — guarantees stty -echo is active before
+    // this session is used. Running in a background thread so blocking read is fine.
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut buf = [0u8; 64];
+        while std::time::Instant::now() < deadline {
+            match reader.read(&mut buf) {
+                Ok(n) if n > 0 => {
+                    if buf[..n].contains(&1u8) { break; }
+                }
+                _ => break, // EOF or error — bash died, proceed anyway
+            }
+        }
+    }
 
     Ok(PooledWsl {
         writer,
@@ -168,6 +192,9 @@ pub async fn pty_spawn(
 /// Returns the number of warm-up threads launched.
 #[tauri::command]
 pub async fn pty_pool_warm(count: u32, distro: Option<String>) -> Result<u32, String> {
+    // Remember distro so auto-replenishment in pty_spawn_pooled knows what to spawn.
+    *pool_distro().lock().unwrap() = distro.clone();
+
     let current_size = wsl_pool().lock().unwrap().len();
     let to_spawn = (count as usize).min(WSL_POOL_MAX.saturating_sub(current_size));
 
@@ -231,6 +258,19 @@ pub async fn pty_spawn_pooled(
     );
 
     start_reader_thread(id, pooled.reader, pooled.child, on_data, on_exit);
+
+    // Auto-replenish: queue a new session so the pool stays healthy after each use.
+    let d = pool_distro().lock().unwrap().clone();
+    std::thread::spawn(move || {
+        if wsl_pool().lock().unwrap().len() < WSL_POOL_MAX {
+            if let Ok(new_session) = spawn_one_wsl(d) {
+                let mut pool = wsl_pool().lock().unwrap();
+                if pool.len() < WSL_POOL_MAX {
+                    pool.push(new_session);
+                }
+            }
+        }
+    });
 
     Ok(id)
 }

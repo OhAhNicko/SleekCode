@@ -4,6 +4,9 @@ import type { TerminalType } from "../types";
 const RESUME_PATTERNS: Partial<Record<TerminalType, RegExp>> = {
   claude:
     /claude\s+--resume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
+  codex: /codex resume\s+(\S+)/i,
+  gemini:
+    /gemini\s+--resume\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
 };
 
 /** Whether a terminal type supports session resume. */
@@ -28,14 +31,16 @@ export function extractSessionResumeId(
   return match?.[1];
 }
 
-/** Build the CLI flag string for resuming a session. */
+/** Build the CLI flag/subcommand string for resuming a session. */
 export function getResumeFlag(
   type: TerminalType,
   id: string
 ): string {
   switch (type) {
+    case "codex":
+      return `resume ${id}`; // codex uses a subcommand: `codex resume <id>`
     case "claude":
-      return `--resume ${id}`;
+    case "gemini":
     default:
       return `--resume ${id}`;
   }

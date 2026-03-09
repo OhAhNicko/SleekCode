@@ -51,6 +51,7 @@ export interface TabSlice {
   setActiveTab: (tabId: string) => void;
   updateTabLayout: (tabId: string, layout: PaneLayout) => void;
   togglePinTab: (tabId: string) => void;
+  reorderTabs: (draggedId: string, insertBeforeId: string | null) => void;
 }
 
 function createDefaultLayout(_workingDir: string): {
@@ -139,9 +140,10 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       scheduleDeferredServerKill(tabId, tabServers);
 
       const remaining = state.tabs.filter((t) => t.id !== tabId);
+      const nonSystemRemaining = remaining.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
       const newActiveId =
         state.activeTabId === tabId
-          ? remaining[remaining.length - 1]?.id ?? DEV_SERVER_TAB_ID
+          ? nonSystemRemaining[nonSystemRemaining.length - 1]?.id ?? remaining[remaining.length - 1]?.id ?? KANBAN_TAB_ID
           : state.activeTabId;
       return { tabs: remaining, activeTabId: newActiveId } as Partial<TabSlice>;
     });
@@ -165,4 +167,19 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       ),
     }));
   },
+
+  reorderTabs: (draggedId, insertBeforeId) =>
+    set((state) => {
+      const tabs = [...state.tabs];
+      const fromIdx = tabs.findIndex((t) => t.id === draggedId);
+      if (fromIdx === -1) return state;
+      const [dragged] = tabs.splice(fromIdx, 1);
+      if (insertBeforeId === null) {
+        tabs.push(dragged);
+      } else {
+        const toIdx = tabs.findIndex((t) => t.id === insertBeforeId);
+        tabs.splice(toIdx === -1 ? tabs.length : toIdx, 0, dragged);
+      }
+      return { tabs };
+    }),
 });

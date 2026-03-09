@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { TerminalType } from "../types";
 import { getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand } from "../lib/terminal-config";
-import { getCachedDistro, wslReady } from "../lib/wsl-cache";
+import { wslReady } from "../lib/wsl-cache";
 import { useAppStore } from "../store";
 import { getShellIntegrationCommand } from "../lib/shell-integration";
 
@@ -168,8 +168,7 @@ export function usePty({
                 onData: onDataChan,
                 onExit: onExitChan,
               });
-              // Replenish pool in background
-              invoke("pty_pool_warm", { count: 1, distro: getCachedDistro() ?? null }).catch(() => {});
+              // Pool auto-replenishes in Rust (pty_spawn_pooled spawns a replacement session)
             } catch {
               // Pool empty — fall through to normal spawn
             }

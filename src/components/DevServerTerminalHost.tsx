@@ -81,6 +81,8 @@ export default function DevServerTerminalHost() {
   const resolvedRef = useRef<Set<string>>(new Set());
   // Track retry attempts for lock errors (serverId → attempt count)
   const lockRetryRef = useRef<Map<string, number>>(new Map());
+  // Track active stopped-detection monitors (serverId → terminalId)
+  const stoppedMonitorRef = useRef<Map<string, string>>(new Map());
 
   const handlePtyReady = useCallback(
     (serverId: string, terminalId: string, command: string) => {
@@ -122,9 +124,10 @@ export default function DevServerTerminalHost() {
       write("\x03");
       // Second Ctrl+C after 100ms for processes that need confirmation
       setTimeout(() => write("\x03"), 100);
-      // Re-enable detection
+      // Re-enable detection — clear all resolved state BEFORE triggering re-render
       resolvedRef.current.delete(serverId);
       portDetectedRef.current.delete(serverId);
+      stoppedMonitorRef.current.delete(serverId);
       updateDevServerStatus(serverId, "starting");
       updateDevServerPort(serverId, 0);
       updateDevServerError(serverId, undefined);
@@ -146,12 +149,13 @@ export default function DevServerTerminalHost() {
       let portFound = false;
 
       registerTerminalDataListener(ds.terminalId, (data) => {
-        buffer += textDecoder.decode(data, { stream: true });
+        const chunk = textDecoder.decode(data, { stream: true });
+        buffer += chunk;
         // Only scan last 4KB to avoid memory buildup
         if (buffer.length > 4096) buffer = buffer.slice(-4096);
 
         // Strip ANSI escape codes for cleaner matching
-        const cleanBuffer = buffer.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "");
+        const cleanBuffer = buffer.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
 
         // ALWAYS check for lock errors first — even after port detection
         for (const pattern of LOCK_ERROR_PATTERNS) {
@@ -203,12 +207,28 @@ export default function DevServerTerminalHost() {
           }
         }
 
-        // Skip port/error checks if already resolved
+        // Skip if fully resolved — stopped monitor (registered by grace timer) handles remaining detection
         if (resolvedRef.current.has(ds.id)) return;
+
+        // If port already detected (still in grace period), watch for early server stop
+        if (portDetectedRef.current.has(ds.id)) {
+          const cleanChunk = chunk
+            .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+            .replace(/\x1b\][^\x07]*\x07/g, "");
+          // Shell prompt: $, %, or # followed by a space — server returned to shell
+          if (/[\$%#] $/.test(cleanChunk)) {
+            const graceTimer = graceTimersRef.current.get(ds.id);
+            if (graceTimer) { clearTimeout(graceTimer); graceTimersRef.current.delete(ds.id); }
+            resolvedRef.current.add(ds.id);
+            updateDevServerStatus(ds.id, "stopped");
+            unregisterTerminalDataListener(ds.terminalId);
+          }
+          return;
+        }
 
         // Check for port
         if (!portFound) {
-          const match = buffer.match(PORT_REGEX);
+          const match = cleanBuffer.match(PORT_REGEX);
           if (match) {
             const port = parseInt(match[1], 10);
             if (port > 0 && port <= 65535) {
@@ -227,11 +247,26 @@ export default function DevServerTerminalHost() {
                   ),
                 });
               }
-              // Keep listening for lock errors for 8 seconds, then resolve
+              // After grace period, replace with a lightweight stopped-detection listener
               const timer = setTimeout(() => {
                 resolvedRef.current.add(ds.id);
                 graceTimersRef.current.delete(ds.id);
-                unregisterTerminalDataListener(ds.terminalId);
+                stoppedMonitorRef.current.set(ds.id, ds.terminalId);
+                let monBuf = "";
+                const monDec = new TextDecoder();
+                registerTerminalDataListener(ds.terminalId, (rawData) => {
+                  monBuf += monDec.decode(rawData, { stream: true });
+                  if (monBuf.length > 500) monBuf = monBuf.slice(-500);
+                  const clean = monBuf
+                    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+                    .replace(/\x1b\][^\x07]*\x07/g, "");
+                  // Shell prompt: $, %, or # followed by a space
+                  if (/[\$%#] $/.test(clean)) {
+                    stoppedMonitorRef.current.delete(ds.id);
+                    updateDevServerStatus(ds.id, "stopped");
+                    unregisterTerminalDataListener(ds.terminalId);
+                  }
+                });
               }, 8000);
               graceTimersRef.current.set(ds.id, timer);
               return;
@@ -257,7 +292,10 @@ export default function DevServerTerminalHost() {
 
     return () => {
       for (const ds of devServers) {
-        unregisterTerminalDataListener(ds.terminalId);
+        // Skip resolved servers — they have a stopped monitor active; don't tear it down
+        if (!resolvedRef.current.has(ds.id)) {
+          unregisterTerminalDataListener(ds.terminalId);
+        }
       }
     };
   }, [devServers, updateDevServerStatus, updateDevServerPort, updateDevServerError, restartServer]);
@@ -284,11 +322,21 @@ export default function DevServerTerminalHost() {
         graceTimersRef.current.delete(id);
       }
     }
+    // Clean up stopped monitors for removed servers
+    for (const [serverId, terminalId] of stoppedMonitorRef.current.entries()) {
+      if (!currentIds.has(serverId)) {
+        unregisterTerminalDataListener(terminalId);
+        stoppedMonitorRef.current.delete(serverId);
+      }
+    }
     // Re-enable detection for servers that were restarted
     for (const ds of devServers) {
       if (ds.status === "starting" && !ds.errorMessage) {
         resolvedRef.current.delete(ds.id);
         portDetectedRef.current.delete(ds.id);
+        // Clear stopped monitor entry (listener itself was already unregistered
+        // by the main effect cleanup, which runs before this cleanup effect)
+        stoppedMonitorRef.current.delete(ds.id);
         const graceTimer = graceTimersRef.current.get(ds.id);
         if (graceTimer) {
           clearTimeout(graceTimer);
@@ -442,6 +490,10 @@ export default function DevServerTerminalHost() {
                   title="Start"
                   style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
                   onClick={() => {
+                    // Clear resolved state BEFORE triggering re-render so main effect re-registers listener
+                    resolvedRef.current.delete(expandedServer.id);
+                    portDetectedRef.current.delete(expandedServer.id);
+                    stoppedMonitorRef.current.delete(expandedServer.id);
                     const write = getPtyWrite(expandedServer.terminalId);
                     if (write) write(expandedServer.command + "\r");
                     updateDevServerStatus(expandedServer.id, "starting");

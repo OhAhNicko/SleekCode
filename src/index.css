@@ -124,9 +124,10 @@ body,
   font-family: Hack, monospace !important;
 }
 
-/* Active pane glow */
+/* Active pane glow — 2px spread renders as a solid line at any DPI/display scaling.
+   1px at 125-150% DPI becomes fractional physical pixels → dotted/dashed artefact. */
 .pane-active {
-  box-shadow: inset 0 0 0 1px var(--ezy-accent-dim);
+  box-shadow: inset 0 0 0 2px var(--ezy-accent-dim);
 }
 
 /* Tab bar drag region */

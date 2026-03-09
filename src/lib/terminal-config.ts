@@ -150,6 +150,8 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
     parts.push(`cd '${wslCwd}'`);
   }
 
+  // Clear the screen before exec so startup noise from Codex/Gemini is never visible.
+  parts.push("printf '\\033[2J\\033[H'");
   parts.push(`exec ${cliPath}${extraSuffix}${resumeSuffix}`);
 
   return parts.join("; ");

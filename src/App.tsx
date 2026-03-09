@@ -12,6 +12,7 @@ import CommandHistory from "./components/CommandHistory";
 import Sidebar from "./components/Sidebar";
 import WindowResizeHandles from "./components/WindowResizeHandles";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
 import { generateTerminalId } from "./lib/layout-utils";
 import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
@@ -31,9 +32,22 @@ export default function App() {
   const [showSnippets, setShowSnippets] = useState(false);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
+  const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
   const theme = getTheme(themeId);
+
+  // If activeTabId is dev-server-tab (from old persisted state), redirect to first non-system tab
+  useEffect(() => {
+    if (activeTabId === "dev-server-tab") {
+      const fallback = tabs.find((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
+      if (fallback) {
+        useAppStore.getState().setActiveTab(fallback.id);
+        // Also open the panel so they still see dev servers
+        if (!devServerPanelOpen) useAppStore.getState().toggleDevServerPanel();
+      }
+    }
+  }, [activeTabId, tabs, devServerPanelOpen]);
 
   // Build extra palette actions from launch configs, snippets, and history
   const paletteExtraActions = useMemo<PaletteAction[]>(() => {
@@ -124,11 +138,17 @@ export default function App() {
       (t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && t.workingDir
     );
 
+    const seenDirs = new Set<string>();
     for (const tab of projectTabs) {
       const command =
         tab.serverCommand ||
         recentByPath.get(tab.workingDir.replace(/\\/g, "/"));
       if (!command) continue;
+
+      // Skip duplicate projects (same workingDir already spawned)
+      const normDir = tab.workingDir.replace(/\\/g, "/");
+      if (seenDirs.has(normDir)) continue;
+      seenDirs.add(normDir);
 
       // Backfill serverCommand on the tab if it was only in recentProjects
       if (!tab.serverCommand) {
@@ -152,6 +172,19 @@ export default function App() {
         status: "running",
       });
     }
+  }, []);
+
+  // Intercept OS-level window close (Alt+F4, taskbar X) and show confirm dialog if enabled
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    getCurrentWindow().onCloseRequested((event) => {
+      const { confirmQuit } = useAppStore.getState();
+      if (confirmQuit) {
+        event.preventDefault();
+        window.dispatchEvent(new Event("ezydev:quit-requested"));
+      }
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
   }, []);
 
   // Watch Windows clipboard for new images (adds to TabBar strip automatically)
@@ -204,15 +237,16 @@ export default function App() {
         return;
       }
 
-      // Ctrl+Tab → next tab
+      // Ctrl+Tab → next tab (skip dev-server-tab which is now a sidebar panel)
       if (ctrlKey && !shiftKey && key === "Tab") {
         e.preventDefault();
         const store = useAppStore.getState();
-        const currentIndex = store.tabs.findIndex(
+        const cycleable = store.tabs.filter((t) => !t.isDevServerTab);
+        const currentIndex = cycleable.findIndex(
           (t) => t.id === store.activeTabId
         );
-        const nextIndex = (currentIndex + 1) % store.tabs.length;
-        store.setActiveTab(store.tabs[nextIndex].id);
+        const nextIndex = (currentIndex + 1) % cycleable.length;
+        store.setActiveTab(cycleable[nextIndex].id);
         return;
       }
 
@@ -234,14 +268,15 @@ export default function App() {
           break;
         }
         case "Tab": {
-          // Ctrl+Shift+Tab → previous tab
+          // Ctrl+Shift+Tab → previous tab (skip dev-server-tab)
           e.preventDefault();
-          const currentIndex = store.tabs.findIndex(
+          const cycleable = store.tabs.filter((t) => !t.isDevServerTab);
+          const currentIndex = cycleable.findIndex(
             (t) => t.id === store.activeTabId
           );
           const prevIndex =
-            (currentIndex - 1 + store.tabs.length) % store.tabs.length;
-          store.setActiveTab(store.tabs[prevIndex].id);
+            (currentIndex - 1 + cycleable.length) % cycleable.length;
+          store.setActiveTab(cycleable[prevIndex].id);
           break;
         }
       }
@@ -268,9 +303,11 @@ export default function App() {
             onOpenFile={handleOpenFile}
           />
         )}
+        {devServerPanelOpen && <DevServerTab />}
         <div className="flex-1 min-w-0 relative">
           {tabs.map((tab) => {
             const isActive = tab.id === activeTabId;
+            if (tab.isDevServerTab) return null;
             return (
               <div
                 key={tab.id}
@@ -282,8 +319,6 @@ export default function App() {
               >
                 {tab.isKanbanTab ? (
                   <KanbanBoard />
-                ) : tab.isDevServerTab ? (
-                  <DevServerTab />
                 ) : tab.isServersTab ? (
                   <ServersPanel />
                 ) : (

@@ -11,12 +11,14 @@ mod win32_border {
     use std::ffi::c_void;
 
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const DWMWCP_DONOTROUND: u32 = 1;
     const DWMWCP_ROUND: u32 = 2;
     const DWMWA_BORDER_COLOR: u32 = 34;
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     const WM_NCCALCSIZE: u32 = 0x0083;
     const GWL_STYLE: i32 = -16;
     const WS_THICKFRAME: isize = 0x00040000;
+    const WS_MAXIMIZE: isize = 0x01000000;
     const SWP_FRAMECHANGED: u32 = 0x0020;
     const SWP_NOMOVE: u32 = 0x0002;
     const SWP_NOSIZE: u32 = 0x0001;
@@ -67,11 +69,30 @@ mod win32_border {
         _ref_data: usize,
     ) -> isize {
         if msg == WM_NCCALCSIZE && wparam == 1 {
-            // When wParam is TRUE, returning 0 tells Windows: no non-client area.
-            // This removes the 1px top border while WS_THICKFRAME keeps resize working.
-            return 0;
+            let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+            if (style & WS_MAXIMIZE) == 0 {
+                // Not maximized: remove all non-client area so content fills the window.
+                return 0;
+            }
+            // Maximized: fall through to DefSubclassProc.
+            // Returning 0 here would make the client rect equal to the raw maximized
+            // window rect, which WS_THICKFRAME extends ~8px beyond screen edges.
+            // That causes corner content to be clipped off-screen (looks like rounded corners).
+            // Letting DefSubclassProc handle it correctly clips the client to the visible monitor area.
         }
         DefSubclassProc(hwnd, msg, wparam, lparam)
+    }
+
+    pub fn set_corner_preference(hwnd: *mut c_void, rounded: bool) {
+        unsafe {
+            let corner_pref = if rounded { DWMWCP_ROUND } else { DWMWCP_DONOTROUND };
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &corner_pref as *const u32 as *const c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
     }
 
     pub fn remove_border(hwnd: *mut c_void) {
@@ -790,6 +811,90 @@ async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>) -
     Ok(None)
 }
 
+/// Find the most recent Codex session ID for a given project.
+/// Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl
+/// The first line of each file is JSON with "cwd" (project path) and "id" (session UUID).
+#[tauri::command]
+async fn get_codex_session_id(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    // Find .jsonl files sorted by mtime, read first line of each, filter by cwd,
+    // then extract the UUID from the "id" field.
+    let script = format!(
+        "find ~/.codex/sessions -name '*.jsonl' -type f -printf '%T@ %p\\n' 2>/dev/null | sort -rn | sed 's/^[0-9.]* //' | while IFS= read -r f; do head -1 \"$f\" 2>/dev/null; done | grep '\"cwd\":\"{}\"' | grep -oE '\"id\":\"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}\"' | sed 's/\"id\":\"//;s/\"//'",
+        project_path
+    );
+
+    let output = Command::new("wsl.exe")
+        .args(["--", "bash", "-lic", &script])
+        .output()
+        .map_err(|e| format!("Failed to query Codex sessions: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Ok(None);
+    }
+
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    for line in stdout.lines() {
+        let id = line.trim();
+        if is_valid_uuid(id) && !exclude_ids.iter().any(|ex| ex == id) {
+            return Ok(Some(id.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Find the most recent Gemini session ID.
+/// Gemini stores sessions at ~/.gemini/tmp/<project_name>/chats/session-<ts>-<partial_uuid>.json
+/// The JSON is pretty-printed; "sessionId" is on line 2.
+#[tauri::command]
+async fn get_gemini_session_id(exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    // List session files sorted by mtime, grep sessionId from file contents, extract UUID.
+    // Uses ls + xargs (like Claude's lookup) instead of find -printf which can fail via wsl.exe.
+    let script = "ls -1t ~/.gemini/tmp/*/chats/*.json 2>/dev/null | head -20 | xargs grep -h sessionId 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'";
+
+    let output = Command::new("wsl.exe")
+        .args(["--", "bash", "-lic", script])
+        .output()
+        .map_err(|e| format!("Failed to query Gemini sessions: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return Ok(None);
+    }
+
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    for line in stdout.lines() {
+        let id = line.trim();
+        if is_valid_uuid(id) && !exclude_ids.iter().any(|ex| ex == id) {
+            return Ok(Some(id.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+#[tauri::command]
+fn set_window_corners(window: tauri::WebviewWindow, rounded: bool) -> Result<(), String> {
+    let _ = (&window, rounded);
+    #[cfg(target_os = "windows")]
+    {
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        win32_border::set_corner_preference(hwnd.0, rounded);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -797,7 +902,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_revert_hunk, git_discard_file, wsl_resolve_cli_env, get_claude_session_id, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_revert_hunk, git_discard_file, wsl_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

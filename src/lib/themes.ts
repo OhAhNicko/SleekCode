@@ -466,6 +466,34 @@ const solarizedDarkTheme: EzyDevTheme = {
   },
 };
 
+// ─── Vibrant ANSI palette (toggle overlay) ──────────────────────────
+
+export const VIBRANT_ANSI_COLORS: Partial<ITheme> = {
+  black: "#3a3a3a",
+  red: "#ff5f5f",
+  green: "#5fff87",
+  yellow: "#ffd75f",
+  blue: "#5fafff",
+  magenta: "#ff5fd7",
+  cyan: "#5fdfdf",
+  white: "#e4e4e4",
+  brightBlack: "#6c6c6c",
+  brightRed: "#ff8787",
+  brightGreen: "#87ffaf",
+  brightYellow: "#ffff87",
+  brightBlue: "#87d7ff",
+  brightMagenta: "#ff87ff",
+  brightCyan: "#87ffff",
+  brightWhite: "#ffffff",
+};
+
+/** Returns the effective terminal theme, optionally with vibrant ANSI colors overlaid. */
+export function getEffectiveTerminalTheme(themeId: string, vibrant: boolean): ITheme {
+  const base = getTheme(themeId).terminal;
+  if (!vibrant) return base;
+  return { ...base, ...VIBRANT_ANSI_COLORS };
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────
 
 export const THEMES: EzyDevTheme[] = [

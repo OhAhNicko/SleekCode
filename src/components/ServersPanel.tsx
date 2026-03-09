@@ -1,4 +1,6 @@
 import { useState, useCallback } from "react";
+import { FaTrash } from "react-icons/fa";
+import { FaPlus, FaPencil } from "react-icons/fa6";
 import { useAppStore } from "../store";
 import type { RemoteServer, AuthMethod } from "../types";
 import { invoke } from "@tauri-apps/api/core";
@@ -206,10 +208,7 @@ export default function ServersPanel() {
             fontFamily: "inherit",
           }}
         >
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#ffffff" strokeWidth="2" strokeLinecap="round">
-            <line x1="8" y1="3" x2="8" y2="13" />
-            <line x1="3" y1="8" x2="13" y2="8" />
-          </svg>
+          <FaPlus size={12} color="#ffffff" />
           Add Server
         </button>
       </div>
@@ -471,36 +470,18 @@ export default function ServersPanel() {
                       onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
                       onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
                     >
-                      <svg
-                        width="13"
-                        height="13"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke="var(--ezy-text-muted)"
-                        strokeWidth="1.3"
-                        strokeLinecap="round"
-                      >
-                        <path d="M11.5 2.5L13.5 4.5L5 13H3V11L11.5 2.5Z" />
-                      </svg>
+                      <FaPencil size={13} color="var(--ezy-text-muted)" />
                     </button>
                     <button
                       onClick={() => handleDelete(server.id)}
                       title={deleteConfirm === server.id ? "Click again to confirm" : "Delete"}
                       className="p-1.5 rounded transition-colors group"
                     >
-                      <svg
-                        width="13"
-                        height="13"
-                        viewBox="0 0 16 16"
-                        fill="none"
-                        stroke={deleteConfirm === server.id ? "var(--ezy-red)" : "var(--ezy-text-muted)"}
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        className="group-hover:stroke-[var(--ezy-red)]"
-                      >
-                        <line x1="4" y1="4" x2="12" y2="12" />
-                        <line x1="12" y1="4" x2="4" y2="12" />
-                      </svg>
+                      <FaTrash
+                        size={13}
+                        color={deleteConfirm === server.id ? "var(--ezy-red)" : "var(--ezy-text-muted)"}
+                        className="group-hover:text-[var(--ezy-red)]"
+                      />
                     </button>
                   </div>
                 </div>

@@ -1,11 +1,133 @@
 # Session Prompts
 
+## 2026-03-09 — Codex/Gemini session resume
+
+1. Resuming a CLI pane on startup works for Claude Code, but it doesn't work for Codex and Gemini yet. Can we fix this?
+2. What do you mean with this part "This is fine for single-project use and can be tightened later once the session file format is known."
+3. We have to change this for Codex, the UUID starts after the time in the jsonl filename. so for example, after this "rollout-2026-03-08T22-19-32-"
+4. Inside the file we can find the file path of the project! Plus the UUID. Here's the first lines in the JSONL-file: {"timestamp":"2026-03-08T21:42:05.151Z","type":"session_meta","payload":{"id":"019ccf51-d3a3-70e1-9822-a3edaac1f438","timestamp":"2026-03-08T21:19:32.265Z","cwd":"/home/nicko/projects/nano"
+5. and for the record, the codex path is different - its saved by date. like this for example for March 8 ".codex\sessions\2026\03\08"
+6. now codex works, but gemini still doesnt work...
+7. From the Gemini docs: [screenshot showing gemini --resume <uuid>]
+8. The Gemini resume still doesnt seem to work. Before I got an error but now the Gemini pane is just blank
+9. [confirmed fresh pane works, restored pane is blank]
+10. [console screenshot showing resumeId: undefined for gemini]
+11. it says "resumeId: undefined"
+12. This is an example from another file and project. But the top rows of the file looks like this: {"sessionId": "18578f73-...", "projectHash": "f6c393...", ...} and the file name is .gemini\tmp\2codegem\chats\session-2026-03-04T20-01-18578f73.json
+13. [screenshot showing SessionResume gemini lookup result: null]
+14. I got this back: [8 UUIDs from running the pipeline manually]
+15. No...... Gemini is in WSL home too. You misunderstood because i just copied from my windows file explorer
+16. [confirmed Codex is in WSL home too]
+17. Now it worked! What was the issue
+18. /end
+
+[AskUserQuestion] Q: What is the command to resume a Codex session from the CLI? → A: codex resume <SESSION_ID> (subcommand, not --resume flag; see docs screenshot)
+[AskUserQuestion] Q: Where does Codex store its session files on disk? → A: ~/.codex/sessions/ (but date-structured: ~/.codex/sessions/YYYY/MM/DD/)
+[AskUserQuestion] Q: What is the command to resume a Gemini session from the CLI? → A: gemini --resume <uuid>
+[AskUserQuestion] Q: Where does Gemini CLI store its session files on disk? → A: ~/.gemini/tmp/<project_hash>/chats/
+[AskUserQuestion] Q: Are Codex session files named as UUIDs? → A: Not sure
+[AskUserQuestion] Q: What do Gemini session files look like? → A: Filename only has first block of UUID. Full sessionId is in the JSON file content: {"sessionId": "79ff352c-ac9f-463d-8753-b224b3015630",...}
+[AskUserQuestion] Q: Is Codex's .codex/sessions/ in WSL or Windows home? → A: WSL home
+
+## 2026-03-09 — Quit button fix
+
+1. When trying to close the app and the close popup appears, the Quit button doesnt work at all. It doesnt close the app
+2. Can you close the app and restart it? Closing doesnt work at all now, maybe it will work after restarting the app?
+3. Nope, it doesnt work to close the app still. Not with the X-button (with the popup disabled) or with the "Quit" button in the popup. FIX IT
+4. /end
+
+## 2026-03-09 — Dev server stopped detection
+
+1. There's issues with the dev servers. It doesnt detect when a server has been closed... or when a server is successfully running like when the "Ready in..." text spawns for "npm run dev" for example. See image, here the indicators show that the server is running when it in fact has been closed
+2. Now it detected the CTRL+C shutdown, but when i started it again with either "restart" or "play" button, the server restarted but the newly started server state was never detected, it just says "detecting..."
+3. Nice! Now its working better. /end
+
+## 2026-03-09 — Slash command picker for EzyComposer
+
+1. Implement the following plan: [Slash Command Picker — popup dropdown + inline ghost text, slash-commands.ts, PromptComposer popup/ghost/arg-hint/auto-close, recentProjectsSlice slashCommandGhostText setting, TabBar toggle]
+2. Was all commands added per CLI?
+3. Yes, I want all commands possible for each CLI. And user added slash commands for skills, how can we find those for Claude for example?
+4. Also add 'rename' for Claude. If the user types 'rename' show ghost text like this '[name]' (Claude does this) so the user knows it has to write a name after it. Also, automatically add a space after 'rename' when its used, so the user just can continue typing. When the user continues to type, remove the ghost placeholder text.
+5. Nice, its good for now. Would it be easy to add other commands for Claude, Codex, Gemini later?
+6. Or I can just ask you to add commands :)
+7. Can you read this site, here you can find all Codex slash commands. Can you implement them? URL: https://developers.openai.com/codex/cli/slash-commands/
+8. And here you can find all the Gemini slash commands. Can you implement them? URL: https://geminicli.com/docs/reference/commands/
+9. Sadly, I cant find a command list for Claude Code?
+10. Now we should have all for all CLI's, right?
+11. Okay, I think that URL got 60 commands, but we have 62 now?
+12. Remove them [referring to bug and quit aliases]
+13. Can you add custom commands for Codex and Gemini too? They the same file path as Claude (~/.gemini/commands/ and .gemini/commands/ - for project scoped for gemini)
+14. I dont think Codex has project specific. Check this docs page for it: https://developers.openai.com/codex/custom-prompts/
+15. Also, for the example test command. can we show '/test' in EzyComposer but send '/prompts:test' to Codex? For a better looking UX in EzyComposer, a 'nice to have' so to say
+16. Nice! Now, sometimes you type the full slash command by hand. Then the EzyComposer command popup should close. Right now you still have to confirm the EzyComposer command popup and then ALSO hit enter again to send it which creates a double ENTER click when its not necessary
+17. Its not working well, the popup still has to stay until the last character has been typed. Now it just disappears on the second character
+18. Like when a full command has been typed, the popup has to go away - but not before that
+19. Nice!
+20. /end
+
+## 2026-03-09 — Slash command mid-sentence, coloring, Ctrl+Backspace
+
+1. Also, show the full command in a different color
+2. I like the completetion color, but I dont like the new colors in the overlay (popup)
+3. Like if i typed '/clear' and tabed to complete it. The command has to have a different color
+4. I want a completely different color for a matched/full command. Also, it has to be possible to enter slash commands when text already has been written. Like in a middle of a sentence. Its not working now
+5. Can we add a space when a command has been tab-completed? Also, for some reason CTRL+BACKSPACE doesnt remove the whole command, the '/' still stays. This is normal behavior, but can we trick it to remove the full slash too?
+6. Nice!! I love it
+7. /end
+
+## 2026-03-09 — Copy-on-select terminal feature
+
+1. Implement the following plan: [Copy-on-Select Terminal Feature — copyOnSelect store field, onSelectionChange handler in TerminalPane, toggle in TabBar Behavior section]
+2. /end
+
+## 2026-03-08 — Console-to-Composer bridge (implementation session)
+
+1. Implement the following plan: [Console-to-Composer Button — browserConsoleStore, BrowserPreview sync, PromptComposer button + select mode + expand-on-submit]
+2. the console button in EzyComposer has to be to the left of the promptifier button. Also, it doesnt start with a dim color like the other buttons. See image
+3. remove the dim part of the console button
+4. I want to change this so I can mark each row in the console that i want to send, like clicking a select circle on each terminal row that has an entry
+[AskUserQuestion] Q: Where should the selection circles appear on each console entry row? → A: Left side
+[AskUserQuestion] Q: How should the selection mode be triggered? → A: Toggle via button
+5. Can we make it so when selecting a row, its immediately copied in to the EzyComposer? Then if i select another row, it gets added too updating the row count from 1 to 2. So its dynamic depending on selection?
+6. When the console isnt open and the console button in the EzyComposer is clicked, open the console in the browser preview. Also, only show the console button when the browser preview pane is open
+7. When the console button is deactivated, i want the EzyComposer input to be wiped also. It can only be sent when the console button is active. Just as an easy "wipe" mechanism if the user changes its mind. Also, upon open of the preview browser, the claude window scrolls to the top. It happens when the preview browser is closed as well. Can you fix this?
+8. For some reason, open and closing the preview browser still scrolls the CLI pane up
+9. add a visual "space" after "[Console, 1 row]" in EzyComposer, but dont send that empty space, just the 2 new line breaks
+10. inline = console placeholder text
+11. I wonder what we should do with the inline (console placeholder text) when its manually removed. Uncheck all console rows? Or just make it grayed out so its not possible to delete it unless clicking the console button again to deactivate the feature. What do you think?
+12. Yes
+13. The tag doesnt look muted or grayed out, also - make it impossible to remove the space before or after
+14. if the console placeholder text was added in an empty composer and the user starts typing before it - dynamically add a space in between the text and the console placeholder text
+15. the function that deletes when the console button is deactivated, it can only delete the console placeholder text (and the real console text of course), not the whole composer as it is now. Fix this
+16. /end
+
+## 2026-03-08 — Tab drag-to-reorder
+
+1. Implement the following plan: [Warp-style drag-to-reorder tabs — reorderTabs action in tabSlice, pointer drag with ghost + drop indicator in TabBar]
+2. Its working! But it has to be like this - when you drag the tab it has to leave its place in the tabbar and when crossing the line to another tab, the other tab has to take its spot leaving place to release the tab thats is being dragged
+3. it has to look like im dragging the actual tab when holding it, not some sort of placeholder
+4. /end
+
+## 2026-03-08 — Console-to-Composer button
+
+[AskUserQuestion] Q: Where should the selection circles appear on each console entry row? → A: Left side
+[AskUserQuestion] Q: How should the selection mode be triggered? → A: Toggle via button — clicking the console button in EzyComposer toggles selection mode on/off in the DevTools console. Circles appear only when active.
+
 ## 2026-03-08 — Fix dev server lock error loop + premature green dot
 
 1. There's a big issue in the dev server startup. sometimes we still get "Unable to acquire lock at /home/nicko/projects/nano/.next/dev/lock, is another instance of next dev running?" if an instance was opened before. Right now we just try again and again which turns it in to a loop, and the server row shows a green dot like its started. we can only show that when the server is confirmed started and stable, until then show an empty or yellow dot. We need to change the port or close the previous instances before we proceed to start the server again. Fix this!!
 2. [screenshot] still same loop
 3. Now it seems to work, nice!
 4. /end
+
+## 2026-03-08 — Browser preview full-column settings & addPaneAsGrid fix
+
+1. I want to add a toggle in the settings dropdown. It has to be a toggle for the preview browser to ALWAYS take up a full column to the right (preview browser default spawn could be switched to the left as well with an additional toggle)
+2. the additional toggle has to affect the file and code browsers as well
+3. the toggle to take up a whole column has to also be for the code review and file browser panes as well, actually. Its only these 3 in total that has the "open to the right" rule, right?
+4. The "full column" on mode doesnt work. When I open a new CLI it can take the grid spot below the preview pane...
+5. Nice!
+6. /end
 
 ## 2026-03-07 — Standardize modal positioning
 
@@ -415,3 +537,197 @@
 [AskUserQuestion] Q: How does the Codex CLI submit prompts? → A: Enter submits
 8. It worked in Codex and Gemini. But the composer in Gemini is too big, make it smaller
 [AskUserQuestion] Q: How should the Gemini composer be sized? → A: Same as Claude (flat) — remove Gemini from the card treatment entirely
+
+## 2026-03-08 — CLI ghost text relay into EzyComposer
+
+1. Implement the following plan: [detailed plan for relaying CLI autocomplete suggestions into EzyComposer as ghost text — scan buffer for dimmed text, display as ghost overlay, TAB to accept]
+2. It relays the text, but it doesnt become "ghost text" that is used only when clicking the "TAB" key. The text becomes the actual text instantly
+3. When suggested text is relayed there's two major problems now. 1. It overlays the "Type your prompt..." text. This text cannot be visible at the same time as we use CLI ghost text. 2. It's not aligned in the same spot as the "Type your prompt..." text, which it has to be.
+4. What should we do when a placeholder has been selected with TAB key and then removed. Should we show the ghost suggestion again or the "Type your prompt..." text? I'm not sure how the CLI's handle this scenario
+5. I just tested it, actually we get the "Type your prompt..." placeholder text in EzyPrompt but the ghost suggestion is still visible behind in the CLI (of course) so there is no "next tick"
+6. There's an issue when in EzyPrompt and hitting TAB key to insert the ghost suggestion, it seems to register in the CLI input composer as well, so both ghost prompts are selected at the same time. Can we do something about this? I tested this in Codex CLI only
+7. Now there's issues with the EzyComposer "CLI ghost suggestion" - When hitting TAB key to select ghost text, the ghost text suggestion still is visible again looking like a double [screenshot]. When the ghost text suggestion has been selected OR when the user has started to type something else - the ghost suggestion has to be removed. It can only show when the EzyComposer is empty of real text
+8. Nice! Now it's working pretty good :)
+9. Now there's an issue in the Gemini CLI where the CLI ghost suggestions isn't picked up... however it works in Codex
+10. Great! Now /end - and document this thoroughly if we need to revisit the topic in the future
+11. Now, we have one placeholder of our own "Type your prompt..." that is displayed when no "CLI suggestion text" is available. Instead of this generic "Type your prompt..." text, can we have a set of good placeholder ghost suggestions of our own that are rotating/randomly picked when no CLI suggestions are available? They have to be good for agentic coding and make sense on a global scale since we cant give suggestions from the codebase like the CLI can (thats why we have to prioritize CLI suggestions as they can be more project specific, so when a CLI suggestion is available we have to replace our placeholder suggestion with it
+12. /end
+
+## 2026-03-08 — Enhanced Preview Browser (proxy console capture)
+
+1. Implement the following plan: [Enhanced Preview Browser — back/forward navigation, viewport controls, devtools console, auto-reload with localStorage clearing]
+2. can you add the Samsung Fold 7 4:3 big screen size as well?
+3. The Devtools console is empty?
+4. I get this in the console... [screenshot] - FIX IT (cross-origin error)
+5. I dont get it. Will it work or not?
+6. I still get the same error... [screenshot] (cross-origin fallback message)
+7. how can I test this?
+8. I get this now when opening the browser preview... [screenshot] (Application error: a client-side exception)
+9. The console just shows 'Script error'
+10. (context restored) I dont get the cors error anymore and the page loads now, but the console is always empty which doesnt feel right
+11. i see "[EzyDev] Console capture active"
+12. can we add other things from a normal browser devtools that would make sense to have for agentic coding in EzyDev?
+13. Other than the Console that is
+[AskUserQuestion] Q: Which devtools features would you want added? → A: Network panel, Screenshot capture, Element inspector, Storage viewer (all four selected)
+[AskUserQuestion] Q: Screenshot capture needs a DOM-to-image library (html2canvas ~40KB). How should we handle this? → A: Skip screenshots for now (implement the other 3 features first)
+[AskUserQuestion] Q: What should the toggle button do? When toggled ON, clicking the project row quick-opens with the last grid (skips picker). When toggled OFF, clicking the row opens the template picker as usual? → A: Yes, that's it — Toggle ON = row click does quick-open with saved grid. Toggle OFF = row click opens template picker.
+
+## 2026-03-08 — Recent project quick-open toggle
+
+1. Remember CLI grid choice for recent projects for quick open button, add it as a toggle button on each recent projects row
+2. This is not what I meant. What I want is a "remember" feature from when each project was opened the last time, like a 2x1 grid with only claude, then there has to be a toggle button on its "recent projects" row named "Open last grid" that has to be like a "Quick open" instead of going through the normal select grid and CLI process (popup)
+3. it has to be a toggle button
+4. /end
+
+## 2026-03-08 — Browser Preview UX improvements + pin icon iteration
+
+1. Implement the following plan: [Browser Preview UX Improvements — viewport bar toggle, open in default browser button, pin DevTools with localStorage persistence]
+2. dont make the background of the pin button in another color when active, its distracting. just change the icon to something else so its a subtle change
+3. Change the icon more
+4. when active
+5. can the pin button be an "open lock" instead?
+6. I like it!
+7. But, could the open lock be more visible prominent?
+8. Cant we just make the lock handle to be more open?
+9. Thats nice! Now /end
+
+## 2026-03-08 — Interactive mode hiding, focus retention, arrow key debounce
+
+1. Can you confirm that the tweaks for "askuserquestion" dialogue and the "accept plan" dialogue was only for claude? We have to make similar adjustments for Gemini and Codex CLI's respectively, but later on
+2. Can you expand on this? Only the detection heuristics in isInteractiveMode() need to be extended with Codex/Gemini-specific strings when you're ready to tackle those.
+3. The ones we have implemented now, can you mark these as Claude specific for now? Just so Claude is completely done. Maybe add the same for Gemni and Codex too, then we can just adjust them later
+4. Btw, the fix for EzyComposer to always be in focus isnt working properly. The caret is blinking as crazy...
+5. I want the focus to always be in the EzyComposer even if ther user clicks outside of it in the same pane
+6. /end
+
+## 2026-03-08 — Maximized window corners fix
+
+1. When the app window is maximized, change it to a square shape or find a better solution because right now the apps rounded corners makes the maximized view to look chopped off
+2. It didnt work at all
+3. Yes i did. I can see no changes to the maximized state
+4. Now it worked!
+5. /end
+
+## 2026-03-09 — Quit confirmation dialog
+
+1. When closing the whole app, add a "Are you sure" popup with a "Do not show again" ticker. This has to always be an option in the settings menu to turn on and off
+2. Nice! Now /end
+
+## 2026-03-09 — addPaneAsGrid single-pane + full-column browser fix
+
+1. When the preview panes "Full column" option is enabled, the add pane has to take it in to consideration when adding new panes. Like if 1 CLI pane is open with the browser preview pane (in total 2 panes in to columns), the next added pane has to be placed as the third pane, below the first CLI pane. Right now, it's placed as a third column (in the middle) because it thinks its the second pane. This is bad ux, fix it!
+2. Nice! Now /end
+
+## 2026-03-09 — EzyComposer Tab ghost text and focus order
+
+1. The tab to insert ghost text in the EzyComposer doesn't work at all now, but it worked before. Now it just tabs to something else in the app. Fix it!
+2. It doesnt work in claude but it works in Codex and Gemini
+3. And its for our own placeholder ghost suggestion text
+4. So it should always work now?
+5. Yes! (re: Tab cycling to buttons inside composer)
+6. Nice! Now /end
+7. And regarding our own placeholder text. It doesnt make sense to add "..." in the end if the user wants to continue writing after hitting tab to insert the text. Just add a space when the text is added so the user can just continue typing directly
+8. Nice! Now /end
+
+
+## 2026-03-09 — Slash command picker for EzyComposer
+
+1. Implement slash command picker per plan (popup + inline ghost text toggle). → Implemented.
+[AskUserQuestion] Q: How should user-defined skill commands be loaded? → A: Dynamic (scan ~/.claude/commands/ and <project>/.claude/commands/ at runtime using existing Tauri fs commands)
+[AskUserQuestion] Q: Codex and Gemini command accuracy? → A: Check docs for Codex and Gemini too (web search for accurate command lists)
+
+## 2026-03-09 — WSL pool exhaustion, dashed TUI borders, EzyComposer position
+
+1. Only 3 panes can be open simultaneously sometimes (most often), nothing happens with the 4th pane. Fix it!
+2. Maybe it has something to do with WSL only pre warms 3 sessions? But now when i tested to start a grid of 16 CLI panes I got 5 to start, the rest (11) was just blank
+3. Was this the best solution? Will 16 panes work?
+4. Do what you think is the best approach!
+5. Maybe we can prewarm 8 panes (up to 8 is the most common anyway) and then warm 8 more? If its a big memory trade-off
+6. Or lets try with pre-warm 16 first and I can check the memory difference
+7. I didnt see a big memory hit when pre-warming 16
+8. However, when opening 16 panes simultaneously I encountered a weird bug with the EzyComposer. It spawned in too big in most panes. To fix it I had to disable and enable it with CTRL+I.
+9. Same issue is still there... also, sometimes when a pane is open some weird text can be seen before it opens. It seems to only be happening for Codex and Gemini.
+10. It seems to be working now, nice!
+11. But it seems to be a lot of dotted lines in all CLI's when 16 panes are opened, why is this? It happens with a smaller grid size sometimes too.
+12. Nope. The 16 panes still opens with broken borders/lines
+13. Nope, its a bug. IT should not look like that. The composer area border lines are also dashed for some reason... here's an example on how it should look and how it should not look.
+14. Nice! It actually seems to be working nicely now
+15. /end
+
+## 2026-03-09 — Arrow ligature (-> → →)
+
+1. Add a WezTerm like special right arrow when typing this combination "->". See image on how it looks in WezTerm.
+
+[AskUserQuestion] Q: Where should the -> arrow ligature apply? → A: EzyComposer for sure, but would prefer Terminal as well, WezTerm have done it. Is it super complex for Terminal?
+
+2. Can we make the arrow in Ezy Composer bigger? its too small now
+3. Even bigger, make it 1.5x
+4. is it possible to make it less thick?
+5. It looks to have exactly the same thickness
+6. try this svg arrow. i think we have installed react icons? import { FaArrowRightLong } from "react-icons/fa6";
+7. yes (install react-icons)
+8. Make the scale 1, it's too big now
+9. And add this one for left arrow with the same settings: import { FaArrowLeftLong } from "react-icons/fa6";
+10. Can you move the arrows up with 2 px, theyre slightly too low now
+11. okay lower it with 1px
+12. Perfect! Now, can we try this as the EzyComposer prompt icon, instead of ">": import { FaAngleRight } from "react-icons/fa";
+13. Try this one instead: import { TbArrowBadgeRight } from "react-icons/tb";
+14. Make it 1.5 scale and move it down 2px
+15. okay revert it back to FaAngleRight
+16. Move it up 1px on Codex and Gemini. Move it down 2px in Claude
+17. What scale is it now?
+18. Make it 1.2
+19. Nice! Now it's good
+20. Can we try this icon right right arrow? import { HiMiniArrowLongRight } from "react-icons/hi2";
+21. Make the scale of it 1.35
+22. Try 1.5
+23. That one is better! Now just the left arrow of that one too
+24. Both with scale 1.5?
+25. Nice! Now, make this one the "Promptifier" icon, replace the current magic wand: import { FaWandMagicSparkles } from "react-icons/fa6";
+26. What can we use instead of the "send/enter right arrow" icon? Any idea?
+27. Can we try this one? import { AiOutlineSend } from "react-icons/ai";
+28. It looks too cluttered sadly. Try this one instead: import { BiSolidSend } from "react-icons/bi";
+29. What do you think? (screenshot)
+30. Yes do it (bump size)
+31. Use this for the console select button: import { AiFillCode } from "react-icons/ai";
+32. And what do you recommend for the Promptifier spinner?
+33. Alright, as for the rest of the icons. I'm not very happy with the current ones apart from maybe the Sidebar tab icon. Can you check and replace with fitting icons of your liking? Then after that we can fine tune
+34. I would prefer svg icons from icon sets we already have chosen icons from
+35. Really dont like the snipping tool icon either
+[AskUserQuestion] Q: Which icon is the 'snipping tool' one you want to replace? → A: This one, it's called "Screenshot in the tooltip" (ClipboardImageStrip)
+36. I want to change DevServer icon to import { FaServer } from "react-icons/fa";
+37. Can we try this one: import { FaServer } from "react-icons/fa6";
+38. Switch back to the FA one
+39. Now do fa6 again
+40. Add it to the dev servers header too
+41. What other icon can we use for "Code review" in the tabbar?
+42. Okay go with FaCodePullRequest
+43. Use this for the kanban button: import { PiKanbanDuotone } from "react-icons/pi";
+44. Make it 1.2 scale
+45. make it 1.5 scale
+46. Nice! Now, change the "Browser preview" icon to: import { TbBrowserPlus } from "react-icons/tb";
+47. Make it 1.2 scale
+48. When the preview browser is open, change the icon to TbBrowserMinus - what do you think?
+49. Yes (TbBrowserMinus)
+50. This is good for now. Now /end
+
+## 2026-03-09 — Dev server tab to sidebar panel
+
+1. I think we should make the Dev Servers tab page to be an more compact inline view instead, exactly like the sidebar. Don't change the functionality, just make the server bar/row more compact without losing any features. Also, the sidebar and the dev server tabs cannot be opened at the same time then.
+2. Nice work! Now, remove the "preview in active tab" button
+3. Now, show the full url in the server rows
+4. Move the stop/play button to be to the left of the refresh button instead
+5. Now, when the same project is opened in two different tabs. Dont launch a new server since its the same project. Every project only needs one server
+6. When a dev server has been stopped, add an X-button to it so its possible to close the server row
+7. /end
+
+## 2026-03-09 — Terminal header & tab bar polish
+
+[AskUserQuestion] Q: Should colors auto-assign when opening a new project, or start uncolored until the user picks one? → A: Auto-assign
+[AskUserQuestion] Q: What should the color indicator look like on the tab? → A: Bottom underline (Recommended)
+[AskUserQuestion] Q: Should there also be a 'No color' option in the right-click menu to remove the color? → A: Yes
+
+## 2026-03-09 — Vibrant terminal colors
+
+1. Would it be possible to add more vibrant colors in the terminals? (just terminal text)
+[AskUserQuestion] Q: How would you like to approach the terminal color changes? → A: Option 3 (Replace default with a new vibrant palette). And add it as a toggle button in the settings dropdown

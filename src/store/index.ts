@@ -45,6 +45,7 @@ export const useAppStore = create<AppStore>()(
         commandHistory: state.commandHistory,
         sidebarOpen: state.sidebarOpen,
         sidebarTab: state.sidebarTab,
+        devServerPanelOpen: state.devServerPanelOpen,
         expandedDirs: state.expandedDirs,
         recentProjects: state.recentProjects,
         alwaysShowTemplatePicker: state.alwaysShowTemplatePicker,
@@ -58,6 +59,12 @@ export const useAppStore = create<AppStore>()(
         autoStartServerCommand: state.autoStartServerCommand,
         previewInProjectTab: state.previewInProjectTab,
         customServerCommands: state.customServerCommands,
+        browserFullColumn: state.browserFullColumn,
+        browserSpawnLeft: state.browserSpawnLeft,
+        copyOnSelect: state.copyOnSelect,
+        confirmQuit: state.confirmQuit,
+        projectColors: state.projectColors,
+        vibrantColors: state.vibrantColors,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;
@@ -77,12 +84,17 @@ export const useAppStore = create<AppStore>()(
           }
         }
 
-        // Fix activeTabId if it pointed to a dropped tab
+        // Fix activeTabId if it pointed to a dropped tab or the dev-server-tab (now a sidebar panel)
         const tabIds = new Set(filteredTabs.map((t) => t.id));
-        const activeTabId =
+        let activeTabId =
           state.activeTabId && tabIds.has(state.activeTabId)
             ? state.activeTabId
             : filteredTabs[0]?.id ?? current.activeTabId;
+        // Dev server tab is no longer a full page — redirect to first non-system tab
+        if (activeTabId === "dev-server-tab") {
+          const nonSystem = filteredTabs.find((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
+          activeTabId = nonSystem?.id ?? filteredTabs[0]?.id ?? current.activeTabId;
+        }
 
         return {
           ...current,
