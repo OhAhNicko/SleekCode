@@ -468,7 +468,8 @@ const solarizedDarkTheme: EzyDevTheme = {
 
 // ─── Vibrant ANSI palette (toggle overlay) ──────────────────────────
 
-export const VIBRANT_ANSI_COLORS: Partial<ITheme> = {
+// Basic 16 ANSI colors — vibrant replacements for indices 0-15
+const VIBRANT_ANSI_16: Partial<ITheme> = {
   black: "#3a3a3a",
   red: "#ff5f5f",
   green: "#5fff87",
@@ -487,11 +488,63 @@ export const VIBRANT_ANSI_COLORS: Partial<ITheme> = {
   brightWhite: "#ffffff",
 };
 
-/** Returns the effective terminal theme, optionally with vibrant ANSI colors overlaid. */
+// Standard 256-color cube intensity levels: [0, 95, 135, 175, 215, 255]
+const STD_LEVELS = [0, 0x5f, 0x87, 0xaf, 0xd7, 0xff];
+
+/** Boost saturation + brightness of an RGB triplet. */
+function vibrantize(r: number, g: number, b: number): [number, number, number] {
+  const avg = (r + g + b) / 3;
+  const satBoost = 0.75;
+  const brightLift = 12;
+  return [
+    Math.max(0, Math.min(255, Math.round(r + (r - avg) * satBoost + brightLift))),
+    Math.max(0, Math.min(255, Math.round(g + (g - avg) * satBoost + brightLift))),
+    Math.max(0, Math.min(255, Math.round(b + (b - avg) * satBoost + brightLift))),
+  ];
+}
+
+function toHex(r: number, g: number, b: number): string {
+  return "#" + [r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("");
+}
+
+/** Generate vibrant extendedAnsi palette (indices 16-255, 240 entries). */
+function buildVibrantExtendedAnsi(): string[] {
+  const colors: string[] = [];
+
+  // Indices 16-231: 6×6×6 color cube — boost saturation + brightness
+  for (let ri = 0; ri < 6; ri++) {
+    for (let gi = 0; gi < 6; gi++) {
+      for (let bi = 0; bi < 6; bi++) {
+        const r = STD_LEVELS[ri], g = STD_LEVELS[gi], b = STD_LEVELS[bi];
+        // Skip near-black/near-white (no meaningful saturation to boost)
+        if (r + g + b < 30 || (r > 240 && g > 240 && b > 240)) {
+          colors.push(toHex(r, g, b));
+        } else {
+          const [vr, vg, vb] = vibrantize(r, g, b);
+          colors.push(toHex(vr, vg, vb));
+        }
+      }
+    }
+  }
+
+  // Indices 232-255: grayscale ramp — slightly boost brightness
+  for (let i = 0; i < 24; i++) {
+    const gray = 8 + i * 10; // standard: 8, 18, 28, ..., 238
+    const boosted = Math.min(255, gray + 12);
+    colors.push(toHex(boosted, boosted, boosted));
+  }
+
+  return colors;
+}
+
+// Pre-compute once — avoids recalculating on every toggle
+const VIBRANT_EXTENDED_ANSI = buildVibrantExtendedAnsi();
+
+/** Returns the effective terminal theme, optionally with vibrant colors overlaid. */
 export function getEffectiveTerminalTheme(themeId: string, vibrant: boolean): ITheme {
   const base = getTheme(themeId).terminal;
   if (!vibrant) return base;
-  return { ...base, ...VIBRANT_ANSI_COLORS };
+  return { ...base, ...VIBRANT_ANSI_16, extendedAnsi: VIBRANT_EXTENDED_ANSI };
 }
 
 // ─── Exports ─────────────────────────────────────────────────────────

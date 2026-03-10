@@ -8,6 +8,7 @@ import { getShellIntegrationCommand } from "../lib/shell-integration";
 
 interface UsePtyOptions {
   terminalType: TerminalType;
+  terminalId: string;
   workingDir: string;
   cols: number;
   rows: number;
@@ -24,6 +25,7 @@ interface UsePtyOptions {
 
 export function usePty({
   terminalType,
+  terminalId: termId,
   workingDir,
   cols,
   rows,
@@ -50,6 +52,8 @@ export function usePty({
   // existing terminal — but parent re-renders could pass new references
   // or subtly different values, causing spurious PTY restarts (Claude CLI
   // would restart mid-session showing /remote-control banner again).
+  const termIdRef = useRef(termId);
+  termIdRef.current = termId;
   const workingDirRef = useRef(workingDir);
   workingDirRef.current = workingDir;
   const serverIdRef = useRef(serverId);

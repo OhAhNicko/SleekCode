@@ -98,6 +98,7 @@ interface PromptComposerProps {
   workingDir: string;
   scrollToPrompt: () => void;
   scrollToNextPrompt: () => void;
+  didStealRef: React.MutableRefObject<boolean>;
 }
 
 export default function PromptComposer({
@@ -116,6 +117,7 @@ export default function PromptComposer({
   workingDir,
   scrollToPrompt,
   scrollToNextPrompt,
+  didStealRef,
 }: PromptComposerProps) {
   const promptHistory = useAppStore((s) => s.promptHistory);
   const addPromptHistory = useAppStore((s) => s.addPromptHistory);
@@ -127,7 +129,7 @@ export default function PromptComposer({
   const [hidden, setHidden] = useState(false);
   const hiddenRef = useRef(false);
   const showTimeRef = useRef(0); // timestamp when composer last became visible
-  const didStealText = useRef(false);
+  const didStealText = didStealRef;
   // History navigation: -1 = composing new text, 0 = most recent, 1 = second most recent, etc.
   const [historyIdx, setHistoryIdx] = useState(-1);
   const draftRef = useRef(""); // saves in-progress text when navigating history
@@ -137,6 +139,8 @@ export default function PromptComposer({
   const [cliSuggestion, setCliSuggestion] = useState("");
   const [slashMatches, setSlashMatches] = useState<SlashCommand[]>([]);
   const [slashSelectedIdx, setSlashSelectedIdx] = useState(0);
+  const [slashScrollOffset, setSlashScrollOffset] = useState(0);
+  const SLASH_VISIBLE = 8;
   const [userSkills, setUserSkills] = useState<SlashCommand[]>([]);
   const slashGhostEnabled = useAppStore((s) => s.slashCommandGhostText);
   const promptLineIdxRef = useRef(-1); // last known prompt line for re-scanning
@@ -330,7 +334,10 @@ export default function PromptComposer({
       }
     }
 
-    return suggestion.trimEnd();
+    const trimmed = suggestion.trimEnd();
+    // Gemini's internal placeholder — ignore it, we show our own placeholder suggestions
+    if (terminalType === "gemini" && trimmed.startsWith("Type your message")) return "";
+    return trimmed;
   }
 
   // Initial scan + steal text on mount.
@@ -376,6 +383,19 @@ export default function PromptComposer({
   useEffect(() => {
     if (!terminal) return;
     const disposable = terminal.onRender(() => {
+      // When scrolled up, hide the composer (the CLI input prompt isn't visible)
+      // and skip all prompt scanning / auto-focus / repositioning.
+      const buf = terminal.buffer.active;
+      const isAtBottom = buf.viewportY + terminal.rows >= buf.length;
+      if (!isAtBottom) {
+        if (!hiddenRef.current) {
+          setHidden(true);
+          hiddenRef.current = true;
+          textareaRef.current?.blur();
+        }
+        return;
+      }
+
       const result = scanPromptPosition();
       if (!result) return;
 
@@ -385,6 +405,9 @@ export default function PromptComposer({
         setHidden(true);
         hiddenRef.current = true;
         textareaRef.current?.blur();
+        // Focus the terminal so keyboard input goes to the interactive dialogue
+        // (e.g. Gemini permission prompts, plan acceptance, tool approvals)
+        terminal.focus();
         return;
       }
 
@@ -392,6 +415,7 @@ export default function PromptComposer({
       if (hiddenRef.current) {
         terminal.scrollToBottom();
         showTimeRef.current = Date.now();
+        setTimeout(() => textareaRef.current?.focus(), 30);
       }
       setHidden(false);
       hiddenRef.current = false;
@@ -459,22 +483,24 @@ export default function PromptComposer({
     return () => clearTimeout(timer);
   }, [terminalId]);
 
-  // Prevent clicks on the terminal area from stealing focus away from the textarea.
-  // mousedown preventDefault stops the browser from moving focus to the clicked element.
+  // Re-focus the textarea after the user clicks the terminal area, but only when
+  // scrolled to the bottom. This uses a delayed refocus instead of mousedown
+  // preventDefault, so scrolling, text selection, and scrollbar drag all work normally.
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !alwaysVisible) return;
-    function onMouseDown(e: MouseEvent) {
-      // Don't block clicks on the composer itself (buttons, images, etc.)
-      const composerEl = textareaRef.current?.closest("[data-composer]");
-      if (composerEl && composerEl.contains(e.target as Node)) return;
+    function onClick() {
       if (hiddenRef.current) return;
-      e.preventDefault();
-      textareaRef.current?.focus();
+      if (!terminal) return;
+      const buf = terminal.buffer.active;
+      const isAtBottom = buf.viewportY + terminal.rows >= buf.length - 1;
+      if (!isAtBottom) return;
+      // Short delay lets xterm process the click first, then reclaim focus
+      setTimeout(() => textareaRef.current?.focus(), 150);
     }
-    container.addEventListener("mousedown", onMouseDown);
-    return () => container.removeEventListener("mousedown", onMouseDown);
-  }, [containerRef, alwaysVisible]);
+    container.addEventListener("click", onClick);
+    return () => container.removeEventListener("click", onClick);
+  }, [containerRef, alwaysVisible, terminal]);
 
   // Auto-resize textarea height
   useEffect(() => {
@@ -596,7 +622,7 @@ export default function PromptComposer({
     setHistoryIdx(-1);
     imgCycleRef.current = null;
     setSlashMatches([]);
-    setSlashSelectedIdx(0);
+    setSlashSelectedIdx(0); setSlashScrollOffset(0);
     slashTokenRef.current = null;
     updateGhost(newVal);
     setTimeout(() => {
@@ -654,12 +680,28 @@ export default function PromptComposer({
     if (slashMatches.length > 0) {
       if (e.key === "ArrowDown" && !e.ctrlKey && !e.shiftKey && !e.altKey) {
         e.preventDefault();
-        setSlashSelectedIdx((i) => (i + 1) % slashMatches.length);
+        setSlashSelectedIdx((prev) => {
+          const next = (prev + 1) % slashMatches.length;
+          setSlashScrollOffset((off) => {
+            if (next === 0) return 0; // wrapped to top
+            if (next >= off + SLASH_VISIBLE) return next - SLASH_VISIBLE + 1;
+            return off;
+          });
+          return next;
+        });
         return;
       }
       if (e.key === "ArrowUp" && !e.ctrlKey && !e.shiftKey && !e.altKey) {
         e.preventDefault();
-        setSlashSelectedIdx((i) => (i - 1 + slashMatches.length) % slashMatches.length);
+        setSlashSelectedIdx((prev) => {
+          const next = (prev - 1 + slashMatches.length) % slashMatches.length;
+          setSlashScrollOffset((off) => {
+            if (next === slashMatches.length - 1) return Math.max(0, slashMatches.length - SLASH_VISIBLE); // wrapped to bottom
+            if (next < off) return next;
+            return off;
+          });
+          return next;
+        });
         return;
       }
       if (e.key === "Tab" && !e.shiftKey) {
@@ -678,7 +720,7 @@ export default function PromptComposer({
         // close the popup and submit directly — no double-Enter needed.
         if (typedQuery === cmdLabel && !hasArgHint) {
           setSlashMatches([]);
-          setSlashSelectedIdx(0);
+          setSlashSelectedIdx(0); setSlashScrollOffset(0);
           slashTokenRef.current = null;
           submit();
         } else {
@@ -689,7 +731,7 @@ export default function PromptComposer({
       if (e.key === "Escape") {
         e.preventDefault();
         setSlashMatches([]);
-        setSlashSelectedIdx(0);
+        setSlashSelectedIdx(0); setSlashScrollOffset(0);
         return;
       }
     }
@@ -754,7 +796,7 @@ export default function PromptComposer({
         updateGhost(newVal);
         const matches = computeSlashMatches(newVal, deleteFrom);
         setSlashMatches(matches);
-        setSlashSelectedIdx(0);
+        setSlashSelectedIdx(0); setSlashScrollOffset(0);
         setTimeout(() => { ta.selectionStart = ta.selectionEnd = deleteFrom; }, 0);
       }
       return;
@@ -1000,7 +1042,7 @@ export default function PromptComposer({
   const cardPadding = isCodex
     ? `${Math.round((cellHeight + 12) / 2) - 3}px 10px ${Math.round((cellHeight + 12) / 2) - 5}px 10px`
     : isGemini
-      ? `${Math.round((cellHeight * 0.4 + 6) / 2)}px 10px ${Math.round((cellHeight * 0.4 + 6) / 2)}px 10px`
+      ? `${Math.round((cellHeight * 0.4 + 6) / 2)}px 10px ${Math.round((cellHeight * 0.4 + 6) / 2) - 5}px 10px`
       : "0 10px 2px 10px";
 
   return (
@@ -1026,74 +1068,108 @@ export default function PromptComposer({
           : {}),
       }}
       onClick={(e) => e.stopPropagation()}
+      onWheel={(e) => {
+        if (terminal) terminal.scrollLines(e.deltaY > 0 ? 3 : -3);
+      }}
     >
       {/* Slash command popup — appears above the composer */}
-      {slashMatches.length > 0 && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: "100%",
-            left: 0,
-            right: 0,
-            marginBottom: 4,
-            backgroundColor: lightenHex(terminalBg, 18),
-            border: `1px solid ${hexToRgba(terminalCursor, 0.2)}`,
-            borderRadius: 5,
-            boxShadow: "0 -2px 10px rgba(0,0,0,0.4)",
-            zIndex: 10,
-            overflow: "hidden",
-          }}
-        >
-          {slashMatches.slice(0, 8).map((cmd, idx) => (
+      {slashMatches.length > 0 && (() => {
+        const hasMore = slashMatches.length > SLASH_VISIBLE;
+        const canScrollUp = slashScrollOffset > 0;
+        const canScrollDown = slashScrollOffset + SLASH_VISIBLE < slashMatches.length;
+        const visibleSlice = slashMatches.slice(slashScrollOffset, slashScrollOffset + SLASH_VISIBLE);
+        return (
+          <div
+            style={{
+              position: "absolute",
+              bottom: "100%",
+              left: 0,
+              right: 0,
+              marginBottom: 4,
+              backgroundColor: lightenHex(terminalBg, 18),
+              border: `1px solid ${hexToRgba(terminalCursor, 0.2)}`,
+              borderRadius: 5,
+              boxShadow: "0 -2px 10px rgba(0,0,0,0.4)",
+              zIndex: 10,
+              overflow: "hidden",
+            }}
+          >
+            {visibleSlice.map((cmd, visIdx) => {
+              const realIdx = slashScrollOffset + visIdx;
+              return (
+                <div
+                  key={cmd.name + (cmd.label ?? "")}
+                  onMouseDown={(e) => { e.preventDefault(); selectSlashCommand(cmd); }}
+                  onMouseEnter={() => setSlashSelectedIdx(realIdx)}
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 10,
+                    padding: "4px 10px",
+                    cursor: "pointer",
+                    backgroundColor: realIdx === slashSelectedIdx ? lightenHex(terminalBg, 36) : "transparent",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: "Hack, monospace",
+                      fontSize: fontSize - 1,
+                      minWidth: 90,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {(() => {
+                      const label = cmd.label ?? cmd.name;
+                      const token = slashTokenRef.current;
+                      const matchLen = token ? value.slice(token.start + 1, token.end).length : 0;
+                      return (
+                        <>
+                          <span style={{ color: terminalCursor }}>/{label.slice(0, matchLen)}</span>
+                          <span style={{ color: terminalFg, opacity: 0.5 }}>{label.slice(matchLen)}</span>
+                        </>
+                      );
+                    })()}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: fontSize - 2,
+                      color: terminalFg,
+                      opacity: 0.5,
+                      overflow: "hidden",
+                      whiteSpace: "nowrap",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {cmd.description}
+                  </span>
+                </div>
+              );
+            })}
+            {/* Footer: arrows (only when scrollable) + page counter (always) */}
             <div
-              key={cmd.name + (cmd.label ?? "")}
-              onMouseDown={(e) => { e.preventDefault(); selectSlashCommand(cmd); }}
-              onMouseEnter={() => setSlashSelectedIdx(idx)}
               style={{
                 display: "flex",
-                alignItems: "baseline",
-                gap: 10,
-                padding: "4px 10px",
-                cursor: "pointer",
-                backgroundColor: idx === slashSelectedIdx ? lightenHex(terminalBg, 36) : "transparent",
+                alignItems: "center",
+                gap: 6,
+                padding: "3px 10px 4px",
+                fontSize: fontSize - 2,
+                color: terminalFg,
+                opacity: 0.45,
               }}
             >
-              <span
-                style={{
-                  fontFamily: "Hack, monospace",
-                  fontSize: fontSize - 1,
-                  minWidth: 90,
-                  flexShrink: 0,
-                }}
-              >
-                {(() => {
-                  const label = cmd.label ?? cmd.name;
-                  const token = slashTokenRef.current;
-                  const matchLen = token ? value.slice(token.start + 1, token.end).length : 0;
-                  return (
-                    <>
-                      <span style={{ color: terminalCursor }}>/{label.slice(0, matchLen)}</span>
-                      <span style={{ color: terminalFg, opacity: 0.5 }}>{label.slice(matchLen)}</span>
-                    </>
-                  );
-                })()}
-              </span>
-              <span
-                style={{
-                  fontSize: fontSize - 2,
-                  color: terminalFg,
-                  opacity: 0.5,
-                  overflow: "hidden",
-                  whiteSpace: "nowrap",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {cmd.description}
+              {hasMore && (
+                <>
+                  <span style={{ opacity: canScrollUp ? 1 : 0.3 }}>&#9650;</span>
+                  <span style={{ opacity: canScrollDown ? 1 : 0.3 }}>&#9660;</span>
+                </>
+              )}
+              <span style={{ marginLeft: hasMore ? 2 : 0 }}>
+                ({slashSelectedIdx + 1}/{slashMatches.length})
               </span>
             </div>
-          ))}
-        </div>
-      )}
+          </div>
+        );
+      })()}
       <FaAngleRight
         style={{
           color: terminalCursor,
@@ -1132,12 +1208,18 @@ export default function PromptComposer({
             const cursorPos = e.target.selectionStart ?? newVal.length;
             const matches = computeSlashMatches(newVal, cursorPos);
             setSlashMatches(matches);
-            setSlashSelectedIdx(0);
+            setSlashSelectedIdx(0); setSlashScrollOffset(0);
           }}
           onKeyDown={handleKeyDown}
           onFocus={() => useClipboardImageStore.getState().setActiveComposerTerminalId(terminalId)}
-          onBlur={() => { setSlashMatches([]); setSlashSelectedIdx(0); }}
-          onWheel={(e) => e.stopPropagation()}
+          onBlur={() => { setSlashMatches([]); setSlashSelectedIdx(0); setSlashScrollOffset(0); }}
+          onWheel={(e) => {
+            e.stopPropagation();
+            // Forward wheel events to the terminal so scrolling works while composer has focus
+            if (terminal) {
+              terminal.scrollLines(e.deltaY > 0 ? 3 : -3);
+            }
+          }}
           rows={1}
           spellCheck={false}
           style={{
@@ -1151,7 +1233,7 @@ export default function PromptComposer({
             border: "none",
             outline: "none",
             resize: "none",
-            padding: "0 0 0 6px",
+            padding: 0,
             margin: 0,
             marginTop: useCard ? 7 : 0,
             overflowY: "auto",
@@ -1179,7 +1261,7 @@ export default function PromptComposer({
                 fontSize,
                 lineHeight: 1.4,
                 letterSpacing: 1,
-                padding: "0 0 0 6px",
+                padding: 0,
                 margin: 0,
                 marginTop: useCard ? 7 : 0,
                 whiteSpace: "pre-wrap",
@@ -1206,7 +1288,7 @@ export default function PromptComposer({
               fontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
-              padding: "0 0 0 6px",
+              padding: 0,
               margin: 0,
               marginTop: useCard ? 7 : 0,
                 whiteSpace: "pre-wrap",
@@ -1232,7 +1314,7 @@ export default function PromptComposer({
               fontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
-              padding: "0 0 0 6px",
+              padding: 0,
               margin: 0,
               marginTop: useCard ? 7 : 0,
                 whiteSpace: "pre-wrap",
@@ -1250,14 +1332,14 @@ export default function PromptComposer({
             style={{
               position: "absolute",
               top: 0,
-              left: 0,
+              left: value ? 0 : 10,
               right: 0,
               pointerEvents: "none",
               fontFamily: "Hack, monospace",
               fontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
-              padding: "0 0 0 6px",
+              padding: 0,
               margin: 0,
               marginTop: useCard ? 7 : 0,
                 whiteSpace: "pre-wrap",
@@ -1279,14 +1361,14 @@ export default function PromptComposer({
             style={{
               position: "absolute",
               top: 0,
-              left: 0,
+              left: 10,
               right: 0,
               pointerEvents: "none",
               fontFamily: "Hack, monospace",
               fontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
-              padding: "0 0 0 6px",
+              padding: 0,
               margin: 0,
               marginTop: useCard ? 7 : 0,
               whiteSpace: "nowrap",
@@ -1306,48 +1388,49 @@ export default function PromptComposer({
         }`}</style>
       )}
       {/* Attached image thumbnails — click to remove */}
-      {localImages.map((img) => {
-        const label = getImageLabel(img.winPath);
-        return (
+      {localImages.map((img, i) => (
           <div
             key={img.id}
-            onClick={() => setLocalImages((prev) => prev.filter((i) => i.id !== img.id))}
+            onClick={() => setLocalImages((prev) => prev.filter((im) => im.id !== img.id))}
             style={{
               position: "relative",
-              width: 28,
-              height: 28,
-              borderRadius: 3,
+              width: 26,
+              height: 26,
+              borderRadius: 4,
               overflow: "hidden",
               cursor: "pointer",
-              border: `1.5px solid ${terminalCursor}`,
+              border: `1px solid ${terminalCursor}`,
               flexShrink: 0,
             }}
-            title={`${label} attached — click to remove`}
+            title={`Image ${i + 1} attached — click to remove`}
           >
             <img
               src={img.dataUri}
-              alt={label}
+              alt={`Image ${i + 1}`}
               style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
             />
-            <span
+            <div
               style={{
                 position: "absolute",
-                bottom: 0,
+                top: 0,
                 left: 0,
-                right: 0,
-                fontSize: 7,
-                lineHeight: "10px",
-                textAlign: "center",
+                width: 8,
+                height: 8,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: terminalCursor,
+                borderBottomRightRadius: 2,
+                fontSize: 6,
+                fontWeight: 700,
                 color: "#fff",
-                backgroundColor: "rgba(0,0,0,0.6)",
-                fontFamily: "Hack, monospace",
+                lineHeight: 1,
               }}
             >
-              {label}
-            </span>
+              {i + 1}
+            </div>
           </div>
-        );
-      })}
+        ))}
       {/* Console insert button — only visible when browser preview is open */}
       {browserPreviewOpen && (
         <div

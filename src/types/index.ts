@@ -153,6 +153,12 @@ export interface GitBranchInfo {
   branches: string[];
 }
 
+export interface GitDiffStats {
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+}
+
 export interface DiffHunk {
   header: string;
   oldStart: number;

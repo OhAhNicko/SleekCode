@@ -23,6 +23,30 @@ mod win32_border {
     const SWP_NOMOVE: u32 = 0x0002;
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOZORDER: u32 = 0x0004;
+    const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct RECT {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    #[repr(C)]
+    struct MONITORINFO {
+        cb_size: u32,
+        rc_monitor: RECT,
+        rc_work: RECT,
+        dw_flags: u32,
+    }
+
+    #[repr(C)]
+    struct NCCALCSIZE_PARAMS {
+        rgrc: [RECT; 3],
+        lppos: *mut c_void,
+    }
 
     extern "system" {
         fn DwmSetWindowAttribute(
@@ -56,10 +80,23 @@ mod win32_border {
             x: i32, y: i32, cx: i32, cy: i32,
             flags: u32,
         ) -> i32;
+        fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
+        fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MONITORINFO) -> i32;
     }
 
     /// Window subclass proc that intercepts WM_NCCALCSIZE to remove the
     /// 1px top non-client border Windows draws on frameless windows.
+    ///
+    /// Handles three cases:
+    /// - **Maximized** (Win+Up or maximize button): WS_MAXIMIZE is set, and
+    ///   WS_THICKFRAME extends the window rect ~8px beyond screen edges.
+    ///   We set client rect = monitor work area.
+    /// - **Snapped** (Win+Left/Right): WS_MAXIMIZE is NOT set, but
+    ///   WS_THICKFRAME still causes the proposed rect to overshoot the work
+    ///   area. We clamp the client rect to the work area boundaries so the
+    ///   window doesn't extend behind the taskbar.
+    /// - **Normal** (floating window): proposed rect is within the work area,
+    ///   no clamping needed. We return 0 to remove all non-client area.
     unsafe extern "system" fn subclass_proc(
         hwnd: *mut c_void,
         msg: u32,
@@ -69,16 +106,43 @@ mod win32_border {
         _ref_data: usize,
     ) -> isize {
         if msg == WM_NCCALCSIZE && wparam == 1 {
-            let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-            if (style & WS_MAXIMIZE) == 0 {
-                // Not maximized: remove all non-client area so content fills the window.
-                return 0;
+            let params = &mut *(lparam as *mut NCCALCSIZE_PARAMS);
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cb_size: std::mem::size_of::<MONITORINFO>() as u32,
+                rc_monitor: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                rc_work: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                dw_flags: 0,
+            };
+            if GetMonitorInfoW(monitor, &mut mi) != 0 {
+                let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+                if (style & WS_MAXIMIZE) != 0 {
+                    // Maximized: client rect = work area exactly.
+                    // WS_THICKFRAME extends the window rect beyond screen edges;
+                    // using the work area prevents corner clipping and taskbar overlap.
+                    params.rgrc[0] = mi.rc_work;
+                } else {
+                    // Normal or snapped: clamp to work area if overshooting.
+                    // During snap (Win+Left/Right), WS_THICKFRAME causes the
+                    // proposed rect to extend a few pixels beyond the work area.
+                    // For normal floating windows the proposed rect is already
+                    // within bounds, so the clamps are no-ops.
+                    let r = &mut params.rgrc[0];
+                    if r.top < mi.rc_work.top {
+                        r.top = mi.rc_work.top;
+                    }
+                    if r.bottom > mi.rc_work.bottom {
+                        r.bottom = mi.rc_work.bottom;
+                    }
+                    if r.left < mi.rc_work.left {
+                        r.left = mi.rc_work.left;
+                    }
+                    if r.right > mi.rc_work.right {
+                        r.right = mi.rc_work.right;
+                    }
+                }
             }
-            // Maximized: fall through to DefSubclassProc.
-            // Returning 0 here would make the client rect equal to the raw maximized
-            // window rect, which WS_THICKFRAME extends ~8px beyond screen edges.
-            // That causes corner content to be clipped off-screen (looks like rounded corners).
-            // Letting DefSubclassProc handle it correctly clips the client to the visible monitor area.
+            return 0;
         }
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
@@ -376,23 +440,53 @@ async fn search_in_files(
     Ok(results)
 }
 
+/// Run a git command, routing through wsl.exe when the directory is a WSL UNC path
+/// (e.g. `\\wsl.localhost\Ubuntu-24.04\home\...`). Windows git.exe can't use UNC
+/// paths as current_dir, so we convert to a Linux path and run via wsl.exe.
+fn run_git_owned(directory: &str, args: &[String]) -> Result<std::process::Output, String> {
+    let strs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    run_git(directory, &strs)
+}
+
+fn run_git(directory: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    // Detect WSL UNC paths: \\wsl.localhost\Distro\... or \\wsl$\Distro\...
+    let normalized = directory.replace('/', "\\");
+    let is_wsl = normalized.starts_with("\\\\wsl.localhost\\") || normalized.starts_with("\\\\wsl$\\");
+
+    if is_wsl {
+        // Extract distro and convert to Linux path
+        // \\wsl.localhost\Ubuntu-24.04\home\nicko\projects\nano → distro=Ubuntu-24.04, linux_path=/home/nicko/projects/nano
+        let trimmed = normalized.trim_start_matches("\\\\wsl.localhost\\").trim_start_matches("\\\\wsl$\\");
+        let (distro, linux_path) = match trimmed.find('\\') {
+            Some(pos) => (&trimmed[..pos], trimmed[pos..].replace('\\', "/")),
+            None => (trimmed, "/".to_string()),
+        };
+
+        let mut cmd_args = vec!["-d", distro, "--", "git", "-C", &linux_path];
+        cmd_args.extend(args);
+
+        Command::new("wsl.exe")
+            .args(&cmd_args)
+            .output()
+            .map_err(|e| format!("Failed to run git via wsl: {}", e))
+    } else {
+        Command::new("git")
+            .args(args)
+            .current_dir(directory)
+            .output()
+            .map_err(|e| format!("Failed to run git: {}", e))
+    }
+}
+
 #[tauri::command]
 async fn git_is_repo(directory: String) -> Result<bool, String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(&directory)
-        .output()
-        .map_err(|e| format!("Failed to run git: {}", e))?;
+    let output = run_git(&directory, &["rev-parse", "--is-inside-work-tree"])?;
     Ok(output.status.success())
 }
 
 #[tauri::command]
 async fn git_status(directory: String) -> Result<Vec<GitFileStatus>, String> {
-    let output = Command::new("git")
-        .args(["status", "--porcelain", "-uall"])
-        .current_dir(&directory)
-        .output()
-        .map_err(|e| format!("Failed to run git: {}", e))?;
+    let output = run_git(&directory, &["status", "--porcelain", "-uall"])?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -438,11 +532,7 @@ async fn git_diff(directory: String, file_path: Option<String>, compare_to: Opti
                 args.push("--".to_string());
                 args.push(fp.clone());
             }
-            let output = Command::new("git")
-                .args(&args)
-                .current_dir(&directory)
-                .output()
-                .map_err(|e| format!("Failed to run git diff: {}", e))?;
+            let output = run_git_owned(&directory, &args)?;
             combined = String::from_utf8_lossy(&output.stdout).to_string();
         }
         None => {
@@ -452,11 +542,7 @@ async fn git_diff(directory: String, file_path: Option<String>, compare_to: Opti
                 args1.push("--".to_string());
                 args1.push(fp.clone());
             }
-            let output1 = Command::new("git")
-                .args(&args1)
-                .current_dir(&directory)
-                .output()
-                .map_err(|e| format!("Failed to run git diff: {}", e))?;
+            let output1 = run_git_owned(&directory, &args1)?;
             combined.push_str(&String::from_utf8_lossy(&output1.stdout));
 
             // Staged changes
@@ -465,11 +551,7 @@ async fn git_diff(directory: String, file_path: Option<String>, compare_to: Opti
                 args2.push("--".to_string());
                 args2.push(fp.clone());
             }
-            let output2 = Command::new("git")
-                .args(&args2)
-                .current_dir(&directory)
-                .output()
-                .map_err(|e| format!("Failed to run git diff: {}", e))?;
+            let output2 = run_git_owned(&directory, &args2)?;
             combined.push_str(&String::from_utf8_lossy(&output2.stdout));
         }
     }
@@ -480,19 +562,11 @@ async fn git_diff(directory: String, file_path: Option<String>, compare_to: Opti
 #[tauri::command]
 async fn git_branches(directory: String) -> Result<GitBranchInfo, String> {
     // Get current branch
-    let current_output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .current_dir(&directory)
-        .output()
-        .map_err(|e| format!("Failed to run git: {}", e))?;
+    let current_output = run_git(&directory, &["rev-parse", "--abbrev-ref", "HEAD"])?;
     let current = String::from_utf8_lossy(&current_output.stdout).trim().to_string();
 
     // Get all branches
-    let branches_output = Command::new("git")
-        .args(["branch", "-a", "--format=%(refname:short)"])
-        .current_dir(&directory)
-        .output()
-        .map_err(|e| format!("Failed to run git: {}", e))?;
+    let branches_output = run_git(&directory, &["branch", "-a", "--format=%(refname:short)"])?;
     let branches: Vec<String> = String::from_utf8_lossy(&branches_output.stdout)
         .lines()
         .filter(|l| !l.is_empty())
@@ -500,6 +574,67 @@ async fn git_branches(directory: String) -> Result<GitBranchInfo, String> {
         .collect();
 
     Ok(GitBranchInfo { current, branches })
+}
+
+#[derive(Serialize)]
+struct GitDiffStats {
+    files_changed: u32,
+    insertions: u32,
+    deletions: u32,
+}
+
+/// Parse a `git diff --shortstat` line like " 3 files changed, 156 insertions(+), 22 deletions(-)"
+fn parse_shortstat(line: &str) -> (u32, u32, u32) {
+    let mut files = 0u32;
+    let mut ins = 0u32;
+    let mut del = 0u32;
+    for part in line.split(',') {
+        let part = part.trim();
+        if part.contains("file") {
+            if let Some(n) = part.split_whitespace().next().and_then(|s| s.parse().ok()) {
+                files = n;
+            }
+        } else if part.contains("insertion") {
+            if let Some(n) = part.split_whitespace().next().and_then(|s| s.parse().ok()) {
+                ins = n;
+            }
+        } else if part.contains("deletion") {
+            if let Some(n) = part.split_whitespace().next().and_then(|s| s.parse().ok()) {
+                del = n;
+            }
+        }
+    }
+    (files, ins, del)
+}
+
+#[tauri::command]
+async fn git_diff_stats(directory: String) -> Result<GitDiffStats, String> {
+    // Unstaged
+    let out1 = run_git(&directory, &["diff", "--shortstat"])?;
+    let line1 = String::from_utf8_lossy(&out1.stdout);
+    let (f1, i1, d1) = parse_shortstat(&line1);
+
+    // Staged
+    let out2 = run_git(&directory, &["diff", "--cached", "--shortstat"])?;
+    let line2 = String::from_utf8_lossy(&out2.stdout);
+    let (f2, i2, d2) = parse_shortstat(&line2);
+
+    Ok(GitDiffStats {
+        files_changed: f1 + f2,
+        insertions: i1 + i2,
+        deletions: d1 + d2,
+    })
+}
+
+#[tauri::command]
+async fn git_switch_branch(directory: String, branch: String) -> Result<(), String> {
+    let output = run_git(&directory, &["switch", &branch])?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr.trim().to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -534,11 +669,7 @@ async fn git_discard_file(directory: String, file_path: String, is_untracked: bo
         std::fs::remove_file(&full_path)
             .map_err(|e| format!("Failed to remove file: {}", e))?;
     } else {
-        let output = Command::new("git")
-            .args(["checkout", "--", &file_path])
-            .current_dir(&directory)
-            .output()
-            .map_err(|e| format!("Failed to run git checkout: {}", e))?;
+        let output = run_git(&directory, &["checkout", "--", &file_path])?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -816,10 +947,12 @@ async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>) -
 /// The first line of each file is JSON with "cwd" (project path) and "id" (session UUID).
 #[tauri::command]
 async fn get_codex_session_id(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
-    // Find .jsonl files sorted by mtime, read first line of each, filter by cwd,
-    // then extract the UUID from the "id" field.
+    // List .jsonl files sorted by mtime, read first line of each via xargs
+    // (not while-read — head inside while-read steals lines from the pipe),
+    // filter by cwd, then extract the UUID from the "id" field.
+    // Uses find (no -printf) + xargs ls -1t instead of find -printf (which fails silently via wsl.exe -- bash -lic).
     let script = format!(
-        "find ~/.codex/sessions -name '*.jsonl' -type f -printf '%T@ %p\\n' 2>/dev/null | sort -rn | sed 's/^[0-9.]* //' | while IFS= read -r f; do head -1 \"$f\" 2>/dev/null; done | grep '\"cwd\":\"{}\"' | grep -oE '\"id\":\"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}\"' | sed 's/\"id\":\"//;s/\"//'",
+        "find ~/.codex/sessions -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -20 | xargs -I{{}} head -1 {{}} 2>/dev/null | grep '\"cwd\":\"{}\"' | grep -oE '\"id\":\"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}\"' | sed 's/\"id\":\"//;s/\"//'",
         project_path
     );
 
@@ -895,6 +1028,396 @@ fn set_window_corners(window: tauri::WebviewWindow, rounded: bool) -> Result<(),
     Ok(())
 }
 
+/// Install the EzyDev statusline wrapper in WSL.
+/// Creates ~/.ezydev/statusline-wrapper.sh that saves the raw statusline JSON
+/// to /tmp/ezydev-claude-statusline.json and chains to the user's existing
+/// statusline command (e.g. cc-statusline) so it keeps working.
+#[tauri::command]
+async fn install_statusline_wrapper(distro: Option<String>) -> Result<String, String> {
+    let wrapper_script = r#"#!/bin/bash
+input=$(cat)
+# Save raw statusline JSON for EzyDev to read
+echo "$input" > /tmp/ezydev-claude-statusline.json 2>/dev/null
+# Chain to original statusline command (e.g. cc-statusline)
+_chain="$(cat "$HOME/.ezydev/statusline-chain" 2>/dev/null)"
+# Guard: never chain to ourselves (prevents infinite recursion / fork bomb)
+case "$_chain" in *statusline-wrapper*) _chain="" ;; esac
+if [ -n "$_chain" ] && [ -x "$_chain" ]; then
+  echo "$input" | "$_chain"
+else
+  echo "$input"
+fi
+"#;
+
+    // Base64-encode the wrapper to avoid heredoc expansion issues in bash -lic
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(wrapper_script.trim());
+
+    // Single bash script: check if installed, create dir, write wrapper, save chain, update settings
+    let script = format!(
+        r#"
+WRAPPER="$HOME/.ezydev/statusline-wrapper.sh"
+CHAIN_FILE="$HOME/.ezydev/statusline-chain"
+SETTINGS="$HOME/.claude/settings.json"
+
+# Read current statusline command from settings
+CURRENT=""
+if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+  CURRENT=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || true)
+fi
+
+mkdir -p "$HOME/.ezydev" 2>/dev/null
+
+# Always (re)write wrapper script (base64-encoded to avoid heredoc expansion issues)
+echo "{b64}" | base64 -d > "$WRAPPER"
+chmod +x "$WRAPPER" 2>/dev/null || true
+
+# Save original statusline command as chain target (only if not already pointing to wrapper)
+case "$CURRENT" in
+  *statusline-wrapper*) ;;  # Already ours, don't overwrite chain
+  *)
+    if [ -n "$CURRENT" ]; then
+      EXPANDED=$(eval echo "$CURRENT" 2>/dev/null || echo "$CURRENT")
+      echo "$EXPANDED" > "$CHAIN_FILE"
+    fi
+    ;;
+esac
+
+# Update settings.json (only if not already pointing to wrapper)
+case "$CURRENT" in
+  *statusline-wrapper*)
+    echo "UPDATED_WRAPPER"
+    exit 0
+    ;;
+esac
+
+if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+  TMP=$(mktemp)
+  if jq '.statusLine = {{"type": "command", "command": "~/.ezydev/statusline-wrapper.sh"}}' "$SETTINGS" > "$TMP" 2>/dev/null; then
+    mv "$TMP" "$SETTINGS"
+  else
+    rm -f "$TMP"
+    echo "ERR_JQ_UPDATE"
+    exit 1
+  fi
+fi
+
+echo "INSTALLED"
+"#,
+        b64 = b64
+    );
+
+    let mut args = Vec::new();
+    if let Some(ref d) = distro {
+        args.push("-d".to_string());
+        args.push(d.clone());
+    }
+    args.extend(["--".to_string(), "bash".to_string()]);
+
+    // Pipe the script via stdin — wsl.exe breaks multi-statement arguments to bash -c
+    let mut child = Command::new("wsl.exe")
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn wsl: {}", e))?;
+
+    if let Some(ref mut stdin) = child.stdin {
+        use std::io::Write;
+        let _ = stdin.write_all(script.as_bytes());
+    }
+    drop(child.stdin.take()); // Close stdin to signal EOF
+
+    let output = child.wait_with_output()
+        .map_err(|e| format!("Failed to wait for wsl: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if stdout.is_empty() && !stderr.is_empty() {
+        return Ok(format!("ERR: {}", stderr));
+    }
+    if stdout.is_empty() {
+        return Ok(format!("ERR_EMPTY (exit={})", output.status.code().unwrap_or(-1)));
+    }
+    Ok(stdout)
+}
+
+/// Read context percentage from CLI session JSONL files.
+/// Supports Claude (usage per message) and Codex (token_count events).
+/// Returns the percentage remaining as a string ("0"-"100"), or empty string if not available.
+///
+/// Uses a temp-file cache (/tmp/ezydev-sessionpath-{session_id}) to avoid repeated `find` calls.
+#[tauri::command]
+async fn read_session_context(
+    terminal_type: String,
+    session_id: String,
+    distro: Option<String>,
+) -> Result<String, String> {
+    if session_id.is_empty() {
+        return Ok(String::new());
+    }
+    // "__latest__" = no specific session yet, search all recent sessions
+    let is_latest = session_id == "__latest__";
+
+    // Build a bash script that:
+    // 1. Locates the session file (cached after first lookup)
+    // 2. Reads the last usage/token_count entry
+    // 3. Calculates remaining context percentage
+    let script = match terminal_type.as_str() {
+        "claude" => format!(
+            r#"
+command -v jq >/dev/null 2>&1 || exit 0
+
+# Read window size and display model name from statusline JSON (if available)
+SL="/tmp/ezydev-claude-statusline.json"
+sl_window=""
+sl_model=""
+if [ -f "$SL" ]; then
+  sl_window=$(jq -r '.context_window.context_window_size // empty' "$SL" 2>/dev/null)
+  sl_model=$(jq -r '.model.display_name // empty' "$SL" 2>/dev/null)
+fi
+
+# Read precise token counts from JSONL session file
+SID='{session_id}'
+if [ "$SID" = "__latest__" ]; then
+  # No specific session (new pane) — show 0 used with statusline model/window.
+  # Never read token data cross-session — context % is session-specific.
+  if [ -n "$sl_window" ]; then
+    echo "0|$sl_window|$sl_model"
+  fi
+  exit 0
+else
+  CACHE="/tmp/ezydev-sessionpath-$SID"
+  if [ -f "$CACHE" ]; then
+    f=$(cat "$CACHE")
+    [ ! -f "$f" ] && rm -f "$CACHE" && f=""
+  fi
+  if [ -z "$f" ]; then
+    f=$(find ~/.claude/projects/ -name "$SID.jsonl" -type f 2>/dev/null | head -1)
+    [ -n "$f" ] && echo "$f" > "$CACHE"
+  fi
+fi
+[ -z "$f" ] && exit 0
+line=$(tac "$f" 2>/dev/null | grep '"message"' | grep '"usage"' | head -1)
+if [ -z "$line" ]; then
+  # No token data in current session — show 0 used (100% remaining).
+  # Never read token data cross-session — context % is session-specific.
+  if [ -n "$sl_window" ]; then
+    echo "0|$sl_window|$sl_model"
+  fi
+  exit 0
+fi
+total=$(echo "$line" | jq '((.message.usage.input_tokens // 0) + (.message.usage.cache_creation_input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0) + (.message.usage.output_tokens // 0))' 2>/dev/null)
+[ -z "$total" ] || [ "$total" = "null" ] || [ "$total" = "0" ] && exit 0
+# Use statusline window/model if available, otherwise fallback
+window="${{sl_window:-200000}}"
+model="${{sl_model:-$(echo "$line" | jq -r '.message.model // empty' 2>/dev/null)}}"
+echo "$total|$window|$model"
+"#,
+            session_id = session_id
+        ),
+        "codex" => format!(
+            r#"
+command -v jq >/dev/null 2>&1 || exit 0
+SID='{session_id}'
+if [ "$SID" = "__latest__" ]; then
+  # No specific session — use the most recent session file
+  f=$(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -1)
+else
+  CACHE="/tmp/ezydev-sessionpath-$SID"
+  if [ -f "$CACHE" ]; then
+    f=$(cat "$CACHE")
+    [ ! -f "$f" ] && rm -f "$CACHE" && f=""
+  fi
+  if [ -z "$f" ]; then
+    f=$(find ~/.codex/sessions/ -name "*$SID*.jsonl" -type f 2>/dev/null | head -1)
+    [ -n "$f" ] && echo "$f" > "$CACHE"
+  fi
+fi
+[ -z "$f" ] && exit 0
+
+# Try current session first for token data
+line=$(tac "$f" 2>/dev/null | grep '"model_context_window"' | head -1)
+used=""
+window=""
+model=""
+if [ -n "$line" ]; then
+  used=$(echo "$line" | jq '.payload.info.last_token_usage.total_tokens // 0' 2>/dev/null)
+  window=$(echo "$line" | jq '.payload.info.model_context_window // 0' 2>/dev/null)
+  [ "$used" = "null" ] || [ "$used" = "0" ] && used=""
+  [ "$window" = "null" ] || [ "$window" = "0" ] && window=""
+fi
+model=$(tac "$f" 2>/dev/null | grep -m1 'turn_context' | jq -r '.payload.model // empty' 2>/dev/null)
+
+# __latest__ mode = new pane — never use another session's token count.
+[ "$SID" = "__latest__" ] && used=""
+
+# Fallback: if current session has no window/model, get from recent sessions.
+# NEVER use another session's 'used' — context % is session-specific.
+if [ -z "$window" ]; then
+  for rf in $(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -10); do
+    [ "$rf" = "$f" ] && continue
+    fb_line=$(tac "$rf" 2>/dev/null | grep '"model_context_window"' | head -1)
+    [ -z "$fb_line" ] && continue
+    fb_window=$(echo "$fb_line" | jq '.payload.info.model_context_window // 0' 2>/dev/null)
+    [ -z "$fb_window" ] || [ "$fb_window" = "null" ] || [ "$fb_window" = "0" ] && continue
+    window="$fb_window"
+    [ -z "$model" ] && model=$(tac "$rf" 2>/dev/null | grep -m1 'turn_context' | jq -r '.payload.model // empty' 2>/dev/null)
+    break
+  done
+fi
+
+# New session with no token data yet = 0 used (100% remaining)
+[ -z "$used" ] && used=0
+[ -z "$window" ] && exit 0
+
+# Rate limits: account-level, search current then all recent sessions.
+rl_line=$(tac "$f" 2>/dev/null | grep '"rate_limits"' | grep -v '"rate_limits":null' | grep -m1 '"used_percent"')
+if [ -z "$rl_line" ]; then
+  for rf in $(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -10); do
+    rl_line=$(grep '"rate_limits"' "$rf" 2>/dev/null | grep -v '"rate_limits":null' | tail -1)
+    [ -n "$rl_line" ] && break
+  done
+fi
+rl5h=""
+rlweek=""
+if [ -n "$rl_line" ]; then
+  rl5h=$(echo "$rl_line" | jq -r '.payload.rate_limits.primary.used_percent // empty' 2>/dev/null)
+  rlweek=$(echo "$rl_line" | jq -r '.payload.rate_limits.secondary.used_percent // empty' 2>/dev/null)
+fi
+echo "$used|$window|$model|$rl5h|$rlweek"
+"#,
+            session_id = session_id
+        ),
+        "gemini" => format!(
+            r#"
+command -v jq >/dev/null 2>&1 || exit 0
+
+# --- Gemini quota (requests per day) via cached API call ---
+gemini_quota_used() {{
+  local model_name="$1"
+  local QC="/tmp/ezydev-gemini-quota.json"
+  command -v curl >/dev/null 2>&1 || return
+  # Refresh cache if stale (> 60 seconds)
+  local now=$(date +%s)
+  local mtime=$(stat -c %Y "$QC" 2>/dev/null || echo 0)
+  if [ ! -f "$QC" ] || [ $(( now - mtime )) -gt 60 ]; then
+    local CREDS="$HOME/.gemini/oauth_creds.json"
+    [ ! -f "$CREDS" ] && return
+    local TOKEN=$(jq -r '.access_token // empty' "$CREDS" 2>/dev/null)
+    [ -z "$TOKEN" ] && return
+    local resp
+    resp=$(curl -s -m 5 -X POST \
+      'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota' \
+      -H "Authorization: Bearer $TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{{}}' 2>/dev/null)
+    # If token expired (401), refresh it
+    if echo "$resp" | jq -e '.error.code == 401' >/dev/null 2>&1; then
+      local REFRESH=$(jq -r '.refresh_token // empty' "$CREDS" 2>/dev/null)
+      if [ -n "$REFRESH" ]; then
+        TOKEN=$(curl -s -m 5 -X POST 'https://oauth2.googleapis.com/token' \
+          -d "client_id=681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com" \
+          -d "client_secret=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" \
+          -d "refresh_token=$REFRESH" \
+          -d "grant_type=refresh_token" 2>/dev/null | jq -r '.access_token // empty')
+        [ -z "$TOKEN" ] && return
+        resp=$(curl -s -m 5 -X POST \
+          'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota' \
+          -H "Authorization: Bearer $TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{{}}' 2>/dev/null)
+      fi
+    fi
+    if echo "$resp" | jq -e '.buckets' >/dev/null 2>&1; then
+      echo "$resp" > "$QC"
+    fi
+  fi
+  # Read cached quota — match model by prefix (strip -preview, -001)
+  [ ! -f "$QC" ] && return
+  local base=$(echo "$model_name" | sed 's/-preview$//' | sed 's/-[0-9]*$//')
+  # Try exact prefix match, then progressively shorter prefixes
+  local frac=""
+  frac=$(jq -r --arg m "$base" '[.buckets[] | select(.modelId == $m) | .remainingFraction] | first // empty' "$QC" 2>/dev/null)
+  if [ -z "$frac" ]; then
+    frac=$(jq -r --arg m "$base" '[.buckets[] | select(.modelId | startswith($m)) | .remainingFraction] | first // empty' "$QC" 2>/dev/null)
+  fi
+  if [ -n "$frac" ] && [ "$frac" != "null" ]; then
+    echo "$frac" | awk '{{printf "%.2f", (1-$1)*100}}'
+  fi
+}}
+
+SID='{session_id}'
+if [ "$SID" = "__latest__" ]; then
+  # New pane — get model from most recent session, used=0 (100% remaining).
+  f=$(ls -1t ~/.gemini/tmp/*/chats/*.json 2>/dev/null | head -1)
+  model=""
+  if [ -n "$f" ]; then
+    model=$(jq -r '[.messages[] | select(.model) | .model] | last // empty' "$f" 2>/dev/null)
+  fi
+  rpd=""
+  [ -n "$model" ] && rpd=$(gemini_quota_used "$model")
+  echo "0|1000000|$model|$rpd"
+  exit 0
+fi
+CACHE="/tmp/ezydev-sessionpath-$SID"
+if [ -f "$CACHE" ]; then
+  f=$(cat "$CACHE")
+  [ ! -f "$f" ] && rm -f "$CACHE" && f=""
+fi
+if [ -z "$f" ]; then
+  f=$(grep -rl "$SID" ~/.gemini/tmp/*/chats/*.json 2>/dev/null | head -1)
+  [ -n "$f" ] && echo "$f" > "$CACHE"
+fi
+[ -z "$f" ] && exit 0
+inp=$(jq '[.messages[] | select(.tokens) | .tokens.input] | last // 0' "$f" 2>/dev/null)
+[ -z "$inp" ] || [ "$inp" = "null" ] || [ "$inp" = "0" ] && exit 0
+model=$(jq -r '[.messages[] | select(.model) | .model] | last // empty' "$f" 2>/dev/null)
+case "$model" in
+  gemini-2.5-pro*)   window=1000000 ;;
+  gemini-2.5-flash*) window=1000000 ;;
+  gemini-3-pro*)     window=1000000 ;;
+  gemini-3-flash*)   window=1000000 ;;
+  *)                 window=1000000 ;;
+esac
+rpd=""
+[ -n "$model" ] && rpd=$(gemini_quota_used "$model")
+echo "$inp|$window|$model|$rpd"
+"#,
+            session_id = session_id
+        ),
+        _ => return Ok(String::new()),
+    };
+
+    let mut args = Vec::new();
+    if let Some(ref d) = distro {
+        args.push("-d".to_string());
+        args.push(d.clone());
+    }
+    args.extend(["--".to_string(), "bash".to_string()]);
+
+    let mut child = Command::new("wsl.exe")
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn wsl: {}", e))?;
+
+    if let Some(ref mut stdin) = child.stdin {
+        use std::io::Write;
+        let _ = stdin.write_all(script.as_bytes());
+    }
+    drop(child.stdin.take());
+
+    let output = child.wait_with_output()
+        .map_err(|e| format!("Failed to wait for wsl: {}", e))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -902,7 +1425,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_revert_hunk, git_discard_file, wsl_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, wsl_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

@@ -13,6 +13,7 @@ import type { WorkspaceTemplate } from "../lib/workspace-templates";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import TemplatePicker, { type ExtraPaneType } from "./TemplatePicker";
 import ClipboardImageStrip from "./ClipboardImageStrip";
+import GitStatusBar from "./GitStatusBar";
 import { FaFolder, FaChevronDown, FaCheck } from "react-icons/fa";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
 import { FaXmark, FaPlus, FaBolt, FaGear, FaCodePullRequest, FaServer } from "react-icons/fa6";
@@ -483,17 +484,46 @@ export default function TabBar() {
             const localColors = { ...projectColors };
             const pendingAssigns: Array<[string, ProjectColorId]> = [];
             const visibleTabs = tabs.filter((t) => !t.isDevServerTab && !t.isKanbanTab && (!t.isServersTab || showServersTab));
-            // Pre-assign colors for any tabs missing them
+
+            // Collect unique project dirs for visible non-system tabs
+            const visibleDirs = new Set<string>();
             for (const tab of visibleTabs) {
-              const isSystem = tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab;
-              const dir = tab.workingDir.replace(/\\/g, "/");
-              if (!isSystem && dir && localColors[dir] === undefined) {
+              if (!(tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab)) {
+                const dir = tab.workingDir.replace(/\\/g, "/");
+                if (dir) visibleDirs.add(dir);
+              }
+            }
+
+            // Assign colors for any tabs missing them
+            for (const dir of visibleDirs) {
+              if (localColors[dir] === undefined) {
                 const newId = autoAssignColor(localColors);
                 localColors[dir] = newId;
                 pendingAssigns.push([dir, newId]);
               }
             }
-            // Commit all new assignments to store in one go
+
+            // Dedup: if two different visible projects share the same color, reassign the later one
+            const colorToDirs = new Map<string, string[]>();
+            for (const dir of visibleDirs) {
+              const cid = localColors[dir];
+              if (cid) {
+                const list = colorToDirs.get(cid) ?? [];
+                list.push(dir);
+                colorToDirs.set(cid, list);
+              }
+            }
+            for (const [, dirs] of colorToDirs) {
+              if (dirs.length <= 1) continue;
+              // Keep the first, reassign the rest
+              for (let i = 1; i < dirs.length; i++) {
+                const newId = autoAssignColor(localColors);
+                localColors[dirs[i]] = newId;
+                pendingAssigns.push([dirs[i], newId]);
+              }
+            }
+
+            // Commit all new/changed assignments to store
             for (const [dir, colorId] of pendingAssigns) {
               setProjectColor(dir, colorId);
             }
@@ -1153,6 +1183,14 @@ export default function TabBar() {
 
         {/* Clipboard image thumbnails */}
         <ClipboardImageStrip />
+
+        {/* Git Status Bar — only for project tabs with workingDir */}
+        {(() => {
+          const at = tabs.find((t) => t.id === activeTabId);
+          return at && at.workingDir && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab;
+        })() && (
+          <GitStatusBar workingDir={tabs.find((t) => t.id === activeTabId)!.workingDir!} />
+        )}
 
         {/* Tasks */}
         <div

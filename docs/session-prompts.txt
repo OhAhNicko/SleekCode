@@ -1,5 +1,11 @@
 # Session Prompts
 
+## 2026-03-11 — WebView2 blank screen after minimize/restore
+
+1. There's an issue when switching minimizing the app and then switch back to it, it just goes blank and you have to resize it for it to show again
+2. This still happens, look at the image: [screenshot showing entire webview blank — white rectangle + black areas, not just xterm]
+3. /end
+
 ## 2026-03-09 — Codex/Gemini session resume
 
 1. Resuming a CLI pane on startup works for Claude Code, but it doesn't work for Codex and Gemini yet. Can we fix this?
@@ -731,3 +737,133 @@
 
 1. Would it be possible to add more vibrant colors in the terminals? (just terminal text)
 [AskUserQuestion] Q: How would you like to approach the terminal color changes? → A: Option 3 (Replace default with a new vibrant palette). And add it as a toggle button in the settings dropdown
+
+## 2026-03-09 — EzyComposer cursor-ghost text overlap
+
+1. In the EzyComposer. Move the caret 5px to the left, in all CLI's
+2. Move it 5px more to the left
+3. No no no, move it back 10px to the right
+4. I want to move the blinking cursor to the left with 5px - in the EzyComposer
+5. I cant notice any difference
+6. Do you understand what the issue is?
+7. The cursor is overlaping the the ghost text. See image: [screenshot showing cursor overlapping "Write" ghost text]
+8. Its better, but we need 2px more gap. Also, when the ghost text is tab-completed, it has to spawn in at its same position, right now it goes back a few px after this pix which doesnt look clean
+9. Okay, now you lessened the gap, its basically back to how it was before..
+10. The cursor is overlaping the the ghost text in the exact same way as when i sent the first prompt about this. NOTHING HAS CHANGED
+11. [chose option 1: Gap only — ghost/placeholder offset from cursor, text jumps left when Tab-accept]
+12. CAn we make it 10px offset?
+13. Actually nice
+14. /end
+
+## 2026-03-09 — Terminal header rework, brand icons, tab project colors
+
+1. Lets rework the terminal pane headers a bit. 1. Only show the X-button on hover of the pane header. 2. Move the CLI title/dropdown from the center to the left side instead
+2. For 2. - move the CLI title 3px to the right
+3. Could we use the official Claude icon in the header title for example? Or is it against TOS?
+4. Yes do that. And for Codex/ChatGPT and Gemini too
+5. Nice!
+6. Would it make sense to make the CLI tabs color coded, either different full color backgrounds or maybe a color underline in the bottom of the tab
+7. The CLI count badge goes against the design rules we have...
+8. Move the badge down with 1px
+9. Also, add the Claude, Codex, Gemini logomark SVG's in the "add pane" dropdown
+10. For the active cli count, that is displayed as "(1)" now for example, can we make it a round badge in the top right of the CLI count? The same as the DevServer active badge
+11. It doesnt look good, the active badge is cut off and overlaps too much, put it in the corner
+12. Still overflows the CLI count number? move it diagonal up right more
+13. Better!
+14. The colored underline was never implemented?
+15. We can keep the active underline color.. i said it looks okay
+16. That didnt make sense? I want you to add it to the tabbar tabs... we can have both?
+17. Or should we have it so the tabs have a solid color background instead?
+18. Sounds reasonable. But we have to have different colors for different projects. So if the same project is opened in 2 tabs, they have to have the same color. Also, to change the assigned color the user can right click on the tab to pick another color from a color preset
+19. Add 3 more colors
+20. The colors arent randomly selected? I just spawned in a new project which got the same color as the other tabs... this can NEVER happen
+21. It just happened again
+22. All tabs still launches with orange ONLY...
+23. /end
+
+## 2026-03-09 — CLI Context Remaining in Pane Header
+
+1. Implement the following plan: CLI Context Remaining in Pane Header (buffer scanning approach)
+2. It doesnt work so far...
+3. (screenshot of debug output — regex not matching "Context Remaining: 93%")
+4. The issue is also that this panel is a custom plugin for Claude Code...
+5. (screenshot showing all bottom 8 rows empty — TUI renders from top)
+6. Can you scan this Git Repo (cc-statusline plugin) and see how it fetches the Context window?
+7. Why are you scanning? → Use ccusage directly instead of buffer scanning
+
+[AskUserQuestion] Q: How should we get the context usage data? → A: Call ccusage directly
+
+8. We need to use the same approach as this repo (cc-statusline) — Claude Code's native context_window JSON via statusline hook
+9. [statusline-setup] ERR: division by 0 — heredoc expansion issue in bash -lic
+10. [statusline-setup] INSTALLED but still no context — settings.json not updated, wrapper file missing
+11. Variable assignment doesn't work through wsl.exe bash -c — must pipe script via stdin
+12. Now it's visible!!
+
+## 2026-03-09 — xterm letterSpacing dashed borders fix
+
+1. The issue with dashed / broken borders is back. It was fixed in the last session for 16 pane grid... see image. Fix it once and for all! (screenshot of Claude CLI with dashed TUI borders)
+2. Remember this, it can never happen again. /lesson
+3. It just happened again on upstart with 3 panes...
+4. Sad, i liked the letter spacing
+5. Okay lets keep it then
+6. /end
+
+## 2026-03-10 — Context counter fixes and Codex support
+
+1. There is some issues with the current implementation of context counter in the pane header. We need to have a session to look in to it. 1. 0% is bad and 100% is good, we have to change the colors. Right now 93% is red and 39% is good.
+2. Can we add context counter for Codex as well
+[AskUserQuestion] Q: Does Codex CLI have a statusline feature similar to Claude Code's? → A: What do you mean with statusline mechanism?
+[AskUserQuestion] Q: Can you check DevTools console for SessionResume logs for Codex? → A: The session resume works, I'm talking about the context calculator
+[AskUserQuestion] Q: Approach for context data? → A: Why can't we use the same approach as cc-statusline but standalone?
+
+[AskUserQuestion] Q: What should the hover tooltip show? → A: Tokens left (Recommended) — "184,715 / 200,000 = 92.36%"
+
+[AskUserQuestion] Q: When you scroll up and then click the terminal area, should clicking near the bottom (at the prompt) still auto-focus the composer, or should ALL clicks be free while scrolled up? → A: All clicks free when scrolled up (Recommended)
+
+[AskUserQuestion] Q: How should we handle context window sizes for Claude and Gemini (which don't store window size in session files)? → A: Model lookup table (Recommended) — map model names to known window sizes, fall back to safe default.
+
+## 2026-03-10 — Slash command counter, scroll fix, Gemini placeholder steal
+
+1. In the EzyComposer, how many auto-complete built in slash commands do we have? List the numbers per CLI
+2. Gemini lists 35 commands in its own CLI input composer. See image: [screenshot of Gemini /commands showing (1/35)]
+3. You must have calculated wrong from the start with 37?
+4. Is the count correct for Claude and Codex?
+5. Can we add the (1/35) as Gemini CLI has? And it has to be possible to scroll down over all the commands in the overlay (add the arrows as well that indicates this). Add this for all CLI's. See image: [screenshot]
+6. When I type '/c' for example, show the new count, like - (1/5)
+7. My claude count says (1/63), why?
+8. Oh okay, that makes sense
+9. Thanks
+10. There's an issue with the Gemini auto-complete. When hiding EzyComposer with CTRL+I and then show it again with CTRL+I - the default Gemini input composer text "Type your message or @path/to/file" gets copied automatically in to the EzyComposer
+11. Now, I noticed an issue with EzyComposer too. We have an "auto focus" thing going on. However, this prohibits scrolling up and also copying text. What can we do about it?
+12. Still cant scroll up...
+13. STILL CANT FUCKING SCROLL
+14. When I scroll up I automatically gets scrolled down again
+15. When scrolling the EzyComposer has to hide when the CLI input composer isnt visible anymore
+16. Is it possible to make it focus again when it's visible after scroll? or will that break scrolling again?
+17. Nice! Now /end
+
+## 2026-03-10 — Context % cross-session fix + Gemini rate limits
+
+[AskUserQuestion] Q: Since we can't call /stats headlessly and quota isn't persisted to disk, how do you want to get Gemini rate limit data? → A: You can open a silent window and call "gemini --resume latest "/stats" --output-format json" (did not work - used direct API call to cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota instead)
+
+1. We can calculate rate limit in google as well. Google has another way of calculating rate limits though, it's requests per day. We have to fetch this per model used.
+
+## 2026-03-10 — Window snap taskbar overlap + COLORTERM env
+
+1. There's an issue when resizing the app window with for example "Windows key + Left arrow", the app window doesnt care about the taskbar in the bottom, it goes behind it causing missing information on the bottom of the apps viewport
+2. Do we set this when opening a Claude pane? Try setting environment variable COLORTERM=truecolor for richer colors
+3. Both on a new pane and resumed pane?
+4. Have you fixed this now?
+5. /end
+[AskUserQuestion] Q: What's wrong with the current height of the EzyComposer in Codex and Gemini? → A: Only fix Gemini height — raise the bottom border by 3px. Don't touch anything else.
+
+## 2026-03-10 — EzyComposer Gemini height & thumbnail style
+
+1. I want to fix the height of the Ezycomposer in Codex and Gemini
+2. [AskUserQuestion answer] Only fix Gemini height — raise the bottom border by 3px. Don't touch anything else.
+3. Move the bottom gemini border up with 2 px more
+4. Perfeectt
+5. Also, add a space in the end when sending text from EzyComposer to the Gemini composer. ONLY for Gemini. Because I think that sometimes everything isnt sent instantly otherwise
+6. Make the number smaller, like 8x8
+7. I also want to change the image thumbnails in the EzyComposer to be like the thumbnails in the tabbar, with only the number in the top left corner. Fix this!
+8. /end

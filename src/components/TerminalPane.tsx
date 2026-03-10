@@ -15,6 +15,7 @@ import { CommandBlockParser, type CommandBlock } from "../lib/command-block-pars
 import { shouldInjectShellIntegration } from "../lib/shell-integration";
 import { supportsSessionResume } from "../lib/session-resume";
 import { createFilePathLinkProvider } from "../lib/file-link-provider";
+import { readSessionContext, type ContextInfo } from "../lib/context-parser";
 import { invoke } from "@tauri-apps/api/core";
 import { toWslPath } from "../lib/terminal-config";
 import { recordTerminalActivity, recordTerminalWrite, recordTerminalResize, clearTerminalActivity } from "../lib/terminal-activity";
@@ -99,7 +100,9 @@ export default function TerminalPane({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const [launchedWithYolo] = useState(() => terminalType === "claude" && useAppStore.getState().claudeYolo);
   const [exited, setExited] = useState(false);
+  const [contextInfo, setContextInfo] = useState<ContextInfo | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
+  const composerDidStealRef = useRef(false);
   const [commandBlocks, setCommandBlocks] = useState<CommandBlock[]>([]);
   const blockParserRef = useRef<CommandBlockParser | null>(null);
   const recordedBlocksRef = useRef<Set<string>>(new Set());
@@ -140,10 +143,11 @@ export default function TerminalPane({
       const lookupSession = async (): Promise<boolean> => {
         try {
           const wslCwd = toWslPath(workingDirRef.current);
-          if (!wslCwd) return false;
+          const type = terminalTypeRef.current;
+          console.log(`[SessionResume] lookup for ${type}, wslCwd="${wslCwd}", workingDir="${workingDirRef.current}"`);
+          if (!wslCwd) { console.log(`[SessionResume] no wslCwd, skipping`); return false; }
           // Exclude IDs already claimed by other panes (prevents duplicates)
           const excludeIds = [...claimedSessionIds];
-          const type = terminalTypeRef.current;
           let id: string | null = null;
           if (type === "claude") {
             id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
@@ -152,6 +156,7 @@ export default function TerminalPane({
           } else if (type === "gemini") {
             id = await invoke<string | null>("get_gemini_session_id", { excludeIds });
           }
+          console.log(`[SessionResume] ${type} lookup result: id=${id}`);
           if (id) {
             claimedSessionIds.add(id);
             onSessionResumeIdRef.current?.(id);
@@ -184,6 +189,7 @@ export default function TerminalPane({
 
   const { write, resize, kill } = usePty({
     terminalType,
+    terminalId,
     workingDir,
     cols: initialDims.current.cols,
     rows: initialDims.current.rows,
@@ -226,7 +232,7 @@ export default function TerminalPane({
       fontWeight: "normal",
       fontWeightBold: "bold",
       lineHeight: 1.2,
-      letterSpacing: 1,
+      letterSpacing: 0, // Must stay 0 — any value >0 gaps box-drawing chars in ALL renderers (DOM, WebGL, Canvas)
       allowTransparency: true,
       allowProposedApi: true,
       scrollback: manyPanes ? 2000 : 10000,
@@ -263,9 +269,18 @@ export default function TerminalPane({
 
     fitAddon.fit();
 
-    // Re-fit after browser layout settles — the initial fit() runs in a
-    // microtask where react-resizable-panels may not have final panel sizes.
-    // Double-rAF ensures one full layout+paint cycle has completed.
+    // Defer PTY-ready signal until layout has settled. The first fit() can
+    // race with CSS grid distribution during session restore — measuring
+    // before panels have final sizes yields tiny cols (e.g. 8). Double-rAF
+    // waits one full layout+paint cycle; 300ms timer is a safety net.
+    let readySignalled = false;
+    function signalReady() {
+      if (readySignalled || disposed) return;
+      readySignalled = true;
+      initialDims.current = { cols: term.cols, rows: term.rows };
+      setTermReady(true);
+    }
+
     let settleRaf2 = 0;
     const settleRaf1 = requestAnimationFrame(() => {
       settleRaf2 = requestAnimationFrame(() => {
@@ -274,6 +289,7 @@ export default function TerminalPane({
             fitAddon.fit();
           }
         } catch { /* container may be detached */ }
+        signalReady();
       });
     });
     // Safety net for late layout shifts (autoSaveId restoring panel sizes)
@@ -283,6 +299,7 @@ export default function TerminalPane({
           fitAddon.fit();
         }
       } catch { /* container may be detached */ }
+      signalReady();
     }, 300);
 
     // Defer WebGL addon — GPU context init is expensive and blocks first paint.
@@ -306,10 +323,6 @@ export default function TerminalPane({
         // Context limit exceeded — canvas/DOM renderer is the fallback
       }
     }, webglDelay);
-    initialDims.current = { cols: term.cols, rows: term.rows };
-    // Signal that the terminal has real dimensions — PTY can now spawn
-    // with correct cols/rows instead of the default 80×24.
-    setTermReady(true);
 
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
@@ -749,10 +762,47 @@ export default function TerminalPane({
         terminalRef.current.reset();
       }
       setExited(false);
+      setContextInfo(null);
       setCommandBlocks([]);
       sessionLookupDone.current = false;
     }
   }, [terminalType]);
+
+  // Periodically read context percentage from CLI session JSONL files.
+  // Starts immediately — backend searches all recent sessions when no
+  // specific session ID is available yet. Once sessionResumeId is
+  // discovered, polls switch to the specific session for precise data.
+  useEffect(() => {
+    const supported = terminalType === "claude" || terminalType === "codex" || terminalType === "gemini";
+    if (!supported) return;
+
+    const poll = async () => {
+      const info = await readSessionContext(terminalType, sessionResumeId || undefined);
+      if (info !== null) {
+        // Merge partial updates — rate_limits and info come from different
+        // server events. Keep previous rate_limits when new poll has none.
+        setContextInfo((prev) => ({
+          ...info,
+          rateLimitFiveHour: info.rateLimitFiveHour ?? prev?.rateLimitFiveHour ?? null,
+          rateLimitWeekly: info.rateLimitWeekly ?? prev?.rateLimitWeekly ?? null,
+        }));
+      }
+      // On null, retain previous value (stale > absent)
+    };
+
+    // Short delay (2s) for WSL to be ready on cold start, then poll every 5s.
+    // If data isn't available yet, null is returned and we retain the previous value.
+    const startTimer = setTimeout(() => {
+      poll();
+      intervalId = setInterval(poll, 5000);
+    }, 2000);
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+
+    return () => {
+      clearTimeout(startTimer);
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [terminalType, sessionResumeId]);
 
   // Focus the active pane
   useEffect(() => {
@@ -784,6 +834,25 @@ export default function TerminalPane({
     observer.observe(el);
     return () => observer.disconnect();
   }, [terminalId]);
+
+  // Repaint after window minimize → restore (or alt-tab back).
+  // WebGL renderer loses its context while the document is hidden;
+  // neither ResizeObserver nor IntersectionObserver fire on restore
+  // because the element size and intersection haven't changed.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const term = terminalRef.current;
+      const fit = fitAddonRef.current;
+      if (!term) return;
+      term.refresh(0, term.rows - 1);
+      if (fit) {
+        try { fit.fit(); } catch { /* container may be detached */ }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   // Auto-open composer when "always visible" is enabled.
   // composerDismissedRef tracks manual Ctrl+I dismiss so we don't re-open immediately.
@@ -843,7 +912,7 @@ export default function TerminalPane({
       write("\x1b[200~" + text + "\x1b[201~");
       setTimeout(() => write("\r"), 50);
     } else if (needsDelayedEnter) {
-      write(text);
+      write(text + (terminalType === "gemini" ? " " : ""));
       setTimeout(() => write("\r"), 80);
     } else {
       // Single-line: write directly (no bracketed paste needed)
@@ -884,6 +953,7 @@ export default function TerminalPane({
           onSwapPane={onSwapPane}
           serverName={serverName}
           isYolo={launchedWithYolo}
+          contextInfo={contextInfo}
         />
       )}
       <div className="flex-1 min-h-0 relative" style={{ backgroundColor: "var(--ezy-bg)" }}>
@@ -923,6 +993,7 @@ export default function TerminalPane({
             workingDir={workingDir}
             scrollToPrompt={() => scrollToPromptRef.current()}
             scrollToNextPrompt={() => scrollToNextPromptRef.current()}
+            didStealRef={composerDidStealRef}
           />
         )}
         {/* Jump-to-bottom button — appears below scrollbar thumb when scrolled up */}

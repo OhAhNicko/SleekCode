@@ -61,13 +61,16 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
   if (cachedPath && cliPath && resumeArgs.length === 0) {
     // Fast path: skip bash entirely, use dash (sh) for env + exec.
     const distroArgs = distro ? ["-d", distro] : [];
+    const envArgs = [
+      `PATH=${cachedPath}`,
+      "TERM=xterm-256color",
+      "COLORTERM=truecolor",
+    ];
     return {
       ...base,
       args: [
         ...distroArgs, "-e", "/usr/bin/env",
-        `PATH=${cachedPath}`,
-        "TERM=xterm-256color",
-        "COLORTERM=truecolor",
+        ...envArgs,
         cliPath,
         ...extra,
       ],
@@ -85,7 +88,7 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
     const cdPart = wslCwd ? `cd '${wslCwd}' && ` : "";
     return {
       ...base,
-      args: [...distroArgs, "--", "bash", "-lic", `${cdPart}exec ${fullCmd}`],
+      args: [...distroArgs, "--", "bash", "-lic", `export TERM=xterm-256color COLORTERM=truecolor; ${cdPart}exec ${fullCmd}`],
     };
   }
 
@@ -145,7 +148,6 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
   const parts: string[] = [];
   parts.push(`export PATH='${cachedPath}'`);
   parts.push("export TERM=xterm-256color COLORTERM=truecolor");
-
   if (wslCwd) {
     parts.push(`cd '${wslCwd}'`);
   }
@@ -207,11 +209,12 @@ export function getSshCommand(
   args.push(userHost);
 
   // Build the remote command: cd to dir (if specified) then exec the tool
+  const envExport = "export TERM=xterm-256color COLORTERM=truecolor;";
   const remoteCmd = getRemoteExecCommand(terminalType, sessionResumeId);
   if (remoteCwd) {
-    args.push(`cd ${remoteCwd} && ${remoteCmd}`);
+    args.push(`${envExport} cd ${remoteCwd} && ${remoteCmd}`);
   } else {
-    args.push(remoteCmd);
+    args.push(`${envExport} ${remoteCmd}`);
   }
 
   return { command: "ssh.exe", args };

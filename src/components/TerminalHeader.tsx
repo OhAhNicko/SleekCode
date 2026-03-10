@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import type { TerminalType } from "../types";
+import type { ContextInfo } from "../lib/context-parser";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { FaChevronDown, FaCheck } from "react-icons/fa";
 import { FaXmark, FaGripVertical } from "react-icons/fa6";
@@ -25,6 +26,7 @@ interface TerminalHeaderProps {
   onSwapPane?: (fromTerminalId: string, toTerminalId: string) => void;
   serverName?: string;
   isYolo?: boolean;
+  contextInfo?: ContextInfo | null;
 }
 
 function TerminalIcon({ type }: { type: TerminalType }) {
@@ -185,7 +187,9 @@ export default function TerminalHeader({
   onSwapPane,
   serverName,
   isYolo = false,
+  contextInfo,
 }: TerminalHeaderProps) {
+  const contextPercent = contextInfo?.percent ?? null;
   const config = TERMINAL_CONFIGS[terminalType];
   const [showTypePicker, setShowTypePicker] = useState(false);
   return (
@@ -316,8 +320,116 @@ export default function TerminalHeader({
         )}
       </div>
 
+      {/* Model name + context usage indicator — CLI panes only */}
+      {contextPercent != null && contextInfo && (
+        <div
+          className="ml-auto flex items-center gap-2"
+          title={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%`}
+          style={{ marginRight: 6 }}
+        >
+          {contextInfo.model && (
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--ezy-text-muted)",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+                opacity: 0.7,
+              }}
+            >
+              {contextInfo.model}
+            </span>
+          )}
+          {/* Rate limits — left of context bar (show remaining, not used) */}
+          {contextInfo.rateLimitFiveHour != null && (() => {
+            const left = Math.round((100 - contextInfo.rateLimitFiveHour) * 100) / 100;
+            const isGemini = terminalType === "gemini";
+            const label = isGemini ? "RPD" : "5h";
+            const tooltip = isGemini
+              ? `Daily rate limit: ${left}% left (${contextInfo.rateLimitFiveHour}% used)`
+              : `5h rate limit: ${left}% left (${contextInfo.rateLimitFiveHour}% used)`;
+            return (
+              <span
+                title={tooltip}
+                style={{
+                  fontSize: 9,
+                  fontVariantNumeric: "tabular-nums",
+                  lineHeight: 1,
+                  whiteSpace: "nowrap",
+                  color: left <= 20 ? "var(--ezy-red)" : "var(--ezy-text-muted)",
+                  opacity: left <= 20 ? 1 : 0.6,
+                }}
+              >
+                {label}:{left}%
+              </span>
+            );
+          })()}
+          {contextInfo.rateLimitWeekly != null && terminalType !== "gemini" && (() => {
+            const left = Math.round((100 - contextInfo.rateLimitWeekly) * 100) / 100;
+            return (
+              <span
+                title={`Weekly rate limit: ${left}% left (${contextInfo.rateLimitWeekly}% used)`}
+                style={{
+                  fontSize: 9,
+                  fontVariantNumeric: "tabular-nums",
+                  lineHeight: 1,
+                  whiteSpace: "nowrap",
+                  color: left <= 20 ? "var(--ezy-red)" : "var(--ezy-text-muted)",
+                  opacity: left <= 20 ? 1 : 0.6,
+                }}
+              >
+                W:{left}%
+              </span>
+            );
+          })()}
+          {/* Context bar + percentage */}
+          <div
+            style={{
+              width: 44,
+              height: 4,
+              borderRadius: 2,
+              backgroundColor: "var(--ezy-border)",
+              overflow: "hidden",
+              flexShrink: 0,
+            }}
+          >
+            <div
+              style={{
+                width: `${contextPercent}%`,
+                height: "100%",
+                borderRadius: 2,
+                backgroundColor:
+                  contextPercent <= 15
+                    ? "var(--ezy-red)"
+                    : contextPercent <= 40
+                      ? "var(--ezy-text-muted)"
+                      : "var(--ezy-accent)",
+                transition: "width 500ms ease, background-color 500ms ease",
+              }}
+            />
+          </div>
+          <span
+            style={{
+              fontSize: 10,
+              fontVariantNumeric: "tabular-nums",
+              color:
+                contextPercent <= 15
+                  ? "var(--ezy-red)"
+                  : contextPercent <= 40
+                    ? "var(--ezy-text-muted)"
+                    : "var(--ezy-text-muted)",
+              lineHeight: 1,
+              minWidth: 36,
+              textAlign: "right",
+            }}
+          >
+            {contextPercent.toFixed(2)}%
+          </span>
+        </div>
+      )}
+
       {/* Right: close (visible on header hover) */}
-      <div className="flex items-center gap-0.5 ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className={`flex items-center gap-0.5 ${contextPercent == null ? "ml-auto" : ""} opacity-0 group-hover:opacity-100 transition-opacity`}>
         <button
           onClick={onClose}
           title="Close Pane (Ctrl+Shift+W)"

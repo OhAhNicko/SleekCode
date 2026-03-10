@@ -30,4 +30,5 @@ Thumbs.db
 
 # Tauri
 src-tauri/target/
+src-tauri/target.backup/
 src-tauri/WixTools/
