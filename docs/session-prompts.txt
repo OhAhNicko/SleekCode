@@ -902,6 +902,7 @@
 5. Okay! Now, move the copy button to be closer to the actual file path, and move the diff to be in the center of the header row!
 6. Add a settings button that on toggle should spawn all docs as collapsed, except for the selected one. (which will be the first one on the first enter?!)
 [AskUserQuestion] Q: Where should the settings toggle button be placed? → A: We have ONE Settings button in the tabbar, talking about that settings dropdown menu
+7. Nice, now /end and explain thoroughly if we want to revisit this topic again.
 
 ## 2026-03-11 — Ship, WebView2 native fix, PTY tiny cols fix (session 4)
 
