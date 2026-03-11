@@ -12,7 +12,7 @@ import CommandHistory from "./components/CommandHistory";
 import Sidebar from "./components/Sidebar";
 import WindowResizeHandles from "./components/WindowResizeHandles";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
 import { installStatuslineWrapper } from "./lib/statusline-setup";
 import { generateTerminalId } from "./lib/layout-utils";
@@ -188,31 +188,6 @@ export default function App() {
       }
     }).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
-  }, []);
-
-  // Fix WebView2 blank screen after minimize → restore.
-  // WebView2 in frameless windows doesn't repaint on restore — the entire
-  // webview goes white/blank. Toggling window size by 1px forces WebView2
-  // to recalculate its bounds and repaint.
-  useEffect(() => {
-    let wasHidden = false;
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        wasHidden = true;
-      } else if (wasHidden) {
-        wasHidden = false;
-        const win = getCurrentWindow();
-        win.innerSize().then((size) => {
-          win.setSize(new PhysicalSize(size.width + 1, size.height)).catch(() => {});
-          // Use rAF to ensure the first resize is committed before reverting
-          requestAnimationFrame(() => {
-            win.setSize(new PhysicalSize(size.width, size.height)).catch(() => {});
-          });
-        }).catch(() => {});
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
   // Watch Windows clipboard for new images (adds to TabBar strip automatically)

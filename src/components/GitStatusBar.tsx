@@ -19,19 +19,25 @@ export default function GitStatusBar({ workingDir }: Props) {
   const searchRef = useRef<HTMLInputElement>(null);
   const errorTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  // Sequential poll: wait for completion before scheduling next poll.
+  // Prevents stacking when WSL git commands are slow.
+  const mountedRef = useRef(true);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
   const fetchAll = useCallback(async () => {
     try {
       const repo = await invoke<boolean>("git_is_repo", { directory: workingDir });
       setIsGitRepo(repo);
       if (!repo) return;
 
-      const br = await invoke<GitBranchInfo>("git_branches", { directory: workingDir });
-      setBranches(br);
-
-      try {
-        const ds = await invoke<GitDiffStats>("git_diff_stats", { directory: workingDir });
-        setDiffStats(ds);
-      } catch {
+      const [br, ds] = await Promise.allSettled([
+        invoke<GitBranchInfo>("git_branches", { directory: workingDir }),
+        invoke<GitDiffStats>("git_diff_stats", { directory: workingDir }),
+      ]);
+      if (br.status === "fulfilled") setBranches(br.value);
+      if (ds.status === "fulfilled") {
+        setDiffStats(ds.value);
+      } else {
         setDiffStats({ filesChanged: 0, insertions: 0, deletions: 0 });
       }
     } catch {
@@ -39,12 +45,30 @@ export default function GitStatusBar({ workingDir }: Props) {
     }
   }, [workingDir]);
 
-  // Poll every 4s
-  useEffect(() => {
-    fetchAll();
-    const id = setInterval(fetchAll, 4000);
-    return () => clearInterval(id);
+  const schedulePoll = useCallback(() => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(async () => {
+      if (!mountedRef.current) return;
+      await fetchAll();
+      if (mountedRef.current) schedulePoll();
+    }, 20000);
   }, [fetchAll]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    fetchAll().then(() => { if (mountedRef.current) schedulePoll(); });
+    const handler = () => {
+      fetchAll();
+      // Reset poll timer so we don't double-fetch right after an event
+      if (mountedRef.current) schedulePoll();
+    };
+    window.addEventListener("ezydev:git-refresh", handler);
+    return () => {
+      mountedRef.current = false;
+      if (timerRef.current) clearTimeout(timerRef.current);
+      window.removeEventListener("ezydev:git-refresh", handler);
+    };
+  }, [fetchAll, schedulePoll]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -160,6 +184,9 @@ export default function GitStatusBar({ workingDir }: Props) {
           {branches.current}
         </span>
       </div>
+
+      {/* Divider between branch and file count */}
+      <div style={{ width: 1, height: 14, backgroundColor: "var(--ezy-border)", opacity: 0.5, flexShrink: 0 }} />
 
       {/* File count — document icon + number */}
       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>

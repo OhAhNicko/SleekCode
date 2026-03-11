@@ -9,6 +9,7 @@ use tauri::Manager;
 #[cfg(target_os = "windows")]
 mod win32_border {
     use std::ffi::c_void;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
     const DWMWCP_DONOTROUND: u32 = 1;
@@ -16,6 +17,10 @@ mod win32_border {
     const DWMWA_BORDER_COLOR: u32 = 34;
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     const WM_NCCALCSIZE: u32 = 0x0083;
+    const WM_SIZE: u32 = 0x0005;
+    const WM_USER: u32 = 0x0400;
+    const WM_WEBVIEW_REPAINT: u32 = WM_USER + 100;
+    const SIZE_MINIMIZED: usize = 1;
     const GWL_STYLE: i32 = -16;
     const WS_THICKFRAME: isize = 0x00040000;
     const WS_MAXIMIZE: isize = 0x01000000;
@@ -24,6 +29,8 @@ mod win32_border {
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOZORDER: u32 = 0x0004;
     const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    static WAS_MINIMIZED: AtomicBool = AtomicBool::new(false);
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -82,6 +89,8 @@ mod win32_border {
         ) -> i32;
         fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
         fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MONITORINFO) -> i32;
+        fn GetWindowRect(hwnd: *mut c_void, rect: *mut RECT) -> i32;
+        fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
     }
 
     /// Window subclass proc that intercepts WM_NCCALCSIZE to remove the
@@ -105,6 +114,40 @@ mod win32_border {
         _uid_subclass: usize,
         _ref_data: usize,
     ) -> isize {
+        // Track minimize → restore to fix WebView2 blank screen.
+        // WebView2 in frameless windows doesn't repaint its compositor
+        // surface after restore. We detect restore and post a deferred
+        // message that forces a 1px resize cycle, which triggers
+        // WebView2's put_Bounds and repaints the content.
+        if msg == WM_SIZE {
+            if wparam == SIZE_MINIMIZED {
+                WAS_MINIMIZED.store(true, Ordering::SeqCst);
+            } else if WAS_MINIMIZED.swap(false, Ordering::SeqCst) {
+                // Defer the resize to after Windows finishes the restore
+                PostMessageW(hwnd, WM_WEBVIEW_REPAINT, 0, 0);
+            }
+        }
+
+        if msg == WM_WEBVIEW_REPAINT {
+            let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+            if (style & WS_MAXIMIZE) != 0 {
+                // Maximized: can't resize, force frame recalculation instead
+                SetWindowPos(
+                    hwnd, std::ptr::null_mut(), 0, 0, 0, 0,
+                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                );
+            } else {
+                // Normal/snapped: resize +1px then back to force WebView2 relayout
+                let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+                GetWindowRect(hwnd, &mut rect);
+                let w = rect.right - rect.left;
+                let h = rect.bottom - rect.top;
+                SetWindowPos(hwnd, std::ptr::null_mut(), rect.left, rect.top, w + 1, h, SWP_NOZORDER);
+                SetWindowPos(hwnd, std::ptr::null_mut(), rect.left, rect.top, w, h, SWP_NOZORDER);
+            }
+            return 0;
+        }
+
         if msg == WM_NCCALCSIZE && wparam == 1 {
             let params = &mut *(lparam as *mut NCCALCSIZE_PARAMS);
             let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -448,6 +491,60 @@ fn run_git_owned(directory: &str, args: &[String]) -> Result<std::process::Outpu
     run_git(directory, &strs)
 }
 
+/// Extract WSL distro and Linux path from a UNC path.
+/// Returns None for non-WSL paths.
+fn parse_wsl_path(directory: &str) -> Option<(String, String)> {
+    let normalized = directory.replace('/', "\\");
+    let is_wsl = normalized.starts_with("\\\\wsl.localhost\\") || normalized.starts_with("\\\\wsl$\\");
+    if !is_wsl { return None; }
+    let trimmed = normalized.trim_start_matches("\\\\wsl.localhost\\").trim_start_matches("\\\\wsl$\\");
+    match trimmed.find('\\') {
+        Some(pos) => Some((trimmed[..pos].to_string(), trimmed[pos..].replace('\\', "/"))),
+        None => Some((trimmed.to_string(), "/".to_string())),
+    }
+}
+
+/// Run a bash script in a directory, routing through WSL for UNC paths.
+/// Pipes script through stdin (proven pattern — `bash -c` mangles multi-line args via wsl.exe).
+fn run_bash_script(directory: &str, script: &str) -> Result<std::process::Output, String> {
+    use std::io::Write;
+
+    if let Some((distro, linux_path)) = parse_wsl_path(directory) {
+        let full_script = format!("cd '{}' && {}", linux_path, script);
+        let mut child = Command::new("wsl.exe")
+            .args(["-d", &distro, "--", "bash"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn wsl: {}", e))?;
+
+        if let Some(ref mut stdin) = child.stdin {
+            let _ = stdin.write_all(full_script.as_bytes());
+        }
+        drop(child.stdin.take());
+
+        child.wait_with_output()
+            .map_err(|e| format!("Failed to wait for wsl: {}", e))
+    } else {
+        let mut child = Command::new("bash")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .current_dir(directory)
+            .spawn()
+            .map_err(|e| format!("Failed to spawn bash: {}", e))?;
+
+        if let Some(ref mut stdin) = child.stdin {
+            let _ = stdin.write_all(script.as_bytes());
+        }
+        drop(child.stdin.take());
+
+        child.wait_with_output()
+            .map_err(|e| format!("Failed to wait for bash: {}", e))
+    }
+}
+
 fn run_git(directory: &str, args: &[&str]) -> Result<std::process::Output, String> {
     // Detect WSL UNC paths: \\wsl.localhost\Distro\... or \\wsl$\Distro\...
     let normalized = directory.replace('/', "\\");
@@ -462,13 +559,23 @@ fn run_git(directory: &str, args: &[&str]) -> Result<std::process::Output, Strin
             None => (trimmed, "/".to_string()),
         };
 
-        let mut cmd_args = vec!["-d", distro, "--", "git", "-C", &linux_path];
-        cmd_args.extend(args);
+        // Use `cd <path> && git <args>` via bash — matches what the user
+        // types in their shell exactly. `git -C` can behave subtly differently
+        // (e.g. .gitignore resolution, submodule paths).
+        let quoted_args: Vec<String> = args.iter()
+            .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
+            .collect();
+        let script = format!("cd '{}' && git {}", linux_path, quoted_args.join(" "));
 
-        Command::new("wsl.exe")
-            .args(&cmd_args)
-            .output()
-            .map_err(|e| format!("Failed to run git via wsl: {}", e))
+        let mut child = Command::new("wsl.exe")
+            .args(["-d", distro, "--", "bash", "-c", &script])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to run git via wsl: {}", e))?;
+
+        child.wait_with_output()
+            .map_err(|e| format!("Failed to wait for wsl git: {}", e))
     } else {
         Command::new("git")
             .args(args)
@@ -561,22 +668,24 @@ async fn git_diff(directory: String, file_path: Option<String>, compare_to: Opti
 
 #[tauri::command]
 async fn git_branches(directory: String) -> Result<GitBranchInfo, String> {
-    // Get current branch
-    let current_output = run_git(&directory, &["rev-parse", "--abbrev-ref", "HEAD"])?;
+    // Current branch — `git branch --show-current` (empty string in detached HEAD)
+    let current_output = run_git(&directory, &["branch", "--show-current"])?;
     let current = String::from_utf8_lossy(&current_output.stdout).trim().to_string();
+    let current = if current.is_empty() { "HEAD".to_string() } else { current };
 
-    // Get all branches
-    let branches_output = run_git(&directory, &["branch", "-a", "--format=%(refname:short)"])?;
+    // Local branches only — remote branches can't be switched to directly.
+    let branches_output = run_git(&directory, &["branch"])?;
     let branches: Vec<String> = String::from_utf8_lossy(&branches_output.stdout)
         .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
+        .map(|l| l.trim().trim_start_matches("* ").trim_start_matches("remotes/").to_string())
+        .filter(|l| !l.is_empty() && !l.contains("->"))
         .collect();
 
     Ok(GitBranchInfo { current, branches })
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct GitDiffStats {
     files_changed: u32,
     insertions: u32,
@@ -609,20 +718,28 @@ fn parse_shortstat(line: &str) -> (u32, u32, u32) {
 
 #[tauri::command]
 async fn git_diff_stats(directory: String) -> Result<GitDiffStats, String> {
-    // Unstaged
-    let out1 = run_git(&directory, &["diff", "--shortstat"])?;
-    let line1 = String::from_utf8_lossy(&out1.stdout);
-    let (f1, i1, d1) = parse_shortstat(&line1);
+    // Single bash script — one WSL process for all three values:
+    //   files = git status --porcelain=v1 | wc -l
+    //   add/del = git diff --numstat HEAD | awk sum
+    let script = r#"
+files=$(git status --porcelain=v1 | wc -l | tr -d ' ')
+read add del <<<$(git diff --numstat HEAD 2>/dev/null | awk '{a+=$1; d+=$2} END {print a+0, d+0}')
+echo "$files $add $del"
+"#;
 
-    // Staged
-    let out2 = run_git(&directory, &["diff", "--cached", "--shortstat"])?;
-    let line2 = String::from_utf8_lossy(&out2.stdout);
-    let (f2, i2, d2) = parse_shortstat(&line2);
+    let output = run_bash_script(&directory, script)?;
+    let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    // Parse "files add del" e.g. "5 589 6"
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let files_changed = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let insertions = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let deletions = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
 
     Ok(GitDiffStats {
-        files_changed: f1 + f2,
-        insertions: i1 + i2,
-        deletions: d1 + d2,
+        files_changed,
+        insertions,
+        deletions,
     })
 }
 

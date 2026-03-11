@@ -65,6 +65,11 @@ export function recordTerminalActivity(terminalId: string, terminalType: Termina
   }
 
   if (s.lastOutput > 0 && now - s.lastOutput > GAP_MS) {
+    // AI output gap detected — the AI likely finished working.
+    // Refresh git status bar so file/diff counts update immediately.
+    if (isConfirmedActive(s, s.lastOutput)) {
+      window.dispatchEvent(new Event("ezydev:git-refresh"));
+    }
     s.burstStart = 0;
     s.burstBytes = 0;
   }

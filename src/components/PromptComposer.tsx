@@ -1213,6 +1213,21 @@ export default function PromptComposer({
           onKeyDown={handleKeyDown}
           onFocus={() => useClipboardImageStore.getState().setActiveComposerTerminalId(terminalId)}
           onBlur={() => { setSlashMatches([]); setSlashSelectedIdx(0); setSlashScrollOffset(0); }}
+          onAuxClick={(e) => {
+            if (e.button !== 1) return; // middle-click only
+            e.preventDefault();
+            navigator.clipboard.readText().then((text) => {
+              if (!text) return;
+              const ta = textareaRef.current;
+              if (!ta) return;
+              const start = ta.selectionStart;
+              const end = ta.selectionEnd;
+              const newVal = value.slice(0, start) + text + value.slice(end);
+              setValue(newVal);
+              const cursor = start + text.length;
+              requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = cursor; });
+            }).catch(() => {});
+          }}
           onWheel={(e) => {
             e.stopPropagation();
             // Forward wheel events to the terminal so scrolling works while composer has focus

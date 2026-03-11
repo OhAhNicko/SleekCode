@@ -4,7 +4,9 @@
 
 1. There's an issue when switching minimizing the app and then switch back to it, it just goes blank and you have to resize it for it to show again
 2. This still happens, look at the image: [screenshot showing entire webview blank — white rectangle + black areas, not just xterm]
-3. /end
+3. It still happens.......................
+4. Almost everytime the app is minimized/out of focus
+5. /end
 
 ## 2026-03-09 — Codex/Gemini session resume
 
@@ -866,4 +868,20 @@
 5. Also, add a space in the end when sending text from EzyComposer to the Gemini composer. ONLY for Gemini. Because I think that sometimes everything isnt sent instantly otherwise
 6. Make the number smaller, like 8x8
 7. I also want to change the image thumbnails in the EzyComposer to be like the thumbnails in the tabbar, with only the number in the top left corner. Fix this!
+8. /end
+
+## 2026-03-11 — Git Status Bar
+
+[AskUserQuestion] Q: In the Warp screenshot, the file count shows 15186. What do you think that number represents? → A: Its the changed files count. Exactly what you get from git diff --shortstat.
+[AskUserQuestion] Q: Git status bar poll interval? → A: Better to update on every finished job from the AI or on every prompt sent, not just polling.
+
+## 2026-03-11 — EzyComposer interactive focus, Gemini placeholder, PTY dims race
+
+1. There's a potential issue in Gemini when the dialogue to allow the CLI to open a document for example. EzyPrompt hides, but the dialogue isn't selected so you have to manually click in the dialogue to be able to select the answer
+2. It seems to be working!
+3. Also, regarding the Gemini EzyComposer ONLY. This text should not be picked up as its almost always showing in the Gemini CLI internal composer. Use our placeholder suggestions instead. This text: "Type your message or @path/to/file"
+4. [screenshot] now the app started with the panes in broken states like this, see image
+5. This didnt happen before with 16 panes opening... but okay
+6. It happens sometimes
+7. Mostly when opening the app again and previous sessions resume
 8. /end

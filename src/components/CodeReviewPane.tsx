@@ -34,7 +34,7 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
   const [showModeDropdown, setShowModeDropdown] = useState(false);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const getCompareArg = useCallback((): string | undefined => {
@@ -78,17 +78,29 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
     }
   }, [workingDir, getCompareArg]);
 
-  // Initial fetch
+  // Sequential poll (4s) + refresh when AI finishes working
+  const mountedRef = useRef(true);
   useEffect(() => {
+    mountedRef.current = true;
     setLoading(true);
-    fetchData();
-  }, [fetchData]);
-
-  // Poll every 2s
-  useEffect(() => {
-    pollRef.current = setInterval(fetchData, 2000);
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      timer = setTimeout(async () => {
+        if (!mountedRef.current) return;
+        await fetchData();
+        if (mountedRef.current) schedule();
+      }, 20000);
+    };
+    fetchData().then(() => { if (mountedRef.current) schedule(); });
+    const handler = () => {
+      clearTimeout(timer);
+      fetchData().then(() => { if (mountedRef.current) schedule(); });
+    };
+    window.addEventListener("ezydev:git-refresh", handler);
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      mountedRef.current = false;
+      clearTimeout(timer);
+      window.removeEventListener("ezydev:git-refresh", handler);
     };
   }, [fetchData]);
 

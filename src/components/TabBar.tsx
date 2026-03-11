@@ -1181,9 +1181,6 @@ export default function TabBar() {
           style={anyMenuOpen ? { cursor: "default" } : undefined}
         />
 
-        {/* Clipboard image thumbnails */}
-        <ClipboardImageStrip />
-
         {/* Git Status Bar — only for project tabs with workingDir */}
         {(() => {
           const at = tabs.find((t) => t.id === activeTabId);
@@ -1191,6 +1188,9 @@ export default function TabBar() {
         })() && (
           <GitStatusBar workingDir={tabs.find((t) => t.id === activeTabId)!.workingDir!} />
         )}
+
+        {/* Clipboard image thumbnails */}
+        <ClipboardImageStrip />
 
         {/* Tasks */}
         <div

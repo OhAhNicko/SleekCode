@@ -1,86 +1,76 @@
-# WebView2 + xterm blank screen after minimize → restore
+# WebView2 blank screen after minimize → restore
 
-**Date:** 2026-03-11 (updated from 2026-03-10)
+**Date:** 2026-03-11
 
 ## Summary
 
-Minimizing the EzyDev window and restoring it caused the entire app to go blank — not just terminal panes, but the **entire WebView2 surface** (white rectangle + black exposed areas). Resizing the window by even 1px immediately fixed it.
+Minimizing the EzyDev window and restoring it caused the entire app to go blank — not just terminal panes, but the **entire WebView2 surface** (white rectangle + black exposed areas). Resizing the window by even 1px immediately fixed it. Three attempts were needed to find the right fix level.
 
 ## Symptoms
 
 - Minimize the app (taskbar click, Win+D, or minimize button)
 - Restore the app (taskbar click or Alt+Tab)
-- Entire window is blank: white rectangle (WebView2 at wrong bounds) + black background
+- Entire window is blank: white rectangle (WebView2 at stale bounds) + black background
 - All UI elements gone — TabBar, terminal panes, headers, everything
 - Resizing the window even 1px immediately fixes it
+- Happens "almost every time" the app is minimized or goes out of focus
 
 ## Root cause
 
-Two layers of the problem:
+WebView2 in frameless Tauri windows (`decorations: false` + custom `WM_NCCALCSIZE` subclass) doesn't repaint its compositor surface after minimize→restore. The Chromium compositor freezes while the document is hidden, and on restore, the WebView2 controller doesn't recalculate its internal bounds.
 
-### Layer 1: WebView2 compositor (primary — entire app blank)
+The key insight: the problem is at the **native Win32 / WebView2 compositor level**, not the JavaScript or xterm level. `ResizeObserver`, `IntersectionObserver`, and even `document.visibilitychange` with Tauri's JS `setSize` API all failed because they operate inside the frozen webview.
 
-WebView2 in frameless Tauri windows (`decorations: false` + custom `WM_NCCALCSIZE` subclass) doesn't repaint its compositor surface after minimize→restore. The Chromium compositor freezes while the document is hidden, and on restore, the WebView2 controller doesn't recalculate its bounds — it renders at stale dimensions, producing the white rectangle + black background pattern.
+## Failed attempts and why they failed
 
-This is a **known WebView2 bug** with frameless windows. Standard framed windows handle this correctly because Windows sends the right `WM_NCCALCSIZE` sequence on restore, but our subclass intercepts and modifies that sequence.
+### Attempt 1: xterm.js per-pane `visibilitychange` (TerminalPane.tsx)
 
-### Layer 2: xterm.js WebGL renderer (secondary — terminal canvases stale)
+Added `document.addEventListener("visibilitychange", ...)` that calls `term.refresh(0, rows-1)` + `fitAddon.fit()` for each terminal pane.
 
-Even if the WebView2 container repaints, the xterm.js WebGL renderer doesn't automatically repaint its canvas. `ResizeObserver` doesn't fire (element size unchanged), `IntersectionObserver` doesn't fire (intersection ratio unchanged), and there's no `visibilitychange` handler.
+**Why it failed**: Assumed the problem was xterm WebGL canvases not repainting. The screenshot revealed the **entire WebView2 container** was blank (white rectangle + black background = WebView2 rendered at wrong bounds). Refreshing xterm canvases inside a blank WebView2 has no visible effect — the compositor isn't displaying any of the DOM content. The faulty reasoning was "blank after minimize" = "xterm WebGL context lost", when the actual issue was one level higher.
 
-## Failed attempt: xterm-only fix
+### Attempt 2: Tauri JS `setSize` toggle (App.tsx)
 
-**First attempt**: Added a `visibilitychange` listener in `TerminalPane.tsx` that calls `term.refresh()` + `fitAddon.fit()` on each terminal pane.
+Added a global `visibilitychange` handler that toggles window size by 1px using `getCurrentWindow().setSize(new PhysicalSize(w+1, h))` then reverts in `requestAnimationFrame`.
 
-**Why it failed**: The problem wasn't the xterm canvases — it was the **entire WebView2 container**. Refreshing xterm canvases inside a blank WebView2 has no visible effect. The screenshot confirmed: the white area was the WebView2 control itself rendered at wrong bounds, not individual terminal panes failing to paint. The faulty reasoning was assuming "blank after minimize" = "xterm WebGL context lost", when the actual issue was one level higher (WebView2 compositor).
+**Why it failed**: Two possible reasons: (1) `visibilitychange` may not fire reliably in WebView2 when the native window is minimized — the browser event depends on the WebView2 runtime reporting visibility, which may be delayed or skipped for frameless windows; (2) Even if the event fires, the Tauri JS `setSize` API goes through IPC → Rust → Win32 `SetWindowPos`, which adds latency and may not reach the WebView2 compositor in time. The fundamental flaw: trying to fix a native compositor problem from inside the compositor (JS runs inside the frozen webview).
 
-## Fix (two layers)
+### Attempt 3: Native Win32 subclass `WM_SIZE` interception (lib.rs) ← Final fix
 
-### App.tsx — WebView2 repaint (fixes the blank screen)
+Added `WM_SIZE` handling to the existing `WM_NCCALCSIZE` subclass proc. Tracks minimized state with `AtomicBool`, defers the resize via `PostMessageW(WM_WEBVIEW_REPAINT)`, then forces a 1px `SetWindowPos` cycle (or `SWP_FRAMECHANGED` for maximized windows).
 
-Global `visibilitychange` handler that toggles window size by 1px on restore. This forces WebView2's `ICoreWebView2Controller::put_Bounds()` to fire, which recalculates the compositor surface:
+**Why this should work**: Operates at the same level as the problem — native Win32 messages. `WM_SIZE` is guaranteed to fire on restore (it's how Windows notifies the window of its new size). `PostMessageW` defers the fix to after the restore sequence completes. `SetWindowPos` directly triggers WebView2's `ICoreWebView2Controller::put_Bounds` which forces the compositor to recalculate and repaint.
 
-```tsx
-useEffect(() => {
-  let wasHidden = false;
-  const onVisibilityChange = () => {
-    if (document.visibilityState === "hidden") {
-      wasHidden = true;
-    } else if (wasHidden) {
-      wasHidden = false;
-      const win = getCurrentWindow();
-      win.innerSize().then((size) => {
-        win.setSize(new PhysicalSize(size.width + 1, size.height)).catch(() => {});
-        requestAnimationFrame(() => {
-          win.setSize(new PhysicalSize(size.width, size.height)).catch(() => {});
-        });
-      }).catch(() => {});
-    }
-  };
-  document.addEventListener("visibilitychange", onVisibilityChange);
-  return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-}, []);
-```
+## Fix (final — Rust subclass proc)
 
-- `wasHidden` flag ensures the resize only fires after actual minimize (not on every focus)
-- `requestAnimationFrame` ensures the +1px resize is committed before reverting
-- 1px change is invisible to the user
+In `src-tauri/src/lib.rs` `win32_border` module:
 
-### TerminalPane.tsx — xterm canvas repaint (belt and suspenders)
+1. Added constants: `WM_SIZE`, `WM_USER`, `WM_WEBVIEW_REPAINT`, `SIZE_MINIMIZED`
+2. Added static: `WAS_MINIMIZED: AtomicBool`
+3. Added extern: `GetWindowRect`, `PostMessageW`
+4. In `subclass_proc`:
+   - `WM_SIZE` with `SIZE_MINIMIZED` → set flag
+   - `WM_SIZE` with restore (flag was set) → `PostMessageW(WM_WEBVIEW_REPAINT)`
+   - `WM_WEBVIEW_REPAINT` → check if maximized:
+     - **Maximized**: `SetWindowPos` with `SWP_FRAMECHANGED | SWP_NOSIZE | SWP_NOMOVE`
+     - **Normal/snapped**: `SetWindowPos` +1px width, then `SetWindowPos` original width
 
-Per-pane `visibilitychange` handler that calls `term.refresh(0, rows - 1)` + `fitAddon.fit()`. This ensures terminal canvases are repainted even if the 1px resize doesn't trigger a full refit through the debounced ResizeObserver.
+Also kept the TerminalPane.tsx `visibilitychange` → `term.refresh()` as belt-and-suspenders for xterm canvases (layer 2 of the original problem).
+
+Removed the failed App.tsx JS-level fix (unused `PhysicalSize` import cleaned up too).
 
 ## Prevention
 
-- **When debugging "blank after minimize"**, check which LEVEL is blank: entire webview container, or just specific child canvases? The fix is different for each.
-- **WebView2 + frameless windows** (`decorations: false` in Tauri) need explicit repaint handling on restore. The 1px resize toggle is the proven workaround.
-- **Three observers cover different scopes** — none is a superset:
-  - `ResizeObserver` → element size changes
-  - `IntersectionObserver` → element visibility in DOM (display:none, scroll)
-  - `visibilitychange` → document-level visibility (minimize, alt-tab, lock screen)
+- **When debugging blank-after-minimize in Tauri/WebView2, always check which LEVEL is blank**: entire webview container (native fix needed) vs. specific child elements (JS fix may suffice)
+- **JS-level fixes cannot fix native compositor issues** — `visibilitychange`, `setSize`, DOM reflow tricks all operate inside the webview, which is exactly the thing that's frozen
+- **Native Win32 subclass is the correct fix level** for WebView2 rendering bugs — it intercepts messages before the webview processes them
+- **`PostMessageW` is essential for deferred work in message handlers** — doing `SetWindowPos` directly inside `WM_SIZE` causes reentrancy; posting a custom message defers it cleanly
+- **Maximized windows need special handling** — can't resize +1px (would un-maximize), use `SWP_FRAMECHANGED` instead
 
 ## Verification
 
 1. `npm run build` — passes clean (tsc + vite)
-2. Manual test: minimize app → restore → entire UI should repaint immediately
-3. Manual test: alt-tab away → alt-tab back → no blank screen
+2. `cargo check` — passes (1 pre-existing unrelated warning)
+3. Requires Tauri rebuild (`npm run tauri:dev`) to test
+4. Manual test: minimize app → restore → entire UI should repaint immediately
+5. Test all window states: normal, maximized, snapped left/right
