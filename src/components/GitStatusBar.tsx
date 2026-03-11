@@ -141,7 +141,7 @@ export default function GitStatusBar({ workingDir }: Props) {
         fontSize: 12,
         fontVariantNumeric: "tabular-nums",
         marginLeft: 6,
-        marginRight: 2,
+        marginRight: 6,
         color: "var(--ezy-text-muted)",
       }}
     >
@@ -188,42 +188,48 @@ export default function GitStatusBar({ workingDir }: Props) {
       {/* Divider between branch and file count */}
       <div style={{ width: 1, height: 14, backgroundColor: "var(--ezy-border)", opacity: 0.5, flexShrink: 0 }} />
 
-      {/* File count — document icon + number */}
-      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+      {/* View changes — file count + bullet + diff stats as one clickable unit (Warp-style) */}
+      <div
+        onClick={() => window.dispatchEvent(new Event("ezydev:open-codereview"))}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          cursor: "pointer",
+          padding: "2px 4px",
+          borderRadius: 3,
+          backgroundColor: "transparent",
+          transition: "background-color 120ms ease",
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}
+        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+        title="View changes"
+      >
         <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
           <path
             d="M3.75 0A1.75 1.75 0 002 1.75v12.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0014 14.25V4.664a1.75 1.75 0 00-.513-1.237L10.573.513A1.75 1.75 0 009.336 0H3.75zM3.5 1.75a.25.25 0 01.25-.25h5.586a.25.25 0 01.177.073l2.914 2.914a.25.25 0 01.073.177v9.586a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25V1.75z"
             fill="var(--ezy-text-muted)"
           />
         </svg>
-        <span style={{ color: "var(--ezy-text-secondary)" }}>
-          {stats.filesChanged}
-        </span>
-      </div>
-
-      {/* Dot separator — Warp uses a centered bullet */}
-      <span style={{ color: "var(--ezy-text-muted)", opacity: 0.6, fontSize: 10, lineHeight: 1 }}>
-        &bull;
-      </span>
-
-      {/* Diff stats — clickable to open code review */}
-      <div
-        onClick={() => window.dispatchEvent(new Event("ezydev:open-codereview"))}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          cursor: "pointer",
-        }}
-        onMouseEnter={(e) => (e.currentTarget.style.opacity = "0.8")}
-        onMouseLeave={(e) => (e.currentTarget.style.opacity = "1")}
-        title="Open Code Review"
-      >
+        <span style={{ color: "var(--ezy-text-secondary)" }}>{stats.filesChanged}</span>
+        <span style={{ color: "var(--ezy-text-muted)", opacity: 0.6, fontSize: 10, lineHeight: 1 }}>&bull;</span>
         <span style={{ color: "var(--ezy-accent)" }}>+{stats.insertions}</span>
         <span style={{ color: "var(--ezy-red)" }}>-{stats.deletions}</span>
       </div>
 
       {/* Branch switcher dropdown */}
+      {/* Trailing divider — separates git stats from toolbar icons */}
+      <div
+        style={{
+          width: 1,
+          height: 14,
+          backgroundColor: "var(--ezy-text-muted)",
+          opacity: 0.2,
+          flexShrink: 0,
+          marginLeft: 2,
+        }}
+      />
+
       {showDropdown && (
         <div
           ref={dropdownRef}

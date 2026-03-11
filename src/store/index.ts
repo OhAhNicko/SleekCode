@@ -63,6 +63,7 @@ export const useAppStore = create<AppStore>()(
         browserSpawnLeft: state.browserSpawnLeft,
         copyOnSelect: state.copyOnSelect,
         confirmQuit: state.confirmQuit,
+        codeReviewCollapseAll: state.codeReviewCollapseAll,
         projectColors: state.projectColors,
         vibrantColors: state.vibrantColors,
       }),

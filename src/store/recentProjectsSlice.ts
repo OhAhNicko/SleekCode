@@ -91,6 +91,7 @@ export interface RecentProjectsSlice {
   copyOnSelect: boolean;
   confirmQuit: boolean;
   slashCommandGhostText: boolean;
+  codeReviewCollapseAll: boolean;
   projectColors: Record<string, ProjectColorId>;
   setProjectColor: (workingDir: string, colorId: ProjectColorId) => void;
   addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string }) => void;
@@ -114,6 +115,7 @@ export interface RecentProjectsSlice {
   setCopyOnSelect: (value: boolean) => void;
   setConfirmQuit: (value: boolean) => void;
   setSlashCommandGhostText: (value: boolean) => void;
+  setCodeReviewCollapseAll: (value: boolean) => void;
   updateProjectTemplate: (path: string, template: RecentProjectTemplate) => void;
   toggleProjectQuickOpen: (path: string) => void;
 }
@@ -141,6 +143,7 @@ export const createRecentProjectsSlice: StateCreator<
   copyOnSelect: false,
   confirmQuit: true,
   slashCommandGhostText: false,
+  codeReviewCollapseAll: false,
   projectColors: {},
 
   setProjectColor: (workingDir, colorId) => {
@@ -266,6 +269,10 @@ export const createRecentProjectsSlice: StateCreator<
 
   setSlashCommandGhostText: (value) => {
     set({ slashCommandGhostText: value });
+  },
+
+  setCodeReviewCollapseAll: (value) => {
+    set({ codeReviewCollapseAll: value });
   },
 
   addCustomServerCommand: (command) => {

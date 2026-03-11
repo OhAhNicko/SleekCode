@@ -271,11 +271,37 @@ export default function TerminalPane({
 
     // Defer PTY-ready signal until layout has settled. The first fit() can
     // race with CSS grid distribution during session restore — measuring
-    // before panels have final sizes yields tiny cols (e.g. 8). Double-rAF
-    // waits one full layout+paint cycle; 300ms timer is a safety net.
+    // before panels have final sizes yields tiny cols (e.g. 5). Double-rAF
+    // waits one full layout+paint cycle; if cols are still unreasonably
+    // small (container in transitional state), retry up to 10×100ms before
+    // giving up. This prevents spawning PTYs at 5 cols which causes TUI
+    // apps (Claude CLI) to render their welcome screen in a 5-char column.
     let readySignalled = false;
+    let readyRetries = 0;
+    const MAX_READY_RETRIES = 10; // 10 × 100ms = 1s max extra wait
+    const MIN_READY_COLS = 20;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
     function signalReady() {
       if (readySignalled || disposed) return;
+
+      // Verify dimensions are reasonable — during session restore, CSS grid
+      // may not have distributed final sizes yet, giving us tiny cols.
+      // Retry a few times to wait for layout to settle.
+      if (term.cols < MIN_READY_COLS && readyRetries < MAX_READY_RETRIES) {
+        readyRetries++;
+        retryTimer = setTimeout(() => {
+          if (disposed) return;
+          try {
+            if (el.clientWidth > 0 && el.clientHeight > 0) {
+              fitAddon.fit();
+            }
+          } catch { /* container may be detached */ }
+          signalReady();
+        }, 100);
+        return;
+      }
+
       readySignalled = true;
       initialDims.current = { cols: term.cols, rows: term.rows };
       setTermReady(true);
@@ -697,6 +723,7 @@ export default function TerminalPane({
       cancelAnimationFrame(settleRaf1);
       cancelAnimationFrame(settleRaf2);
       clearTimeout(settleTimer);
+      clearTimeout(retryTimer);
       clearTimeout(fitTimer);
       observer.disconnect();
       fileLinkDisposable.dispose();

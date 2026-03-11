@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { FaExpand, FaCompress } from "react-icons/fa6";
 import { useAppStore } from "../store";
 import { parseUnifiedDiff, buildHunkPatch } from "../lib/diff-parser";
 import CodeReviewFileList from "./CodeReviewFileList";
@@ -33,7 +34,7 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
   const [customBranch, setCustomBranch] = useState("");
   const [showModeDropdown, setShowModeDropdown] = useState(false);
   const [showBranchPicker, setShowBranchPicker] = useState(false);
-
+  const [fullscreen, setFullscreen] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -104,6 +105,16 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
     };
   }, [fetchData]);
 
+  // Escape key closes fullscreen
+  useEffect(() => {
+    if (!fullscreen) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [fullscreen]);
+
   // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -170,7 +181,7 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
         ? "vs main"
         : `vs ${customBranch}`;
 
-  return (
+  const content = (
     <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
       {/* Header */}
       <div
@@ -321,6 +332,23 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
             />
           </svg>
 
+          {/* Expand / Collapse fullscreen */}
+          {fullscreen ? (
+            <FaCompress
+              size={12}
+              className="cursor-pointer hover:opacity-80 transition-opacity"
+              style={{ color: "var(--ezy-text-muted)", flexShrink: 0 }}
+              onClick={() => setFullscreen(false)}
+            />
+          ) : (
+            <FaExpand
+              size={12}
+              className="cursor-pointer hover:opacity-80 transition-opacity"
+              style={{ color: "var(--ezy-text-muted)", flexShrink: 0 }}
+              onClick={() => setFullscreen(true)}
+            />
+          )}
+
           {/* Close */}
           <svg
             width="14"
@@ -329,7 +357,7 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
             fill="none"
             className="cursor-pointer hover:opacity-80 transition-opacity"
             style={{ color: "var(--ezy-text-muted)" }}
-            onClick={onClose}
+            onClick={() => { if (fullscreen) setFullscreen(false); else onClose(); }}
           >
             <path
               d="M4 4L12 12M12 4L4 12"
@@ -362,5 +390,40 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
         />
       </div>
     </div>
+  );
+
+  if (!fullscreen) return content;
+
+  return (
+    <>
+      {/* Inline placeholder so the sidebar slot doesn't collapse */}
+      <div style={{ width: "100%", height: "100%" }} />
+      {/* Fullscreen overlay */}
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 200,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: "rgba(0,0,0,0.6)",
+        }}
+        onClick={(e) => { if (e.target === e.currentTarget) setFullscreen(false); }}
+      >
+        <div
+          style={{
+            width: "95vw",
+            height: "95vh",
+            borderRadius: 10,
+            overflow: "hidden",
+            boxShadow: "0 16px 48px rgba(0,0,0,0.5)",
+            border: "1px solid var(--ezy-border)",
+          }}
+        >
+          {content}
+        </div>
+      </div>
+    </>
   );
 }

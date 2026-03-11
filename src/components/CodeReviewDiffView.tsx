@@ -1,6 +1,7 @@
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
+import { FaCopy, FaRotateLeft, FaArrowUpRightFromSquare, FaPencil } from "react-icons/fa6";
+import { useAppStore } from "../store";
 import type { FileDiff, DiffHunk } from "../types";
-import { statusBadge } from "./CodeReviewFileList";
 
 interface CodeReviewDiffViewProps {
   fileDiffs: FileDiff[];
@@ -27,6 +28,47 @@ export default function CodeReviewDiffView({
   const fileRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [hoveredHunk, setHoveredHunk] = useState<string | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState<string | null>(null);
+  const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(new Set());
+  const [copiedFile, setCopiedFile] = useState<string | null>(null);
+  const collapseAll = useAppStore((s) => s.codeReviewCollapseAll);
+
+  // When collapseAll is on, collapse every file except the selected one (or first file)
+  useEffect(() => {
+    if (!collapseAll) {
+      setCollapsedFiles(new Set());
+      return;
+    }
+    if (fileDiffs.length === 0) return;
+    const expandedFile = selectedFile ?? fileDiffs[0]?.filePath;
+    setCollapsedFiles(new Set(
+      fileDiffs.map((f) => f.filePath).filter((p) => p !== expandedFile)
+    ));
+  }, [collapseAll, fileDiffs, selectedFile]);
+
+  const toggleCollapse = useCallback((path: string) => {
+    setCollapsedFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path); else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const copyFilePath = useCallback((path: string) => {
+    navigator.clipboard.writeText(path);
+    setCopiedFile(path);
+    setTimeout(() => setCopiedFile((v) => (v === path ? null : v)), 1500);
+  }, []);
+
+  const getFileStats = useCallback((diff: FileDiff) => {
+    let add = 0, del = 0;
+    for (const hunk of diff.hunks) {
+      for (const line of hunk.lines) {
+        if (line.type === "add") add++;
+        else if (line.type === "remove") del++;
+      }
+    }
+    return { add, del };
+  }, []);
 
   // Scroll to selected file
   const setFileRef = useCallback(
@@ -96,88 +138,155 @@ export default function CodeReviewDiffView({
           ref={setFileRef(fileDiff.filePath)}
           className="mb-1"
         >
-          {/* File header — sticky */}
-          <div
-            className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5"
-            style={{
-              backgroundColor: "var(--ezy-surface-raised)",
-              borderBottom: "1px solid var(--ezy-border-subtle)",
-            }}
-          >
-            {statusBadge(fileDiff.status)}
-            <span
-              className="text-[11px] font-medium flex-1 truncate"
-              style={{ color: "var(--ezy-text)", fontFamily: "var(--ezy-font-mono, monospace)" }}
-            >
-              {fileDiff.filePath}
-            </span>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => onOpenInEditor(fileDiff.filePath)}
-                className="px-1.5 py-0.5 rounded text-[10px] hover:opacity-80 transition-opacity"
+          {/* File header — Warp-style sticky toolbar */}
+          {(() => {
+            const stats = getFileStats(fileDiff);
+            const isCollapsed = collapsedFiles.has(fileDiff.filePath);
+            return (
+              <div
+                className="sticky top-0 z-10 flex items-center gap-1.5 px-2 py-1"
                 style={{
-                  color: "var(--ezy-text-secondary)",
-                  border: "1px solid var(--ezy-border-subtle)",
+                  backgroundColor: "var(--ezy-surface-raised)",
+                  borderBottom: "1px solid var(--ezy-border-subtle)",
+                  minHeight: 30,
                 }}
-                title="Open in editor"
               >
-                Edit
-              </button>
-              {confirmDiscard === fileDiff.filePath ? (
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => {
-                      onDiscardFile(fileDiff.filePath, fileDiff.status === "??");
-                      setConfirmDiscard(null);
-                    }}
-                    className="px-1.5 py-0.5 rounded text-[10px] bg-red-600 text-white hover:bg-red-700 transition-colors"
-                  >
-                    Confirm
-                  </button>
-                  <button
-                    onClick={() => setConfirmDiscard(null)}
-                    className="px-1.5 py-0.5 rounded text-[10px] hover:opacity-80"
-                    style={{ color: "var(--ezy-text-muted)" }}
-                  >
-                    Cancel
-                  </button>
+                {/* Chevron toggle */}
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  className="shrink-0 cursor-pointer hover:opacity-80 transition-all"
+                  style={{
+                    color: "var(--ezy-text-muted)",
+                    transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                    transition: "transform 150ms ease",
+                  }}
+                  onClick={() => toggleCollapse(fileDiff.filePath)}
+                >
+                  <path d="M4 6L8 10L12 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+
+                {/* File path */}
+                <span
+                  className="text-[11px] font-medium truncate cursor-pointer"
+                  style={{ color: "var(--ezy-text)", fontFamily: "var(--ezy-font-mono, monospace)", minWidth: 0 }}
+                  onClick={() => toggleCollapse(fileDiff.filePath)}
+                >
+                  {fileDiff.filePath}
+                </span>
+
+                {/* Copy file path — adjacent to filepath */}
+                <FaCopy
+                  size={11}
+                  className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                  style={{ color: copiedFile === fileDiff.filePath ? "var(--ezy-accent)" : "var(--ezy-text-muted)" }}
+                  onClick={() => copyFilePath(fileDiff.filePath)}
+                  title="Copy file path"
+                />
+
+                {/* Left spacer — pushes diff badge to center */}
+                <div className="flex-1" />
+
+                {/* Per-file diff stats badge — centered */}
+                <div
+                  className="flex items-center gap-1 shrink-0 rounded px-1.5 py-0.5"
+                  style={{
+                    backgroundColor: "var(--ezy-surface)",
+                    border: "1px solid var(--ezy-border-subtle)",
+                    fontSize: 11,
+                    fontVariantNumeric: "tabular-nums",
+                    lineHeight: 1,
+                  }}
+                >
+                  <span style={{ color: "var(--ezy-accent)" }}>+{stats.add}</span>
+                  <span style={{ color: "var(--ezy-text-muted)", opacity: 0.5, fontSize: 9 }}>&bull;</span>
+                  <span style={{ color: "var(--ezy-red)" }}>-{stats.del}</span>
                 </div>
-              ) : (
-                <button
-                  onClick={() => setConfirmDiscard(fileDiff.filePath)}
-                  className="px-1.5 py-0.5 rounded text-[10px] hover:opacity-80 transition-opacity"
+
+                {/* Right spacer — pushes diff badge to center */}
+                <div className="flex-1" />
+
+                {/* Edit button */}
+                <div
+                  className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity flex items-center gap-1 rounded px-1.5 py-0.5"
                   style={{
                     color: "var(--ezy-text-muted)",
                     border: "1px solid var(--ezy-border-subtle)",
+                    fontSize: 10,
                   }}
-                  title="Discard all changes in this file"
+                  onClick={() => onOpenInEditor(fileDiff.filePath)}
+                  title="Open in editor"
                 >
-                  Discard
-                </button>
-              )}
-            </div>
-          </div>
+                  <FaPencil size={9} />
+                  <span>Edit</span>
+                </div>
 
-          {/* Hunks */}
-          {fileDiff.hunks.length === 0 ? (
-            <div
-              className="px-4 py-2 text-[11px]"
-              style={{ color: "var(--ezy-text-muted)" }}
-            >
-              Binary file or no diff available
-            </div>
-          ) : (
-            fileDiff.hunks.map((hunk, hunkIdx) => (
-              <HunkBlock
-                key={`${fileDiff.filePath}-${hunkIdx}`}
-                hunk={hunk}
-                hunkId={`${fileDiff.filePath}-${hunkIdx}`}
-                isHovered={hoveredHunk === `${fileDiff.filePath}-${hunkIdx}`}
-                onMouseEnter={() => setHoveredHunk(`${fileDiff.filePath}-${hunkIdx}`)}
-                onMouseLeave={() => setHoveredHunk(null)}
-                onRevert={() => onRevertHunk(fileDiff, hunkIdx)}
-              />
-            ))
+                {/* Discard */}
+                {confirmDiscard === fileDiff.filePath ? (
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => {
+                        onDiscardFile(fileDiff.filePath, fileDiff.status === "??");
+                        setConfirmDiscard(null);
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[10px] bg-red-600 text-white hover:bg-red-700 transition-colors"
+                    >
+                      Confirm
+                    </button>
+                    <button
+                      onClick={() => setConfirmDiscard(null)}
+                      className="px-1.5 py-0.5 rounded text-[10px] hover:opacity-80"
+                      style={{ color: "var(--ezy-text-muted)" }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <FaRotateLeft
+                    size={11}
+                    className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                    style={{ color: "var(--ezy-text-muted)" }}
+                    onClick={() => setConfirmDiscard(fileDiff.filePath)}
+                    title="Discard all changes"
+                  />
+                )}
+
+                {/* Open file externally */}
+                <FaArrowUpRightFromSquare
+                  size={10}
+                  className="shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
+                  style={{ color: "var(--ezy-text-muted)" }}
+                  onClick={() => onOpenInEditor(fileDiff.filePath)}
+                  title="Open file"
+                />
+              </div>
+            );
+          })()}
+
+          {/* Hunks — collapsible */}
+          {!collapsedFiles.has(fileDiff.filePath) && (
+            fileDiff.hunks.length === 0 ? (
+              <div
+                className="px-4 py-2 text-[11px]"
+                style={{ color: "var(--ezy-text-muted)" }}
+              >
+                Binary file or no diff available
+              </div>
+            ) : (
+              fileDiff.hunks.map((hunk, hunkIdx) => (
+                <HunkBlock
+                  key={`${fileDiff.filePath}-${hunkIdx}`}
+                  hunk={hunk}
+                  hunkId={`${fileDiff.filePath}-${hunkIdx}`}
+                  isHovered={hoveredHunk === `${fileDiff.filePath}-${hunkIdx}`}
+                  onMouseEnter={() => setHoveredHunk(`${fileDiff.filePath}-${hunkIdx}`)}
+                  onMouseLeave={() => setHoveredHunk(null)}
+                  onRevert={() => onRevertHunk(fileDiff, hunkIdx)}
+                />
+              ))
+            )
           )}
         </div>
       ))}
@@ -216,15 +325,14 @@ function HunkBlock({
         }}
       >
         <span className="flex-1 truncate">{hunk.header}</span>
-        {isHovered && (
-          <button
-            onClick={onRevert}
-            className="px-1.5 py-0.5 rounded text-[10px] bg-red-600 text-white hover:bg-red-700 transition-colors shrink-0"
-            title="Revert this hunk"
-          >
-            Revert
-          </button>
-        )}
+        <button
+          onClick={onRevert}
+          className="px-1.5 py-0.5 rounded text-[10px] bg-red-600 text-white hover:bg-red-700 transition-colors shrink-0"
+          style={{ opacity: isHovered ? 1 : 0, pointerEvents: isHovered ? "auto" : "none" }}
+          title="Revert this hunk"
+        >
+          Revert
+        </button>
       </div>
 
       {/* Lines */}

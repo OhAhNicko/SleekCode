@@ -65,6 +65,8 @@ export default function TabBar() {
   const setConfirmQuit = useAppStore((s) => s.setConfirmQuit);
   const slashCommandGhostText = useAppStore((s) => s.slashCommandGhostText);
   const setSlashCommandGhostText = useAppStore((s) => s.setSlashCommandGhostText);
+  const codeReviewCollapseAll = useAppStore((s) => s.codeReviewCollapseAll);
+  const setCodeReviewCollapseAll = useAppStore((s) => s.setCodeReviewCollapseAll);
   const devServers = useAppStore((s) => s.devServers);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
@@ -1769,6 +1771,35 @@ export default function TabBar() {
                       transition: "left 150ms ease",
                     }}
                   />
+                </div>
+              </div>
+
+              {/* Code Review section */}
+              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
+              <div
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--ezy-text-muted)",
+                  borderBottom: "1px solid var(--ezy-border)",
+                }}
+              >
+                Code Review
+              </div>
+              <div
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
+                onClick={() => setCodeReviewCollapseAll(!codeReviewCollapseAll)}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  Collapse all files
+                </span>
+                <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: codeReviewCollapseAll ? "var(--ezy-accent)" : "transparent", border: codeReviewCollapseAll ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: codeReviewCollapseAll ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: codeReviewCollapseAll ? 16 : 2, transition: "left 150ms ease" }} />
                 </div>
               </div>
 

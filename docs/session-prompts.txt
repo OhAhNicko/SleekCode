@@ -885,3 +885,27 @@
 6. It happens sometimes
 7. Mostly when opening the app again and previous sessions resume
 8. /end
+
+## 2026-03-11 — CodeReview fullscreen + GitStatusBar divider (session 2)
+
+1. Nice! Just 2 more things. 1. add som space and a divider between the git statusbar and the snipping tool icon. 2. Add a new icon for expand and collapse the code review sidebar, take it from react-icons fa6
+2. The divider is super badly placed. Did you use the frontend design skill for ui work AS YOU SHOULD?
+3. How can we make so you never violate the rule again?
+4. /end
+
+## 2026-03-11 — CodeReview file headers, collapse mode, and UI polish (session 3)
+
+1. Also, in the codereviewer, make each document header to be like in warp with the "Copy file path" button, the change/diff for that file, discard icon from react-icons Fa6, open file icon with fa6 icon too. See image from warp, I want it exactly like this! (But keep the "Edit" button but add an Fa6 icon for it too)
+2. It should also have the down arrow chevron to collapse and expand the doc, just like in the picture
+3. What does this row that starts with "@@" do? I dont like that it changes size on hover because of the "revert" button showing. Fix that!
+4. What does that revert button do?
+5. Okay! Now, move the copy button to be closer to the actual file path, and move the diff to be in the center of the header row!
+6. Add a settings button that on toggle should spawn all docs as collapsed, except for the selected one. (which will be the first one on the first enter?!)
+[AskUserQuestion] Q: Where should the settings toggle button be placed? → A: We have ONE Settings button in the tabbar, talking about that settings dropdown menu
+
+## 2026-03-11 — Ship, WebView2 native fix, PTY tiny cols fix (session 4)
+
+1. /ship
+2. /ship
+3. Why does some panes spawn in super cropped and mushed together sometimes? See image: [screenshot showing Claude Code TUI rendered at ~5 cols despite full-width pane]
+4. /end
