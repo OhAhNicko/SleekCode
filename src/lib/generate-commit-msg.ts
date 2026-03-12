@@ -3,13 +3,23 @@ import { getCachedCliPath, getCachedDistro } from "./wsl-cache";
 import { useAppStore } from "../store";
 
 // For Claude: meta-prompt + diff combined into one stdin payload
-const META_PROMPT = `You are generating a git commit message. Output ONLY the commit message — no preamble, no markdown, no explanation.
+const META_PROMPT = `You are generating a git commit message. Output ONLY the commit message — no preamble, no markdown fences, no explanation.
 
-Format: conventional commit style.
-- Line 1: type(scope): short summary (max 72 chars). Types: feat, fix, chore, refactor, docs, style, test.
-- Optionally line 3+: brief body if the change is non-trivial (wrap at 72 chars).
+Format: conventional commit with bullet body.
+- Line 1: type(scope): concise summary (max 72 chars). Types: feat, fix, chore, refactor, docs, style, test.
+- Line 2: blank
+- Lines 3+: bullet list (- prefix) grouping changes by area or feature. Each bullet summarizes a conceptual change — not raw filenames.
 
-Analyze the diff below and write a commit message that describes WHAT changed and WHY (if inferrable). Focus on the semantic purpose, not filenames.
+Example:
+feat: commit popover, multi-lang safety checks
+
+- CommitPopover with safety checks, file staging, secrets scanning
+- Multi-language lint/test/typecheck detection in Rust backend
+- New "Commit & Push" button with Ctrl+Shift+Enter shortcut
+
+For small changes (1-3 files), a single subject line is sufficient — skip the bullets.
+
+Analyze the diff below and write a commit message. Focus on WHAT changed semantically, not filenames.
 
 Diff:`;
 

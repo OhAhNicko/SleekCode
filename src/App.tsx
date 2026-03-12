@@ -246,112 +246,216 @@ export default function App() {
     return () => window.removeEventListener("ezydev:open-shortcuts", handler);
   }, []);
 
-  // Global keyboard shortcuts
+  // Global keyboard shortcuts (capture phase — fires before xterm/composer handlers)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const { ctrlKey, shiftKey, key } = e;
+      const { ctrlKey, shiftKey, altKey, key } = e;
+      // Helper: prevent default AND stop propagation (capture phase blocks xterm)
+      const consume = () => { e.preventDefault(); e.stopPropagation(); };
 
-      // Ctrl+K → Command Palette
-      if (ctrlKey && !shiftKey && key === "k") {
-        e.preventDefault();
-        setShowPalette((v) => !v);
-        return;
+      // Alt+1..9 → Switch to tab by number
+      // Use e.code (physical key) because Alt+digit on Windows can produce
+      // special characters in e.key depending on keyboard layout / alt-codes.
+      if (altKey && !ctrlKey && !shiftKey) {
+        const code = e.code; // "Digit1".."Digit9"
+        if (code >= "Digit1" && code <= "Digit9") {
+          consume();
+          const store = useAppStore.getState();
+          const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
+          const idx = parseInt(code.slice(5)) - 1; // "Digit1" → 0
+          if (idx < cycleable.length) {
+            store.setActiveTab(cycleable[idx].id);
+          }
+          return;
+        }
       }
 
-      // Ctrl+B → Toggle Sidebar
-      if (ctrlKey && !shiftKey && key === "b") {
-        e.preventDefault();
-        toggleSidebar();
-        return;
+      if (!ctrlKey) return;
+
+      // Ctrl (no Shift) shortcuts
+      if (!shiftKey) {
+        switch (key) {
+          case "k":
+            // Ctrl+K → Command Palette
+            consume();
+            setShowPalette((v) => !v);
+            return;
+          case "b":
+            // Ctrl+B → Toggle Sidebar
+            consume();
+            toggleSidebar();
+            return;
+          case "/":
+            // Ctrl+/ → Keyboard Shortcuts
+            consume();
+            setShowShortcuts((v) => !v);
+            return;
+          case ",":
+            // Ctrl+, → Toggle Settings
+            consume();
+            window.dispatchEvent(new Event("ezydev:toggle-settings"));
+            return;
+          case "1":
+            // Ctrl+1 → new Claude pane (vertical / grid)
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "claude" } }));
+            return;
+          case "2":
+            // Ctrl+2 → new Codex pane
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "codex" } }));
+            return;
+          case "3":
+            // Ctrl+3 → new Gemini pane
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "gemini" } }));
+            return;
+          case "d":
+            // Ctrl+D → Split pane vertically (new pane right)
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "shell" } }));
+            return;
+          case "w":
+            // Ctrl+W → Close current pane
+            consume();
+            window.dispatchEvent(new Event("ezydev:close-pane"));
+            return;
+          case "l":
+            // Ctrl+L → Clear terminal
+            consume();
+            window.dispatchEvent(new Event("ezydev:clear-terminal"));
+            return;
+          case "=":
+          case "+":
+            // Ctrl+= / Ctrl++ → Zoom in (increase font size)
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:font-zoom", { detail: { delta: 1 } }));
+            return;
+          case "-":
+            // Ctrl+- → Zoom out (decrease font size)
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:font-zoom", { detail: { delta: -1 } }));
+            return;
+          case "Tab":
+            // Ctrl+Tab → next tab (skip system tabs)
+            consume();
+            {
+              const store = useAppStore.getState();
+              const cycleable = store.tabs.filter((t) => !t.isDevServerTab);
+              const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
+              const nextIndex = (currentIndex + 1) % cycleable.length;
+              store.setActiveTab(cycleable[nextIndex].id);
+            }
+            return;
+        }
       }
 
-      // Ctrl+/ → Keyboard Shortcuts
-      if (ctrlKey && !shiftKey && key === "/") {
-        e.preventDefault();
-        setShowShortcuts((v) => !v);
-        return;
-      }
-
-      // Ctrl+1 → new Claude pane
-      if (ctrlKey && !shiftKey && key === "1") {
-        e.preventDefault();
-        window.dispatchEvent(
-          new CustomEvent("ezydev:split-terminal", {
-            detail: { type: "claude" },
-          })
-        );
-        return;
-      }
-
-      // Ctrl+2 → new Codex pane
-      if (ctrlKey && !shiftKey && key === "2") {
-        e.preventDefault();
-        window.dispatchEvent(
-          new CustomEvent("ezydev:split-terminal", {
-            detail: { type: "codex" },
-          })
-        );
-        return;
-      }
-
-      // Ctrl+3 → new Gemini pane
-      if (ctrlKey && !shiftKey && key === "3") {
-        e.preventDefault();
-        window.dispatchEvent(
-          new CustomEvent("ezydev:split-terminal", {
-            detail: { type: "gemini" },
-          })
-        );
-        return;
-      }
-
-      // Ctrl+Tab → next tab (skip dev-server-tab which is now a sidebar panel)
-      if (ctrlKey && !shiftKey && key === "Tab") {
-        e.preventDefault();
+      // Ctrl+Shift shortcuts
+      if (shiftKey) {
         const store = useAppStore.getState();
-        const cycleable = store.tabs.filter((t) => !t.isDevServerTab);
-        const currentIndex = cycleable.findIndex(
-          (t) => t.id === store.activeTabId
-        );
-        const nextIndex = (currentIndex + 1) % cycleable.length;
-        store.setActiveTab(cycleable[nextIndex].id);
-        return;
-      }
 
-      if (!ctrlKey || !shiftKey) return;
-
-      const store = useAppStore.getState();
-
-      switch (key) {
-        case "T": {
-          // Ctrl+Shift+T → dispatch new-tab event for TabBar
-          e.preventDefault();
-          window.dispatchEvent(new Event("ezydev:new-tab"));
-          break;
-        }
-        case "G": {
-          // Ctrl+Shift+G → Open Code Review
-          e.preventDefault();
-          window.dispatchEvent(new Event("ezydev:open-codereview"));
-          break;
-        }
-        case "Tab": {
-          // Ctrl+Shift+Tab → previous tab (skip dev-server-tab)
-          e.preventDefault();
-          const cycleable = store.tabs.filter((t) => !t.isDevServerTab);
-          const currentIndex = cycleable.findIndex(
-            (t) => t.id === store.activeTabId
-          );
-          const prevIndex =
-            (currentIndex - 1 + cycleable.length) % cycleable.length;
-          store.setActiveTab(cycleable[prevIndex].id);
-          break;
+        switch (key) {
+          case "T":
+            // Ctrl+Shift+T → New tab
+            consume();
+            window.dispatchEvent(new Event("ezydev:new-tab"));
+            return;
+          case "N":
+            // Ctrl+Shift+N → New project/tab
+            consume();
+            window.dispatchEvent(new Event("ezydev:new-tab"));
+            return;
+          case "G":
+            // Ctrl+Shift+G → Open Code Review
+            consume();
+            window.dispatchEvent(new Event("ezydev:open-codereview"));
+            return;
+          case "W":
+            // Ctrl+Shift+W → Close current tab
+            consume();
+            {
+              const activeId = store.activeTabId;
+              if (activeId) store.removeTab(activeId);
+            }
+            return;
+          case "D":
+            // Ctrl+Shift+D → Split pane horizontally (new pane below)
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "shell", direction: "vertical" } }));
+            return;
+          case "P":
+            // Ctrl+Shift+P → Command palette (alias)
+            consume();
+            setShowPalette((v) => !v);
+            return;
+          case "E":
+            // Ctrl+Shift+E → Toggle file explorer sidebar
+            consume();
+            {
+              const s = useAppStore.getState();
+              if (s.sidebarOpen && s.sidebarTab === "files") {
+                s.toggleSidebar();
+              } else {
+                s.setSidebarTab("files");
+                if (!s.sidebarOpen) s.toggleSidebar();
+              }
+            }
+            return;
+          case "C":
+            // Ctrl+Shift+C → Copy (explicit)
+            consume();
+            document.execCommand("copy");
+            return;
+          case "V":
+            // Ctrl+Shift+V → Paste (explicit)
+            consume();
+            navigator.clipboard.readText().then((text) => {
+              window.dispatchEvent(new CustomEvent("ezydev:paste-text", { detail: { text } }));
+            }).catch(() => {});
+            return;
+          case "]":
+            // Ctrl+Shift+] → Focus next pane
+            consume();
+            window.dispatchEvent(new Event("ezydev:focus-next-pane"));
+            return;
+          case "[":
+            // Ctrl+Shift+[ → Focus previous pane
+            consume();
+            window.dispatchEvent(new Event("ezydev:focus-prev-pane"));
+            return;
+          case "!":
+            // Ctrl+Shift+1 → New Claude pane (horizontal split)
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "claude", direction: "vertical" } }));
+            return;
+          case "@":
+            // Ctrl+Shift+2 → New Codex pane (horizontal split)
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "codex", direction: "vertical" } }));
+            return;
+          case "#":
+            // Ctrl+Shift+3 → New Gemini pane (horizontal split)
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "gemini", direction: "vertical" } }));
+            return;
+          case "Tab":
+            // Ctrl+Shift+Tab → previous tab
+            consume();
+            {
+              const cycleable = store.tabs.filter((t) => !t.isDevServerTab);
+              const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
+              const prevIndex = (currentIndex - 1 + cycleable.length) % cycleable.length;
+              store.setActiveTab(cycleable[prevIndex].id);
+            }
+            return;
         }
       }
     };
 
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    // Use capture phase so global shortcuts fire BEFORE xterm's key handler
+    // (xterm textarea intercepts keys in bubble phase and sends them to PTY)
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
   }, []);
 
   const handleOpenFile = useCallback((filePath: string, lineNumber?: number) => {

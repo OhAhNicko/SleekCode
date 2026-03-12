@@ -88,7 +88,7 @@ export default function TabBar() {
   const [showRecentMenu, setShowRecentMenu] = useState(false);
   const [browsingServer, setBrowsingServer] = useState<RemoteServer | null>(null);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
-  const [showServersTab, setShowServersTab] = useState(false);
+  const [showServersTab] = useState(false);
   const [pendingDir, setPendingDir] = useState<{ name: string; dir: string; serverId?: string } | null>(null);
   const [expandedCli, setExpandedCli] = useState<Record<string, boolean>>({});
   const [themeExpanded, setThemeExpanded] = useState(false);
@@ -116,12 +116,27 @@ export default function TabBar() {
     return () => clearInterval(id);
   }, []);
 
+  // Delayed path tooltip (2s hover)
+  const [pathTooltip, setPathTooltip] = useState<{ tabId: string; x: number; y: number } | null>(null);
+  const pathTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearPathTooltip = useCallback(() => {
+    if (pathTooltipTimer.current) { clearTimeout(pathTooltipTimer.current); pathTooltipTimer.current = null; }
+    setPathTooltip(null);
+  }, []);
+
   const anyMenuOpen = showNewTabMenu || showRecentMenu || showSettingsMenu;
   const closeAllMenus = useCallback(() => {
     setShowNewTabMenu(false);
     setShowRecentMenu(false);
     setShowSettingsMenu(false);
     setColorPickerTab(null);
+  }, []);
+
+  // Listen for Ctrl+, toggle-settings event
+  useEffect(() => {
+    const handler = () => setShowSettingsMenu((v) => !v);
+    window.addEventListener("ezydev:toggle-settings", handler);
+    return () => window.removeEventListener("ezydev:toggle-settings", handler);
   }, []);
 
   const getInsertBeforeId = useCallback((clientX: number, excludeId: string): string | null => {
@@ -665,12 +680,22 @@ export default function TabBar() {
                       e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.03)";
                       e.currentTarget.style.color = "var(--ezy-text-secondary)";
                     }
+                    // Delayed path tooltip (2s)
+                    if (tab.workingDir) {
+                      clearPathTooltip();
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const tid = tab.id;
+                      pathTooltipTimer.current = setTimeout(() => {
+                        setPathTooltip({ tabId: tid, x: rect.left + rect.width / 2, y: rect.bottom + 4 });
+                      }, 2000);
+                    }
                   }}
                   onMouseLeave={(e) => {
                     if (!isActive) {
                       e.currentTarget.style.backgroundColor = "transparent";
                       e.currentTarget.style.color = "var(--ezy-text-muted)";
                     }
+                    clearPathTooltip();
                   }}
                 >
                   {/* Tab icon (special tabs only — no icon for regular project tabs) */}
@@ -2362,40 +2387,6 @@ export default function TabBar() {
                 </div>
               )}
 
-              {/* Remote Servers */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => {
-                  setShowSettingsMenu(false);
-                  if (showServersTab) {
-                    setShowServersTab(false);
-                    const other = tabs.find((t) => !t.isServersTab && !t.isKanbanTab && !t.isDevServerTab);
-                    if (other) setActiveTab(other.id);
-                  } else {
-                    setShowServersTab(true);
-                    const srv = tabs.find((t) => t.isServersTab);
-                    if (srv) setActiveTab(srv.id);
-                  }
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-cyan)" strokeWidth="1.3">
-                  <rect x="2" y="1" width="12" height="6" rx="1.5" />
-                  <rect x="2" y="9" width="12" height="6" rx="1.5" />
-                  <circle cx="5" cy="4" r="1" fill="var(--ezy-cyan)" stroke="none" />
-                  <circle cx="5" cy="12" r="1" fill="var(--ezy-cyan)" stroke="none" />
-                </svg>
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>Remote Servers</span>
-              </div>
-
               {/* Snippets */}
               <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
               <div
@@ -2740,6 +2731,34 @@ export default function TabBar() {
           }
         />
       )}
+
+      {/* Delayed path tooltip (2s hover on tab) */}
+      {pathTooltip && (() => {
+        const tt = tabs.find((t) => t.id === pathTooltip.tabId);
+        if (!tt?.workingDir) return null;
+        return (
+          <div
+            style={{
+              position: "fixed",
+              left: pathTooltip.x,
+              top: pathTooltip.y,
+              transform: "translateX(-50%)",
+              zIndex: 400,
+              backgroundColor: "var(--ezy-surface-raised)",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: 6,
+              padding: "4px 8px",
+              fontSize: 11,
+              color: "var(--ezy-text-secondary)",
+              whiteSpace: "nowrap",
+              pointerEvents: "none",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+            }}
+          >
+            {tt.workingDir}
+          </div>
+        );
+      })()}
     </>
   );
 }

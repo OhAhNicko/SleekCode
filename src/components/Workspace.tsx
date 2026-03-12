@@ -251,6 +251,82 @@ export default function Workspace({ tab }: WorkspaceProps) {
     return () => window.removeEventListener("ezydev:split-terminal", handler);
   }, [tab.id, tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal, handleTerminalFocus, refocusPrevious]);
 
+  // Listen for close-pane events (Ctrl+W)
+  useEffect(() => {
+    const handler = () => {
+      if (useAppStore.getState().activeTabId !== tab.id) return;
+      if (!activeTerminalId) return;
+      handleTerminalClose(activeTerminalId);
+    };
+    window.addEventListener("ezydev:close-pane", handler);
+    return () => window.removeEventListener("ezydev:close-pane", handler);
+  }, [tab.id, activeTerminalId, handleTerminalClose]);
+
+  // Listen for focus-next/prev pane events (Ctrl+Shift+]/[)
+  useEffect(() => {
+    const nextHandler = () => {
+      if (useAppStore.getState().activeTabId !== tab.id) return;
+      const leaves = findAllTerminalLeaves(tab.layout);
+      if (leaves.length < 2) return;
+      const ids = leaves.map((l) => l.terminalId);
+      const curIdx = ids.indexOf(activeTerminalId ?? "");
+      const nextIdx = (curIdx + 1) % ids.length;
+      handleTerminalFocus(ids[nextIdx]);
+      // Focus the terminal's textarea/canvas
+      const paneEl = document.querySelector(`[data-terminal-id="${ids[nextIdx]}"]`);
+      const focusTarget = paneEl?.querySelector("textarea") ?? paneEl?.querySelector("canvas");
+      (focusTarget as HTMLElement)?.focus();
+    };
+    const prevHandler = () => {
+      if (useAppStore.getState().activeTabId !== tab.id) return;
+      const leaves = findAllTerminalLeaves(tab.layout);
+      if (leaves.length < 2) return;
+      const ids = leaves.map((l) => l.terminalId);
+      const curIdx = ids.indexOf(activeTerminalId ?? "");
+      const prevIdx = (curIdx - 1 + ids.length) % ids.length;
+      handleTerminalFocus(ids[prevIdx]);
+      const paneEl = document.querySelector(`[data-terminal-id="${ids[prevIdx]}"]`);
+      const focusTarget = paneEl?.querySelector("textarea") ?? paneEl?.querySelector("canvas");
+      (focusTarget as HTMLElement)?.focus();
+    };
+    window.addEventListener("ezydev:focus-next-pane", nextHandler);
+    window.addEventListener("ezydev:focus-prev-pane", prevHandler);
+    return () => {
+      window.removeEventListener("ezydev:focus-next-pane", nextHandler);
+      window.removeEventListener("ezydev:focus-prev-pane", prevHandler);
+    };
+  }, [tab.id, tab.layout, activeTerminalId, handleTerminalFocus]);
+
+  // Listen for clear-terminal events (Ctrl+L)
+  useEffect(() => {
+    const handler = () => {
+      if (useAppStore.getState().activeTabId !== tab.id) return;
+      if (!activeTerminalId) return;
+      const writeFn = getPtyWrite(activeTerminalId);
+      if (writeFn) writeFn("\x0c"); // Send form-feed (Ctrl+L) to PTY
+    };
+    window.addEventListener("ezydev:clear-terminal", handler);
+    return () => window.removeEventListener("ezydev:clear-terminal", handler);
+  }, [tab.id, activeTerminalId]);
+
+  // Listen for font-zoom events (Ctrl++/Ctrl+-)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if (useAppStore.getState().activeTabId !== tab.id) return;
+      if (!activeTerminalId) return;
+      const delta = (e as CustomEvent).detail?.delta as number;
+      if (!delta) return;
+      const terminal = useAppStore.getState().terminals[activeTerminalId];
+      if (!terminal) return;
+      const store = useAppStore.getState();
+      const currentSize = store.cliFontSizes[terminal.type] ?? 15;
+      const newSize = Math.min(30, Math.max(8, currentSize + delta));
+      store.setCliFontSize(terminal.type, newSize);
+    };
+    window.addEventListener("ezydev:font-zoom", handler);
+    return () => window.removeEventListener("ezydev:font-zoom", handler);
+  }, [tab.id, activeTerminalId]);
+
   // Auto-spawn terminals for restored tabs (session restore)
   const hasAutoSpawned = useRef(false);
   useEffect(() => {

@@ -29,6 +29,7 @@ interface TerminalHeaderProps {
   serverName?: string;
   isYolo?: boolean;
   contextInfo?: ContextInfo | null;
+  workingDir?: string;
 }
 
 function TerminalIcon({ type }: { type: TerminalType }) {
@@ -180,6 +181,23 @@ function CliPicker({
   );
 }
 
+/** Format Gemini model ID into human-readable name, e.g. "gemini-2.5-pro-preview-05-06" → "Gemini 2.5 Pro Preview" */
+function formatGeminiModel(raw: string): string {
+  const m = raw.match(/^gemini-([0-9.]+)-(\w+)(?:-preview)?/i);
+  if (!m) return raw;
+  const version = m[1];
+  const variant = m[2].charAt(0).toUpperCase() + m[2].slice(1);
+  const isPreview = /preview/i.test(raw);
+  return `Gemini ${version} ${variant}${isPreview ? " Preview" : ""}`;
+}
+
+/** Extract last N segments from a file path */
+function truncatePath(path: string, maxSegments = 3): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const segments = normalized.split("/").filter(Boolean);
+  return segments.slice(-maxSegments).join("/");
+}
+
 export default function TerminalHeader({
   terminalId,
   terminalType,
@@ -191,6 +209,7 @@ export default function TerminalHeader({
   serverName,
   isYolo = false,
   contextInfo,
+  workingDir,
 }: TerminalHeaderProps) {
   const contextPercent = contextInfo?.percent ?? null;
   const config = TERMINAL_CONFIGS[terminalType];
@@ -300,7 +319,7 @@ export default function TerminalHeader({
                 fontSize: 9,
                 fontWeight: 700,
                 letterSpacing: "0.06em",
-                lineHeight: 1,
+                lineHeight: 1.2,
                 padding: "1px 4px",
                 borderRadius: 3,
                 backgroundColor: "var(--ezy-red, #e55)",
@@ -316,7 +335,7 @@ export default function TerminalHeader({
                 fontSize: 9,
                 fontWeight: 700,
                 letterSpacing: "0.06em",
-                lineHeight: 1,
+                lineHeight: 1.2,
                 padding: "1px 4px",
                 borderRadius: 3,
                 backgroundColor: "var(--ezy-cyan, #5eead4)",
@@ -340,11 +359,30 @@ export default function TerminalHeader({
         )}
       </div>
 
+      {/* File path — max 3 segments from end */}
+      {workingDir && (
+        <span
+          style={{
+            fontSize: 10,
+            color: "var(--ezy-text-muted)",
+            opacity: 0.4,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            minWidth: 0,
+            lineHeight: 1.2,
+            marginLeft: 4,
+          }}
+          title={workingDir}
+        >
+          · {truncatePath(workingDir)}
+        </span>
+      )}
+
       {/* Model name + context usage indicator — CLI panes only (collapses when pane is narrow) */}
       {contextPercent != null && contextInfo && (
         <div
           className="ml-auto flex items-center gap-2"
-          title={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%`}
           style={{ marginRight: 6, minWidth: 0, overflow: "hidden" }}
         >
           {contextInfo.model && (
@@ -352,12 +390,14 @@ export default function TerminalHeader({
               style={{
                 fontSize: 10,
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1,
+                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 opacity: 0.7,
               }}
             >
-              {contextInfo.model?.replace(/^gpt-/i, "GPT ") ?? ""}{contextInfo.effort ? ` - ${contextInfo.effort}` : ""}
+              {terminalType === "gemini"
+                ? formatGeminiModel(contextInfo.model ?? "")
+                : (contextInfo.model?.replace(/^gpt-/i, "GPT ") ?? "")}{contextInfo.effort ? ` - ${contextInfo.effort}` : ""}
             </span>
           )}
           {/* Claude: version */}
@@ -366,7 +406,7 @@ export default function TerminalHeader({
               style={{
                 fontSize: 9,
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1,
+                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 opacity: 0.5,
               }}
@@ -380,7 +420,7 @@ export default function TerminalHeader({
               style={{
                 fontSize: 9,
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1,
+                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 opacity: 0.5,
               }}
@@ -388,16 +428,24 @@ export default function TerminalHeader({
               {contextInfo.speed}
             </span>
           )}
-          {/* Claude: session cost + cost/hr */}
+          {/* Claude: per-pane session cost + cost/hr (project total in tooltip) */}
           {contextInfo.costUsd != null && (
             <span
-              title={contextInfo.durationMs != null
-                ? `$${contextInfo.costUsd.toFixed(2)} total · $${(contextInfo.costUsd / (contextInfo.durationMs / 3_600_000)).toFixed(2)}/hr · ${Math.round(contextInfo.durationMs / 60_000)}m session`
-                : `$${contextInfo.costUsd.toFixed(2)} total`}
+              title={(() => {
+                const parts: string[] = [`$${contextInfo.costUsd.toFixed(2)} this session`];
+                if (contextInfo.durationMs != null && contextInfo.durationMs > 0) {
+                  parts.push(`$${(contextInfo.costUsd / (contextInfo.durationMs / 3_600_000)).toFixed(2)}/hr`);
+                  parts.push(`${Math.round(contextInfo.durationMs / 60_000)}m session`);
+                }
+                if (contextInfo.projectCostUsd != null) {
+                  parts.push(`$${contextInfo.projectCostUsd.toFixed(2)} project total`);
+                }
+                return parts.join(" · ");
+              })()}
               style={{
                 fontSize: 9,
                 fontVariantNumeric: "tabular-nums",
-                lineHeight: 1,
+                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 color: "var(--ezy-text-muted)",
                 opacity: 0.7,
@@ -415,7 +463,7 @@ export default function TerminalHeader({
               style={{
                 fontSize: 9,
                 fontVariantNumeric: "tabular-nums",
-                lineHeight: 1,
+                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 color: "var(--ezy-text-muted)",
                 opacity: 0.6,
@@ -424,18 +472,19 @@ export default function TerminalHeader({
               C:{contextInfo.compactCount}
             </span>
           )}
-          {/* Gemini: summary */}
+          {/* Gemini: summary — flexible width, truncates only when pane is narrow */}
           {contextInfo.summary && (
             <span
               title={contextInfo.summary}
               style={{
                 fontSize: 9,
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1,
+                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
-                maxWidth: 120,
+                minWidth: 0,
+                flexShrink: 1,
                 opacity: 0.6,
               }}
             >
@@ -449,7 +498,7 @@ export default function TerminalHeader({
               style={{
                 fontSize: 9,
                 fontVariantNumeric: "tabular-nums",
-                lineHeight: 1,
+                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 color: "var(--ezy-text-muted)",
                 opacity: 0.6,
@@ -473,7 +522,7 @@ export default function TerminalHeader({
                 style={{
                   fontSize: 9,
                   fontVariantNumeric: "tabular-nums",
-                  lineHeight: 1,
+                  lineHeight: 1.2,
                   whiteSpace: "nowrap",
                   color: "var(--ezy-text-muted)",
                   opacity: 0.5,
@@ -497,7 +546,7 @@ export default function TerminalHeader({
                 style={{
                   fontSize: 9,
                   fontVariantNumeric: "tabular-nums",
-                  lineHeight: 1,
+                  lineHeight: 1.2,
                   whiteSpace: "nowrap",
                   color: left <= 20 ? "var(--ezy-red)" : "var(--ezy-text-muted)",
                   opacity: left <= 20 ? 1 : 0.6,
@@ -515,7 +564,7 @@ export default function TerminalHeader({
                 style={{
                   fontSize: 9,
                   fontVariantNumeric: "tabular-nums",
-                  lineHeight: 1,
+                  lineHeight: 1.2,
                   whiteSpace: "nowrap",
                   color: left <= 20 ? "var(--ezy-red)" : "var(--ezy-text-muted)",
                   opacity: left <= 20 ? 1 : 0.6,
@@ -525,49 +574,55 @@ export default function TerminalHeader({
               </span>
             );
           })()}
-          {/* Context bar + percentage */}
+          {/* Context bar + percentage — tooltip only on this section */}
           <div
-            style={{
-              width: 44,
-              height: 4,
-              borderRadius: 2,
-              backgroundColor: "var(--ezy-border)",
-              overflow: "hidden",
-              flexShrink: 0,
-            }}
+            className="flex items-center gap-2"
+            title={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%`}
+            style={{ flexShrink: 0 }}
           >
             <div
               style={{
-                width: `${contextPercent}%`,
-                height: "100%",
+                width: 44,
+                height: 4,
                 borderRadius: 2,
-                backgroundColor:
+                backgroundColor: "var(--ezy-border)",
+                overflow: "hidden",
+                flexShrink: 0,
+              }}
+            >
+              <div
+                style={{
+                  width: `${contextPercent}%`,
+                  height: "100%",
+                  borderRadius: 2,
+                  backgroundColor:
+                    contextPercent <= 15
+                      ? "var(--ezy-red)"
+                      : contextPercent <= 40
+                        ? "var(--ezy-text-muted)"
+                        : "var(--ezy-accent)",
+                  transition: "width 500ms ease, background-color 500ms ease",
+                }}
+              />
+            </div>
+            <span
+              style={{
+                fontSize: 10,
+                fontVariantNumeric: "tabular-nums",
+                color:
                   contextPercent <= 15
                     ? "var(--ezy-red)"
                     : contextPercent <= 40
                       ? "var(--ezy-text-muted)"
-                      : "var(--ezy-accent)",
-                transition: "width 500ms ease, background-color 500ms ease",
+                      : "var(--ezy-text-muted)",
+                lineHeight: 1.2,
+                minWidth: 36,
+                textAlign: "right",
               }}
-            />
+            >
+              {contextPercent.toFixed(2)}%
+            </span>
           </div>
-          <span
-            style={{
-              fontSize: 10,
-              fontVariantNumeric: "tabular-nums",
-              color:
-                contextPercent <= 15
-                  ? "var(--ezy-red)"
-                  : contextPercent <= 40
-                    ? "var(--ezy-text-muted)"
-                    : "var(--ezy-text-muted)",
-              lineHeight: 1,
-              minWidth: 36,
-              textAlign: "right",
-            }}
-          >
-            {contextPercent.toFixed(2)}%
-          </span>
 
         </div>
       )}

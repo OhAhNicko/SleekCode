@@ -986,18 +986,33 @@ async fn git_ahead_behind(directory: String) -> Result<GitAheadBehind, String> {
 
 #[tauri::command]
 async fn git_run_typecheck(directory: String) -> Result<String, String> {
-    let script = r#"npx tsc --noEmit 2>&1; echo "EXITCODE:$?""#;
+    let script = r#"
+if [ -f tsconfig.json ]; then
+  npx tsc --noEmit 2>&1; echo "EXITCODE:$?"
+elif [ -f Cargo.toml ]; then
+  cargo check --all-targets 2>&1; echo "EXITCODE:$?"
+elif ls *.csproj >/dev/null 2>&1 || ls *.sln >/dev/null 2>&1; then
+  dotnet build --no-restore 2>&1; echo "EXITCODE:$?"
+elif [ -f go.mod ]; then
+  go vet ./... 2>&1; echo "EXITCODE:$?"
+else
+  echo "EXITCODE:SKIP"
+fi
+"#;
     let output = run_bash_script(&directory, script)?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    // Parse exit code from last line
     if let Some(pos) = text.rfind("EXITCODE:") {
         let code_str = text[pos + 9..].trim();
-        let code: i32 = code_str.parse().unwrap_or(-1);
-        let errors = text[..pos].trim().to_string();
-        if code == 0 {
-            Ok(String::new()) // passed
+        if code_str == "SKIP" {
+            Ok("__SKIP__".to_string())
         } else {
-            Ok(errors) // failed but ran fine — return error output
+            let code: i32 = code_str.parse().unwrap_or(-1);
+            let errors = text[..pos].trim().to_string();
+            if code == 0 {
+                Ok(String::new())
+            } else {
+                Ok(errors)
+            }
         }
     } else {
         Err(format!("Typecheck failed unexpectedly: {}", text))
@@ -1014,6 +1029,68 @@ elif [ -f package.json ] && grep -q '"lint"' package.json 2>/dev/null; then
   [ -f pnpm-lock.yaml ] && PM="pnpm"
   [ -f yarn.lock ] && PM="yarn"
   $PM run lint 2>&1; echo "EXITCODE:$?"
+elif [ -f pyproject.toml ] || [ -f ruff.toml ] || [ -f .ruff.toml ]; then
+  if command -v ruff >/dev/null 2>&1; then
+    ruff check . 2>&1; echo "EXITCODE:$?"
+  elif command -v flake8 >/dev/null 2>&1; then
+    flake8 . 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif [ -f go.mod ]; then
+  if command -v golangci-lint >/dev/null 2>&1; then
+    golangci-lint run ./... 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif [ -f Cargo.toml ]; then
+  cargo clippy --all-targets --all-features 2>&1; echo "EXITCODE:$?"
+elif [ -f pom.xml ]; then
+  mvn checkstyle:check -q 2>&1; echo "EXITCODE:$?"
+elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then
+  if [ -x ./gradlew ]; then
+    ./gradlew check 2>&1; echo "EXITCODE:$?"
+  elif command -v gradle >/dev/null 2>&1; then
+    gradle check 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif ls *.csproj >/dev/null 2>&1 || ls *.sln >/dev/null 2>&1; then
+  dotnet format --verify-no-changes 2>&1; echo "EXITCODE:$?"
+elif [ -f Gemfile ]; then
+  if command -v rubocop >/dev/null 2>&1; then
+    rubocop 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif [ -f composer.json ]; then
+  if command -v phpstan >/dev/null 2>&1; then
+    phpstan analyse 2>&1; echo "EXITCODE:$?"
+  elif command -v phpcs >/dev/null 2>&1; then
+    phpcs . 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif [ -f pubspec.yaml ]; then
+  if command -v flutter >/dev/null 2>&1; then
+    flutter analyze 2>&1; echo "EXITCODE:$?"
+  elif command -v dart >/dev/null 2>&1; then
+    dart analyze 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif [ -f mix.exs ]; then
+  if mix help credo >/dev/null 2>&1; then
+    mix credo 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif [ -f Package.swift ]; then
+  if command -v swiftlint >/dev/null 2>&1; then
+    swiftlint lint 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
 else
   echo "EXITCODE:SKIP"
 fi
@@ -1048,6 +1125,54 @@ elif [ -f package.json ] && grep -q '"test"' package.json 2>/dev/null; then
   [ -f pnpm-lock.yaml ] && PM="pnpm"
   [ -f yarn.lock ] && PM="yarn"
   CI=true $PM run test 2>&1; echo "EXITCODE:$?"
+elif [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ]; then
+  if [ -d tests ] || [ -d test ] || grep -rq 'pytest' pyproject.toml 2>/dev/null || [ -f pytest.ini ] || [ -f conftest.py ]; then
+    python3 -m pytest -q 2>&1; echo "EXITCODE:$?"
+  else
+    python3 -m unittest discover 2>&1; echo "EXITCODE:$?"
+  fi
+elif [ -f go.mod ]; then
+  go test ./... 2>&1; echo "EXITCODE:$?"
+elif [ -f Cargo.toml ]; then
+  cargo test 2>&1; echo "EXITCODE:$?"
+elif [ -f pom.xml ]; then
+  mvn test -q 2>&1; echo "EXITCODE:$?"
+elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then
+  if [ -x ./gradlew ]; then
+    ./gradlew test 2>&1; echo "EXITCODE:$?"
+  elif command -v gradle >/dev/null 2>&1; then
+    gradle test 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif ls *.csproj >/dev/null 2>&1 || ls *.sln >/dev/null 2>&1; then
+  dotnet test 2>&1; echo "EXITCODE:$?"
+elif [ -f Gemfile ]; then
+  if [ -d spec ]; then
+    bundle exec rspec 2>&1; echo "EXITCODE:$?"
+  else
+    bundle exec rake test 2>&1; echo "EXITCODE:$?"
+  fi
+elif [ -f composer.json ]; then
+  if [ -x ./vendor/bin/phpunit ]; then
+    ./vendor/bin/phpunit 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif [ -f pubspec.yaml ]; then
+  if command -v flutter >/dev/null 2>&1 && grep -q 'flutter' pubspec.yaml 2>/dev/null; then
+    flutter test 2>&1; echo "EXITCODE:$?"
+  elif command -v dart >/dev/null 2>&1; then
+    dart test 2>&1; echo "EXITCODE:$?"
+  else
+    echo "EXITCODE:SKIP"
+  fi
+elif [ -f mix.exs ]; then
+  mix test 2>&1; echo "EXITCODE:$?"
+elif [ -f Package.swift ]; then
+  swift test 2>&1; echo "EXITCODE:$?"
+elif [ -f build.zig ]; then
+  zig build test 2>&1; echo "EXITCODE:$?"
 else
   echo "EXITCODE:SKIP"
 fi
@@ -1750,6 +1875,7 @@ async fn read_session_context_windows(
             let mut sl_cost: Option<f64> = None;
             let mut sl_duration: Option<u64> = None;
             let mut sl_version: Option<String> = None;
+            let mut sl_session_id: Option<String> = None;
             if let Ok(content) = std::fs::read_to_string(&sl_path) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
                     sl_window = v.pointer("/context_window/context_window_size").and_then(|v| v.as_u64());
@@ -1758,19 +1884,23 @@ async fn read_session_context_windows(
                     sl_cost = v.pointer("/cost/total_cost_usd").and_then(|v| v.as_f64());
                     sl_duration = v.pointer("/cost/total_duration_ms").and_then(|v| v.as_u64());
                     sl_version = v.pointer("/version").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    sl_session_id = v.pointer("/session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    // Cache per-session cost from statusline
+                    if let (Some(ref sid), Some(cost)) = (&sl_session_id, sl_cost) {
+                        let cache_path = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", sid));
+                        let dur_str = sl_duration.map(|d| d.to_string()).unwrap_or_default();
+                        let _ = std::fs::write(&cache_path, format!("{:.6}|{}", cost, dur_str));
+                    }
                 }
             }
 
-            let sl_suffix = format!("|{}|{}|{}|{}",
-                sl_used_pct.map(|v| v.to_string()).unwrap_or_default(),
-                sl_cost.map(|v| format!("{:.6}", v)).unwrap_or_default(),
-                sl_duration.map(|v| v.to_string()).unwrap_or_default(),
-                sl_version.as_deref().unwrap_or(""),
-            );
+            let used_pct_str = sl_used_pct.map(|v| v.to_string()).unwrap_or_default();
+            let ver_str = sl_version.unwrap_or_default();
 
             if is_latest {
+                // 0|window|model|used_pct|||version||||
                 if let Some(w) = sl_window {
-                    return Ok(format!("0|{}|{}{}||", w, sl_model.as_deref().unwrap_or(""), sl_suffix));
+                    return Ok(format!("0|{}|{}|{}|||{}||||", w, sl_model.as_deref().unwrap_or(""), used_pct_str, ver_str));
                 }
                 return Ok(String::new());
             }
@@ -1825,16 +1955,63 @@ async fn read_session_context_windows(
             // Count context compactions
             let compact_count = content.lines().filter(|l| l.contains("compact_boundary")).count();
 
+            // Per-session cost: use statusline if session matches, else cached
+            let (sess_cost, sess_duration): (Option<f64>, Option<u64>) =
+                if sl_session_id.as_deref() == Some(&session_id) {
+                    (sl_cost, sl_duration)
+                } else {
+                    let cache_path = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", session_id));
+                    if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+                        let parts: Vec<&str> = cached.trim().split('|').collect();
+                        let c = parts.first().and_then(|s| s.parse::<f64>().ok());
+                        let d = parts.get(1).and_then(|s| s.parse::<u64>().ok());
+                        (c, d)
+                    } else {
+                        (None, None)
+                    }
+                };
+
+            // Project cost: sum all cached session costs in the project directory
+            let proj_cost: Option<f64> = {
+                let proj_dir = f.parent();
+                if let Some(dir) = proj_dir {
+                    let mut total_cost: f64 = 0.0;
+                    let mut found_any = false;
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.extension().map_or(true, |ext| ext != "jsonl") { continue; }
+                            let sid = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                            let sc = if sl_session_id.as_deref() == Some(&sid) {
+                                sl_cost
+                            } else {
+                                let cp = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", sid));
+                                std::fs::read_to_string(&cp).ok()
+                                    .and_then(|c| c.trim().split('|').next().and_then(|s| s.parse::<f64>().ok()))
+                            };
+                            if let Some(c) = sc { total_cost += c; found_any = true; }
+                        }
+                    }
+                    if found_any { Some(total_cost) } else { None }
+                } else { None }
+            };
+
+            let cost_str = sess_cost.map(|c| format!("{:.6}", c)).unwrap_or_default();
+            let dur_str = sess_duration.map(|d| d.to_string()).unwrap_or_default();
+            let proj_str = proj_cost.map(|c| format!("{:.6}", c)).unwrap_or_default();
+
             if total == 0 {
                 if let Some(w) = sl_window {
-                    return Ok(format!("0|{}|{}{}|||{}", w, sl_model.as_deref().unwrap_or(""), sl_suffix, compact_count));
+                    // 0|window|model|used_pct|cost|dur|version|||compact|proj
+                    return Ok(format!("0|{}|{}|{}|{}|{}|{}|||{}|{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, cost_str, dur_str, ver_str, compact_count, proj_str));
                 }
                 return Ok(String::new());
             }
 
             let window = sl_window.unwrap_or(200000);
             let model_str = sl_model.unwrap_or_default();
-            Ok(format!("{}|{}|{}{}|{}|{}|{}", total, window, model_str, sl_suffix, service_tier, speed, compact_count))
+            // total|window|model|used_pct|cost|dur|version|tier|speed|compact|proj
+            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", total, window, model_str, used_pct_str, cost_str, dur_str, ver_str, service_tier, speed, compact_count, proj_str))
         },
         "codex" => {
             let sessions_dir = std::path::Path::new(&home).join(".codex").join("sessions");
@@ -1931,7 +2108,46 @@ async fn read_session_context_windows(
                 None => return Ok(String::new()),
             };
 
-            Ok(format!("{}|{}|{}|||{}|{}", used_val, window_val, model, effort, collab_mode))
+            // Rate limits: account-level — search all sessions (newest first)
+            let mut rl5h: Option<f64> = None;
+            let mut rlweek: Option<f64> = None;
+            {
+                // Collect all session files sorted by mtime (newest first)
+                let mut all_files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+                fn walk_rl(dir: &std::path::Path, files: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.is_dir() { walk_rl(&path, files); }
+                            else if path.extension().map_or(false, |ext| ext == "jsonl") {
+                                if let Ok(m) = entry.metadata() {
+                                    if let Ok(t) = m.modified() { files.push((path, t)); }
+                                }
+                            }
+                        }
+                    }
+                }
+                walk_rl(&sessions_dir, &mut all_files);
+                all_files.sort_by(|a, b| b.1.cmp(&a.1));
+                for (rf, _) in all_files.iter().take(15) {
+                    if let Ok(rc) = std::fs::read_to_string(rf) {
+                        for line in rc.lines().rev() {
+                            if !line.contains("\"rate_limits\"") || line.contains("\"rate_limits\":null") { continue; }
+                            if !line.contains("\"used_percent\"") { continue; }
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                                rl5h = v.pointer("/payload/rate_limits/primary/used_percent").and_then(|v| v.as_f64());
+                                rlweek = v.pointer("/payload/rate_limits/secondary/used_percent").and_then(|v| v.as_f64());
+                                break;
+                            }
+                        }
+                    }
+                    if rl5h.is_some() { break; }
+                }
+            }
+            let rl5h_str = rl5h.map(|v| format!("{:.2}", v)).unwrap_or_default();
+            let rlweek_str = rlweek.map(|v| format!("{:.2}", v)).unwrap_or_default();
+
+            Ok(format!("{}|{}|{}|{}|{}|{}|{}", used_val, window_val, model, rl5h_str, rlweek_str, effort, collab_mode))
         },
         "gemini" => {
             let tmp_dir = std::path::Path::new(&home).join(".gemini").join("tmp");
@@ -2157,6 +2373,7 @@ sl_used_pct=""
 sl_cost=""
 sl_duration=""
 sl_version=""
+sl_session_id=""
 if [ -f "$SL" ]; then
   sl_window=$(jq -r '.context_window.context_window_size // empty' "$SL" 2>/dev/null)
   sl_model=$(jq -r '.model.display_name // empty' "$SL" 2>/dev/null)
@@ -2164,15 +2381,19 @@ if [ -f "$SL" ]; then
   sl_cost=$(jq -r '.cost.total_cost_usd // empty' "$SL" 2>/dev/null)
   sl_duration=$(jq -r '.cost.total_duration_ms // empty' "$SL" 2>/dev/null)
   sl_version=$(jq -r '.version // empty' "$SL" 2>/dev/null)
+  sl_session_id=$(jq -r '.session_id // empty' "$SL" 2>/dev/null)
+  # Cache per-session cost from statusline
+  if [ -n "$sl_session_id" ] && [ -n "$sl_cost" ]; then
+    echo "$sl_cost|$sl_duration" > "/tmp/ezydev-claude-cost-$sl_session_id.txt"
+  fi
 fi
 
 # Read precise token counts from JSONL session file
 SID='{session_id}'
 if [ "$SID" = "__latest__" ]; then
-  # No specific session (new pane) — show 0 used with statusline model/window.
-  # Never read token data cross-session — context % is session-specific.
+  # No specific session (new pane) — no per-session cost yet.
   if [ -n "$sl_window" ]; then
-    echo "0|$sl_window|$sl_model|$sl_used_pct|$sl_cost|$sl_duration|$sl_version||"
+    echo "0|$sl_window|$sl_model|$sl_used_pct|||$sl_version||||"
   fi
   exit 0
 else
@@ -2187,26 +2408,50 @@ else
   fi
 fi
 [ -z "$f" ] && exit 0
+
+# Per-session cost: use statusline if session matches, else cached
+sess_cost=""
+sess_duration=""
+if [ -n "$sl_session_id" ] && [ "$sl_session_id" = "$SID" ]; then
+  sess_cost="$sl_cost"
+  sess_duration="$sl_duration"
+elif [ -f "/tmp/ezydev-claude-cost-$SID.txt" ]; then
+  IFS='|' read sess_cost sess_duration < "/tmp/ezydev-claude-cost-$SID.txt"
+fi
+
+# Project cost: sum all cached session costs in the project directory
+proj_cost=""
+proj_dir=$(dirname "$f")
+if [ -d "$proj_dir" ]; then
+  proj_cost=0
+  for sf in "$proj_dir"/*.jsonl; do
+    [ ! -f "$sf" ] && continue
+    sid=$(basename "$sf" .jsonl)
+    sc=""
+    if [ -n "$sl_session_id" ] && [ "$sid" = "$sl_session_id" ] && [ -n "$sl_cost" ]; then
+      sc="$sl_cost"
+    elif [ -f "/tmp/ezydev-claude-cost-$sid.txt" ]; then
+      sc=$(cut -d'|' -f1 "/tmp/ezydev-claude-cost-$sid.txt")
+    fi
+    [ -n "$sc" ] && proj_cost=$(awk "BEGIN{{printf \"%.6f\", $proj_cost + $sc}}")
+  done
+fi
+
 line=$(tac "$f" 2>/dev/null | grep '"message"' | grep '"usage"' | head -1)
 if [ -z "$line" ]; then
-  # No token data in current session — show 0 used (100% remaining).
-  # Never read token data cross-session — context % is session-specific.
   if [ -n "$sl_window" ]; then
-    echo "0|$sl_window|$sl_model|$sl_used_pct|$sl_cost|$sl_duration|$sl_version||"
+    echo "0|$sl_window|$sl_model|$sl_used_pct|$sess_cost|$sess_duration|$sl_version|||0|$proj_cost"
   fi
   exit 0
 fi
 total=$(echo "$line" | jq '((.message.usage.input_tokens // 0) + (.message.usage.cache_creation_input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0) + (.message.usage.output_tokens // 0))' 2>/dev/null)
 [ -z "$total" ] || [ "$total" = "null" ] || [ "$total" = "0" ] && exit 0
-# Extract service_tier and speed from the same usage line
 service_tier=$(echo "$line" | jq -r '.message.usage.service_tier // empty' 2>/dev/null)
 speed=$(echo "$line" | jq -r '.message.usage.speed // empty' 2>/dev/null)
-# Use statusline window/model if available, otherwise fallback
 window="${{sl_window:-200000}}"
 model="${{sl_model:-$(echo "$line" | jq -r '.message.model // empty' 2>/dev/null)}}"
-# Count context compactions in the session
 compact_count=$(grep -c 'compact_boundary' "$f" 2>/dev/null || echo 0)
-echo "$total|$window|$model|$sl_used_pct|$sl_cost|$sl_duration|$sl_version|$service_tier|$speed|$compact_count"
+echo "$total|$window|$model|$sl_used_pct|$sess_cost|$sess_duration|$sl_version|$service_tier|$speed|$compact_count|$proj_cost"
 "#,
             session_id = session_id
         ),
@@ -2273,14 +2518,12 @@ fi
 [ -z "$used" ] && used=0
 [ -z "$window" ] && exit 0
 
-# Rate limits: account-level, search current then all recent sessions.
-rl_line=$(tac "$f" 2>/dev/null | grep '"rate_limits"' | grep -v '"rate_limits":null' | grep -m1 '"used_percent"')
-if [ -z "$rl_line" ]; then
-  for rf in $(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -10); do
-    rl_line=$(grep '"rate_limits"' "$rf" 2>/dev/null | grep -v '"rate_limits":null' | tail -1)
-    [ -n "$rl_line" ] && break
-  done
-fi
+# Rate limits: account-level — always search all sessions (newest file first)
+rl_line=""
+for rf in $(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -15); do
+  rl_line=$(tac "$rf" 2>/dev/null | grep '"rate_limits"' | grep -v '"rate_limits":null' | grep -m1 '"used_percent"')
+  [ -n "$rl_line" ] && break
+done
 rl5h=""
 rlweek=""
 if [ -n "$rl_line" ]; then

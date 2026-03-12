@@ -1,6 +1,6 @@
 import { useCallback, useEffect } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import type { PaneLayout } from "../types";
+import type { PaneLayout, GameType } from "../types";
 import {
   removePane,
   generatePaneId,
@@ -13,6 +13,9 @@ import KanbanBoard from "./KanbanBoard";
 import CodeReviewPane from "./CodeReviewPane";
 import FileViewerPane from "./FileViewerPane";
 import GamePane from "./GamePane";
+
+// Remember last active game so toggling off/on resumes it
+let lastActiveGame: GameType | undefined;
 
 interface PaneGridProps {
   layout: PaneLayout;
@@ -98,24 +101,28 @@ export default function PaneGrid({
   }, [layout, onLayoutChange]);
 
   // Toggle game pane (open on right / close if already open)
+  // When closing, remember the active game; when reopening, resume it
   useEffect(() => {
     const handler = () => {
-      const findGameId = (node: PaneLayout): string | null => {
-        if (node.type === "game") return node.id;
+      const findGameNode = (node: PaneLayout): { id: string; game?: GameType } | null => {
+        if (node.type === "game") return { id: node.id, game: node.game };
         if (node.type === "split") {
-          return findGameId(node.children[0]) ?? findGameId(node.children[1]);
+          return findGameNode(node.children[0]) ?? findGameNode(node.children[1]);
         }
         return null;
       };
-      const existingId = findGameId(layout);
-      if (existingId) {
-        const newLayout = removePane(layout, existingId);
+      const existing = findGameNode(layout);
+      if (existing) {
+        // Save the current game selection before closing
+        if (existing.game) lastActiveGame = existing.game;
+        const newLayout = removePane(layout, existing.id);
         if (newLayout) onLayoutChange(newLayout);
         return;
       }
       const gamePane = {
         type: "game" as const,
         id: generatePaneId(),
+        game: lastActiveGame, // resume previous game if any
       };
       const newLayout: PaneLayout = {
         type: "split",
@@ -126,8 +133,20 @@ export default function PaneGrid({
       };
       onLayoutChange(newLayout);
     };
+
+    // Listen for game-active broadcast from GamePane to track current game
+    const gameActiveHandler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.game) lastActiveGame = detail.game as GameType;
+      else lastActiveGame = undefined;
+    };
+
     window.addEventListener("ezydev:open-game", handler);
-    return () => window.removeEventListener("ezydev:open-game", handler);
+    window.addEventListener("ezydev:game-active", gameActiveHandler);
+    return () => {
+      window.removeEventListener("ezydev:open-game", handler);
+      window.removeEventListener("ezydev:game-active", gameActiveHandler);
+    };
   }, [layout, onLayoutChange]);
 
   // Listen for file viewer open events

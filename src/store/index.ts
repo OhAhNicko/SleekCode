@@ -73,6 +73,8 @@ export const useAppStore = create<AppStore>()(
         projectColors: state.projectColors,
         vibrantColors: state.vibrantColors,
         highscores: state.highscores,
+        timedHighscores: state.timedHighscores,
+        gameStats: state.gameStats,
         completedCrosswordIds: state.completedCrosswordIds,
         customCrosswords: state.customCrosswords,
       }),

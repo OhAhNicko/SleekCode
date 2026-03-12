@@ -1094,6 +1094,7 @@ export default function TerminalPane({
           serverName={serverName}
           isYolo={launchedWithYolo}
           contextInfo={contextInfo}
+          workingDir={workingDir}
         />
       )}
       <div className="flex-1 min-h-0 relative" style={{ backgroundColor: "var(--ezy-bg)" }}>

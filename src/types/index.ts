@@ -1,5 +1,5 @@
 export type TerminalType = "claude" | "codex" | "gemini" | "shell" | "devserver";
-export type GameType = "snake" | "2048" | "sudoku" | "crossword";
+export type GameType = "snake" | "2048" | "sudoku" | "crossword" | "minesweeper" | "wordle" | "ticTacToe" | "blockBreaker" | "solitaire" | "pong";
 export type TerminalBackend = "wsl" | "windows";
 
 export type AuthMethod = "ssh-key" | "password";

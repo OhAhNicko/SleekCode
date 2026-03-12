@@ -29,6 +29,8 @@ export interface ContextInfo {
   speed: string | null;
   /** Claude context compaction count, null if unavailable */
   compactCount: number | null;
+  /** Claude project-wide total cost in USD, null if unavailable */
+  projectCostUsd: number | null;
   /** Gemini session summary, null if unavailable */
   summary: string | null;
   /** Gemini last-message thinking tokens, null if unavailable */
@@ -41,7 +43,7 @@ export interface ContextInfo {
  * Read context info from CLI session data.
  *
  * Backend returns pipe-delimited fields:
- * - Claude:  "USED|WINDOW|MODEL|SL_USED_PCT|COST_USD|DURATION_MS|VERSION|SERVICE_TIER|SPEED|COMPACT_COUNT"
+ * - Claude:  "USED|WINDOW|MODEL|SL_USED_PCT|COST_USD|DURATION_MS|VERSION|SERVICE_TIER|SPEED|COMPACT_COUNT|PROJECT_COST"
  * - Codex:   "USED|WINDOW|MODEL|RL_5H|RL_WEEKLY|EFFORT|COLLAB_MODE"
  * - Gemini:  "USED|WINDOW|MODEL|RPD_USED|SUMMARY|THOUGHTS|RESET_TIME"
  */
@@ -91,13 +93,14 @@ export async function readSessionContext(
     let cliVersion: string | null = null;
     let speed: string | null = null;
     let compactCount: number | null = null;
+    let projectCostUsd: number | null = null;
     let summary: string | null = null;
     let thinkingTokens: number | null = null;
     let quotaResetTime: string | null = null;
 
     if (terminalType === "claude") {
-      // Claude: |SL_USED_PCT|COST_USD|DURATION_MS|VERSION|SERVICE_TIER|SPEED|COMPACT_COUNT
-      // (field 3 = sl_used_pct, skipped — global singleton, not per-session)
+      // Claude: |SL_USED_PCT|COST_USD|DURATION_MS|VERSION|SERVICE_TIER|SPEED|COMPACT_COUNT|PROJECT_COST
+      // field 3 = sl_used_pct (skipped), field 4-5 = per-session cost/duration, field 10 = project total
       const cost = parts[4] ? parseFloat(parts[4]) : null;
       costUsd = cost !== null && !isNaN(cost) ? cost : null;
       const dur = parts[5] ? parseInt(parts[5], 10) : null;
@@ -106,6 +109,8 @@ export async function readSessionContext(
       speed = parts[8] || null;
       const cc = parts[9] ? parseInt(parts[9], 10) : null;
       compactCount = cc !== null && !isNaN(cc) ? cc : null;
+      const pc = parts[10] ? parseFloat(parts[10]) : null;
+      projectCostUsd = pc !== null && !isNaN(pc) ? pc : null;
     } else if (terminalType === "codex") {
       // Codex: |RL_5H|RL_WEEKLY|EFFORT|COLLAB_MODE
       const rl5h = parts[3] ? parseFloat(parts[3]) : null;
@@ -138,6 +143,7 @@ export async function readSessionContext(
       cliVersion,
       speed,
       compactCount,
+      projectCostUsd,
       summary,
       thinkingTokens,
       quotaResetTime,

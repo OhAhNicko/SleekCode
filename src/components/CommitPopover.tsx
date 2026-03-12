@@ -11,6 +11,7 @@ interface CommitPopoverProps {
   diffText: string;
   onClose: () => void;
   onCommitSuccess: () => void;
+  onCommitAndPush: () => void;
 }
 
 type CheckStatus = "idle" | "running" | "passed" | "failed" | "skipped";
@@ -126,69 +127,122 @@ function CheckRow({
   );
 }
 
-/** Generate a conventional commit message from file statuses */
+/** Generate a conventional commit message from file statuses.
+ *  Groups files by logical area, produces subject + bullet body for larger commits. */
 function generateCommitMessage(files: GitFileStatus[]): string {
   if (files.length === 0) return "";
 
-  const stripExt = (p: string) => (p.split("/").pop() || p).replace(/\.[^.]+$/, "");
-  const getDir = (p: string) => {
-    const parts = p.split("/");
-    // Return meaningful directory: "src/components" → "components", "src-tauri/src" → "backend"
-    if (parts.length <= 1) return "";
-    const dir = parts[parts.length - 2];
-    if (dir === "src" && parts.length > 2) return parts[parts.length - 3] === "src-tauri" ? "backend" : "";
-    return dir;
+  const baseName = (p: string) => (p.split("/").pop() || p).replace(/\.[^.]+$/, "");
+  const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  const trunc = (names: string[], max: number) =>
+    names.length <= max ? names.join(", ") : `${names.slice(0, max).join(", ")} +${names.length - max} more`;
+
+  // Classify file into a logical area based on directory structure
+  const areaOf = (path: string): string => {
+    const parts = path.split("/");
+    if (parts.length === 1) return "root";
+    if (parts[0].startsWith("src-")) return parts[0].replace("src-", "");
+    if (parts[0] === "src" && parts.length >= 3) return parts[1];
+    if (parts[0] === "src") return "app";
+    return parts[0];
   };
 
-  const added: string[] = [];
-  const modified: string[] = [];
-  const deleted: string[] = [];
-  const dirs = new Set<string>();
-
+  // Group files by area
+  type Group = { added: string[]; modified: string[]; deleted: string[] };
+  const areas = new Map<string, Group>();
   for (const f of files) {
-    const name = stripExt(f.path);
-    const dir = getDir(f.path);
-    if (dir) dirs.add(dir);
-    if (f.status === "A" || f.status === "??") added.push(name);
-    else if (f.status === "D") deleted.push(name);
-    else modified.push(name);
+    const area = areaOf(f.path);
+    if (!areas.has(area)) areas.set(area, { added: [], modified: [], deleted: [] });
+    const g = areas.get(area)!;
+    const name = baseName(f.path);
+    if (f.status === "A" || f.status === "??") g.added.push(name);
+    else if (f.status === "D") g.deleted.push(name);
+    else g.modified.push(name);
   }
 
-  // Determine prefix
+  // Totals for prefix selection
+  let totalAdded = 0, totalModified = 0, totalDeleted = 0;
+  for (const g of areas.values()) {
+    totalAdded += g.added.length;
+    totalModified += g.modified.length;
+    totalDeleted += g.deleted.length;
+  }
+
+  // Conventional commit prefix
   let prefix: string;
-  if (deleted.length > 0 && added.length === 0 && modified.length === 0) {
-    prefix = "chore";
-  } else if (added.length > modified.length) {
-    prefix = "feat";
-  } else {
-    // Check if all changes are config/build files
-    const configFiles = ["package", "tsconfig", "vite.config", "tailwind.config", "Cargo", ".gitignore"];
-    const allConfig = files.every((f) => configFiles.some((c) => f.path.includes(c)));
-    prefix = allConfig ? "chore" : "chore";
+  if (totalDeleted > 0 && totalAdded === 0 && totalModified === 0) prefix = "chore";
+  else if (totalAdded > 0) prefix = "feat";
+  else prefix = "chore";
+
+  // Scope: if all files share one area, use it
+  const scope = areas.size === 1 ? areas.keys().next().value : "";
+  const head = scope ? `${prefix}(${scope})` : prefix;
+
+  // Small commits (1-2 files): single-line message
+  if (files.length <= 2) {
+    const names = files.map((f) => baseName(f.path));
+    const verb = totalAdded > 0 && totalModified === 0 ? "add"
+      : totalDeleted > 0 && totalAdded === 0 ? "remove" : "update";
+    return `${head}: ${verb} ${names.join(", ")}`;
   }
 
-  // Scope from common directory
-  const scope = dirs.size === 1 ? dirs.values().next().value : "";
+  // Medium commits (3-5 files, single area): single line with names
+  if (files.length <= 5 && areas.size === 1) {
+    const [, g] = [...areas.entries()][0];
+    const allNames = [...g.added, ...g.modified, ...g.deleted];
+    return `${head}: ${trunc(allNames, 4)}`;
+  }
 
-  // Build description
-  const parts: string[] = [];
-  const listNames = (verb: string, names: string[], max = 3) => {
-    if (names.length === 0) return;
-    if (names.length === 1) {
-      parts.push(`${verb} ${names[0]}`);
-    } else if (names.length <= max) {
-      parts.push(`${verb} ${names.join(", ")}`);
-    } else {
-      parts.push(`${verb} ${names.slice(0, max).join(", ")}, and ${names.length - max} more`);
+  // Larger commits: subject line + bullet body
+  // Sort areas: new-file areas first, then by total count desc
+  const sorted = [...areas.entries()].sort((a, b) => {
+    if (a[1].added.length !== b[1].added.length) return b[1].added.length - a[1].added.length;
+    const aT = a[1].added.length + a[1].modified.length + a[1].deleted.length;
+    const bT = b[1].added.length + b[1].modified.length + b[1].deleted.length;
+    return bT - aT;
+  });
+
+  const bullets: string[] = [];
+  const subjectNames: string[] = [];
+
+  for (const [area, g] of sorted) {
+    const segs: string[] = [];
+    if (g.added.length > 0) {
+      segs.push(trunc(g.added, 3) + " (new)");
+      subjectNames.push(...g.added.slice(0, 2));
     }
-  };
+    if (g.modified.length > 0) {
+      segs.push(trunc(g.modified, 3));
+      if (g.added.length === 0) subjectNames.push(...g.modified.slice(0, 2));
+    }
+    if (g.deleted.length > 0) {
+      segs.push(trunc(g.deleted, 2) + " (removed)");
+      if (g.added.length === 0 && g.modified.length === 0) subjectNames.push(...g.deleted.slice(0, 2));
+    }
+    if (segs.length > 0) {
+      bullets.push(`- ${cap(area)}: ${segs.join(", ")}`);
+    }
+  }
 
-  listNames("update", modified);
-  listNames("add", added);
-  listNames("remove", deleted);
+  // Cap bullets at 5
+  if (bullets.length > 5) {
+    const extra = bullets.length - 4;
+    bullets.length = 4;
+    bullets.push(`- +${extra} more area${extra > 1 ? "s" : ""}`);
+  }
 
-  const desc = parts.join("; ");
-  return scope ? `${prefix}(${scope}): ${desc}` : `${prefix}: ${desc}`;
+  // Build subject from key names, fit within 72 chars
+  let subject = `${files.length} files`;
+  for (let n = Math.min(subjectNames.length, 4); n >= 1; n--) {
+    const names = subjectNames.slice(0, n).join(", ");
+    const suffix = files.length > n ? ` +${files.length - n} more` : "";
+    if (`${prefix}: ${names}${suffix}`.length <= 72) {
+      subject = `${names}${suffix}`;
+      break;
+    }
+  }
+
+  return `${prefix}: ${subject}\n\n${bullets.join("\n")}`;
 }
 
 export default function CommitPopover({
@@ -197,6 +251,7 @@ export default function CommitPopover({
   diffText,
   onClose,
   onCommitSuccess,
+  onCommitAndPush,
 }: CommitPopoverProps) {
   const commitMsgMode = useAppStore((s) => s.commitMsgMode ?? "simple");
   const [message, setMessage] = useState(() =>
@@ -344,7 +399,7 @@ export default function CommitPopover({
   const anyCheckFailed = typecheckState.status === "failed" || lintState.status === "failed" || testState.status === "failed";
   const anyCheckRunning = typecheckState.status === "running" || lintState.status === "running" || testState.status === "running";
 
-  const handleCommit = useCallback(async () => {
+  const handleCommit = useCallback(async (withPush = false) => {
     if (!message.trim() || selectedFiles.size === 0) return;
 
     // If any check failed and user hasn't confirmed bypass
@@ -374,13 +429,17 @@ export default function CommitPopover({
         directory: workingDir,
         message: message.trim(),
       });
-      onCommitSuccess();
+      if (withPush) {
+        onCommitAndPush();
+      } else {
+        onCommitSuccess();
+      }
     } catch (err) {
       setCommitError(String(err));
     } finally {
       setCommitting(false);
     }
-  }, [message, selectedFiles, anyCheckFailed, confirmBypass, workingDir, onCommitSuccess, gitFiles]);
+  }, [message, selectedFiles, anyCheckFailed, confirmBypass, workingDir, onCommitSuccess, onCommitAndPush, gitFiles]);
 
   const allSelected = selectedFiles.size === gitFiles.length;
   const canCommit = message.trim().length > 0 && selectedFiles.size > 0 && !committing && !anyCheckRunning;
@@ -456,7 +515,7 @@ export default function CommitPopover({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();
-                  handleCommit();
+                  handleCommit(e.shiftKey);
                 }
               }}
               placeholder="Commit message..."
@@ -715,7 +774,7 @@ export default function CommitPopover({
             {confirmBypass ? "Back" : "Cancel"}
           </button>
           <button
-            onClick={handleCommit}
+            onClick={() => handleCommit(false)}
             disabled={!canCommit}
             className="flex items-center gap-1 text-[11px] font-medium transition-opacity"
             style={{
@@ -723,7 +782,7 @@ export default function CommitPopover({
               color: "#fff",
               border: confirmBypass ? "1px solid #7f1d1d" : "none",
               borderRadius: 4,
-              padding: confirmBypass ? "5px 16px" : "4px 14px",
+              padding: confirmBypass ? "5px 16px" : "4px 12px",
               cursor: canCommit ? "pointer" : "default",
               opacity: canCommit ? 1 : 0.4,
             }}
@@ -747,6 +806,27 @@ export default function CommitPopover({
               "Commit"
             )}
           </button>
+          {!confirmBypass && (
+            <button
+              onClick={() => handleCommit(true)}
+              disabled={!canCommit}
+              className="flex items-center gap-1 text-[11px] font-medium transition-opacity"
+              style={{
+                backgroundColor: "var(--ezy-accent)",
+                color: "#fff",
+                border: "none",
+                borderRadius: 4,
+                padding: "4px 12px",
+                cursor: canCommit ? "pointer" : "default",
+                opacity: canCommit ? 1 : 0.4,
+              }}
+            >
+              Commit & Push
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none">
+                <path d="M8 12V4M5 6.5L8 3.5L11 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 

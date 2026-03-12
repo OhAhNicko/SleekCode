@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 interface SudokuGameProps {
   onAddHighscore: (score: number) => void;
+  paused?: boolean;
 }
 
 type Grid = (number | null)[][];
@@ -97,7 +98,7 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export default function SudokuGame({ onAddHighscore }: SudokuGameProps) {
+export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGameProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [difficulty, setDifficulty] = useState<Difficulty | null>(null);
   const [_puzzle, setPuzzle] = useState<Grid | null>(null);
@@ -139,14 +140,14 @@ export default function SudokuGame({ onAddHighscore }: SudokuGameProps) {
     setIsComplete(false);
   }, []);
 
-  // Timer
+  // Timer — stops when paused
   useEffect(() => {
-    if (grid && !isComplete) {
+    if (grid && !isComplete && !paused) {
       timerRef.current = setInterval(() => setTimer((t) => t + 1), 1000);
       return () => clearInterval(timerRef.current);
     }
     return () => clearInterval(timerRef.current);
-  }, [grid, isComplete]);
+  }, [grid, isComplete, paused]);
 
   // Check completion
   const checkComplete = useCallback((g: Grid) => {
@@ -169,7 +170,7 @@ export default function SudokuGame({ onAddHighscore }: SudokuGameProps) {
   }, [fixed, isComplete]);
 
   const handleNumber = useCallback((num: number | null) => {
-    if (!grid || !selected || isComplete) return;
+    if (!grid || !selected || isComplete || paused) return;
     const [r, c] = selected;
     if (fixed.has(`${r},${c}`)) return;
 
@@ -191,7 +192,7 @@ export default function SudokuGame({ onAddHighscore }: SudokuGameProps) {
     const el = containerRef.current;
     if (!el) return;
     const handler = (e: KeyboardEvent) => {
-      if (!grid || !selected || isComplete) return;
+      if (!grid || !selected || isComplete || paused) return;
 
       if (e.key >= "1" && e.key <= "9") {
         e.preventDefault();
@@ -433,6 +434,22 @@ export default function SudokuGame({ onAddHighscore }: SudokuGameProps) {
             CLR
           </button>
         </div>
+
+        {/* Pause overlay */}
+        {paused && !isComplete && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "rgba(0,0,0,0.6)",
+            }}
+          >
+            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
+          </div>
+        )}
 
         {/* Completion overlay */}
         {isComplete && (

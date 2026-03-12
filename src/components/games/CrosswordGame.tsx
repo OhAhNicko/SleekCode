@@ -7,11 +7,12 @@ interface CrosswordGameProps {
   onComplete: (id: string) => void;
   allCompleted: boolean;
   onGenerateNew: (puzzle: CrosswordPuzzle) => void;
+  paused?: boolean;
 }
 
 type Direction = "across" | "down";
 
-export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGenerateNew }: CrosswordGameProps) {
+export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGenerateNew, paused = false }: CrosswordGameProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [userGrid, setUserGrid] = useState<string[][]>(() =>
     puzzle.grid.map((row) => row.map((cell) => (cell === "#" ? "#" : "")))
@@ -23,14 +24,12 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [containerWidth, setContainerWidth] = useState(300);
 
-  // Reset when puzzle changes
   useEffect(() => {
     setUserGrid(puzzle.grid.map((row) => row.map((cell) => (cell === "#" ? "#" : ""))));
     setSelectedCell(null);
     setCompleted(false);
   }, [puzzle.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Resize observer
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -44,7 +43,6 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
   const rows = puzzle.grid.length;
   const cols = puzzle.grid[0]?.length ?? 0;
 
-  // Build number labels map
   const numberMap = new Map<string, number>();
   const allClues = [...puzzle.clues.across, ...puzzle.clues.down];
   for (const clue of allClues) {
@@ -52,24 +50,17 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
     if (!numberMap.has(key)) numberMap.set(key, clue.number);
   }
 
-  // Get the active word cells
   const getWordCells = useCallback(
     (row: number, col: number, dir: Direction): [number, number][] => {
       const cells: [number, number][] = [];
       if (dir === "across") {
         let c = col;
         while (c > 0 && puzzle.grid[row][c - 1] !== "#") c--;
-        while (c < cols && puzzle.grid[row][c] !== "#") {
-          cells.push([row, c]);
-          c++;
-        }
+        while (c < cols && puzzle.grid[row][c] !== "#") { cells.push([row, c]); c++; }
       } else {
         let r = row;
         while (r > 0 && puzzle.grid[r - 1][col] !== "#") r--;
-        while (r < rows && puzzle.grid[r][col] !== "#") {
-          cells.push([r, col]);
-          r++;
-        }
+        while (r < rows && puzzle.grid[r][col] !== "#") { cells.push([r, col]); r++; }
       }
       return cells;
     },
@@ -80,7 +71,6 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
     ? new Set(getWordCells(selectedCell[0], selectedCell[1], direction).map(([r, c]) => `${r},${c}`))
     : new Set<string>();
 
-  // Find clue for the active word
   const getActiveClue = useCallback((): CrosswordClue | null => {
     if (!selectedCell) return null;
     const wordCells = getWordCells(selectedCell[0], selectedCell[1], direction);
@@ -94,7 +84,6 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
     (r: number, c: number) => {
       if (puzzle.grid[r][c] === "#" || completed) return;
       if (selectedCell && selectedCell[0] === r && selectedCell[1] === c) {
-        // Toggle direction on re-click
         setDirection((d) => (d === "across" ? "down" : "across"));
       } else {
         setSelectedCell([r, c]);
@@ -107,9 +96,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
     (grid: string[][]) => {
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-          if (puzzle.grid[r][c] !== "#" && grid[r][c].toUpperCase() !== puzzle.grid[r][c].toUpperCase()) {
-            return false;
-          }
+          if (puzzle.grid[r][c] !== "#" && grid[r][c].toUpperCase() !== puzzle.grid[r][c].toUpperCase()) return false;
         }
       }
       return true;
@@ -117,13 +104,12 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
     [puzzle.grid, rows, cols]
   );
 
-  // Key handler
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
     const handler = (e: KeyboardEvent) => {
-      if (completed || !selectedCell) return;
+      if (completed || paused || !selectedCell) return;
       const [r, c] = selectedCell;
 
       if (e.key.length === 1 && /[a-zA-Z]/.test(e.key)) {
@@ -132,12 +118,9 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
         newGrid[r][c] = e.key.toUpperCase();
         setUserGrid(newGrid);
 
-        // Advance to next cell in word
         const wordCells = getWordCells(r, c, direction);
         const idx = wordCells.findIndex(([wr, wc]) => wr === r && wc === c);
-        if (idx >= 0 && idx < wordCells.length - 1) {
-          setSelectedCell(wordCells[idx + 1]);
-        }
+        if (idx >= 0 && idx < wordCells.length - 1) setSelectedCell(wordCells[idx + 1]);
 
         if (checkCompletion(newGrid)) {
           setCompleted(true);
@@ -149,7 +132,6 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
         if (newGrid[r][c] !== "") {
           newGrid[r][c] = "";
         } else {
-          // Move back
           const wordCells = getWordCells(r, c, direction);
           const idx = wordCells.findIndex(([wr, wc]) => wr === r && wc === c);
           if (idx > 0) {
@@ -204,7 +186,8 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
     }
   }, [onGenerateNew]);
 
-  const cellSize = Math.max(24, Math.min(38, Math.floor((containerWidth - 32) / cols)));
+  // Grid fills the available width — subtract padding + border
+  const cellSize = Math.max(28, Math.min(52, Math.floor((containerWidth - 24) / cols)));
   const activeClue = getActiveClue();
 
   return (
@@ -221,7 +204,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
         overflow: "auto",
       }}
     >
-      {/* Active clue bar */}
+      {/* Active clue bar — single line */}
       <div
         style={{
           padding: "6px 12px",
@@ -233,29 +216,32 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
           display: "flex",
           alignItems: "center",
           fontStyle: activeClue ? "normal" : "italic",
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
         }}
       >
         {activeClue ? (
           <>
-            <span style={{ fontWeight: 600, color: "var(--ezy-accent)", marginRight: 6 }}>
+            <span style={{ fontWeight: 600, color: "var(--ezy-accent)", marginRight: 6, flexShrink: 0 }}>
               {activeClue.number}{direction === "across" ? "A" : "D"}
             </span>
-            {activeClue.clue}
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{activeClue.clue}</span>
           </>
         ) : (
           "Click a cell to begin"
         )}
       </div>
 
-      {/* Grid */}
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: 12, gap: 12 }}>
+      {/* Grid + Clues */}
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "12px 10px", gap: 10 }}>
         <div
           style={{
             display: "grid",
             gridTemplateColumns: `repeat(${cols}, ${cellSize}px)`,
             gridTemplateRows: `repeat(${rows}, ${cellSize}px)`,
             border: "2px solid var(--ezy-text-muted)",
-            borderRadius: 2,
+            borderRadius: 3,
           }}
         >
           {puzzle.grid.map((row, r) =>
@@ -311,7 +297,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
                         position: "absolute",
                         top: 1,
                         left: 2,
-                        fontSize: cellSize < 30 ? 7 : 9,
+                        fontSize: cellSize < 34 ? 8 : 10,
                         fontWeight: 600,
                         color: "var(--ezy-text-muted)",
                         lineHeight: 1,
@@ -322,11 +308,9 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
                   )}
                   <span
                     style={{
-                      fontSize: cellSize < 30 ? 12 : 16,
+                      fontSize: cellSize < 34 ? 14 : 18,
                       fontWeight: 600,
-                      color: completed && isCorrect
-                        ? "#4ade80"
-                        : "var(--ezy-text)",
+                      color: completed && isCorrect ? "#4ade80" : "var(--ezy-text)",
                       fontVariantNumeric: "tabular-nums",
                     }}
                   >
@@ -338,45 +322,58 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
           )}
         </div>
 
-        {/* Clues */}
-        <div style={{ display: "flex", gap: 16, fontSize: 11, color: "var(--ezy-text-secondary)", width: "100%", maxWidth: cols * cellSize + 4 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, color: "var(--ezy-text)", marginBottom: 4, fontSize: 12 }}>Across</div>
+        {/* Clues — across and down side by side, single-line per clue */}
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            fontSize: 11,
+            color: "var(--ezy-text-secondary)",
+            width: "100%",
+            maxWidth: cols * cellSize + 4,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, color: "var(--ezy-text)", marginBottom: 3, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>Across</div>
             {puzzle.clues.across.map((cl) => (
               <div
                 key={`a-${cl.number}`}
+                onClick={() => { setSelectedCell([cl.row, cl.col]); setDirection("across"); }}
                 style={{
-                  padding: "2px 0",
+                  padding: "1px 0",
                   cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
                   color: activeClue?.number === cl.number && direction === "across"
                     ? "var(--ezy-accent)"
                     : "var(--ezy-text-secondary)",
+                  lineHeight: 1.5,
                 }}
-                onClick={() => {
-                  setSelectedCell([cl.row, cl.col]);
-                  setDirection("across");
-                }}
+                title={`${cl.number}. ${cl.clue}`}
               >
                 <strong>{cl.number}.</strong> {cl.clue}
               </div>
             ))}
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, color: "var(--ezy-text)", marginBottom: 4, fontSize: 12 }}>Down</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, color: "var(--ezy-text)", marginBottom: 3, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>Down</div>
             {puzzle.clues.down.map((cl) => (
               <div
                 key={`d-${cl.number}`}
+                onClick={() => { setSelectedCell([cl.row, cl.col]); setDirection("down"); }}
                 style={{
-                  padding: "2px 0",
+                  padding: "1px 0",
                   cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
                   color: activeClue?.number === cl.number && direction === "down"
                     ? "var(--ezy-accent)"
                     : "var(--ezy-text-secondary)",
+                  lineHeight: 1.5,
                 }}
-                onClick={() => {
-                  setSelectedCell([cl.row, cl.col]);
-                  setDirection("down");
-                }}
+                title={`${cl.number}. ${cl.clue}`}
               >
                 <strong>{cl.number}.</strong> {cl.clue}
               </div>
@@ -384,7 +381,6 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
           </div>
         </div>
 
-        {/* Generate new button when all completed */}
         {allCompleted && !generating && (
           <button
             onClick={handleGenerate}
@@ -425,7 +421,6 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
             backgroundColor: "rgba(0,0,0,0.6)",
             zIndex: 100,
             pointerEvents: "none",
-            animation: "fadeIn 300ms ease",
           }}
         >
           <div
@@ -438,9 +433,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
             }}
           >
             <div style={{ fontSize: 18, fontWeight: 700, color: "#4ade80" }}>Completed!</div>
-            <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginTop: 6 }}>
-              Puzzle solved
-            </div>
+            <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginTop: 6 }}>Puzzle solved</div>
           </div>
         </div>
       )}

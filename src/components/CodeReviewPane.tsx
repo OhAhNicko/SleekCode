@@ -191,6 +191,28 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
     window.dispatchEvent(new Event("ezydev:git-refresh"));
   }, []);
 
+  const handleCommitAndPush = useCallback(async () => {
+    setShowCommitPopover(false);
+    window.dispatchEvent(new Event("ezydev:git-refresh"));
+    setPushing(true);
+    setPushError(null);
+    setPushResult(null);
+    const prePushBranch = branches?.current ?? "";
+    try {
+      const msg = await invoke<string>("git_push", {
+        directory: workingDir,
+        setUpstream: !aheadBehind?.hasRemote,
+      });
+      setPushResult({ ok: true, msg, branch: prePushBranch, count: 1 });
+      window.dispatchEvent(new Event("ezydev:git-refresh"));
+      setTimeout(() => setPushResult(null), 3000);
+    } catch (err) {
+      setPushError(String(err));
+    } finally {
+      setPushing(false);
+    }
+  }, [workingDir, aheadBehind, branches]);
+
   const handlePush = useCallback(async () => {
     if (pushing) return;
     setPushing(true);
@@ -381,6 +403,7 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
                 diffText={fileDiffs.map((d) => d.rawDiff).join("\n")}
                 onClose={() => setShowCommitPopover(false)}
                 onCommitSuccess={handleCommitSuccess}
+                onCommitAndPush={handleCommitAndPush}
               />
             )}
           </div>

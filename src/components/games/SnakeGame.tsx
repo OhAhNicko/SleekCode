@@ -2,21 +2,25 @@ import { useRef, useEffect, useState, useCallback } from "react";
 
 interface SnakeGameProps {
   onAddHighscore: (score: number) => void;
+  paused?: boolean;
 }
 
 type Direction = "up" | "down" | "left" | "right";
 type Coord = [number, number];
 
-const TICK_MS = 140;
-const CELL_PX = 16;
+const CELL_PX = 20;
 const FOOD_SCORE = 10;
+// Speed: starts at 95ms, floors at 55ms — ramps quickly
+function getTick(score: number): number {
+  return Math.max(55, 95 - Math.floor(score / FOOD_SCORE) * 3);
+}
 
 function getComputedColor(varName: string, fallback: string): string {
   const val = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
   return val || fallback;
 }
 
-export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
+export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [gridSize, setGridSize] = useState<{ cols: number; rows: number }>({ cols: 20, rows: 20 });
@@ -24,13 +28,13 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
   const [score, setScore] = useState(0);
   const [bestScore, setBestScore] = useState(0);
 
-  // Game state refs (mutated in game loop)
   const snakeRef = useRef<Coord[]>([[5, 5], [4, 5], [3, 5]]);
   const dirRef = useRef<Direction>("right");
   const nextDirRef = useRef<Direction>("right");
   const foodRef = useRef<Coord>([10, 10]);
   const scoreRef = useRef(0);
   const gameStateRef = useRef<"idle" | "playing" | "over">("idle");
+  const tickTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const spawnFood = useCallback((snake: Coord[], cols: number, rows: number): Coord => {
     const occupied = new Set(snake.map(([x, y]) => `${x},${y}`));
@@ -44,9 +48,9 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
     return [fx, fy];
   }, []);
 
-  // Resize observer
+  // Resize observer — canvas area only
   useEffect(() => {
-    const container = containerRef.current;
+    const container = containerRef.current?.querySelector("[data-canvas-area]") as HTMLElement | null;
     if (!container) return;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -75,35 +79,34 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
     const borderColor = getComputedColor("--ezy-border", "#2a2a2a");
     const accentColor = getComputedColor("--ezy-accent", "#5eead4");
 
-    // Background
     ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Grid lines (subtle)
+    // Subtle grid lines
     ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 0.5;
-    ctx.globalAlpha = 0.3;
+    ctx.globalAlpha = 0.15;
+    ctx.lineWidth = 1;
     for (let x = 0; x <= cols; x++) {
       ctx.beginPath();
-      ctx.moveTo(x * CELL_PX, 0);
-      ctx.lineTo(x * CELL_PX, rows * CELL_PX);
+      ctx.moveTo(x * CELL_PX + 0.5, 0);
+      ctx.lineTo(x * CELL_PX + 0.5, canvas.height);
       ctx.stroke();
     }
     for (let y = 0; y <= rows; y++) {
       ctx.beginPath();
-      ctx.moveTo(0, y * CELL_PX);
-      ctx.lineTo(cols * CELL_PX, y * CELL_PX);
+      ctx.moveTo(0, y * CELL_PX + 0.5);
+      ctx.lineTo(canvas.width, y * CELL_PX + 0.5);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
 
-    // Food
+    // Food — glowing circle
     const [fx, fy] = foodRef.current;
     ctx.fillStyle = "#f87171";
     ctx.shadowColor = "#f87171";
     ctx.shadowBlur = 8;
     ctx.beginPath();
-    ctx.arc(fx * CELL_PX + CELL_PX / 2, fy * CELL_PX + CELL_PX / 2, CELL_PX / 2 - 2, 0, Math.PI * 2);
+    ctx.arc(fx * CELL_PX + CELL_PX / 2, fy * CELL_PX + CELL_PX / 2, CELL_PX / 2 - 1.5, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
 
@@ -112,26 +115,32 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
     for (let i = 0; i < snake.length; i++) {
       const [sx, sy] = snake[i];
       const isHead = i === 0;
-      const alpha = 1 - (i / snake.length) * 0.5;
-      ctx.globalAlpha = alpha;
+      const t = i / Math.max(snake.length - 1, 1);
+      ctx.globalAlpha = 1 - t * 0.55;
       ctx.fillStyle = accentColor;
       if (isHead) {
         ctx.shadowColor = accentColor;
-        ctx.shadowBlur = 6;
+        ctx.shadowBlur = 5;
       }
-      const padding = isHead ? 1 : 2;
-      ctx.fillRect(
-        sx * CELL_PX + padding,
-        sy * CELL_PX + padding,
-        CELL_PX - padding * 2,
-        CELL_PX - padding * 2
-      );
+      const pad = isHead ? 0.5 : 1;
+      const radius = isHead ? 2.5 : 1.5;
+      const x = sx * CELL_PX + pad;
+      const y = sy * CELL_PX + pad;
+      const w = CELL_PX - pad * 2;
+      const h = CELL_PX - pad * 2;
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.arcTo(x + w, y, x + w, y + h, radius);
+      ctx.arcTo(x + w, y + h, x, y + h, radius);
+      ctx.arcTo(x, y + h, x, y, radius);
+      ctx.arcTo(x, y, x + w, y, radius);
+      ctx.closePath();
+      ctx.fill();
       ctx.shadowBlur = 0;
     }
     ctx.globalAlpha = 1;
   }, [gridSize]);
 
-  // Start game
   const startGame = useCallback(() => {
     const { cols, rows } = gridSize;
     const startX = Math.floor(cols / 4);
@@ -146,12 +155,15 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
     gameStateRef.current = "playing";
   }, [gridSize, spawnFood]);
 
-  // Game loop
-  useEffect(() => {
-    if (gameState !== "playing") return;
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
 
-    const interval = setInterval(() => {
-      if (gameStateRef.current !== "playing") return;
+  // Game loop with dynamic speed via setTimeout chain
+  useEffect(() => {
+    if (gameState !== "playing" || paused) return;
+
+    function tick() {
+      if (gameStateRef.current !== "playing" || pausedRef.current) return;
 
       const { cols, rows } = gridSize;
       const snake = snakeRef.current;
@@ -166,7 +178,6 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
         case "right": nx++; break;
       }
 
-      // Wall collision
       if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) {
         gameStateRef.current = "over";
         setGameState("over");
@@ -175,7 +186,6 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
         return;
       }
 
-      // Self collision
       for (let i = 0; i < snake.length - 1; i++) {
         if (snake[i][0] === nx && snake[i][1] === ny) {
           gameStateRef.current = "over";
@@ -197,10 +207,14 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
       }
       snakeRef.current = newSnake;
       draw();
-    }, TICK_MS);
 
-    return () => clearInterval(interval);
-  }, [gameState, gridSize, draw, spawnFood, onAddHighscore]);
+      // Schedule next tick at dynamic speed
+      tickTimerRef.current = setTimeout(tick, getTick(scoreRef.current));
+    }
+
+    tickTimerRef.current = setTimeout(tick, getTick(scoreRef.current));
+    return () => clearTimeout(tickTimerRef.current);
+  }, [gameState, paused, gridSize, draw, spawnFood, onAddHighscore]);
 
   // Key handler
   useEffect(() => {
@@ -209,7 +223,6 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
 
     const handleKey = (e: KeyboardEvent) => {
       if (gameStateRef.current !== "playing") return;
-
       const dir = dirRef.current;
       let newDir: Direction | null = null;
 
@@ -235,13 +248,8 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
     return () => container.removeEventListener("keydown", handleKey);
   }, []);
 
-  // Initial draw
   useEffect(() => { draw(); }, [draw]);
-
-  // Auto-focus
-  useEffect(() => {
-    containerRef.current?.focus();
-  }, [gameState]);
+  useEffect(() => { containerRef.current?.focus(); }, [gameState]);
 
   return (
     <div
@@ -272,17 +280,17 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
         }}
       >
         <span>Score: <span style={{ color: "var(--ezy-accent)" }}>{score}</span></span>
+        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>{getTick(score)}ms</span>
         {bestScore > 0 && <span>Best: {bestScore}</span>}
       </div>
 
       {/* Canvas area */}
-      <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+      <div data-canvas-area style={{ flex: 1, position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
         <canvas
           ref={canvasRef}
-          style={{ display: "block", width: "100%", height: "100%" }}
+          style={{ display: "block" }}
         />
 
-        {/* Idle / Game Over overlay */}
         {gameState !== "playing" && (
           <div
             style={{
@@ -299,13 +307,9 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
             {gameState === "over" && (
               <>
                 <div style={{ fontSize: 18, fontWeight: 700, color: "var(--ezy-text)" }}>Game Over</div>
-                <div style={{ fontSize: 14, color: "var(--ezy-accent)", fontWeight: 600 }}>
-                  Score: {score}
-                </div>
+                <div style={{ fontSize: 14, color: "var(--ezy-accent)", fontWeight: 600 }}>Score: {score}</div>
                 {score > 0 && score >= bestScore && (
-                  <div style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>
-                    New Highscore!
-                  </div>
+                  <div style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>New Highscore!</div>
                 )}
               </>
             )}
@@ -336,6 +340,22 @@ export default function SnakeGame({ onAddHighscore }: SnakeGameProps) {
             >
               {gameState === "over" ? "Play Again" : "Start Game"}
             </button>
+          </div>
+        )}
+
+        {/* Pause overlay */}
+        {paused && gameState === "playing" && (
+          <div
+            style={{
+              position: "absolute",
+              inset: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "rgba(0,0,0,0.6)",
+            }}
+          >
+            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
           </div>
         )}
       </div>
