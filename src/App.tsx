@@ -41,14 +41,16 @@ export default function App() {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
   const theme = getTheme(themeId);
 
-  // If activeTabId is dev-server-tab (from old persisted state), redirect to first non-system tab
+  // If activeTabId is empty or a system tab, redirect to the first project tab.
+  // System tabs (kanban, servers, dev-server) must only be active via explicit user action.
   useEffect(() => {
-    if (activeTabId === "dev-server-tab") {
+    const isSystemTab = activeTabId === "dev-server-tab" || activeTabId === "kanban-tab" || activeTabId === "servers-tab";
+    if (isSystemTab || !activeTabId) {
       const fallback = tabs.find((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
       if (fallback) {
         useAppStore.getState().setActiveTab(fallback.id);
         // Also open the panel so they still see dev servers
-        if (!devServerPanelOpen) useAppStore.getState().toggleDevServerPanel();
+        if (activeTabId === "dev-server-tab" && !devServerPanelOpen) useAppStore.getState().toggleDevServerPanel();
       }
     }
   }, [activeTabId, tabs, devServerPanelOpen]);
@@ -366,7 +368,9 @@ export default function App() {
         <div className="flex-1 min-w-0 relative">
           {tabs.map((tab) => {
             const isActive = tab.id === activeTabId;
+            // System tabs: never render in background — only when explicitly active
             if (tab.isDevServerTab) return null;
+            if ((tab.isKanbanTab || tab.isServersTab) && !isActive) return null;
             return (
               <div
                 key={tab.id}

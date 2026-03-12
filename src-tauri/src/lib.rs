@@ -5,6 +5,21 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Serialize;
 use tauri::Manager;
 
+/// Spawn `wsl.exe` with `CREATE_NO_WINDOW` so no console window flashes.
+#[cfg(target_os = "windows")]
+fn wsl_command() -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let mut cmd = Command::new("wsl.exe");
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(target_os = "windows"))]
+fn wsl_command() -> Command {
+    Command::new("wsl.exe")
+}
+
 /// Remove all Windows 11 DWM borders including the 1px top non-client border.
 #[cfg(target_os = "windows")]
 mod win32_border {
@@ -511,7 +526,7 @@ fn run_bash_script(directory: &str, script: &str) -> Result<std::process::Output
 
     if let Some((distro, linux_path)) = parse_wsl_path(directory) {
         let full_script = format!("cd '{}' && {}", linux_path, script);
-        let mut child = Command::new("wsl.exe")
+        let mut child = wsl_command()
             .args(["-d", &distro, "--", "bash"])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -567,7 +582,7 @@ fn run_git(directory: &str, args: &[&str]) -> Result<std::process::Output, Strin
             .collect();
         let script = format!("cd '{}' && git {}", linux_path, quoted_args.join(" "));
 
-        let mut child = Command::new("wsl.exe")
+        let mut child = wsl_command()
             .args(["-d", distro, "--", "bash", "-c", &script])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -1142,7 +1157,7 @@ async fn wsl_resolve_cli_env(cli_names: Vec<String>) -> Result<std::collections:
 
     let script = script_parts.join("; ");
 
-    let output = Command::new("wsl.exe")
+    let output = wsl_command()
         .args(["--", "bash", "-lic", &script])
         .output()
         .map_err(|e| format!("Failed to run wsl: {}", e))?;
@@ -1202,7 +1217,7 @@ async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>) -
         encoded, encoded, encoded
     );
 
-    let output = Command::new("wsl.exe")
+    let output = wsl_command()
         .args(["--", "bash", "-lic", &script])
         .output()
         .map_err(|e| format!("Failed to query Claude sessions: {}", e))?;
@@ -1267,7 +1282,7 @@ for r in rows:
         project_path.replace('\'', "'\\''")
     );
 
-    let output = Command::new("wsl.exe")
+    let output = wsl_command()
         .args(["--", "bash", "-lic", &script])
         .output()
         .map_err(|e| format!("Failed to query Codex sessions: {}", e))?;
@@ -1288,7 +1303,7 @@ for r in rows:
         project_path.replace('\'', "'\\''")
     );
 
-    let output = Command::new("wsl.exe")
+    let output = wsl_command()
         .args(["--", "bash", "-lic", &fallback_script])
         .output()
         .map_err(|e| format!("Failed to query Codex sessions (fallback): {}", e))?;
@@ -1329,7 +1344,7 @@ async fn get_gemini_session_id(project_path: String, exclude_ids: Vec<String>) -
         )
     };
 
-    let output = Command::new("wsl.exe")
+    let output = wsl_command()
         .args(["--", "bash", "-lic", &script])
         .output()
         .map_err(|e| format!("Failed to query Gemini sessions: {}", e))?;
@@ -1983,7 +1998,7 @@ echo "INSTALLED"
     args.extend(["--".to_string(), "bash".to_string()]);
 
     // Pipe the script via stdin — wsl.exe breaks multi-statement arguments to bash -c
-    let mut child = Command::new("wsl.exe")
+    let mut child = wsl_command()
         .args(&args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -2303,7 +2318,7 @@ echo "$inp|$window|$model|$rpd|$summary|$thoughts|$reset_time"
     }
     args.extend(["--".to_string(), "bash".to_string()]);
 
-    let mut child = Command::new("wsl.exe")
+    let mut child = wsl_command()
         .args(&args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -2334,6 +2349,26 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {
+                // Allocate a hidden console so child processes (wsl.exe) don't
+                // create visible console windows. GUI apps have no console by
+                // default — any console app spawned as a child creates a new
+                // visible console window. Pre-allocating a hidden one makes all
+                // children inherit it invisibly.
+                {
+                    extern "system" {
+                        fn AllocConsole() -> i32;
+                        fn GetConsoleWindow() -> isize;
+                        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+                    }
+                    unsafe {
+                        AllocConsole();
+                        let hwnd = GetConsoleWindow();
+                        if hwnd != 0 {
+                            ShowWindow(hwnd, 0); // SW_HIDE
+                        }
+                    }
+                }
+
                 let window = app.get_webview_window("main").expect("main window not found");
                 let hwnd = window.hwnd().expect("failed to get HWND");
                 win32_border::remove_border(hwnd.0);
@@ -2343,7 +2378,7 @@ pub fn run() {
                 // Uses /bin/cat which blocks on stdin indefinitely.
                 // The child process is killed when the app exits (handle dropped).
                 std::thread::spawn(|| {
-                    let _ = Command::new("wsl.exe")
+                    let _ = wsl_command()
                         .args(["-e", "/bin/cat"])
                         .stdin(std::process::Stdio::piped())
                         .stdout(std::process::Stdio::null())

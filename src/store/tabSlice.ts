@@ -99,7 +99,7 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       isServersTab: true,
     },
   ],
-  activeTabId: KANBAN_TAB_ID,
+  activeTabId: "",  // No default system tab — App.tsx redirect will pick the first project tab
 
   addTab: (name, workingDir, serverId?) => {
     const tabId = `tab-${Date.now()}`;
@@ -150,7 +150,7 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       const nonSystemRemaining = remaining.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
       const newActiveId =
         state.activeTabId === tabId
-          ? nonSystemRemaining[nonSystemRemaining.length - 1]?.id ?? remaining[remaining.length - 1]?.id ?? KANBAN_TAB_ID
+          ? nonSystemRemaining[nonSystemRemaining.length - 1]?.id ?? ""
           : state.activeTabId;
       return { tabs: remaining, activeTabId: newActiveId } as Partial<TabSlice>;
     });
