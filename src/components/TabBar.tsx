@@ -16,7 +16,7 @@ import ClipboardImageStrip from "./ClipboardImageStrip";
 import GitStatusBar from "./GitStatusBar";
 import { FaFolder, FaChevronDown, FaCheck } from "react-icons/fa";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
-import { FaXmark, FaPlus, FaBolt, FaGear, FaCodePullRequest, FaServer, FaArrowsRotate } from "react-icons/fa6";
+import { FaXmark, FaPlus, FaBolt, FaGear, FaServer, FaArrowsRotate } from "react-icons/fa6";
 import { PiKanbanDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
 import { BiSidebar, BiExpandVertical } from "react-icons/bi";
@@ -369,6 +369,21 @@ export default function TabBar() {
     window.addEventListener("ezydev:new-tab", handler);
     return () => window.removeEventListener("ezydev:new-tab", handler);
   }, [handleNewLocalTab]);
+
+  // Listen for open-recent event from startup screen
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { path, name } = (e as CustomEvent).detail;
+      const project = recentProjects.find((p) => p.path === path);
+      if (project && (project.lastLayout || project.lastTemplate)) {
+        quickOpenProject(project, false);
+      } else {
+        setPendingDir({ name, dir: path });
+      }
+    };
+    window.addEventListener("ezydev:open-recent", handler);
+    return () => window.removeEventListener("ezydev:open-recent", handler);
+  }, [recentProjects, quickOpenProject]);
 
   // Listen for OS-level quit request (Alt+F4 etc.) intercepted in App.tsx
   useEffect(() => {
@@ -1295,28 +1310,6 @@ export default function TabBar() {
           onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
         >
           <PiKanbanDuotone size={14} color="var(--ezy-text-muted)" style={{ transform: "scale(1.5)" }} />
-        </div>
-
-        {/* Code Review */}
-        <div
-          onClick={() => window.dispatchEvent(new Event("ezydev:open-codereview"))}
-          title="Code Review (Ctrl+Shift+G)"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            alignSelf: "center",
-            width: 34,
-            height: 26,
-            cursor: "pointer",
-            borderRadius: 4,
-            backgroundColor: "transparent",
-            transition: "background-color 120ms ease",
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
-          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-        >
-          <FaCodePullRequest size={14} color="var(--ezy-text-muted)" />
         </div>
 
         {/* Browser Preview — only for project tabs */}

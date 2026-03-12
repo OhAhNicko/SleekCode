@@ -1,10 +1,11 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand } from "react-icons/fa";
+import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand, FaServer } from "react-icons/fa";
 import { FaXmark, FaPlus, FaPencil } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
 import { useAppStore } from "../store";
+import ServersPanel from "./ServersPanel";
 import { getPtyWrite } from "../store/terminalSlice";
 import { findAllBrowserPanes, addBrowserPaneRight, generateTerminalId } from "../lib/layout-utils";
 import type { DevServer } from "../types";
@@ -719,6 +720,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
 export default function DevServerTab() {
   const devServers = useAppStore((s) => s.devServers);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [showRemoteServers, setShowRemoteServers] = useState(false);
 
   return (
     <div
@@ -757,6 +759,26 @@ export default function DevServerTab() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          {/* Remote servers toggle */}
+          <div
+            title="Remote Servers"
+            style={{
+              width: 20,
+              height: 20,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 4,
+              cursor: "pointer",
+              transition: "background-color 120ms ease",
+              backgroundColor: showRemoteServers ? "var(--ezy-accent-glow)" : "transparent",
+            }}
+            onClick={() => setShowRemoteServers(!showRemoteServers)}
+            onMouseEnter={(e) => { if (!showRemoteServers) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+            onMouseLeave={(e) => { if (!showRemoteServers) e.currentTarget.style.backgroundColor = "transparent"; }}
+          >
+            <FaServer size={9} color={showRemoteServers ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} />
+          </div>
           {/* Add server button */}
           <div
             title="Add dev server"
@@ -817,6 +839,13 @@ export default function DevServerTab() {
           devServers.map((server) => (
             <DevServerRow key={server.id} server={server} />
           ))
+        )}
+
+        {/* Inline Remote Servers section */}
+        {showRemoteServers && (
+          <div style={{ borderTop: "1px solid var(--ezy-border-subtle)" }}>
+            <ServersPanel />
+          </div>
         )}
       </div>
     </div>

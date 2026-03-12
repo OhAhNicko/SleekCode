@@ -37,23 +37,30 @@ export default function App() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
+  const recentProjects = useAppStore((s) => s.recentProjects);
 
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
+  const projectTabs = useMemo(() => tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab), [tabs]);
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? projectTabs[0] ?? tabs[0];
   const theme = getTheme(themeId);
 
-  // If activeTabId is empty or a system tab, redirect to the first project tab.
-  // System tabs (kanban, servers, dev-server) must only be active via explicit user action.
+  // Determine if a real project tab is active (not a system tab, not empty)
+  const isSystemTab = activeTabId === "dev-server-tab" || activeTabId === "kanban-tab" || activeTabId === "servers-tab";
+  const hasActiveProjectTab = !isSystemTab && !!activeTabId && projectTabs.some((t) => t.id === activeTabId);
+
+  // On startup: if activeTabId is a system tab, redirect to first project tab.
+  // If no project tabs exist, force activeTabId to "" so the startup screen shows.
   useEffect(() => {
-    const isSystemTab = activeTabId === "dev-server-tab" || activeTabId === "kanban-tab" || activeTabId === "servers-tab";
     if (isSystemTab || !activeTabId) {
-      const fallback = tabs.find((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
+      const fallback = projectTabs[0];
       if (fallback) {
         useAppStore.getState().setActiveTab(fallback.id);
-        // Also open the panel so they still see dev servers
-        if (activeTabId === "dev-server-tab" && !devServerPanelOpen) useAppStore.getState().toggleDevServerPanel();
+      } else if (activeTabId) {
+        // Force empty so system tab doesn't render
+        useAppStore.getState().setActiveTab("");
       }
+      if (activeTabId === "dev-server-tab" && !devServerPanelOpen) useAppStore.getState().toggleDevServerPanel();
     }
-  }, [activeTabId, tabs, devServerPanelOpen]);
+  }, [activeTabId, projectTabs, isSystemTab, devServerPanelOpen]);
 
   // Build extra palette actions from launch configs, snippets, and history
   const paletteExtraActions = useMemo<PaletteAction[]>(() => {
@@ -366,11 +373,86 @@ export default function App() {
         )}
         {devServerPanelOpen && <DevServerTab />}
         <div className="flex-1 min-w-0 relative">
+          {/* System tabs: rendered standalone, only when explicitly active */}
+          {activeTabId === "kanban-tab" && (
+            <div className="h-full w-full" style={{ position: "relative" }}>
+              <KanbanBoard />
+            </div>
+          )}
+          {activeTabId === "servers-tab" && (
+            <div className="h-full w-full" style={{ position: "relative" }}>
+              <ServersPanel />
+            </div>
+          )}
+          {/* Startup screen: no project tab active */}
+          {!hasActiveProjectTab && activeTabId !== "kanban-tab" && activeTabId !== "servers-tab" && (
+            <div className="h-full w-full" style={{
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              backgroundColor: "var(--ezy-bg)", gap: 32, padding: "0 40px",
+            }}>
+              <div style={{ textAlign: "center" }}>
+                <h1 style={{
+                  fontSize: 28, fontWeight: 700, color: "var(--ezy-text)",
+                  letterSpacing: "-0.02em", margin: 0,
+                }}>EzyDev</h1>
+                <p style={{ fontSize: 13, color: "var(--ezy-text-muted)", margin: "6px 0 0" }}>
+                  Open a project to get started
+                </p>
+              </div>
+              {recentProjects.length > 0 && (
+                <div style={{ width: "100%", maxWidth: 480 }}>
+                  <div style={{
+                    fontSize: 11, fontWeight: 600, color: "var(--ezy-text-muted)",
+                    textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8,
+                  }}>Recent Projects</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    {recentProjects.slice(0, 8).map((project) => (
+                      <button
+                        key={project.id}
+                        onClick={() => window.dispatchEvent(new CustomEvent("ezydev:open-recent", { detail: { path: project.path, name: project.name } }))}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 10,
+                          padding: "8px 12px", borderRadius: 6, border: "none",
+                          background: "transparent", cursor: "pointer", textAlign: "left", width: "100%",
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface-raised)"}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--ezy-text-muted)">
+                          <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/>
+                        </svg>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ezy-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {project.name}
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {project.path}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <button
+                onClick={() => window.dispatchEvent(new Event("ezydev:new-tab"))}
+                style={{
+                  padding: "8px 20px", borderRadius: 6,
+                  border: "1px solid var(--ezy-border)",
+                  background: "var(--ezy-surface-raised)", color: "var(--ezy-text)",
+                  fontSize: 13, fontWeight: 500, cursor: "pointer",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--ezy-accent)"}
+                onMouseLeave={(e) => e.currentTarget.style.borderColor = "var(--ezy-border)"}
+              >
+                Open Project
+              </button>
+            </div>
+          )}
+          {/* Project tabs */}
           {tabs.map((tab) => {
+            if (tab.isDevServerTab || tab.isKanbanTab || tab.isServersTab) return null;
             const isActive = tab.id === activeTabId;
-            // System tabs: never render in background — only when explicitly active
-            if (tab.isDevServerTab) return null;
-            if ((tab.isKanbanTab || tab.isServersTab) && !isActive) return null;
             return (
               <div
                 key={tab.id}
@@ -380,13 +462,7 @@ export default function App() {
                   position: isActive ? "relative" : "absolute",
                 }}
               >
-                {tab.isKanbanTab ? (
-                  <KanbanBoard />
-                ) : tab.isServersTab ? (
-                  <ServersPanel />
-                ) : (
-                  <Workspace tab={tab} />
-                )}
+                <Workspace tab={tab} />
               </div>
             );
           })}
