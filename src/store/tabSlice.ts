@@ -134,6 +134,13 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       if (tab?.isPinned) return state;
       snapshotTab(tabId);
 
+      // Persist layout to recent project for quick-open restore
+      if (tab && !tab.isDevServerTab && !tab.isServersTab && !tab.isKanbanTab) {
+        import("./index").then(({ useAppStore }) => {
+          useAppStore.getState().updateProjectLayout(tab.workingDir, tab.layout);
+        });
+      }
+
       // Defer dev server kill — keep servers alive during undo window
       const devServers = (state as unknown as { devServers: DevServer[] }).devServers ?? [];
       const tabServers = devServers.filter((ds) => ds.tabId === tabId);

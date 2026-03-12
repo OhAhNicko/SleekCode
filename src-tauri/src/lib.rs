@@ -796,6 +796,103 @@ async fn git_discard_file(directory: String, file_path: String, is_untracked: bo
     Ok(())
 }
 
+#[tauri::command]
+async fn git_add(directory: String, files: Vec<String>) -> Result<(), String> {
+    if files.is_empty() { return Ok(()); }
+    let mut args: Vec<String> = vec!["add".to_string(), "--".to_string()];
+    args.extend(files);
+    let output = run_git_owned(&directory, &args)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git add failed: {}", stderr.trim()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn git_reset_files(directory: String, files: Vec<String>) -> Result<(), String> {
+    if files.is_empty() { return Ok(()); }
+    let mut args: Vec<String> = vec!["reset".into(), "HEAD".into(), "--".into()];
+    args.extend(files);
+    let output = run_git_owned(&directory, &args)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git reset failed: {}", stderr.trim()));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn git_commit(directory: String, message: String) -> Result<String, String> {
+    let output = run_git(&directory, &["commit", "-m", &message])?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(stderr.trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+#[tauri::command]
+async fn git_push(directory: String, set_upstream: bool) -> Result<String, String> {
+    let output = if set_upstream {
+        run_git(&directory, &["push", "-u", "origin", "HEAD"])?
+    } else {
+        run_git(&directory, &["push"])?
+    };
+    // git push writes progress to stderr even on success
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(format!("{}\n{}", stdout.trim(), stderr.trim()).trim().to_string());
+    }
+    Ok(format!("{}\n{}", stdout.trim(), stderr.trim()).trim().to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitAheadBehind {
+    ahead: u32,
+    behind: u32,
+    has_remote: bool,
+}
+
+#[tauri::command]
+async fn git_ahead_behind(directory: String) -> Result<GitAheadBehind, String> {
+    // Check if there's an upstream
+    let upstream = run_git(&directory, &["rev-parse", "--abbrev-ref", "@{u}"]);
+    match upstream {
+        Ok(ref out) if out.status.success() => {},
+        _ => return Ok(GitAheadBehind { ahead: 0, behind: 0, has_remote: false }),
+    }
+    // Count ahead/behind
+    let output = run_git(&directory, &["rev-list", "--left-right", "--count", "HEAD...@{u}"])?;
+    let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let parts: Vec<&str> = line.split('\t').collect();
+    let ahead = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let behind = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    Ok(GitAheadBehind { ahead, behind, has_remote: true })
+}
+
+#[tauri::command]
+async fn git_run_typecheck(directory: String) -> Result<String, String> {
+    let script = r#"npx tsc --noEmit 2>&1; echo "EXITCODE:$?""#;
+    let output = run_bash_script(&directory, script)?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Parse exit code from last line
+    if let Some(pos) = text.rfind("EXITCODE:") {
+        let code_str = text[pos + 9..].trim();
+        let code: i32 = code_str.parse().unwrap_or(-1);
+        let errors = text[..pos].trim().to_string();
+        if code == 0 {
+            Ok(String::new()) // passed
+        } else {
+            Ok(errors) // failed but ran fine — return error output
+        }
+    } else {
+        Err(format!("Typecheck failed unexpectedly: {}", text))
+    }
+}
+
 #[derive(Serialize)]
 struct ClipboardImageResult {
     path: String,
@@ -1019,16 +1116,22 @@ async fn wsl_resolve_cli_env(cli_names: Vec<String>) -> Result<std::collections:
 /// Find the most recent Claude Code session ID for a given project.
 /// Claude stores sessions at ~/.claude/projects/<encoded-path>/<uuid>.jsonl
 /// where <encoded-path> replaces '/' with '-' in the absolute project path.
+/// Case can vary (e.g. "Documents" vs "documents") on WSL with Windows paths.
 #[tauri::command]
 async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
     let encoded = project_path.replace('/', "-");
 
-    // Use bash -lic (login shell) to match wsl_resolve_cli_env pattern.
-    // List ALL session files sorted by modification time (newest first).
-    // We pick the first one not in the exclude list on the Rust side.
+    // Try exact match first, then case-insensitive glob for /mnt/ paths where
+    // Windows case folding creates multiple folder variants (Documents vs documents).
     let script = format!(
-        "ls -1t ~/.claude/projects/{}/*.jsonl 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'",
-        encoded
+        "ls -1t ~/.claude/projects/{}/*.jsonl 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'; \
+         for d in ~/.claude/projects/*/; do \
+           base=$(basename \"$d\"); \
+           if [ \"$(echo \"$base\" | tr '[:upper:]' '[:lower:]')\" = \"$(echo '{}' | tr '[:upper:]' '[:lower:]')\" ] && [ \"$base\" != '{}' ]; then \
+             ls -1t \"$d\"*.jsonl 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'; \
+           fi; \
+         done",
+        encoded, encoded, encoded
     );
 
     let output = Command::new("wsl.exe")
@@ -1049,6 +1152,7 @@ async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>) -
     };
 
     // Return the first valid UUID that isn't in the exclude list
+    // (exact-match results come first, then case-insensitive fallback)
     for line in stdout.lines() {
         let id = line.trim();
         if is_valid_uuid(id) && !exclude_ids.iter().any(|ex| ex == id) {
@@ -1060,17 +1164,39 @@ async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>) -
 }
 
 /// Find the most recent Codex session ID for a given project.
-/// Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<uuid>.jsonl
-/// The first line of each file is JSON with "cwd" (project path) and "id" (session UUID).
+/// Codex ≥0.113 stores sessions in ~/.codex/state_5.sqlite `threads` table.
+/// Falls back to JSONL file scanning for older versions.
 #[tauri::command]
 async fn get_codex_session_id(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
-    // List .jsonl files sorted by mtime, read first line of each via xargs
-    // (not while-read — head inside while-read steals lines from the pipe),
-    // filter by cwd, then extract the UUID from the "id" field.
-    // Uses find (no -printf) + xargs ls -1t instead of find -printf (which fails silently via wsl.exe -- bash -lic).
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    // Primary: query SQLite threads table (Codex ≥0.113).
+    // Try both the exact path and case-insensitive match for /mnt/c paths.
+    let exclude_csv = exclude_ids.join(",");
     let script = format!(
-        "find ~/.codex/sessions -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -20 | xargs -I{{}} head -1 {{}} 2>/dev/null | grep '\"cwd\":\"{}\"' | grep -oE '\"id\":\"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}\"' | sed 's/\"id\":\"//;s/\"//'",
-        project_path
+        r#"python3 -c "
+import sqlite3, os, sys
+db = os.path.expanduser('~/.codex/state_5.sqlite')
+if not os.path.exists(db):
+    sys.exit(0)
+c = sqlite3.connect(db)
+exclude = set(sys.argv[1].split(',')) if sys.argv[1] else set()
+path = sys.argv[2]
+rows = c.execute('SELECT id FROM threads WHERE cwd=? ORDER BY updated_at DESC LIMIT 20', (path,)).fetchall()
+if not rows and path.startswith('/mnt/'):
+    rows = c.execute('SELECT id, cwd FROM threads ORDER BY updated_at DESC LIMIT 50').fetchall()
+    rows = [(r[0],) for r in rows if r[1].lower() == path.lower()]
+for r in rows:
+    if r[0] not in exclude:
+        print(r[0])
+        break
+" '{}' '{}'"#,
+        exclude_csv.replace('\'', "'\\''"),
+        project_path.replace('\'', "'\\''")
     );
 
     let output = Command::new("wsl.exe")
@@ -1079,16 +1205,27 @@ async fn get_codex_session_id(project_path: String, exclude_ids: Vec<String>) ->
         .map_err(|e| format!("Failed to query Codex sessions: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Ok(None);
+    if !stdout.is_empty() {
+        for line in stdout.lines() {
+            let id = line.trim();
+            if is_valid_uuid(id) {
+                return Ok(Some(id.to_string()));
+            }
+        }
     }
 
-    let is_valid_uuid = |s: &str| -> bool {
-        s.len() == 36
-            && s.split('-').count() == 5
-            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-    };
+    // Fallback: scan JSONL files (Codex <0.113)
+    let fallback_script = format!(
+        "find ~/.codex/sessions -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -20 | xargs -I{{}} head -1 {{}} 2>/dev/null | grep -i '\"cwd\":\"{}\"' | grep -oE '\"id\":\"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}\"' | sed 's/\"id\":\"//;s/\"//'",
+        project_path.replace('\'', "'\\''")
+    );
 
+    let output = Command::new("wsl.exe")
+        .args(["--", "bash", "-lic", &fallback_script])
+        .output()
+        .map_err(|e| format!("Failed to query Codex sessions (fallback): {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     for line in stdout.lines() {
         let id = line.trim();
         if is_valid_uuid(id) && !exclude_ids.iter().any(|ex| ex == id) {
@@ -1099,17 +1236,33 @@ async fn get_codex_session_id(project_path: String, exclude_ids: Vec<String>) ->
     Ok(None)
 }
 
-/// Find the most recent Gemini session ID.
+/// Find the most recent Gemini session ID for a given project.
 /// Gemini stores sessions at ~/.gemini/tmp/<project_name>/chats/session-<ts>-<partial_uuid>.json
+/// where <project_name> is the lowercased directory basename (with optional -N suffix for collisions).
 /// The JSON is pretty-printed; "sessionId" is on line 2.
 #[tauri::command]
-async fn get_gemini_session_id(exclude_ids: Vec<String>) -> Result<Option<String>, String> {
-    // List session files sorted by mtime, grep sessionId from file contents, extract UUID.
-    // Uses ls + xargs (like Claude's lookup) instead of find -printf which can fail via wsl.exe.
-    let script = "ls -1t ~/.gemini/tmp/*/chats/*.json 2>/dev/null | head -20 | xargs grep -h sessionId 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'";
+async fn get_gemini_session_id(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    // Extract the basename of the project path and lowercase it to match Gemini's folder naming.
+    let basename = project_path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+
+    // Search matching project folders (exact + suffixed variants like "project-1", "project-2").
+    // Falls back to all projects if basename is empty.
+    let script = if basename.is_empty() {
+        "ls -1t ~/.gemini/tmp/*/chats/*.json 2>/dev/null | head -20 | xargs grep -h sessionId 2>/dev/null | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'".to_string()
+    } else {
+        format!(
+            "ls -1t ~/.gemini/tmp/{{{},{}-[0-9]*}}/chats/*.json 2>/dev/null | head -20 | xargs grep -h sessionId 2>/dev/null | grep -oE '[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}'",
+            basename, basename
+        )
+    };
 
     let output = Command::new("wsl.exe")
-        .args(["--", "bash", "-lic", script])
+        .args(["--", "bash", "-lic", &script])
         .output()
         .map_err(|e| format!("Failed to query Gemini sessions: {}", e))?;
 
@@ -1132,6 +1285,536 @@ async fn get_gemini_session_id(exclude_ids: Vec<String>) -> Result<Option<String
     }
 
     Ok(None)
+}
+
+/// Resolve CLI paths on native Windows using `where.exe`.
+/// Returns a BTreeMap<String, String> with cli_name → resolved_path entries.
+#[tauri::command]
+async fn windows_resolve_cli_env(cli_names: Vec<String>) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut result = std::collections::BTreeMap::new();
+
+    for name in &cli_names {
+        // where.exe finds executables on the Windows PATH
+        let output = Command::new("where.exe")
+            .arg(name)
+            .output()
+            .map_err(|e| format!("Failed to run where.exe for {}: {}", name, e))?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            // where.exe may return multiple lines — take the first match
+            if let Some(first_line) = stdout.lines().next() {
+                let path = first_line.trim();
+                if !path.is_empty() {
+                    result.insert(name.clone(), path.to_string());
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Find the most recent Claude session ID on native Windows.
+/// Claude stores sessions at %USERPROFILE%\.claude\projects\<encoded-path>\<uuid>.jsonl
+#[tauri::command]
+async fn get_claude_session_id_windows(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let encoded = project_path.replace('\\', "-").replace('/', "-");
+    // Strip leading dash if present (from paths starting with C:\)
+    let encoded = encoded.trim_start_matches('-').to_string();
+    let session_dir = std::path::Path::new(&home).join(".claude").join("projects").join(&encoded);
+
+    if !session_dir.exists() {
+        return Ok(None);
+    }
+
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    // Read directory entries sorted by modification time (newest first)
+    let mut entries: Vec<_> = std::fs::read_dir(&session_dir)
+        .map_err(|e| format!("Failed to read session dir: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
+        .filter_map(|e| {
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((e, mtime))
+        })
+        .collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (entry, _) in entries {
+        if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
+            if is_valid_uuid(stem) && !exclude_ids.iter().any(|ex| ex == stem) {
+                return Ok(Some(stem.to_string()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Find the most recent Codex session ID on native Windows.
+/// Codex ≥0.113 stores sessions in %USERPROFILE%\.codex\state_5.sqlite `threads` table.
+/// Falls back to JSONL file scanning for older versions.
+#[tauri::command]
+async fn get_codex_session_id_windows(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let codex_dir = std::path::Path::new(&home).join(".codex");
+
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    // Primary: query SQLite threads table (Codex ≥0.113)
+    let db_path = codex_dir.join("state_5.sqlite");
+    if db_path.exists() {
+        let exclude_csv = exclude_ids.join(",");
+        let py_script = format!(
+            r#"import sqlite3,sys;c=sqlite3.connect(r'{}');exclude=set(sys.argv[1].split(',')) if sys.argv[1] else set();path=sys.argv[2];rows=c.execute('SELECT id FROM threads WHERE cwd=? ORDER BY updated_at DESC LIMIT 20',(path,)).fetchall();
+[print(r[0]) or sys.exit(0) for r in rows if r[0] not in exclude]"#,
+            db_path.display()
+        );
+        // Try python3 first, then python (Windows often has "python" not "python3")
+        let output = Command::new("python3")
+            .args(["-c", &py_script, &exclude_csv, &project_path])
+            .output()
+            .or_else(|_| Command::new("python")
+                .args(["-c", &py_script, &exclude_csv, &project_path])
+                .output()
+            );
+        if let Ok(o) = output {
+            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            for line in stdout.lines() {
+                let id = line.trim();
+                if is_valid_uuid(id) {
+                    return Ok(Some(id.to_string()));
+                }
+            }
+        }
+    }
+
+    // Fallback: scan JSONL files (Codex <0.113)
+    let sessions_dir = codex_dir.join("sessions");
+    if !sessions_dir.exists() {
+        return Ok(None);
+    }
+
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    fn walk_dir(dir: &std::path::Path, files: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk_dir(&path, files);
+                } else if path.extension().map_or(false, |ext| ext == "jsonl") {
+                    if let Ok(meta) = entry.metadata() {
+                        if let Ok(mtime) = meta.modified() {
+                            files.push((path, mtime));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    walk_dir(&sessions_dir, &mut files);
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (path, _) in files.iter().take(20) {
+        if let Ok(file) = std::fs::File::open(path) {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(file);
+            if let Some(Ok(first_line)) = reader.lines().next() {
+                let cwd_match = format!("\"cwd\":\"{}\"", project_path);
+                let cwd_match_spaced = format!("\"cwd\": \"{}\"", project_path);
+                if !first_line.contains(&cwd_match) && !first_line.contains(&cwd_match_spaced) {
+                    continue;
+                }
+                if let Some(id_start) = first_line.find("\"id\":\"").or_else(|| first_line.find("\"id\": \"")) {
+                    let after = &first_line[id_start..];
+                    if let Some(uuid_start) = after.find('"').and_then(|i| after[i+1..].find('"').map(|j| i + 1 + j + 1)) {
+                        let remaining = &after[uuid_start..];
+                        if let Some(end) = remaining.find('"') {
+                            let id = &remaining[..end];
+                            if is_valid_uuid(id) && !exclude_ids.iter().any(|ex| ex == id) {
+                                return Ok(Some(id.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Find the most recent Gemini session ID on native Windows.
+/// Gemini stores sessions at %USERPROFILE%\.gemini\tmp\<project>\chats\session-*.json
+#[tauri::command]
+async fn get_gemini_session_id_windows(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let tmp_dir = std::path::Path::new(&home).join(".gemini").join("tmp");
+
+    if !tmp_dir.exists() {
+        return Ok(None);
+    }
+
+    // Extract the basename and lowercase it to match Gemini's folder naming
+    let basename = project_path
+        .trim_end_matches('\\')
+        .trim_end_matches('/')
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    // Find session JSON files only in matching project subdirs (exact + suffixed)
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    if let Ok(projects) = std::fs::read_dir(&tmp_dir) {
+        for proj in projects.filter_map(|e| e.ok()) {
+            // Filter by project name — match exact basename or basename-N variants
+            if !basename.is_empty() {
+                let dir_name = proj.file_name().to_string_lossy().to_lowercase();
+                if dir_name != basename && !dir_name.starts_with(&format!("{}-", basename)) {
+                    continue;
+                }
+            }
+            let chats_dir = proj.path().join("chats");
+            if chats_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&chats_dir) {
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        let path = entry.path();
+                        if path.extension().map_or(false, |ext| ext == "json") {
+                            if let Ok(meta) = entry.metadata() {
+                                if let Ok(mtime) = meta.modified() {
+                                    files.push((path, mtime));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Read sessionId from each file (line 2 in pretty-printed JSON)
+    for (path, _) in files.iter().take(20) {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            // Search for sessionId in the content
+            if let Some(idx) = content.find("\"sessionId\"") {
+                let after = &content[idx..];
+                // Extract UUID after the colon
+                let uuid_re_like = |s: &str| -> Option<String> {
+                    // Find first UUID-like pattern
+                    let chars: Vec<char> = s.chars().collect();
+                    let mut i = 0;
+                    while i < chars.len() {
+                        if chars[i] == '"' {
+                            let start = i + 1;
+                            if let Some(end_pos) = s[start..].find('"') {
+                                let candidate = &s[start..start + end_pos];
+                                if is_valid_uuid(candidate) {
+                                    return Some(candidate.to_string());
+                                }
+                            }
+                        }
+                        i += 1;
+                    }
+                    None
+                };
+                if let Some(id) = uuid_re_like(after) {
+                    if !exclude_ids.iter().any(|ex| *ex == id) {
+                        return Ok(Some(id));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Read context info from CLI session files on native Windows.
+/// Uses Rust-native JSON parsing (no jq dependency).
+#[tauri::command]
+async fn read_session_context_windows(
+    terminal_type: String,
+    session_id: String,
+) -> Result<String, String> {
+    if session_id.is_empty() {
+        return Ok(String::new());
+    }
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let is_latest = session_id == "__latest__";
+
+    match terminal_type.as_str() {
+        "claude" => {
+            // Read statusline JSON if available
+            let sl_path = std::path::Path::new(&home).join(".ezydev").join("claude-statusline.json");
+            let mut sl_window: Option<u64> = None;
+            let mut sl_model: Option<String> = None;
+            let mut sl_used_pct: Option<u64> = None;
+            let mut sl_cost: Option<f64> = None;
+            let mut sl_duration: Option<u64> = None;
+            let mut sl_version: Option<String> = None;
+            if let Ok(content) = std::fs::read_to_string(&sl_path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                    sl_window = v.pointer("/context_window/context_window_size").and_then(|v| v.as_u64());
+                    sl_model = v.pointer("/model/display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    sl_used_pct = v.pointer("/context_window/used_percentage").and_then(|v| v.as_u64());
+                    sl_cost = v.pointer("/cost/total_cost_usd").and_then(|v| v.as_f64());
+                    sl_duration = v.pointer("/cost/total_duration_ms").and_then(|v| v.as_u64());
+                    sl_version = v.pointer("/version").and_then(|v| v.as_str()).map(|s| s.to_string());
+                }
+            }
+
+            let sl_suffix = format!("|{}|{}|{}|{}",
+                sl_used_pct.map(|v| v.to_string()).unwrap_or_default(),
+                sl_cost.map(|v| format!("{:.6}", v)).unwrap_or_default(),
+                sl_duration.map(|v| v.to_string()).unwrap_or_default(),
+                sl_version.as_deref().unwrap_or(""),
+            );
+
+            if is_latest {
+                if let Some(w) = sl_window {
+                    return Ok(format!("0|{}|{}{}||", w, sl_model.as_deref().unwrap_or(""), sl_suffix));
+                }
+                return Ok(String::new());
+            }
+
+            // Find session file
+            let claude_dir = std::path::Path::new(&home).join(".claude").join("projects");
+            let mut session_file: Option<std::path::PathBuf> = None;
+            if claude_dir.exists() {
+                // Walk project dirs to find <uuid>.jsonl
+                if let Ok(projects) = std::fs::read_dir(&claude_dir) {
+                    for proj in projects.filter_map(|e| e.ok()) {
+                        let candidate = proj.path().join(format!("{}.jsonl", session_id));
+                        if candidate.exists() {
+                            session_file = Some(candidate);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let f = match session_file {
+                Some(f) => f,
+                None => return Ok(String::new()),
+            };
+
+            // Read last usage line + extract service_tier/speed
+            let content = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
+            let mut total: u64 = 0;
+            let mut service_tier = String::new();
+            let mut speed = String::new();
+            for line in content.lines().rev() {
+                if line.contains("\"message\"") && line.contains("\"usage\"") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(usage) = v.pointer("/message/usage") {
+                            let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let cache_create = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            total = input + cache_create + cache_read + output;
+                            if let Some(st) = usage.get("service_tier").and_then(|v| v.as_str()) {
+                                service_tier = st.to_string();
+                            }
+                            if let Some(sp) = usage.get("speed").and_then(|v| v.as_str()) {
+                                speed = sp.to_string();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Count context compactions
+            let compact_count = content.lines().filter(|l| l.contains("compact_boundary")).count();
+
+            if total == 0 {
+                if let Some(w) = sl_window {
+                    return Ok(format!("0|{}|{}{}|||{}", w, sl_model.as_deref().unwrap_or(""), sl_suffix, compact_count));
+                }
+                return Ok(String::new());
+            }
+
+            let window = sl_window.unwrap_or(200000);
+            let model_str = sl_model.unwrap_or_default();
+            Ok(format!("{}|{}|{}{}|{}|{}|{}", total, window, model_str, sl_suffix, service_tier, speed, compact_count))
+        },
+        "codex" => {
+            let sessions_dir = std::path::Path::new(&home).join(".codex").join("sessions");
+            if !sessions_dir.exists() {
+                return Ok(String::new());
+            }
+
+            // Find session file
+            let target_file: Option<std::path::PathBuf>;
+            if is_latest {
+                // Find most recent .jsonl file
+                let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+                fn walk(dir: &std::path::Path, files: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.is_dir() { walk(&path, files); }
+                            else if path.extension().map_or(false, |ext| ext == "jsonl") {
+                                if let Ok(m) = entry.metadata() {
+                                    if let Ok(t) = m.modified() { files.push((path, t)); }
+                                }
+                            }
+                        }
+                    }
+                }
+                walk(&sessions_dir, &mut files);
+                files.sort_by(|a, b| b.1.cmp(&a.1));
+                target_file = files.into_iter().next().map(|(p, _)| p);
+            } else {
+                // Search for file containing the session UUID
+                fn walk2(dir: &std::path::Path, uuid: &str) -> Option<std::path::PathBuf> {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.is_dir() {
+                                if let Some(found) = walk2(&path, uuid) { return Some(found); }
+                            } else if path.file_name().map_or(false, |n| n.to_string_lossy().contains(uuid)) {
+                                return Some(path);
+                            }
+                        }
+                    }
+                    None
+                }
+                target_file = walk2(&sessions_dir, &session_id);
+            }
+
+            let f = match target_file {
+                Some(f) => f,
+                None => return Ok(String::new()),
+            };
+
+            let content = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
+            let mut used: Option<u64> = None;
+            let mut window: Option<u64> = None;
+            let mut model: String = String::new();
+            let mut effort: String = String::new();
+            let mut collab_mode: String = String::new();
+
+            for line in content.lines().rev() {
+                if window.is_some() && (used.is_some() || is_latest) { break; }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    if window.is_none() {
+                        if let Some(w) = v.pointer("/payload/info/model_context_window").and_then(|v| v.as_u64()) {
+                            if w > 0 { window = Some(w); }
+                        }
+                        if used.is_none() && !is_latest {
+                            if let Some(u) = v.pointer("/payload/info/last_token_usage/total_tokens").and_then(|v| v.as_u64()) {
+                                if u > 0 { used = Some(u); }
+                            }
+                        }
+                    }
+                    if model.is_empty() {
+                        if let Some(m) = v.pointer("/payload/model").and_then(|v| v.as_str()) {
+                            model = m.to_string();
+                        }
+                    }
+                    if effort.is_empty() {
+                        if let Some(e) = v.pointer("/payload/effort").and_then(|v| v.as_str()) {
+                            effort = e.to_string();
+                        }
+                    }
+                    if collab_mode.is_empty() {
+                        if let Some(cm) = v.pointer("/payload/collaboration_mode/mode").and_then(|v| v.as_str()) {
+                            collab_mode = cm.to_string();
+                        }
+                    }
+                }
+            }
+
+            if is_latest { used = None; }
+            let used_val = used.unwrap_or(0);
+            let window_val = match window {
+                Some(w) => w,
+                None => return Ok(String::new()),
+            };
+
+            Ok(format!("{}|{}|{}|||{}|{}", used_val, window_val, model, effort, collab_mode))
+        },
+        "gemini" => {
+            let tmp_dir = std::path::Path::new(&home).join(".gemini").join("tmp");
+            if !tmp_dir.exists() {
+                return Ok(String::new());
+            }
+
+            // Find most recent session file
+            let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+            if let Ok(projects) = std::fs::read_dir(&tmp_dir) {
+                for proj in projects.filter_map(|e| e.ok()) {
+                    let chats = proj.path().join("chats");
+                    if chats.is_dir() {
+                        if let Ok(entries) = std::fs::read_dir(&chats) {
+                            for entry in entries.filter_map(|e| e.ok()) {
+                                let path = entry.path();
+                                if path.extension().map_or(false, |ext| ext == "json") {
+                                    if let Ok(m) = entry.metadata() {
+                                        if let Ok(t) = m.modified() { files.push((path, t)); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            files.sort_by(|a, b| b.1.cmp(&a.1));
+
+            let f = match files.into_iter().next() {
+                Some((p, _)) => p,
+                None => return Ok(String::new()),
+            };
+
+            let content = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
+            let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+            // Last message input tokens
+            let inp = v.pointer("/messages")
+                .and_then(|m| m.as_array())
+                .map(|msgs| msgs.iter().rev().find_map(|m| m.pointer("/tokens/input").and_then(|v| v.as_u64())).unwrap_or(0))
+                .unwrap_or(0);
+            if inp == 0 { return Ok(String::new()); }
+
+            // Last model
+            let model = v.pointer("/messages")
+                .and_then(|m| m.as_array())
+                .map(|msgs| msgs.iter().rev().find_map(|m| m.get("model").and_then(|v| v.as_str())).unwrap_or(""))
+                .unwrap_or("");
+
+            // Summary
+            let summary = v.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+
+            // Last thinking tokens
+            let thoughts = v.pointer("/messages")
+                .and_then(|m| m.as_array())
+                .map(|msgs| msgs.iter().rev().find_map(|m| m.pointer("/tokens/thoughts").and_then(|v| v.as_u64())).unwrap_or(0))
+                .unwrap_or(0);
+
+            Ok(format!("{}|1000000|{}||{}|{}|", inp, model, summary, thoughts))
+        },
+        _ => Ok(String::new()),
+    }
 }
 
 #[tauri::command]
@@ -1287,13 +1970,21 @@ async fn read_session_context(
             r#"
 command -v jq >/dev/null 2>&1 || exit 0
 
-# Read window size and display model name from statusline JSON (if available)
+# Read statusline JSON (if available)
 SL="/tmp/ezydev-claude-statusline.json"
 sl_window=""
 sl_model=""
+sl_used_pct=""
+sl_cost=""
+sl_duration=""
+sl_version=""
 if [ -f "$SL" ]; then
   sl_window=$(jq -r '.context_window.context_window_size // empty' "$SL" 2>/dev/null)
   sl_model=$(jq -r '.model.display_name // empty' "$SL" 2>/dev/null)
+  sl_used_pct=$(jq -r '.context_window.used_percentage // empty' "$SL" 2>/dev/null)
+  sl_cost=$(jq -r '.cost.total_cost_usd // empty' "$SL" 2>/dev/null)
+  sl_duration=$(jq -r '.cost.total_duration_ms // empty' "$SL" 2>/dev/null)
+  sl_version=$(jq -r '.version // empty' "$SL" 2>/dev/null)
 fi
 
 # Read precise token counts from JSONL session file
@@ -1302,7 +1993,7 @@ if [ "$SID" = "__latest__" ]; then
   # No specific session (new pane) — show 0 used with statusline model/window.
   # Never read token data cross-session — context % is session-specific.
   if [ -n "$sl_window" ]; then
-    echo "0|$sl_window|$sl_model"
+    echo "0|$sl_window|$sl_model|$sl_used_pct|$sl_cost|$sl_duration|$sl_version||"
   fi
   exit 0
 else
@@ -1322,16 +2013,21 @@ if [ -z "$line" ]; then
   # No token data in current session — show 0 used (100% remaining).
   # Never read token data cross-session — context % is session-specific.
   if [ -n "$sl_window" ]; then
-    echo "0|$sl_window|$sl_model"
+    echo "0|$sl_window|$sl_model|$sl_used_pct|$sl_cost|$sl_duration|$sl_version||"
   fi
   exit 0
 fi
 total=$(echo "$line" | jq '((.message.usage.input_tokens // 0) + (.message.usage.cache_creation_input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0) + (.message.usage.output_tokens // 0))' 2>/dev/null)
 [ -z "$total" ] || [ "$total" = "null" ] || [ "$total" = "0" ] && exit 0
+# Extract service_tier and speed from the same usage line
+service_tier=$(echo "$line" | jq -r '.message.usage.service_tier // empty' 2>/dev/null)
+speed=$(echo "$line" | jq -r '.message.usage.speed // empty' 2>/dev/null)
 # Use statusline window/model if available, otherwise fallback
 window="${{sl_window:-200000}}"
 model="${{sl_model:-$(echo "$line" | jq -r '.message.model // empty' 2>/dev/null)}}"
-echo "$total|$window|$model"
+# Count context compactions in the session
+compact_count=$(grep -c 'compact_boundary' "$f" 2>/dev/null || echo 0)
+echo "$total|$window|$model|$sl_used_pct|$sl_cost|$sl_duration|$sl_version|$service_tier|$speed|$compact_count"
 "#,
             session_id = session_id
         ),
@@ -1366,7 +2062,10 @@ if [ -n "$line" ]; then
   [ "$used" = "null" ] || [ "$used" = "0" ] && used=""
   [ "$window" = "null" ] || [ "$window" = "0" ] && window=""
 fi
-model=$(tac "$f" 2>/dev/null | grep -m1 'turn_context' | jq -r '.payload.model // empty' 2>/dev/null)
+tc_line=$(tac "$f" 2>/dev/null | grep -m1 'turn_context')
+model=$(echo "$tc_line" | jq -r '.payload.model // empty' 2>/dev/null)
+effort=$(echo "$tc_line" | jq -r '.payload.effort // empty' 2>/dev/null)
+collab_mode=$(echo "$tc_line" | jq -r '.payload.collaboration_mode.mode // empty' 2>/dev/null)
 
 # __latest__ mode = new pane — never use another session's token count.
 [ "$SID" = "__latest__" ] && used=""
@@ -1381,7 +2080,12 @@ if [ -z "$window" ]; then
     fb_window=$(echo "$fb_line" | jq '.payload.info.model_context_window // 0' 2>/dev/null)
     [ -z "$fb_window" ] || [ "$fb_window" = "null" ] || [ "$fb_window" = "0" ] && continue
     window="$fb_window"
-    [ -z "$model" ] && model=$(tac "$rf" 2>/dev/null | grep -m1 'turn_context' | jq -r '.payload.model // empty' 2>/dev/null)
+    if [ -z "$model" ]; then
+      fb_tc=$(tac "$rf" 2>/dev/null | grep -m1 'turn_context')
+      model=$(echo "$fb_tc" | jq -r '.payload.model // empty' 2>/dev/null)
+      [ -z "$effort" ] && effort=$(echo "$fb_tc" | jq -r '.payload.effort // empty' 2>/dev/null)
+      [ -z "$collab_mode" ] && collab_mode=$(echo "$fb_tc" | jq -r '.payload.collaboration_mode.mode // empty' 2>/dev/null)
+    fi
     break
   done
 fi
@@ -1404,7 +2108,7 @@ if [ -n "$rl_line" ]; then
   rl5h=$(echo "$rl_line" | jq -r '.payload.rate_limits.primary.used_percent // empty' 2>/dev/null)
   rlweek=$(echo "$rl_line" | jq -r '.payload.rate_limits.secondary.used_percent // empty' 2>/dev/null)
 fi
-echo "$used|$window|$model|$rl5h|$rlweek"
+echo "$used|$window|$model|$rl5h|$rlweek|$effort|$collab_mode"
 "#,
             session_id = session_id
         ),
@@ -1475,8 +2179,14 @@ if [ "$SID" = "__latest__" ]; then
     model=$(jq -r '[.messages[] | select(.model) | .model] | last // empty' "$f" 2>/dev/null)
   fi
   rpd=""
+  reset_time=""
   [ -n "$model" ] && rpd=$(gemini_quota_used "$model")
-  echo "0|1000000|$model|$rpd"
+  QC="/tmp/ezydev-gemini-quota.json"
+  if [ -f "$QC" ] && [ -n "$model" ]; then
+    base=$(echo "$model" | sed 's/-preview$//' | sed 's/-[0-9]*$//')
+    reset_time=$(jq -r --arg m "$base" '[.buckets[] | select(.modelId == $m or (.modelId | startswith($m))) | .resetTime] | first // empty' "$QC" 2>/dev/null)
+  fi
+  echo "0|1000000|$model|$rpd|||$reset_time"
   exit 0
 fi
 CACHE="/tmp/ezydev-sessionpath-$SID"
@@ -1501,7 +2211,17 @@ case "$model" in
 esac
 rpd=""
 [ -n "$model" ] && rpd=$(gemini_quota_used "$model")
-echo "$inp|$window|$model|$rpd"
+# Extract summary, last thinking tokens, and quota reset time
+summary=$(jq -r '.summary // empty' "$f" 2>/dev/null)
+thoughts=$(jq '[.messages[] | select(.tokens.thoughts) | .tokens.thoughts] | last // 0' "$f" 2>/dev/null)
+[ "$thoughts" = "null" ] && thoughts=0
+QC="/tmp/ezydev-gemini-quota.json"
+reset_time=""
+if [ -f "$QC" ] && [ -n "$model" ]; then
+  base=$(echo "$model" | sed 's/-preview$//' | sed 's/-[0-9]*$//')
+  reset_time=$(jq -r --arg m "$base" '[.buckets[] | select(.modelId == $m or (.modelId | startswith($m))) | .resetTime] | first // empty' "$QC" 2>/dev/null)
+fi
+echo "$inp|$window|$model|$rpd|$summary|$thoughts|$reset_time"
 "#,
             session_id = session_id
         ),
@@ -1542,7 +2262,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, wsl_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, wsl_resolve_cli_env, windows_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, read_session_context_windows, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

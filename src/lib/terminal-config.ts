@@ -1,6 +1,17 @@
-import type { TerminalConfig, TerminalType } from "../types";
+import type { TerminalConfig, TerminalType, TerminalBackend } from "../types";
 import { getCachedWslPath, getCachedCliPath, getCachedDistro } from "./wsl-cache";
+import { getCachedWindowsCliPath } from "./windows-cli-cache";
 import { getResumeFlag, supportsSessionResume } from "./session-resume";
+
+/** Returns the YOLO/skip-permissions flag for a given CLI, or null if not applicable. */
+export function getYoloFlag(type: TerminalType): string | null {
+  switch (type) {
+    case "claude": return "--dangerously-skip-permissions";
+    case "codex": return "--yolo";
+    case "gemini": return "--yolo";
+    default: return null;
+  }
+}
 
 // Base configs for each terminal type.
 const TERMINAL_CONFIGS_BASE: Record<TerminalType, TerminalConfig> = {
@@ -36,12 +47,66 @@ const TERMINAL_CONFIGS_BASE: Record<TerminalType, TerminalConfig> = {
   },
 };
 
+// Base configs for Windows native backend (no WSL wrapping).
+const TERMINAL_CONFIGS_WINDOWS: Record<TerminalType, TerminalConfig> = {
+  claude: {
+    command: "claude",
+    args: [],
+    label: "Claude Code",
+    description: "Anthropic's AI coding assistant",
+  },
+  codex: {
+    command: "codex",
+    args: [],
+    label: "Codex CLI",
+    description: "OpenAI's coding CLI",
+  },
+  gemini: {
+    command: "gemini",
+    args: [],
+    label: "Gemini CLI",
+    description: "Google's AI coding CLI",
+  },
+  shell: {
+    command: "powershell.exe",
+    args: [],
+    label: "PowerShell",
+    description: "Windows PowerShell",
+  },
+  devserver: {
+    command: "powershell.exe",
+    args: [],
+    label: "Dev Server",
+    description: "PowerShell for dev servers",
+  },
+};
+
 /**
  * Get terminal config for a given type.
- * Uses cached PATH + absolute CLI path when available (fast path),
- * falls back to bash -lic (slow path) otherwise.
+ * When backend is "windows", uses native Windows executables directly.
+ * When backend is "wsl" (default), uses cached PATH + absolute CLI path
+ * when available (fast path), falls back to bash -lic (slow path) otherwise.
  */
-export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string): TerminalConfig {
+export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string, backend?: TerminalBackend): TerminalConfig {
+  // Windows native backend — use resolved .exe/.cmd path directly
+  if (backend === "windows") {
+    const winBase = TERMINAL_CONFIGS_WINDOWS[type];
+    if (type === "shell" || type === "devserver") return winBase;
+
+    const cliPath = getCachedWindowsCliPath(type);
+    const resumeArgs = sessionResumeId && supportsSessionResume(type)
+      ? getResumeFlag(type, sessionResumeId).split(" ")
+      : [];
+    const extra = extraArgs ?? [];
+
+    return {
+      ...winBase,
+      command: cliPath ?? winBase.command,
+      args: [...extra, ...resumeArgs],
+    };
+  }
+
+  // WSL backend (default)
   const base = TERMINAL_CONFIGS_BASE[type];
   if (type === "shell" || type === "devserver") return base;
 
@@ -131,8 +196,9 @@ export function toWslPath(winPath: string): string {
  * Returns null if we don't have the absolute CLI path cached
  * (pooled bash has --norc --noprofile, so it can't resolve CLI names).
  */
-export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessionResumeId?: string, extraArgs?: string[]): string | null {
+export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessionResumeId?: string, extraArgs?: string[], backend?: TerminalBackend): string | null {
   if (type === "shell") return null;
+  if (backend === "windows") return null; // No WSL pool in Windows mode
 
   const cachedPath = getCachedWslPath();
   const cliPath = getCachedCliPath(type);
@@ -160,7 +226,8 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
 }
 
 /** Returns true if the terminal type runs inside WSL */
-export function isWslTerminal(type: TerminalType): boolean {
+export function isWslTerminal(type: TerminalType, backend?: TerminalBackend): boolean {
+  if (backend === "windows") return false;
   return type !== "shell";
 }
 

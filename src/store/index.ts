@@ -52,7 +52,7 @@ export const useAppStore = create<AppStore>()(
         restoreLastSession: state.restoreLastSession,
         autoInsertClipboardImage: state.autoInsertClipboardImage,
         cliFontSizes: state.cliFontSizes,
-        claudeYolo: state.claudeYolo,
+        cliYolo: state.cliYolo,
         promptComposerEnabled: state.promptComposerEnabled,
         promptComposerAlwaysVisible: state.promptComposerAlwaysVisible,
         promptHistory: state.promptHistory,
@@ -64,6 +64,10 @@ export const useAppStore = create<AppStore>()(
         copyOnSelect: state.copyOnSelect,
         confirmQuit: state.confirmQuit,
         codeReviewCollapseAll: state.codeReviewCollapseAll,
+        openPanesInBackground: state.openPanesInBackground,
+        terminalBackend: state.terminalBackend,
+        commitMsgMode: state.commitMsgMode,
+        shadowAiCli: state.shadowAiCli,
         projectColors: state.projectColors,
         vibrantColors: state.vibrantColors,
       }),
@@ -97,11 +101,19 @@ export const useAppStore = create<AppStore>()(
           activeTabId = nonSystem?.id ?? filteredTabs[0]?.id ?? current.activeTabId;
         }
 
+        // Migrate legacy claudeYolo → cliYolo
+        const persAny = state as Record<string, unknown>;
+        let cliYolo = state.cliYolo ?? {};
+        if (persAny.claudeYolo === true && !cliYolo.claude) {
+          cliYolo = { ...cliYolo, claude: true };
+        }
+
         return {
           ...current,
           ...state,
           tabs: filteredTabs,
           activeTabId,
+          cliYolo,
         };
       },
     }

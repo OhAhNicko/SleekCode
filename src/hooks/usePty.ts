@@ -1,9 +1,11 @@
 import { useEffect, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { TerminalType } from "../types";
-import { getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand } from "../lib/terminal-config";
+import { getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
 import { wslReady } from "../lib/wsl-cache";
+import { windowsReady } from "../lib/windows-cli-cache";
 import { useAppStore } from "../store";
+import type { TerminalBackend } from "../types";
 import { getShellIntegrationCommand } from "../lib/shell-integration";
 
 interface UsePtyOptions {
@@ -21,6 +23,10 @@ interface UsePtyOptions {
    *  its real dimensions via fitAddon.fit(). This prevents spawning at
    *  the default 80×24 and racing with TUI apps that draw immediately. */
   ready?: boolean;
+  /** Bump to trigger PTY kill + re-spawn (restart). */
+  restartKey?: number;
+  /** When true, YOLO flag is always applied regardless of current global setting. */
+  forceYolo?: boolean;
 }
 
 export function usePty({
@@ -35,6 +41,8 @@ export function usePty({
   sessionResumeId,
   injectShellIntegration = false,
   ready = true,
+  restartKey = 0,
+  forceYolo = false,
 }: UsePtyOptions) {
   const ptyIdRef = useRef<number | null>(null);
   const spawnIdRef = useRef(0);
@@ -60,6 +68,12 @@ export function usePty({
   serverIdRef.current = serverId;
   const injectShellIntegrationRef = useRef(injectShellIntegration);
   injectShellIntegrationRef.current = injectShellIntegration;
+  // Read terminal backend setting via ref (never triggers re-spawn)
+  const backendRef = useRef<TerminalBackend>(useAppStore.getState().terminalBackend ?? "wsl");
+  // Force YOLO on restart — preserves launch-time YOLO state regardless of global toggle
+  const forceYoloRef = useRef(forceYolo);
+  forceYoloRef.current = forceYolo;
+
   const onDataRef = useRef(onData);
   onDataRef.current = onData;
   const onExitRef = useRef(onExit);
@@ -88,9 +102,15 @@ export function usePty({
       // Bail-out helper: check if this spawn has been superseded
       const isStale = () => cancelled || spawnIdRef.current !== thisSpawnId;
 
-      // For resume spawns, wait for WSL to boot before invoking wsl.exe.
-      // Fresh spawns can race ahead and use the pool (or start wsl.exe cold).
-      if (isWslTerminal(terminalType) && sessionResumeIdRef.current) {
+      const backend = backendRef.current;
+
+      // Wait for the correct CLI cache to be ready before spawning
+      if (backend === "windows") {
+        await windowsReady;
+        if (isStale()) return;
+      } else if (isWslTerminal(terminalType, backend) && sessionResumeIdRef.current) {
+        // For WSL resume spawns, wait for WSL to boot before invoking wsl.exe.
+        // Fresh spawns can race ahead and use the pool (or start wsl.exe cold).
         await wslReady;
         if (isStale()) return;
       }
@@ -111,27 +131,39 @@ export function usePty({
         cwd = undefined;
       } else {
         const extraArgs: string[] = [];
-        if (terminalType === "claude" && useAppStore.getState().claudeYolo) {
-          extraArgs.push("--dangerously-skip-permissions");
+        const yoloFlag = getYoloFlag(terminalType);
+        if (yoloFlag && (forceYoloRef.current || useAppStore.getState().cliYolo[terminalType])) {
+          extraArgs.push(yoloFlag);
         }
+        console.log(`[PTY] spawn ${terminalType}`, extraArgs.length ? `extraArgs: ${extraArgs.join(" ")}` : "(no extra args)", `forceYolo=${forceYoloRef.current}`);
         const resumeId = sessionResumeIdRef.current;
         cwd = currentWorkingDir || undefined;
-        let wslCwd: string | undefined;
-        if (cwd && isWslTerminal(terminalType)) {
-          wslCwd = toWslPath(cwd);
-        }
 
-        // For resume spawns, pass wslCwd so cd is baked into bash -lic command
-        // (avoids wsl.exe --cd flag which can cause arg parsing issues)
-        const config = getTerminalConfig(terminalType, resumeId, extraArgs, resumeId ? wslCwd : undefined);
-        command = config.command;
+        if (backend === "windows") {
+          // Windows native: use resolved CLI path directly, native Windows cwd
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, undefined, "windows");
+          command = config.command;
+          args = [...config.args];
+          // cwd stays as native Windows path
+        } else {
+          // WSL backend
+          let wslCwd: string | undefined;
+          if (cwd && isWslTerminal(terminalType, backend)) {
+            wslCwd = toWslPath(cwd);
+          }
 
-        args = [...config.args];
-        if (isWslTerminal(terminalType) && wslCwd && !resumeId) {
-          // Fresh spawns: use wsl.exe --cd flag
-          args = ["--cd", wslCwd, ...args];
+          // For resume spawns, pass wslCwd so cd is baked into bash -lic command
+          // (avoids wsl.exe --cd flag which can cause arg parsing issues)
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, resumeId ? wslCwd : undefined);
+          command = config.command;
+
+          args = [...config.args];
+          if (isWslTerminal(terminalType, backend) && wslCwd && !resumeId) {
+            // Fresh spawns: use wsl.exe --cd flag
+            args = ["--cd", wslCwd, ...args];
+          }
+          cwd = undefined;
         }
-        cwd = undefined;
       }
 
       const onDataChan = new Channel<number[]>();
@@ -155,15 +187,17 @@ export function usePty({
         // Skip pool for session resume — pooled bash uses --norc --noprofile
         // which may lack env setup that Claude needs for --resume.
         // The normal spawn path uses bash -lic (full login shell) for resume.
-        if (!currentServerId && isWslTerminal(terminalType) && !sessionResumeIdRef.current) {
+        // Windows mode skips pool entirely (no WSL pool).
+        if (!currentServerId && backend !== "windows" && isWslTerminal(terminalType, backend) && !sessionResumeIdRef.current) {
           const wslCwd = currentWorkingDir ? toWslPath(currentWorkingDir) : undefined;
           const poolExtraArgs: string[] = [];
-          if (terminalType === "claude" && useAppStore.getState().claudeYolo) {
-            poolExtraArgs.push("--dangerously-skip-permissions");
+          const poolYoloFlag = getYoloFlag(terminalType);
+          if (poolYoloFlag && (forceYoloRef.current || useAppStore.getState().cliYolo[terminalType])) {
+            poolExtraArgs.push(poolYoloFlag);
           }
-          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, poolExtraArgs);
+          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, poolExtraArgs, backend);
           if (initCmd) {
-            console.log(`[PTY] using pool for ${terminalType}`);
+            console.log(`[PTY] using pool for ${terminalType}`, poolExtraArgs.length ? `extraArgs: ${poolExtraArgs.join(" ")}` : "(no extra args)");
             try {
               id = await invoke<number>("pty_spawn_pooled", {
                 initCommand: initCmd,
@@ -238,9 +272,10 @@ export function usePty({
     };
     // terminalType triggers PTY restart (explicit CLI type switch).
     // ready gates first spawn until terminal has real dimensions.
+    // restartKey triggers PTY restart (user clicked restart button).
     // All other config is read from refs at spawn time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [terminalType, ready]);
+  }, [terminalType, ready, restartKey]);
 
   const write = useCallback((data: string) => {
     if (ptyIdRef.current !== null) {

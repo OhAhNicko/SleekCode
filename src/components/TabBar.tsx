@@ -3,9 +3,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { THEMES, getTheme } from "../lib/themes";
-import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, generateTerminalId, findKanbanPaneId, addKanbanPane } from "../lib/layout-utils";
+import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, generateTerminalId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
-import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId } from "../store/recentProjectsSlice";
+import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import type { RemoteServer, TerminalType } from "../types";
@@ -16,7 +16,7 @@ import ClipboardImageStrip from "./ClipboardImageStrip";
 import GitStatusBar from "./GitStatusBar";
 import { FaFolder, FaChevronDown, FaCheck } from "react-icons/fa";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
-import { FaXmark, FaPlus, FaBolt, FaGear, FaCodePullRequest, FaServer } from "react-icons/fa6";
+import { FaXmark, FaPlus, FaBolt, FaGear, FaCodePullRequest, FaServer, FaArrowsRotate } from "react-icons/fa6";
 import { PiKanbanDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
 import { BiSidebar, BiExpandVertical } from "react-icons/bi";
@@ -47,8 +47,8 @@ export default function TabBar() {
   const setAutoInsertClipboardImage = useAppStore((s) => s.setAutoInsertClipboardImage);
   const cliFontSizes = useAppStore((s) => s.cliFontSizes);
   const setCliFontSize = useAppStore((s) => s.setCliFontSize);
-  const claudeYolo = useAppStore((s) => s.claudeYolo);
-  const setClaudeYolo = useAppStore((s) => s.setClaudeYolo);
+  const cliYolo = useAppStore((s) => s.cliYolo);
+  const setCliYolo = useAppStore((s) => s.setCliYolo);
   const promptComposerEnabled = useAppStore((s) => s.promptComposerEnabled);
   const setPromptComposerEnabled = useAppStore((s) => s.setPromptComposerEnabled);
   const promptComposerAlwaysVisible = useAppStore((s) => s.promptComposerAlwaysVisible);
@@ -67,6 +67,14 @@ export default function TabBar() {
   const setSlashCommandGhostText = useAppStore((s) => s.setSlashCommandGhostText);
   const codeReviewCollapseAll = useAppStore((s) => s.codeReviewCollapseAll);
   const setCodeReviewCollapseAll = useAppStore((s) => s.setCodeReviewCollapseAll);
+  const commitMsgMode = useAppStore((s) => s.commitMsgMode ?? "simple");
+  const setCommitMsgMode = useAppStore((s) => s.setCommitMsgMode);
+  const shadowAiCli = useAppStore((s) => s.shadowAiCli ?? "claude");
+  const setShadowAiCli = useAppStore((s) => s.setShadowAiCli);
+  const openPanesInBackground = useAppStore((s) => s.openPanesInBackground);
+  const setOpenPanesInBackground = useAppStore((s) => s.setOpenPanesInBackground);
+  const terminalBackend = useAppStore((s) => s.terminalBackend ?? "wsl");
+  const setTerminalBackend = useAppStore((s) => s.setTerminalBackend);
   const devServers = useAppStore((s) => s.devServers);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
@@ -301,6 +309,44 @@ export default function TabBar() {
       setPendingDir(null);
     },
     [pendingDir, addTerminals, addTabWithLayout, addRecentProject, autoStartServerCommand, spawnDevServer]
+  );
+
+  /** Quick-open a recent project using saved layout (or template fallback) */
+  const quickOpenProject = useCallback(
+    (project: RecentProject, startFresh: boolean) => {
+      if (project.lastLayout) {
+        // Use last-closed layout — clone with fresh IDs, optionally strip resume IDs
+        const { layout, terminalIds } = cloneLayoutWithFreshIds(project.lastLayout, { stripResume: startFresh });
+        const batch = terminalIds.map((t) => ({
+          id: t.id,
+          type: t.type,
+          workingDir: project.path,
+        }));
+        addTerminals(batch);
+        const tabId = addTabWithLayout(project.name, project.path, layout);
+        addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate });
+        if (project.serverCommand && autoStartServerCommand) {
+          spawnDevServer(tabId, project.name, project.path, project.serverCommand);
+        }
+      } else if (project.lastTemplate) {
+        // Fallback to template-based rebuild
+        const { templateId, cols, rows, slotTypes, paneCount } = project.lastTemplate;
+        const { layout, terminalIds } = buildLayoutFromTemplate(templateId, cols, rows, paneCount);
+        const typedLayout = stampTerminalTypes(layout, terminalIds, slotTypes);
+        const batch = terminalIds.map((id, i) => ({
+          id,
+          type: slotTypes[i] ?? ("shell" as TerminalType),
+          workingDir: project.path,
+        }));
+        addTerminals(batch);
+        const tabId = addTabWithLayout(project.name, project.path, typedLayout);
+        addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate });
+        if (project.serverCommand && autoStartServerCommand) {
+          spawnDevServer(tabId, project.name, project.path, project.serverCommand);
+        }
+      }
+    },
+    [addTerminals, addTabWithLayout, addRecentProject, autoStartServerCommand, spawnDevServer]
   );
 
   // Track maximized state for window control icon
@@ -888,7 +934,9 @@ export default function TabBar() {
                 Recent Projects
               </div>
               {recentProjects.map((project) => {
-                const canQuickOpen = !!project.lastTemplate && !!project.quickOpen;
+                const hasSavedLayout = !!project.lastLayout || !!project.lastTemplate;
+                const canQuickOpen = hasSavedLayout && !!project.quickOpen;
+                const savedPaneCount = project.lastLayout ? countLeafPanes(project.lastLayout) : project.lastTemplate?.paneCount;
                 return (
                 <div
                   key={project.id}
@@ -909,21 +957,7 @@ export default function TabBar() {
                   onClick={() => {
                     setShowRecentMenu(false);
                     if (canQuickOpen) {
-                      // Quick-open: reuse saved grid + CLI assignments
-                      const { templateId, cols, rows, slotTypes, paneCount } = project.lastTemplate!;
-                      const { layout, terminalIds } = buildLayoutFromTemplate(templateId, cols, rows, paneCount);
-                      const typedLayout = stampTerminalTypes(layout, terminalIds, slotTypes);
-                      const batch = terminalIds.map((id, i) => ({
-                        id,
-                        type: slotTypes[i] ?? ("shell" as TerminalType),
-                        workingDir: project.path,
-                      }));
-                      addTerminals(batch);
-                      const tabId = addTabWithLayout(project.name, project.path, typedLayout);
-                      addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate });
-                      if (project.serverCommand && autoStartServerCommand) {
-                        spawnDevServer(tabId, project.name, project.path, project.serverCommand);
-                      }
+                      quickOpenProject(project, false);
                     } else {
                       setPendingDir({ name: project.name, dir: project.path });
                     }
@@ -939,39 +973,70 @@ export default function TabBar() {
                       {truncatePath(project.path)}
                     </div>
                   </div>
-                  {/* Quick-open toggle — only shown when a saved grid exists */}
-                  {project.lastTemplate && (
-                    <button
-                      title={project.quickOpen
-                        ? `Quick open ON (${project.lastTemplate.paneCount ?? "?"} panes) — click to disable`
-                        : `Quick open OFF — click to enable (reuse last ${project.lastTemplate.paneCount ?? "?"}-pane grid)`}
-                      style={{
-                        flexShrink: 0,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
-                        padding: "2px 6px",
-                        border: "1px solid",
-                        borderColor: project.quickOpen ? "var(--ezy-accent, #10b981)" : "var(--ezy-border)",
-                        borderRadius: 4,
-                        backgroundColor: project.quickOpen ? "var(--ezy-accent-glow, rgba(16,185,129,0.12))" : "transparent",
-                        color: project.quickOpen ? "var(--ezy-accent, #10b981)" : "var(--ezy-text-muted)",
-                        fontSize: 10,
-                        fontWeight: 600,
-                        cursor: "pointer",
-                        lineHeight: 1,
-                        whiteSpace: "nowrap",
-                        transition: "all 120ms ease",
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleProjectQuickOpen(project.path);
-                      }}
-                    >
-                      {/* Lightning icon */}
-                      <FaBolt size={10} color="currentColor" />
-                      {project.lastTemplate.paneCount ?? "?"}
-                    </button>
+                  {/* Quick-open toggle — only shown when a saved layout/template exists */}
+                  {hasSavedLayout && (
+                    <>
+                      {/* Start Fresh — same layout, new sessions */}
+                      {canQuickOpen && (
+                        <button
+                          title="Start fresh — same layout, new sessions"
+                          style={{
+                            flexShrink: 0,
+                            display: "flex",
+                            alignItems: "center",
+                            padding: "2px 4px",
+                            border: "1px solid var(--ezy-border)",
+                            borderRadius: 4,
+                            backgroundColor: "transparent",
+                            color: "var(--ezy-text-muted)",
+                            fontSize: 10,
+                            cursor: "pointer",
+                            lineHeight: 1,
+                            transition: "all 120ms ease",
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowRecentMenu(false);
+                            quickOpenProject(project, true);
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--ezy-text-muted)"; e.currentTarget.style.color = "var(--ezy-text)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--ezy-border)"; e.currentTarget.style.color = "var(--ezy-text-muted)"; }}
+                        >
+                          <FaArrowsRotate size={9} />
+                        </button>
+                      )}
+                      {/* Quick-open toggle */}
+                      <button
+                        title={project.quickOpen
+                          ? `Quick open ON (${savedPaneCount ?? "?"} panes) — click to disable`
+                          : `Quick open OFF — click to enable (reuse last ${savedPaneCount ?? "?"}-pane layout)`}
+                        style={{
+                          flexShrink: 0,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          padding: "2px 6px",
+                          border: "1px solid",
+                          borderColor: project.quickOpen ? "var(--ezy-accent, #10b981)" : "var(--ezy-border)",
+                          borderRadius: 4,
+                          backgroundColor: project.quickOpen ? "var(--ezy-accent-glow, rgba(16,185,129,0.12))" : "transparent",
+                          color: project.quickOpen ? "var(--ezy-accent, #10b981)" : "var(--ezy-text-muted)",
+                          fontSize: 10,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          lineHeight: 1,
+                          whiteSpace: "nowrap",
+                          transition: "all 120ms ease",
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleProjectQuickOpen(project.path);
+                        }}
+                      >
+                        <FaBolt size={10} color="currentColor" />
+                        {savedPaneCount ?? "?"}
+                      </button>
+                    </>
                   )}
                   {/* Remove button */}
                   <FaXmark
@@ -1126,7 +1191,7 @@ export default function TabBar() {
                   >
                     {icon}
                     {TERMINAL_CONFIGS[type].label}
-                    {type === "claude" && claudeYolo && (
+                    {!!cliYolo[type] && (
                       <span
                         style={{
                           fontSize: 9,
@@ -1366,6 +1431,65 @@ export default function TabBar() {
                 zIndex: 100,
               }}
             >
+              {/* Terminal Backend section */}
+              <div
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--ezy-text-muted)",
+                  borderBottom: "1px solid var(--ezy-border)",
+                }}
+              >
+                Terminal
+              </div>
+              <div style={{ padding: "8px 10px" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    borderRadius: 6,
+                    border: "1px solid var(--ezy-border)",
+                    overflow: "hidden",
+                  }}
+                >
+                  {(["wsl", "windows"] as const).map((opt) => {
+                    const isActive = terminalBackend === opt;
+                    return (
+                      <button
+                        key={opt}
+                        style={{
+                          flex: 1,
+                          padding: "5px 0",
+                          fontSize: 11,
+                          fontWeight: isActive ? 600 : 400,
+                          color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
+                          backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
+                          border: "none",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                          transition: "background-color 150ms ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!isActive) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!isActive) e.currentTarget.style.backgroundColor = "transparent";
+                        }}
+                        onClick={() => setTerminalBackend(opt)}
+                      >
+                        {opt === "wsl" ? "WSL" : "Windows"}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, lineHeight: 1.3 }}>
+                  New terminals use the selected backend
+                </div>
+              </div>
+              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
+
               {/* Behavior section */}
               <div
                 style={{
@@ -1543,6 +1667,19 @@ export default function TabBar() {
                 </span>
                 <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: slashCommandGhostText ? "var(--ezy-accent)" : "transparent", border: slashCommandGhostText ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
                   <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: slashCommandGhostText ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: slashCommandGhostText ? 16 : 2, transition: "left 150ms ease" }} />
+                </div>
+              </div>
+              <div
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
+                onClick={() => setOpenPanesInBackground(!openPanesInBackground)}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  Open panes in background
+                </span>
+                <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: openPanesInBackground ? "var(--ezy-accent)" : "transparent", border: openPanesInBackground ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: openPanesInBackground ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: openPanesInBackground ? 16 : 2, transition: "left 150ms ease" }} />
                 </div>
               </div>
 
@@ -1803,6 +1940,99 @@ export default function TabBar() {
                 </div>
               </div>
 
+              {/* Commit message mode */}
+              <div style={{ padding: "8px 10px" }}>
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", display: "block", marginBottom: 6 }}>
+                  Commit message
+                </span>
+                <div style={{ display: "flex", borderRadius: 6, border: "1px solid var(--ezy-border)", overflow: "hidden" }}>
+                  {(["empty", "simple", "advanced"] as const).map((opt) => {
+                    const isActive = commitMsgMode === opt;
+                    return (
+                      <button
+                        key={opt}
+                        style={{
+                          flex: 1,
+                          padding: "5px 0",
+                          fontSize: 11,
+                          fontWeight: isActive ? 600 : 400,
+                          color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
+                          backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
+                          border: "none",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                          transition: "background-color 150ms ease",
+                        }}
+                        onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
+                        onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.backgroundColor = "transparent"; }}
+                        onClick={() => setCommitMsgMode(opt)}
+                      >
+                        {opt === "empty" ? "Empty" : opt === "simple" ? "Simple" : "AI"}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, lineHeight: 1.3 }}>
+                  {commitMsgMode === "empty" && "Start with a blank commit message"}
+                  {commitMsgMode === "simple" && "Auto-fill from changed filenames"}
+                  {commitMsgMode === "advanced" && "Generate message via background AI session"}
+                </div>
+              </div>
+
+              {/* AI Sessions section */}
+              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
+              <div
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: "0.08em",
+                  textTransform: "uppercase",
+                  color: "var(--ezy-text-muted)",
+                  borderBottom: "1px solid var(--ezy-border)",
+                }}
+              >
+                AI Sessions
+              </div>
+              <div style={{ padding: "8px 10px" }}>
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", display: "block", marginBottom: 6 }}>
+                  Shadow AI provider
+                </span>
+                <div style={{ display: "flex", borderRadius: 6, border: "1px solid var(--ezy-border)", overflow: "hidden" }}>
+                  {(["claude", "codex", "gemini"] as const).map((opt) => {
+                    const isActive = shadowAiCli === opt;
+                    const isDisabled = opt === "gemini";
+                    return (
+                      <button
+                        key={opt}
+                        disabled={isDisabled}
+                        style={{
+                          flex: 1,
+                          padding: "5px 0",
+                          fontSize: 11,
+                          fontWeight: isActive ? 600 : 400,
+                          color: isDisabled ? "var(--ezy-text-muted)" : isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
+                          backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
+                          border: "none",
+                          cursor: isDisabled ? "default" : "pointer",
+                          fontFamily: "inherit",
+                          transition: "background-color 150ms ease",
+                          opacity: isDisabled ? 0.35 : 1,
+                        }}
+                        onMouseEnter={(e) => { if (!isActive && !isDisabled) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
+                        onMouseLeave={(e) => { if (!isActive && !isDisabled) e.currentTarget.style.backgroundColor = "transparent"; }}
+                        onClick={() => { if (!isDisabled) setShadowAiCli(opt as "claude" | "codex"); }}
+                      >
+                        {opt === "claude" ? "Claude" : opt === "codex" ? "Codex" : "Gemini"}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, lineHeight: 1.3 }}>
+                  Subscription used for Promptifier and AI commit messages
+                </div>
+              </div>
+
               {/* CLI Options section */}
               <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
               <div
@@ -1899,13 +2129,15 @@ export default function TabBar() {
                             </div>
                           </div>
                         </div>
-                        {cliType === "claude" && (
+                        {(["claude", "codex", "gemini"] as TerminalType[]).includes(cliType) && (() => {
+                          const isYolo = !!cliYolo[cliType];
+                          return (
                           <div
                             style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
-                            onClick={() => setClaudeYolo(!claudeYolo)}
+                            onClick={() => setCliYolo(cliType, !isYolo)}
                           >
                             <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                              {claudeYolo ? (
+                              {isYolo ? (
                                 <span
                                   style={{
                                     fontSize: 9,
@@ -1930,8 +2162,8 @@ export default function TabBar() {
                                 width: 28,
                                 height: 16,
                                 borderRadius: 8,
-                                backgroundColor: claudeYolo ? "var(--ezy-red, #e55)" : "transparent",
-                                border: claudeYolo ? "none" : "1px solid var(--ezy-border-light)",
+                                backgroundColor: isYolo ? "var(--ezy-red, #e55)" : "transparent",
+                                border: isYolo ? "none" : "1px solid var(--ezy-border-light)",
                                 position: "relative",
                                 transition: "background-color 150ms ease",
                                 flexShrink: 0,
@@ -1942,16 +2174,17 @@ export default function TabBar() {
                                   width: 12,
                                   height: 12,
                                   borderRadius: "50%",
-                                  backgroundColor: claudeYolo ? "#fff" : "var(--ezy-text-muted)",
+                                  backgroundColor: isYolo ? "#fff" : "var(--ezy-text-muted)",
                                   position: "absolute",
                                   top: 2,
-                                  left: claudeYolo ? 14 : 2,
+                                  left: isYolo ? 14 : 2,
                                   transition: "left 150ms ease",
                                 }}
                               />
                             </div>
                           </div>
-                        )}
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
@@ -2105,6 +2338,34 @@ export default function TabBar() {
                   <line x1="8" y1="10" x2="12" y2="10" />
                 </svg>
                 <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>Snippets</span>
+              </div>
+
+              {/* Keyboard Shortcuts */}
+              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                }}
+                onClick={() => {
+                  setShowSettingsMenu(false);
+                  window.dispatchEvent(new Event("ezydev:open-shortcuts"));
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1" y="4" width="14" height="9" rx="1.5" />
+                  <line x1="4" y1="7" x2="5.5" y2="7" />
+                  <line x1="7" y1="7" x2="8.5" y2="7" />
+                  <line x1="10.5" y1="7" x2="12" y2="7" />
+                  <line x1="4.5" y1="10" x2="11.5" y2="10" />
+                </svg>
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", flex: 1 }}>Keyboard Shortcuts</span>
+                <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>Ctrl+/</span>
               </div>
             </div>
           )}

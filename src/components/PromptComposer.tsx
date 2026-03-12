@@ -99,6 +99,8 @@ interface PromptComposerProps {
   scrollToPrompt: () => void;
   scrollToNextPrompt: () => void;
   didStealRef: React.MutableRefObject<boolean>;
+  /** When true, skip auto-focus on mount (pane opened in background). */
+  suppressAutoFocus?: boolean;
 }
 
 export default function PromptComposer({
@@ -118,6 +120,7 @@ export default function PromptComposer({
   scrollToPrompt,
   scrollToNextPrompt,
   didStealRef,
+  suppressAutoFocus = false,
 }: PromptComposerProps) {
   const promptHistory = useAppStore((s) => s.promptHistory);
   const addPromptHistory = useAppStore((s) => s.addPromptHistory);
@@ -479,6 +482,7 @@ export default function PromptComposer({
   // Auto-focus on mount + register as active composer
   useEffect(() => {
     useClipboardImageStore.getState().setActiveComposerTerminalId(terminalId);
+    if (suppressAutoFocus) return; // pane opened in background — don't steal focus
     const timer = setTimeout(() => textareaRef.current?.focus(), 30);
     return () => clearTimeout(timer);
   }, [terminalId]);
@@ -1042,7 +1046,7 @@ export default function PromptComposer({
   const cardPadding = isCodex
     ? `${Math.round((cellHeight + 12) / 2) - 3}px 10px ${Math.round((cellHeight + 12) / 2) - 5}px 10px`
     : isGemini
-      ? `${Math.round((cellHeight * 0.4 + 6) / 2)}px 10px ${Math.round((cellHeight * 0.4 + 6) / 2) - 5}px 10px`
+      ? `${Math.round((cellHeight * 0.4 + 6) / 2) - 1}px 10px ${Math.round((cellHeight * 0.4 + 6) / 2) - 4}px 10px`
       : "0 10px 2px 10px";
 
   return (
@@ -1357,8 +1361,9 @@ export default function PromptComposer({
               padding: 0,
               margin: 0,
               marginTop: useCard ? 7 : 0,
-                whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
               color: "transparent",
             }}
           >

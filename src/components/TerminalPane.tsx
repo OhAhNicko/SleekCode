@@ -44,6 +44,9 @@ function ensureHackFont(): Promise<void> {
   return hackFontReady;
 }
 
+/** Terminal IDs that should suppress auto-focus on init (background open). */
+export const suppressFocusTerminals = new Set<string>();
+
 interface TerminalPaneProps {
   terminalId: string;
   terminalType: TerminalType;
@@ -98,7 +101,19 @@ export default function TerminalPane({
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const [launchedWithYolo] = useState(() => terminalType === "claude" && useAppStore.getState().claudeYolo);
+  const focusRestorerRef = useRef<(() => void) | null>(null);
+  // Consume suppressFocusTerminals synchronously on first render so the
+  // value is available to PromptComposer's suppressAutoFocus prop BEFORE
+  // any useEffects fire.  initTerminal (async) later sets up the DOM blocker.
+  const focusSuppressedRef = useRef<boolean | null>(null);
+  if (focusSuppressedRef.current === null) {
+    focusSuppressedRef.current = suppressFocusTerminals.has(terminalId);
+    if (focusSuppressedRef.current) {
+      suppressFocusTerminals.delete(terminalId);
+    }
+  }
+  const [launchedWithYolo, setLaunchedWithYolo] = useState(() => !!useAppStore.getState().cliYolo[terminalType]);
+  const [restartKey, setRestartKey] = useState(0);
   const [exited, setExited] = useState(false);
   const [contextInfo, setContextInfo] = useState<ContextInfo | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
@@ -128,12 +143,23 @@ export default function TerminalPane({
   const sessionResumeIdPropRef = useRef(sessionResumeId);
   sessionResumeIdPropRef.current = sessionResumeId;
   const sessionLookupDone = useRef(false);
+  // Tracks whether we're waiting for PTY data after a restart (hides composer until loaded)
+  const awaitingRestartDataRef = useRef(false);
 
   const handlePtyData = useCallback((data: Uint8Array) => {
     terminalRef.current?.write(new Uint8Array(data));
     recordTerminalActivity(terminalId, terminalTypeRef.current, data.length);
     // Notify external data listeners (e.g. port detection for dev servers)
     getTerminalDataListener(terminalId)?.(data);
+
+    // Re-open composer after restart once PTY has started producing output
+    if (awaitingRestartDataRef.current) {
+      awaitingRestartDataRef.current = false;
+      const s = useAppStore.getState();
+      if (s.promptComposerEnabled && s.promptComposerAlwaysVisible) {
+        setComposerOpen(true);
+      }
+    }
 
     // On first data from a resumable CLI, look up session ID from disk after a short delay.
     // Skip if this pane already has a session ID (restored from persist).
@@ -142,20 +168,37 @@ export default function TerminalPane({
 
       const lookupSession = async (): Promise<boolean> => {
         try {
-          const wslCwd = toWslPath(workingDirRef.current);
+          const backend = useAppStore.getState().terminalBackend ?? "wsl";
           const type = terminalTypeRef.current;
-          console.log(`[SessionResume] lookup for ${type}, wslCwd="${wslCwd}", workingDir="${workingDirRef.current}"`);
-          if (!wslCwd) { console.log(`[SessionResume] no wslCwd, skipping`); return false; }
-          // Exclude IDs already claimed by other panes (prevents duplicates)
           const excludeIds = [...claimedSessionIds];
           let id: string | null = null;
-          if (type === "claude") {
-            id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
-          } else if (type === "codex") {
-            id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
-          } else if (type === "gemini") {
-            id = await invoke<string | null>("get_gemini_session_id", { excludeIds });
+
+          if (backend === "windows") {
+            // Windows native: use native Windows path and Windows session commands
+            const winCwd = workingDirRef.current;
+            console.log(`[SessionResume] lookup for ${type} (windows), cwd="${winCwd}"`);
+            if (!winCwd) { console.log(`[SessionResume] no cwd, skipping`); return false; }
+            if (type === "claude") {
+              id = await invoke<string | null>("get_claude_session_id_windows", { projectPath: winCwd, excludeIds });
+            } else if (type === "codex") {
+              id = await invoke<string | null>("get_codex_session_id_windows", { projectPath: winCwd, excludeIds });
+            } else if (type === "gemini") {
+              id = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: winCwd, excludeIds });
+            }
+          } else {
+            // WSL backend: convert path and use WSL commands
+            const wslCwd = toWslPath(workingDirRef.current);
+            console.log(`[SessionResume] lookup for ${type}, wslCwd="${wslCwd}", workingDir="${workingDirRef.current}"`);
+            if (!wslCwd) { console.log(`[SessionResume] no wslCwd, skipping`); return false; }
+            if (type === "claude") {
+              id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
+            } else if (type === "codex") {
+              id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
+            } else if (type === "gemini") {
+              id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+            }
           }
+
           console.log(`[SessionResume] ${type} lookup result: id=${id}`);
           if (id) {
             claimedSessionIds.add(id);
@@ -199,6 +242,8 @@ export default function TerminalPane({
     sessionResumeId,
     injectShellIntegration: useShellIntegration,
     ready: termReady,
+    restartKey,
+    forceYolo: launchedWithYolo,
   });
 
   // Initialize xterm.js (waits for Hack font to load — canvas renderer
@@ -251,6 +296,34 @@ export default function TerminalPane({
 
     let disposed = false;
     term.open(el);
+
+    // When "Open panes in background" created this terminal, suppress ALL
+    // focus attempts until the user explicitly activates this pane.
+    //
+    // Override the textarea's `focus` method at the DOM instance level.
+    // This shadows HTMLElement.prototype.focus on this specific element,
+    // blocking ALL focus regardless of source — xterm internal core calls,
+    // browser auto-focus, tab navigation, everything. No event-listener
+    // registration-order issues (capture-phase listeners on the target
+    // element fire in registration order, not by phase — xterm registers
+    // its listener in open() before us, so it would fire first).
+    if (focusSuppressedRef.current) {
+      const textarea = el.querySelector('textarea');
+      if (textarea) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (textarea as any).focus = function () { /* blocked */ };
+        focusRestorerRef.current = () => {
+          // Remove instance override → prototype method is restored
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          delete (textarea as any).focus;
+          focusSuppressedRef.current = false;
+          focusRestorerRef.current = null;
+        };
+      }
+
+      // Blur immediately in case open() or the browser already focused it
+      term.blur();
+    }
 
     term.onSelectionChange(() => {
       if (!copyOnSelectRef.current) return;
@@ -804,7 +877,8 @@ export default function TerminalPane({
     if (!supported) return;
 
     const poll = async () => {
-      const info = await readSessionContext(terminalType, sessionResumeId || undefined);
+      const backend = useAppStore.getState().terminalBackend ?? "wsl";
+      const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend);
       if (info !== null) {
         // Merge partial updates — rate_limits and info come from different
         // server events. Keep previous rate_limits when new poll has none.
@@ -831,12 +905,23 @@ export default function TerminalPane({
     };
   }, [terminalType, sessionResumeId]);
 
-  // Focus the active pane
+  // Composer settings — declared early because isActive effect references them.
+  const composerAlwaysVisible = useAppStore((s) => s.promptComposerEnabled && s.promptComposerAlwaysVisible);
+  const composerDismissedRef = useRef(false);
+
+  // Focus the active pane — also removes the DOM focus blocker if it was
+  // installed by the "open in background" feature, and opens the deferred
+  // composer (was skipped to prevent focus steal on background open).
   useEffect(() => {
-    if (isActive && terminalRef.current) {
-      terminalRef.current.focus();
+    if (isActive) {
+      focusRestorerRef.current?.();
+      terminalRef.current?.focus();
+      // Open composer now that the pane is active (deferred from background open)
+      if (composerAlwaysVisible && !composerDismissedRef.current && !composerOpen) {
+        setComposerOpen(true);
+      }
     }
-  }, [isActive]);
+  }, [isActive, composerAlwaysVisible, composerOpen]);
 
   // Force repaint when container becomes visible (tab switch).
   // xterm.js doesn't render while display:none — IntersectionObserver
@@ -882,11 +967,11 @@ export default function TerminalPane({
   }, []);
 
   // Auto-open composer when "always visible" is enabled.
-  // composerDismissedRef tracks manual Ctrl+I dismiss so we don't re-open immediately.
-  const composerAlwaysVisible = useAppStore((s) => s.promptComposerEnabled && s.promptComposerAlwaysVisible);
-  const composerDismissedRef = useRef(false);
   useEffect(() => {
-    if (composerAlwaysVisible && !composerDismissedRef.current) {
+    // Don't open composer when pane was opened in background — its many
+    // focus paths (onRender position changes, hidden→visible transitions)
+    // would steal focus from the original pane.  Deferred until isActive.
+    if (composerAlwaysVisible && !composerDismissedRef.current && !focusSuppressedRef.current) {
       setComposerOpen(true);
     }
   }, [composerAlwaysVisible]);
@@ -958,6 +1043,27 @@ export default function TerminalPane({
     terminalRef.current?.focus();
   }, []);
 
+  const handleRestart = useCallback(() => {
+    if (terminalRef.current) {
+      terminalRef.current.clear();
+      terminalRef.current.reset();
+    }
+    // Capture current YOLO state at restart time — updates badge + forceYolo for spawn
+    setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
+    setExited(false);
+    setContextInfo(null);
+    setCommandBlocks([]);
+    // Hide composer until PTY produces output again
+    awaitingRestartDataRef.current = true;
+    setComposerOpen(false);
+    // Only re-enable session lookup if we don't already have a session ID.
+    // If we DO have one, keep it — restart should use the SAME session, not find a new one.
+    if (!sessionResumeIdPropRef.current) {
+      sessionLookupDone.current = false;
+    }
+    setRestartKey((k) => k + 1);
+  }, [terminalType]);
+
   const handleClose = useCallback(() => {
     kill();
     onClose();
@@ -977,6 +1083,7 @@ export default function TerminalPane({
           isActive={isActive}
           onChangeType={onChangeType}
           onClose={handleClose}
+          onRestart={handleRestart}
           onSwapPane={onSwapPane}
           serverName={serverName}
           isYolo={launchedWithYolo}
@@ -1021,6 +1128,7 @@ export default function TerminalPane({
             scrollToPrompt={() => scrollToPromptRef.current()}
             scrollToNextPrompt={() => scrollToNextPromptRef.current()}
             didStealRef={composerDidStealRef}
+            suppressAutoFocus={!!focusSuppressedRef.current}
           />
         )}
         {/* Jump-to-bottom button — appears below scrollbar thumb when scrolled up */}

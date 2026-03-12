@@ -5,10 +5,12 @@ import { useAppStore } from "../store";
 import { parseUnifiedDiff, buildHunkPatch } from "../lib/diff-parser";
 import CodeReviewFileList from "./CodeReviewFileList";
 import CodeReviewDiffView from "./CodeReviewDiffView";
+import CommitPopover from "./CommitPopover";
 import type {
   ComparisonMode,
   GitFileStatus,
   GitBranchInfo,
+  GitAheadBehind,
   FileDiff,
 } from "../types";
 
@@ -36,7 +38,15 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
   const [showBranchPicker, setShowBranchPicker] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
 
+  const [showCommitPopover, setShowCommitPopover] = useState(false);
+  const [aheadBehind, setAheadBehind] = useState<GitAheadBehind | null>(null);
+  const [pushing, setPushing] = useState(false);
+  const [pushResult, setPushResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [pushError, setPushError] = useState<string | null>(null);
+
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const commitBtnRef = useRef<HTMLDivElement>(null);
+  const pushErrorRef = useRef<HTMLDivElement>(null);
 
   const getCompareArg = useCallback((): string | undefined => {
     if (comparisonMode === "vs-main") return "main";
@@ -58,7 +68,7 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
 
       const compareArg = getCompareArg();
 
-      const [statusResult, diffResult, branchResult] = await Promise.all([
+      const [statusResult, diffResult, branchResult, abResult] = await Promise.all([
         invoke<GitFileStatus[]>("git_status", { directory: workingDir }),
         invoke<string>("git_diff", {
           directory: workingDir,
@@ -66,11 +76,13 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
           compareTo: compareArg ?? null,
         }),
         invoke<GitBranchInfo>("git_branches", { directory: workingDir }),
+        invoke<GitAheadBehind>("git_ahead_behind", { directory: workingDir }),
       ]);
 
       setGitFiles(statusResult);
       setFileDiffs(parseUnifiedDiff(diffResult));
       setBranches(branchResult);
+      setAheadBehind(abResult);
       setError(null);
     } catch (err) {
       setError(String(err));
@@ -173,6 +185,43 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
     setShowBranchPicker(false);
     setLoading(true);
   }, []);
+
+  const handleCommitSuccess = useCallback(() => {
+    setShowCommitPopover(false);
+    window.dispatchEvent(new Event("ezydev:git-refresh"));
+  }, []);
+
+  const handlePush = useCallback(async () => {
+    if (pushing) return;
+    setPushing(true);
+    setPushError(null);
+    setPushResult(null);
+    try {
+      const msg = await invoke<string>("git_push", {
+        directory: workingDir,
+        setUpstream: !aheadBehind?.hasRemote,
+      });
+      setPushResult({ ok: true, msg });
+      window.dispatchEvent(new Event("ezydev:git-refresh"));
+      setTimeout(() => setPushResult(null), 2000);
+    } catch (err) {
+      setPushError(String(err));
+    } finally {
+      setPushing(false);
+    }
+  }, [workingDir, aheadBehind, pushing]);
+
+  // Close push error on outside click
+  useEffect(() => {
+    if (!pushError) return;
+    const handler = (e: MouseEvent) => {
+      if (pushErrorRef.current && !pushErrorRef.current.contains(e.target as Node)) {
+        setPushError(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pushError]);
 
   const modeLabel =
     comparisonMode === "uncommitted"
@@ -301,8 +350,130 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
           </div>
         </div>
 
-        {/* Right: refresh + close */}
+        {/* Right: commit + push + divider + refresh + fullscreen + close */}
         <div className="flex items-center gap-1">
+          {/* Commit button */}
+          <div ref={commitBtnRef} style={{ position: "relative" }}>
+            <button
+              onClick={() => setShowCommitPopover((v) => !v)}
+              disabled={gitFiles.length === 0}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
+              style={{
+                backgroundColor: gitFiles.length > 0 ? "#059669" : "transparent",
+                color: gitFiles.length > 0 ? "#fff" : "var(--ezy-text-muted)",
+                border: `1px solid ${gitFiles.length > 0 ? "#059669" : "var(--ezy-border-subtle)"}`,
+                opacity: gitFiles.length === 0 ? 0.35 : 1,
+                cursor: gitFiles.length === 0 ? "default" : "pointer",
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+                <path d="M3 8.5L6.5 12L13 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              Commit
+            </button>
+            {showCommitPopover && gitFiles.length > 0 && (
+              <CommitPopover
+                workingDir={workingDir}
+                gitFiles={gitFiles}
+                diffText={fileDiffs.map((d) => d.rawDiff).join("\n")}
+                onClose={() => setShowCommitPopover(false)}
+                onCommitSuccess={handleCommitSuccess}
+              />
+            )}
+          </div>
+
+          {/* Push button */}
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={handlePush}
+              disabled={pushing || (!aheadBehind?.ahead && aheadBehind?.hasRemote !== false)}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
+              style={{
+                backgroundColor: "transparent",
+                color: "var(--ezy-text-secondary)",
+                border: "1px solid var(--ezy-border-subtle)",
+                opacity: (aheadBehind?.ahead || !aheadBehind?.hasRemote) && !pushing ? 1 : 0.35,
+                cursor: (aheadBehind?.ahead || !aheadBehind?.hasRemote) && !pushing ? "pointer" : "default",
+              }}
+            >
+              {pushing ? (
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  style={{ animation: "ezy-spin 0.8s linear infinite" }}
+                >
+                  <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" />
+                </svg>
+              ) : pushResult?.ok ? (
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+                  <path d="M3 8.5L6.5 12L13 4" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : (
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+                  <path d="M8 12V4M5 6.5L8 3.5L11 6.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+              {pushResult?.ok
+                ? "Pushed"
+                : aheadBehind?.ahead
+                  ? `Push ${aheadBehind.ahead}`
+                  : "Push"}
+            </button>
+
+            {/* Push error popover */}
+            {pushError && (
+              <div
+                ref={pushErrorRef}
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 4px)",
+                  right: 0,
+                  width: 280,
+                  zIndex: 50,
+                  backgroundColor: "var(--ezy-surface-raised)",
+                  border: "1px solid var(--ezy-border)",
+                  borderRadius: 6,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                  padding: "8px 10px",
+                }}
+              >
+                <div className="text-[10px] font-medium" style={{ color: "#f87171", marginBottom: 6 }}>
+                  Push failed
+                </div>
+                <pre
+                  className="text-[10px]"
+                  style={{
+                    color: "var(--ezy-text-secondary)",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    margin: 0,
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {pushError}
+                </pre>
+                <button
+                  onClick={() => setPushError(null)}
+                  className="text-[10px] hover:opacity-80 transition-opacity mt-1.5"
+                  style={{
+                    color: "var(--ezy-text-muted)",
+                    background: "none",
+                    border: "none",
+                    cursor: "pointer",
+                    padding: 0,
+                  }}
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* 1px divider */}
+          <div style={{ width: 1, height: 14, backgroundColor: "var(--ezy-border-subtle)", margin: "0 2px" }} />
+
           {/* Refresh */}
           <svg
             width="14"
@@ -367,6 +538,14 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
             />
           </svg>
         </div>
+
+        {/* CSS keyframes for push spinner */}
+        <style>{`
+          @keyframes ezy-spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+          }
+        `}</style>
       </div>
 
       {/* Body */}

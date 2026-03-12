@@ -14,11 +14,13 @@ import WindowResizeHandles from "./components/WindowResizeHandles";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
+import { resolveWindowsCliPaths } from "./lib/windows-cli-cache";
 import { installStatuslineWrapper } from "./lib/statusline-setup";
 import { generateTerminalId } from "./lib/layout-utils";
 import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
 import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
 import UndoCloseToast from "./components/UndoCloseToast";
+import KeyboardShortcutsModal from "./components/KeyboardShortcutsModal";
 import DevServerTerminalHost from "./components/DevServerTerminalHost";
 
 export default function App() {
@@ -31,6 +33,7 @@ export default function App() {
   const snippets = useAppStore((s) => s.snippets);
   const [showHistory, setShowHistory] = useState(false);
   const [showSnippets, setShowSnippets] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
@@ -113,11 +116,17 @@ export default function App() {
     return actions;
   }, [launchConfigs, loadLaunchConfig, snippets]);
 
-  // Pre-warm WSL and resolve CLI paths at startup (background)
+  // Pre-warm CLI paths at startup (background) — branches on terminal backend
   useEffect(() => {
-    resolveWslCliPaths();
-    // Install statusline wrapper for Claude context data (chains to existing statusline)
-    installStatuslineWrapper();
+    const backend = useAppStore.getState().terminalBackend ?? "wsl";
+    if (backend === "windows") {
+      resolveWindowsCliPaths();
+      // Statusline wrapper is WSL-only — skip in Windows mode
+    } else {
+      resolveWslCliPaths();
+      // Install statusline wrapper for Claude context data (chains to existing statusline)
+      installStatuslineWrapper();
+    }
     // Clean up clipboard images older than 24h
     invoke("cleanup_clipboard_images", { maxAgeSecs: 86400 }).catch(() => {});
   }, []);
@@ -221,6 +230,13 @@ export default function App() {
     return () => window.removeEventListener("ezydev:open-snippets", handler);
   }, []);
 
+  // Listen for keyboard shortcuts modal open events from TabBar settings menu
+  useEffect(() => {
+    const handler = () => setShowShortcuts(true);
+    window.addEventListener("ezydev:open-shortcuts", handler);
+    return () => window.removeEventListener("ezydev:open-shortcuts", handler);
+  }, []);
+
   // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -237,6 +253,46 @@ export default function App() {
       if (ctrlKey && !shiftKey && key === "b") {
         e.preventDefault();
         toggleSidebar();
+        return;
+      }
+
+      // Ctrl+/ → Keyboard Shortcuts
+      if (ctrlKey && !shiftKey && key === "/") {
+        e.preventDefault();
+        setShowShortcuts((v) => !v);
+        return;
+      }
+
+      // Ctrl+1 → new Claude pane
+      if (ctrlKey && !shiftKey && key === "1") {
+        e.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent("ezydev:split-terminal", {
+            detail: { type: "claude" },
+          })
+        );
+        return;
+      }
+
+      // Ctrl+2 → new Codex pane
+      if (ctrlKey && !shiftKey && key === "2") {
+        e.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent("ezydev:split-terminal", {
+            detail: { type: "codex" },
+          })
+        );
+        return;
+      }
+
+      // Ctrl+3 → new Gemini pane
+      if (ctrlKey && !shiftKey && key === "3") {
+        e.preventDefault();
+        window.dispatchEvent(
+          new CustomEvent("ezydev:split-terminal", {
+            detail: { type: "gemini" },
+          })
+        );
         return;
       }
 
@@ -339,6 +395,7 @@ export default function App() {
       />
       {showSnippets && <SnippetPanel onClose={() => setShowSnippets(false)} />}
       {showHistory && <CommandHistory onClose={() => setShowHistory(false)} />}
+      {showShortcuts && <KeyboardShortcutsModal onClose={() => setShowShortcuts(false)} />}
       <ImageInsertUndoToast />
       <UndoCloseToast />
       <DevServerTerminalHost />

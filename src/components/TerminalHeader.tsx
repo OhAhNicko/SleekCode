@@ -4,6 +4,7 @@ import type { ContextInfo } from "../lib/context-parser";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { FaChevronDown, FaCheck } from "react-icons/fa";
 import { FaXmark, FaGripVertical } from "react-icons/fa6";
+import { BiRefresh } from "react-icons/bi";
 
 const TOOL_ORDER: TerminalType[] = ["claude", "codex", "gemini", "shell"];
 
@@ -23,6 +24,7 @@ interface TerminalHeaderProps {
   isActive: boolean;
   onChangeType: (type: TerminalType) => void;
   onClose: () => void;
+  onRestart?: () => void;
   onSwapPane?: (fromTerminalId: string, toTerminalId: string) => void;
   serverName?: string;
   isYolo?: boolean;
@@ -184,6 +186,7 @@ export default function TerminalHeader({
   isActive,
   onChangeType,
   onClose,
+  onRestart,
   onSwapPane,
   serverName,
   isYolo = false,
@@ -268,7 +271,7 @@ export default function TerminalHeader({
         <FaGripVertical size={12} color="var(--ezy-text-muted)" />
       </div>
       {/* Left: type badge — clickable to switch CLI */}
-      <div style={{ position: "relative", marginLeft: 3 }}>
+      <div style={{ position: "relative", marginLeft: 3, flexShrink: 0 }}>
         <div
           className="flex items-center gap-1.5"
           style={{ cursor: "pointer", borderRadius: 4, padding: "2px 4px", margin: "-2px -4px" }}
@@ -307,6 +310,23 @@ export default function TerminalHeader({
               YOLO
             </span>
           )}
+          {contextInfo?.collabMode && contextInfo.collabMode !== "default" && (
+            <span
+              style={{
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                lineHeight: 1,
+                padding: "1px 4px",
+                borderRadius: 3,
+                backgroundColor: "var(--ezy-cyan, #5eead4)",
+                color: "#000",
+                textTransform: "uppercase",
+              }}
+            >
+              {contextInfo.collabMode}
+            </span>
+          )}
           <FaChevronDown size={8} color="var(--ezy-text-muted)" />
         </div>
         {showTypePicker && (
@@ -320,12 +340,12 @@ export default function TerminalHeader({
         )}
       </div>
 
-      {/* Model name + context usage indicator — CLI panes only */}
+      {/* Model name + context usage indicator — CLI panes only (collapses when pane is narrow) */}
       {contextPercent != null && contextInfo && (
         <div
           className="ml-auto flex items-center gap-2"
           title={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%`}
-          style={{ marginRight: 6 }}
+          style={{ marginRight: 6, minWidth: 0, overflow: "hidden" }}
         >
           {contextInfo.model && (
             <span
@@ -337,9 +357,132 @@ export default function TerminalHeader({
                 opacity: 0.7,
               }}
             >
-              {contextInfo.model}
+              {contextInfo.model?.replace(/^gpt-/i, "GPT ") ?? ""}{contextInfo.effort ? ` - ${contextInfo.effort}` : ""}
             </span>
           )}
+          {/* Claude: version */}
+          {contextInfo.cliVersion && (
+            <span
+              style={{
+                fontSize: 9,
+                color: "var(--ezy-text-muted)",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+                opacity: 0.5,
+              }}
+            >
+              v{contextInfo.cliVersion}
+            </span>
+          )}
+          {/* Claude: speed mode */}
+          {contextInfo.speed && (
+            <span
+              style={{
+                fontSize: 9,
+                color: "var(--ezy-text-muted)",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+                opacity: 0.5,
+              }}
+            >
+              {contextInfo.speed}
+            </span>
+          )}
+          {/* Claude: session cost + cost/hr */}
+          {contextInfo.costUsd != null && (
+            <span
+              title={contextInfo.durationMs != null
+                ? `$${contextInfo.costUsd.toFixed(2)} total · $${(contextInfo.costUsd / (contextInfo.durationMs / 3_600_000)).toFixed(2)}/hr · ${Math.round(contextInfo.durationMs / 60_000)}m session`
+                : `$${contextInfo.costUsd.toFixed(2)} total`}
+              style={{
+                fontSize: 9,
+                fontVariantNumeric: "tabular-nums",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+                color: "var(--ezy-text-muted)",
+                opacity: 0.7,
+              }}
+            >
+              ${contextInfo.costUsd.toFixed(2)}{contextInfo.durationMs != null && contextInfo.durationMs > 0
+                ? ` · $${(contextInfo.costUsd / (contextInfo.durationMs / 3_600_000)).toFixed(2)}/hr`
+                : ""}
+            </span>
+          )}
+          {/* Claude: compact count */}
+          {contextInfo.compactCount != null && contextInfo.compactCount > 0 && (
+            <span
+              title={`Context compacted ${contextInfo.compactCount} time${contextInfo.compactCount !== 1 ? "s" : ""}`}
+              style={{
+                fontSize: 9,
+                fontVariantNumeric: "tabular-nums",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+                color: "var(--ezy-text-muted)",
+                opacity: 0.6,
+              }}
+            >
+              C:{contextInfo.compactCount}
+            </span>
+          )}
+          {/* Gemini: summary */}
+          {contextInfo.summary && (
+            <span
+              title={contextInfo.summary}
+              style={{
+                fontSize: 9,
+                color: "var(--ezy-text-muted)",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: 120,
+                opacity: 0.6,
+              }}
+            >
+              {contextInfo.summary}
+            </span>
+          )}
+          {/* Gemini: thinking tokens */}
+          {contextInfo.thinkingTokens != null && (
+            <span
+              title={`Last response used ${contextInfo.thinkingTokens.toLocaleString()} thinking tokens`}
+              style={{
+                fontSize: 9,
+                fontVariantNumeric: "tabular-nums",
+                lineHeight: 1,
+                whiteSpace: "nowrap",
+                color: "var(--ezy-text-muted)",
+                opacity: 0.6,
+              }}
+            >
+              T:{contextInfo.thinkingTokens.toLocaleString()}
+            </span>
+          )}
+          {/* Gemini: quota reset time */}
+          {contextInfo.quotaResetTime && (() => {
+            const reset = new Date(contextInfo.quotaResetTime);
+            const now = new Date();
+            const diffMs = reset.getTime() - now.getTime();
+            if (diffMs <= 0) return null;
+            const diffH = Math.floor(diffMs / 3_600_000);
+            const diffM = Math.floor((diffMs % 3_600_000) / 60_000);
+            const label = diffH > 0 ? `${diffH}h${diffM}m` : `${diffM}m`;
+            return (
+              <span
+                title={`Quota resets at ${reset.toLocaleTimeString()}`}
+                style={{
+                  fontSize: 9,
+                  fontVariantNumeric: "tabular-nums",
+                  lineHeight: 1,
+                  whiteSpace: "nowrap",
+                  color: "var(--ezy-text-muted)",
+                  opacity: 0.5,
+                }}
+              >
+                RST:{label}
+              </span>
+            );
+          })()}
           {/* Rate limits — left of context bar (show remaining, not used) */}
           {contextInfo.rateLimitFiveHour != null && (() => {
             const left = Math.round((100 - contextInfo.rateLimitFiveHour) * 100) / 100;
@@ -425,11 +568,25 @@ export default function TerminalHeader({
           >
             {contextPercent.toFixed(2)}%
           </span>
+
         </div>
       )}
 
-      {/* Right: close (visible on header hover) */}
-      <div className={`flex items-center gap-0.5 ${contextPercent == null ? "ml-auto" : ""} opacity-0 group-hover:opacity-100 transition-opacity`}>
+      {/* Right: restart + close (visible on header hover) */}
+      <div className={`flex items-center gap-0.5 ${contextPercent == null ? "ml-auto" : ""} opacity-0 group-hover:opacity-100 transition-opacity`} style={{ flexShrink: 0 }}>
+        {onRestart && (
+          <button
+            onClick={onRestart}
+            title="Restart (same session)"
+            className="p-1 rounded transition-colors hover:bg-[var(--ezy-border)]"
+          >
+            <BiRefresh
+              size={12}
+              color="var(--ezy-text-muted)"
+              style={{ transform: "scale(1.3)" }}
+            />
+          </button>
+        )}
         <button
           onClick={onClose}
           title="Close Pane (Ctrl+Shift+W)"

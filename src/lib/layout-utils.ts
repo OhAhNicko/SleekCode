@@ -1,4 +1,4 @@
-import type { PaneLayout, PaneLeaf, PaneBrowser, PaneKanban, PaneSplit, TerminalType } from "../types";
+import type { PaneLayout, PaneLeaf, PaneBrowser, PaneKanban, PaneCodeReview, PaneFileViewer, PaneSplit, TerminalType } from "../types";
 
 let paneCounter = 0;
 export function generatePaneId(): string {
@@ -596,4 +596,58 @@ export function addBrowserPaneLeft(layout: PaneLayout, url: string, sizePercent 
     sizes: [sizePercent, 100 - sizePercent],
   };
   return { layout: newLayout, paneId };
+}
+
+/**
+ * Clone a layout tree with fresh pane/terminal IDs.
+ * Preserves terminalType, sessionResumeId, sizes, directions, and all non-terminal pane data.
+ * Returns the cloned layout plus a list of terminal IDs (for creating TerminalInstance records).
+ */
+export function cloneLayoutWithFreshIds(
+  layout: PaneLayout,
+  opts?: { stripResume?: boolean }
+): { layout: PaneLayout; terminalIds: { id: string; type: TerminalType; sessionResumeId?: string }[] } {
+  const terminalIds: { id: string; type: TerminalType; sessionResumeId?: string }[] = [];
+
+  function walk(node: PaneLayout): PaneLayout {
+    switch (node.type) {
+      case "terminal": {
+        const newId = generateTerminalId();
+        const resumeId = opts?.stripResume ? undefined : node.sessionResumeId;
+        terminalIds.push({ id: newId, type: node.terminalType ?? "shell", sessionResumeId: resumeId });
+        return {
+          type: "terminal",
+          id: generatePaneId(),
+          terminalId: newId,
+          terminalType: node.terminalType,
+          sessionResumeId: resumeId,
+        } as PaneLeaf;
+      }
+      case "split":
+        return {
+          type: "split",
+          id: generatePaneId(),
+          direction: node.direction,
+          children: [walk(node.children[0]), walk(node.children[1])] as [PaneLayout, PaneLayout],
+          sizes: node.sizes,
+        } as PaneSplit;
+      case "browser":
+        return { type: "browser", id: generatePaneId(), url: node.url } as PaneBrowser;
+      case "kanban":
+        return { type: "kanban", id: generatePaneId(), vertical: node.vertical } as PaneKanban;
+      case "codereview":
+        return { type: "codereview", id: generatePaneId() } as PaneCodeReview;
+      case "fileviewer":
+        return { type: "fileviewer", id: generatePaneId(), files: [], activeFile: "" } as PaneFileViewer;
+      case "editor":
+        // Editors reference specific files that may not exist — skip, replace with shell
+        const editorId = generateTerminalId();
+        terminalIds.push({ id: editorId, type: "shell" });
+        return { type: "terminal", id: generatePaneId(), terminalId: editorId, terminalType: "shell" } as PaneLeaf;
+      default:
+        return node;
+    }
+  }
+
+  return { layout: walk(layout), terminalIds };
 }

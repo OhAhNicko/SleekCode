@@ -41,10 +41,26 @@ function guessDefaultPort(command: string): number {
 }
 
 /** Build a shell one-liner that kills old processes and removes framework lock files. */
-function buildCleanupPrefix(command: string, detectedPort: number): string {
+function buildCleanupPrefix(command: string, detectedPort: number, backend?: string): string {
   const parts: string[] = [];
   const defaultPort = guessDefaultPort(command);
 
+  if (backend === "windows") {
+    // PowerShell cleanup: kill processes by port
+    const killPort = (port: number) =>
+      `$p = Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`;
+    parts.push(killPort(defaultPort));
+    if (detectedPort > 0 && detectedPort !== defaultPort) {
+      parts.push(killPort(detectedPort));
+    }
+    if (/\bnext\b/.test(command)) {
+      parts.push("Remove-Item -Force .next\\dev\\lock -ErrorAction SilentlyContinue");
+    }
+    parts.push("Start-Sleep -Seconds 1");
+    return parts.join("; ");
+  }
+
+  // WSL/Linux cleanup
   // Always kill the default port first — the stale instance is typically here
   parts.push(`fuser -k ${defaultPort}/tcp 2>/dev/null`);
   // Also kill the detected port if it differs (auto-incremented by framework)
@@ -184,7 +200,8 @@ export default function DevServerTerminalHost() {
               updateDevServerPort(ds.id, 0);
               updateDevServerError(ds.id, undefined);
 
-              const cleanup = buildCleanupPrefix(ds.command, ds.port);
+              const backend = useAppStore.getState().terminalBackend ?? "wsl";
+              const cleanup = buildCleanupPrefix(ds.command, ds.port, backend);
 
               if (attempts === 0) {
                 // First retry: kill old process on default port + remove lock, then same command

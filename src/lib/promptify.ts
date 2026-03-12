@@ -1,9 +1,12 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { getCachedWslPath, getCachedCliPath, getCachedDistro } from "./wsl-cache";
+import { useAppStore } from "../store";
 
 const META_PROMPT = `Rewrite this short coding instruction into a sharp, actionable prompt for an AI coding assistant (like Claude Code). Output 2-4 concise sentences max. Be specific about what to change and the expected outcome. Mention edge cases only if critical. Say "preserve existing patterns" if relevant. No preamble, no markdown, no meta-commentary — output ONLY the rewritten prompt.
 
 Short instruction:`;
+
+// For Codex: same meta-prompt is combined with user text and piped via stdin
 
 function stripAnsi(str: string): string {
   // eslint-disable-next-line no-control-regex
@@ -31,18 +34,19 @@ function toBase64(str: string): string {
  * command-line escaping mangles nested quotes in long args passed to wsl.exe.
  */
 export function promptify(shortPrompt: string): Promise<string> {
+  const shadowCli = useAppStore.getState().shadowAiCli ?? "claude";
   const cachedPath = getCachedWslPath();
-  const cliPath = getCachedCliPath("claude");
+  const cliPath = getCachedCliPath(shadowCli);
   const distro = getCachedDistro();
 
-  console.log("[Promptify] starting", { cachedPath: !!cachedPath, cliPath, distro });
+  console.log("[Promptify] starting", { shadowCli, cachedPath: !!cachedPath, cliPath, distro });
 
   if (!cachedPath || !cliPath) {
-    return Promise.reject(new Error("Claude CLI path not cached. Open a Claude pane first."));
+    return Promise.reject(new Error(`${shadowCli} CLI path not cached. Open a ${shadowCli} pane first.`));
   }
 
-  const fullPrompt = `${META_PROMPT} ${shortPrompt}`;
-  const b64 = toBase64(fullPrompt);
+  // Both CLIs: encode meta-prompt + user text together
+  const b64 = toBase64(`${META_PROMPT} ${shortPrompt}`);
   const distroArgs = distro ? ["-d", distro] : [];
   const marker = `__EZYDEV_PROMPTIFY_${Date.now()}__`;
 
@@ -123,20 +127,23 @@ export function promptify(shortPrompt: string): Promise<string> {
       settle(new Error("Promptify timed out"));
     }, 60000);
 
-    // Pipe decoded prompt directly to `claude -p` stdin.
-    // Avoids ALL problematic chars for Windows/WSL arg passing: no >, <, ", $().
-    // bash -lic sources .bashrc (nvm/PATH setup), so no explicit PATH needed.
-    // Only single quotes used (safe: b64 is A-Za-z0-9+/=, marker is alphanum).
-    const bashCmd = `unset CLAUDECODE; export TERM=dumb; echo '${marker}'; echo '${b64}' | base64 -d | ${cliPath} -p`;
+    // Claude: pipe full prompt to stdin via `claude -p` with TERM=dumb
+    // Codex: pipe stdin to `codex exec --color never -` (silent mode)
+    // b64 is A-Za-z0-9+/=, marker is alphanum — safe for single quotes.
+    const termExport = shadowCli === "codex" ? "export TERM=xterm-256color" : "export TERM=dumb";
+    const cliCmd = shadowCli === "codex"
+      ? `echo '${b64}' | base64 -d | ${cliPath} exec --skip-git-repo-check --color never - 2>/dev/null`
+      : `echo '${b64}' | base64 -d | ${cliPath} -p`;
+    const bashCmd = `unset CLAUDECODE; ${termExport}; echo '${marker}'; ${cliCmd}`;
 
-    console.log("[Promptify] spawning PTY, cmd length:", bashCmd.length);
+    console.log(`[Promptify] using ${shadowCli.toUpperCase()} | cliPath: ${cliPath} | cmd: ${cliCmd.slice(0, 120)}...`);
     invoke<number>("pty_spawn", {
       command: "wsl.exe",
       args: [...distroArgs, "--", "bash", "-lic", bashCmd],
       cols: 200,
       rows: 50,
       cwd: null,
-      env: { TERM: "dumb" },
+      env: { TERM: shadowCli === "codex" ? "xterm-256color" : "dumb" },
       onData: onDataChan,
       onExit: onExitChan,
     })

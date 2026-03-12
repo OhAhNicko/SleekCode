@@ -19,7 +19,7 @@ import { getPtyWrite } from "../store/terminalSlice";
 import { snapshotPane } from "../store/undoCloseStore";
 import type { CommandBlock } from "../lib/command-block-parser";
 import PaneGrid from "./PaneGrid";
-import TerminalPane from "./TerminalPane";
+import TerminalPane, { suppressFocusTerminals } from "./TerminalPane";
 import ToolSelector from "./ToolSelector";
 
 interface WorkspaceProps {
@@ -36,6 +36,23 @@ export default function Workspace({ tab }: WorkspaceProps) {
     null
   );
   const [showToolSelector, setShowToolSelector] = useState(false);
+
+  // Track which element last had DOM focus inside a terminal pane.
+  // Captures BOTH xterm textareas and PromptComposer textareas — whichever
+  // was focused when the user last interacted with a terminal pane.
+  // Survives clicks on TabBar/menus (those elements aren't inside a pane).
+  const lastFocusedElementRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const handler = (e: FocusEvent) => {
+      const target = e.target as HTMLElement;
+      const pane = target.closest('[data-terminal-id]');
+      if (pane) {
+        lastFocusedElementRef.current = target;
+      }
+    };
+    document.addEventListener('focusin', handler);
+    return () => document.removeEventListener('focusin', handler);
+  }, []);
 
   // Check if this is a fresh tab that needs its first terminal spawned
   // (skip if the leaf has a persisted terminalType — that means it's being restored)
@@ -92,6 +109,21 @@ export default function Workspace({ tab }: WorkspaceProps) {
     },
     [setActiveTerminal]
   );
+
+  // Refocus the previously focused element — used after "open in background"
+  // to return focus to wherever the user was (xterm textarea OR composer textarea).
+  // Retries because the new pane's async init may steal focus later.
+  const refocusPrevious = useCallback(() => {
+    const doFocus = () => {
+      const el = lastFocusedElementRef.current;
+      if (el && el.isConnected) el.focus();
+    };
+    doFocus();
+    setTimeout(doFocus, 50);
+    setTimeout(doFocus, 200);
+    setTimeout(doFocus, 500);
+    setTimeout(doFocus, 1000);
+  }, []);
 
   const handleSpawnTerminal = useCallback(
     (terminalId: string, type: TerminalType, serverId?: string) => {
@@ -194,18 +226,30 @@ export default function Workspace({ tab }: WorkspaceProps) {
       const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type };
       handleSpawnTerminal(newTerminalId, type, tab.serverId);
 
+      const focusNewPane = !useAppStore.getState().openPanesInBackground;
+
+      // Mark this terminal for focus suppression — TerminalPane will
+      // override textarea.focus() until the pane becomes active.
+      if (!focusNewPane) {
+        suppressFocusTerminals.add(newTerminalId);
+      }
+
       if (detail?.direction === "vertical" && activeTerminalId) {
         const paneId = findPaneIdForTerminal(tab.layout, activeTerminalId);
         if (paneId) {
           handleLayoutChange(splitPane(tab.layout, paneId, "vertical", newLeaf));
+          if (focusNewPane) handleTerminalFocus(newTerminalId);
+          else refocusPrevious();
           return;
         }
       }
       handleLayoutChange(addPaneAsGrid(tab.layout, newLeaf));
+      if (focusNewPane) handleTerminalFocus(newTerminalId);
+      else refocusPrevious();
     };
     window.addEventListener("ezydev:split-terminal", handler);
     return () => window.removeEventListener("ezydev:split-terminal", handler);
-  }, [tab.id, tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal]);
+  }, [tab.id, tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal, handleTerminalFocus, refocusPrevious]);
 
   // Auto-spawn terminals for restored tabs (session restore)
   const hasAutoSpawned = useRef(false);

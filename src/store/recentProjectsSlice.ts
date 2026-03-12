@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { TerminalType } from "../types";
+import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, PaneLayout } from "../types";
 
 export interface RecentProjectTemplate {
   templateId: string;
@@ -18,6 +18,7 @@ export interface RecentProject {
   lastTemplate?: RecentProjectTemplate;
   serverCommand?: string;
   quickOpen?: boolean;
+  lastLayout?: PaneLayout;
 }
 
 const MAX_RECENT_PROJECTS = 15;
@@ -79,7 +80,7 @@ export interface RecentProjectsSlice {
   restoreLastSession: boolean;
   autoInsertClipboardImage: boolean;
   cliFontSizes: CliFontSizes;
-  claudeYolo: boolean;
+  cliYolo: Partial<Record<TerminalType, boolean>>;
   promptComposerEnabled: boolean;
   promptComposerAlwaysVisible: boolean;
   promptHistory: string[];
@@ -92,6 +93,10 @@ export interface RecentProjectsSlice {
   confirmQuit: boolean;
   slashCommandGhostText: boolean;
   codeReviewCollapseAll: boolean;
+  openPanesInBackground: boolean;
+  terminalBackend: TerminalBackend;
+  commitMsgMode: CommitMsgMode;
+  shadowAiCli: ShadowAiCli;
   projectColors: Record<string, ProjectColorId>;
   setProjectColor: (workingDir: string, colorId: ProjectColorId) => void;
   addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string }) => void;
@@ -101,7 +106,7 @@ export interface RecentProjectsSlice {
   setRestoreLastSession: (value: boolean) => void;
   setAutoInsertClipboardImage: (value: boolean) => void;
   setCliFontSize: (type: TerminalType, size: number) => void;
-  setClaudeYolo: (value: boolean) => void;
+  setCliYolo: (type: TerminalType, value: boolean) => void;
   setPromptComposerEnabled: (value: boolean) => void;
   setPromptComposerAlwaysVisible: (value: boolean) => void;
   addPromptHistory: (text: string) => void;
@@ -116,7 +121,12 @@ export interface RecentProjectsSlice {
   setConfirmQuit: (value: boolean) => void;
   setSlashCommandGhostText: (value: boolean) => void;
   setCodeReviewCollapseAll: (value: boolean) => void;
+  setOpenPanesInBackground: (value: boolean) => void;
+  setTerminalBackend: (value: TerminalBackend) => void;
+  setCommitMsgMode: (value: CommitMsgMode) => void;
+  setShadowAiCli: (value: ShadowAiCli) => void;
   updateProjectTemplate: (path: string, template: RecentProjectTemplate) => void;
+  updateProjectLayout: (path: string, layout: PaneLayout) => void;
   toggleProjectQuickOpen: (path: string) => void;
 }
 
@@ -131,7 +141,7 @@ export const createRecentProjectsSlice: StateCreator<
   restoreLastSession: false,
   autoInsertClipboardImage: false,
   cliFontSizes: {},
-  claudeYolo: false,
+  cliYolo: {},
   promptComposerEnabled: false,
   promptComposerAlwaysVisible: false,
   promptHistory: [],
@@ -144,6 +154,10 @@ export const createRecentProjectsSlice: StateCreator<
   confirmQuit: true,
   slashCommandGhostText: false,
   codeReviewCollapseAll: false,
+  openPanesInBackground: false,
+  terminalBackend: "wsl",
+  commitMsgMode: "simple",
+  shadowAiCli: "claude",
   projectColors: {},
 
   setProjectColor: (workingDir, colorId) => {
@@ -221,8 +235,8 @@ export const createRecentProjectsSlice: StateCreator<
     }));
   },
 
-  setClaudeYolo: (value) => {
-    set({ claudeYolo: value });
+  setCliYolo: (type, value) => {
+    set((s) => ({ cliYolo: { ...s.cliYolo, [type]: value } }));
   },
 
   setPromptComposerEnabled: (value) => {
@@ -275,6 +289,20 @@ export const createRecentProjectsSlice: StateCreator<
     set({ codeReviewCollapseAll: value });
   },
 
+  setOpenPanesInBackground: (value) => {
+    set({ openPanesInBackground: value });
+  },
+
+  setTerminalBackend: (value) => {
+    set({ terminalBackend: value });
+  },
+  setCommitMsgMode: (value) => {
+    set({ commitMsgMode: value });
+  },
+  setShadowAiCli: (value) => {
+    set({ shadowAiCli: value });
+  },
+
   addCustomServerCommand: (command) => {
     set((state) => {
       const trimmed = command.trim();
@@ -306,6 +334,17 @@ export const createRecentProjectsSlice: StateCreator<
       recentProjects: state.recentProjects.map((p) =>
         normalizePath(p.path) === normalized
           ? { ...p, lastTemplate: template }
+          : p
+      ),
+    }));
+  },
+
+  updateProjectLayout: (path, layout) => {
+    const normalized = normalizePath(path);
+    set((state) => ({
+      recentProjects: state.recentProjects.map((p) =>
+        normalizePath(p.path) === normalized
+          ? { ...p, lastLayout: layout }
           : p
       ),
     }));

@@ -180,7 +180,7 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
 
 
 export default function TemplatePicker({ onSelect, onClose, initialServerCommand }: TemplatePickerProps) {
-  const claudeYolo = useAppStore((s) => s.claudeYolo);
+  const cliYolo = useAppStore((s) => s.cliYolo);
   const addCustomServerCommand = useAppStore((s) => s.addCustomServerCommand);
   const removeCustomServerCommand = useAppStore((s) => s.removeCustomServerCommand);
   const [selectedTemplate, setSelectedTemplate] = useState<WorkspaceTemplate | null>(null);
@@ -635,7 +635,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text)" }}>
                           {agent.label}
-                          {agent.type === "claude" && claudeYolo && (
+                          {!!cliYolo[agent.type] && (
                             <span
                               style={{
                                 fontSize: 9,

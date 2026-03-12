@@ -1,4 +1,5 @@
 export type TerminalType = "claude" | "codex" | "gemini" | "shell" | "devserver";
+export type TerminalBackend = "wsl" | "windows";
 
 export type AuthMethod = "ssh-key" | "password";
 
@@ -181,4 +182,13 @@ export interface FileDiff {
   status: string;
   hunks: DiffHunk[];
   rawDiff: string;
+}
+
+export type CommitMsgMode = "empty" | "simple" | "advanced";
+export type ShadowAiCli = "claude" | "codex";
+
+export interface GitAheadBehind {
+  ahead: number;
+  behind: number;
+  hasRemote: boolean;
 }
