@@ -111,7 +111,7 @@ export default function CommandBlockOverlay({
       {visibleBlocks.map(({ block, top, height }) => {
         const duration = formatDuration(block.timestamp, block.endTimestamp);
         const isError = block.exitCode !== null && block.exitCode !== 0;
-        const gutterColor = isError ? "var(--ezy-red)" : "var(--ezy-accent)";
+        const gutterColor = isError ? "#f87171" : "#4ade80";
 
         return (
           <div
@@ -197,7 +197,7 @@ export default function CommandBlockOverlay({
                     padding: "1px 5px",
                     borderRadius: 3,
                     backgroundColor:
-                      block.exitCode === 0 ? "var(--ezy-accent-dim)" : "var(--ezy-red)",
+                      block.exitCode === 0 ? "#22c55e" : "#f87171",
                     color: "#fff",
                   }}
                 >

@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { THEMES, getTheme } from "../lib/themes";
-import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, generateTerminalId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes } from "../lib/layout-utils";
+import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, generateTerminalId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes, hasGamePane } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
@@ -17,7 +17,7 @@ import GitStatusBar from "./GitStatusBar";
 import { FaFolder, FaChevronDown, FaCheck } from "react-icons/fa";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
 import { FaXmark, FaPlus, FaBolt, FaGear, FaServer, FaArrowsRotate } from "react-icons/fa6";
-import { PiKanbanDuotone } from "react-icons/pi";
+import { PiKanbanDuotone, PiGameControllerDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
 import { BiSidebar, BiExpandVertical } from "react-icons/bi";
 
@@ -92,6 +92,8 @@ export default function TabBar() {
   const [pendingDir, setPendingDir] = useState<{ name: string; dir: string; serverId?: string } | null>(null);
   const [expandedCli, setExpandedCli] = useState<Record<string, boolean>>({});
   const [themeExpanded, setThemeExpanded] = useState(false);
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({ terminal: true, behavior: true, preview: true, codereview: true, ai: true, cli: true });
+  const toggleSection = useCallback((key: string) => setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] })), []);
   const [colorPickerTab, setColorPickerTab] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const recentMenuRef = useRef<HTMLDivElement>(null);
@@ -1375,6 +1377,39 @@ export default function TabBar() {
           </div>
         )}
 
+        {/* Mini Games — only for project tabs */}
+        {(() => {
+          const at = tabs.find((t) => t.id === activeTabId);
+          return at && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab;
+        })() && (
+          <div
+            onClick={() => {
+              window.dispatchEvent(new CustomEvent("ezydev:open-game"));
+            }}
+            title="Mini Games"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              alignSelf: "center",
+              width: 34,
+              height: 26,
+              cursor: "pointer",
+              borderRadius: 4,
+              backgroundColor: "transparent",
+              transition: "background-color 120ms ease",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+          >
+            {(() => {
+              const tab = tabs.find((t) => t.id === activeTabId);
+              const hasGame = tab ? hasGamePane(tab.layout) : false;
+              return <PiGameControllerDuotone size={14} color={hasGame ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} style={{ transform: "scale(1.3)" }} />;
+            })()}
+          </div>
+        )}
+
         {/* Settings */}
         <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
           <div
@@ -1421,24 +1456,32 @@ export default function TabBar() {
                 border: "1px solid var(--ezy-border)",
                 borderRadius: 8,
                 boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
-                zIndex: 100,
+                zIndex: 9999,
               }}
             >
               {/* Terminal Backend section */}
               <div
                 style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
                   padding: "6px 10px",
                   fontSize: 10,
                   fontWeight: 600,
                   letterSpacing: "0.08em",
                   textTransform: "uppercase",
                   color: "var(--ezy-text-muted)",
-                  borderBottom: "1px solid var(--ezy-border)",
+                  borderBottom: !collapsedSections.terminal ? "1px solid var(--ezy-border)" : "none",
+                  cursor: "pointer",
                 }}
+                onClick={() => toggleSection("terminal")}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
               >
-                Terminal
+                <span>Terminal</span>
+                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.terminal ? "rotate(-90deg)" : "rotate(0deg)" }} />
               </div>
-              <div style={{ padding: "8px 10px" }}>
+              {!collapsedSections.terminal && <div style={{ padding: "8px 10px" }}>
                 <div
                   style={{
                     display: "flex",
@@ -1454,7 +1497,7 @@ export default function TabBar() {
                         key={opt}
                         style={{
                           flex: 1,
-                          padding: "5px 0",
+                          padding: "2px 0",
                           fontSize: 11,
                           fontWeight: isActive ? 600 : 400,
                           color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
@@ -1474,30 +1517,39 @@ export default function TabBar() {
                       >
                         {opt === "wsl" ? "WSL" : "Windows"}
                       </button>
+
                     );
                   })}
                 </div>
                 <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, lineHeight: 1.3 }}>
                   New terminals use the selected backend
                 </div>
-              </div>
+              </div>}
               <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
 
               {/* Behavior section */}
               <div
                 style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
                   padding: "6px 10px",
                   fontSize: 10,
                   fontWeight: 600,
                   letterSpacing: "0.08em",
                   textTransform: "uppercase",
                   color: "var(--ezy-text-muted)",
-                  borderBottom: "1px solid var(--ezy-border)",
+                  borderBottom: !collapsedSections.behavior ? "1px solid var(--ezy-border)" : "none",
+                  cursor: "pointer",
                 }}
+                onClick={() => toggleSection("behavior")}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
               >
-                Behavior
+                <span>Behavior</span>
+                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.behavior ? "rotate(-90deg)" : "rotate(0deg)" }} />
               </div>
-              <div
+              {!collapsedSections.behavior && <><div
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1806,22 +1858,31 @@ export default function TabBar() {
                 </div>
               </div>
 
+              </>}
               {/* Preview Panes section */}
               <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
               <div
                 style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
                   padding: "6px 10px",
                   fontSize: 10,
                   fontWeight: 600,
                   letterSpacing: "0.08em",
                   textTransform: "uppercase",
                   color: "var(--ezy-text-muted)",
-                  borderBottom: "1px solid var(--ezy-border)",
+                  borderBottom: !collapsedSections.preview ? "1px solid var(--ezy-border)" : "none",
+                  cursor: "pointer",
                 }}
+                onClick={() => toggleSection("preview")}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
               >
-                Preview Panes
+                <span>Preview Panes</span>
+                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.preview ? "rotate(-90deg)" : "rotate(0deg)" }} />
               </div>
-              <div
+              {!collapsedSections.preview && <><div
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1904,22 +1965,31 @@ export default function TabBar() {
                 </div>
               </div>
 
+              </>}
               {/* Code Review section */}
               <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
               <div
                 style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
                   padding: "6px 10px",
                   fontSize: 10,
                   fontWeight: 600,
                   letterSpacing: "0.08em",
                   textTransform: "uppercase",
                   color: "var(--ezy-text-muted)",
-                  borderBottom: "1px solid var(--ezy-border)",
+                  borderBottom: !collapsedSections.codereview ? "1px solid var(--ezy-border)" : "none",
+                  cursor: "pointer",
                 }}
+                onClick={() => toggleSection("codereview")}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
               >
-                Code Review
+                <span>Code Review</span>
+                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.codereview ? "rotate(-90deg)" : "rotate(0deg)" }} />
               </div>
-              <div
+              {!collapsedSections.codereview && <><div
                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
                 onClick={() => setCodeReviewCollapseAll(!codeReviewCollapseAll)}
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
@@ -1972,22 +2042,31 @@ export default function TabBar() {
                 </div>
               </div>
 
+              </>}
               {/* AI Sessions section */}
               <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
               <div
                 style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
                   padding: "6px 10px",
                   fontSize: 10,
                   fontWeight: 600,
                   letterSpacing: "0.08em",
                   textTransform: "uppercase",
                   color: "var(--ezy-text-muted)",
-                  borderBottom: "1px solid var(--ezy-border)",
+                  borderBottom: !collapsedSections.ai ? "1px solid var(--ezy-border)" : "none",
+                  cursor: "pointer",
                 }}
+                onClick={() => toggleSection("ai")}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
               >
-                AI Sessions
+                <span>AI Sessions</span>
+                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.ai ? "rotate(-90deg)" : "rotate(0deg)" }} />
               </div>
-              <div style={{ padding: "8px 10px" }}>
+              {!collapsedSections.ai && <div style={{ padding: "8px 10px" }}>
                 <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", display: "block", marginBottom: 6 }}>
                   Shadow AI provider
                 </span>
@@ -2026,22 +2105,31 @@ export default function TabBar() {
                 </div>
               </div>
 
+              }
               {/* CLI Options section */}
               <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
               <div
                 style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
                   padding: "6px 10px",
                   fontSize: 10,
                   fontWeight: 600,
                   letterSpacing: "0.08em",
                   textTransform: "uppercase",
                   color: "var(--ezy-text-muted)",
-                  borderBottom: "1px solid var(--ezy-border)",
+                  borderBottom: !collapsedSections.cli ? "1px solid var(--ezy-border)" : "none",
+                  cursor: "pointer",
                 }}
+                onClick={() => toggleSection("cli")}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
               >
-                CLI Options
+                <span>CLI Options</span>
+                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.cli ? "rotate(-90deg)" : "rotate(0deg)" }} />
               </div>
-              {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
+              {!collapsedSections.cli && (["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
                 const isExpanded = !!expandedCli[cliType];
                 const currentSize = cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE;
                 const label = TERMINAL_CONFIGS[cliType].label;
@@ -2208,7 +2296,7 @@ export default function TabBar() {
                 <FaChevronDown
                   size={10}
                   color="var(--ezy-text-muted)"
-                  style={{ transition: "transform 150ms ease", transform: themeExpanded ? "rotate(180deg)" : "rotate(0deg)" }}
+                  style={{ transition: "transform 150ms ease", transform: themeExpanded ? "rotate(0deg)" : "rotate(-90deg)" }}
                 />
               </div>
               {themeExpanded && THEMES.map((t) => {

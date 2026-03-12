@@ -14,11 +14,11 @@ import { getServerCommandSuggestions, BUILTIN_SERVER_COMMANDS, injectPort } from
 function StatusDot({ status }: { status: DevServer["status"] }) {
   const color =
     status === "running"
-      ? "var(--ezy-accent)"
+      ? "#4ade80"
       : status === "error"
-        ? "var(--ezy-red)"
+        ? "#f87171"
         : status === "stopped"
-          ? "var(--ezy-red)"
+          ? "#f87171"
           : "var(--ezy-text-muted)"; // "starting"
   return (
     <span
@@ -844,7 +844,7 @@ export default function DevServerTab() {
         {/* Inline Remote Servers section */}
         {showRemoteServers && (
           <div style={{ borderTop: "1px solid var(--ezy-border-subtle)" }}>
-            <ServersPanel />
+            <ServersPanel compact />
           </div>
         )}
       </div>

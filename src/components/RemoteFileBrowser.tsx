@@ -13,13 +13,12 @@ export default function RemoteFileBrowser({
   onSelect,
   onClose,
 }: RemoteFileBrowserProps) {
-  const startDir = server.defaultDirectory || "/";
-  const [currentPath, setCurrentPath] = useState(startDir);
+  const [currentPath, setCurrentPath] = useState("/");
   const [entries, setEntries] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const host = server.preferTailscale ? server.tailscaleHostname : server.localIp;
+  const host = server.host;
   const identityFile = server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null;
 
   const loadDirectory = useCallback(async (path: string) => {
@@ -42,7 +41,7 @@ export default function RemoteFileBrowser({
   }, [host, server.username, identityFile]);
 
   useEffect(() => {
-    loadDirectory(startDir);
+    loadDirectory("/");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

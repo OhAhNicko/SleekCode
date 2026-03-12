@@ -1,4 +1,4 @@
-import type { PaneLayout, PaneLeaf, PaneBrowser, PaneKanban, PaneCodeReview, PaneFileViewer, PaneSplit, TerminalType } from "../types";
+import type { PaneLayout, PaneLeaf, PaneBrowser, PaneKanban, PaneCodeReview, PaneFileViewer, PaneGame, PaneSplit, TerminalType } from "../types";
 
 let paneCounter = 0;
 export function generatePaneId(): string {
@@ -77,6 +77,7 @@ export function findAllTerminalIds(layout: PaneLayout): string[] {
   if (layout.type === "browser") return [];
   if (layout.type === "codereview") return [];
   if (layout.type === "fileviewer") return [];
+  if (layout.type === "game") return [];
   if (layout.type === "split") {
     return [
       ...findAllTerminalIds(layout.children[0]),
@@ -286,7 +287,7 @@ function findRootSpecialColumnPane(layout: PaneLayout): {
   if (layout.type !== "split" || layout.direction !== "horizontal") return null;
   const sizes = layout.sizes ?? [50, 50];
   const isSpecial = (p: PaneLayout) =>
-    p.type === "browser" || p.type === "codereview" || p.type === "fileviewer";
+    p.type === "browser" || p.type === "codereview" || p.type === "fileviewer" || p.type === "game";
   if (isSpecial(layout.children[0])) {
     return { pane: layout.children[0], side: "left", sizePercent: sizes[0] };
   }
@@ -639,6 +640,8 @@ export function cloneLayoutWithFreshIds(
         return { type: "codereview", id: generatePaneId() } as PaneCodeReview;
       case "fileviewer":
         return { type: "fileviewer", id: generatePaneId(), files: [], activeFile: "" } as PaneFileViewer;
+      case "game":
+        return { type: "game", id: generatePaneId(), game: node.game } as PaneGame;
       case "editor":
         // Editors reference specific files that may not exist — skip, replace with shell
         const editorId = generateTerminalId();
@@ -650,4 +653,22 @@ export function cloneLayoutWithFreshIds(
   }
 
   return { layout: walk(layout), terminalIds };
+}
+
+/** Check if a game pane exists anywhere in the layout tree */
+export function hasGamePane(layout: PaneLayout): boolean {
+  if (layout.type === "game") return true;
+  if (layout.type === "split") {
+    return hasGamePane(layout.children[0]) || hasGamePane(layout.children[1]);
+  }
+  return false;
+}
+
+/** Find the ID of the game pane in the layout, or null if none */
+export function findGamePaneId(layout: PaneLayout): string | null {
+  if (layout.type === "game") return layout.id;
+  if (layout.type === "split") {
+    return findGamePaneId(layout.children[0]) ?? findGamePaneId(layout.children[1]);
+  }
+  return null;
 }

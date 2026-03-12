@@ -444,10 +444,10 @@ export default function DevServerTerminalHost() {
                   borderRadius: "50%",
                   backgroundColor:
                     expandedServer.status === "running"
-                      ? "var(--ezy-accent)"
+                      ? "#4ade80"
                       : expandedServer.status === "starting"
                         ? "var(--ezy-text-muted)"
-                        : "var(--ezy-red)",
+                        : "#f87171",
                   opacity: expandedServer.status === "starting" ? 0.6 : 1,
                   flexShrink: 0,
                 }}
@@ -538,7 +538,7 @@ export default function DevServerTerminalHost() {
               style={{
                 position: "absolute",
                 inset: 0,
-                display: ds.id === expandedDevServerId ? "block" : "none",
+                visibility: ds.id === expandedDevServerId ? "visible" : "hidden",
               }}
             >
               <TerminalPane

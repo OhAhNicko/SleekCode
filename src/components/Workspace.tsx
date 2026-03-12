@@ -364,6 +364,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
             onExplainError={(block) => handleTerminalExplainError(termId, block)}
             serverId={terminal.serverId}
             sessionResumeId={leaf?.sessionResumeId}
+            backend={tab.backend}
             onSessionResumeId={(id) => {
               // Read current layout from store to avoid stale closure
               const currentTab = useAppStore.getState().tabs.find(t => t.id === tab.id);

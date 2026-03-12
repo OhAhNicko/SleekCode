@@ -12,6 +12,7 @@ import EditorPane from "./EditorPane";
 import KanbanBoard from "./KanbanBoard";
 import CodeReviewPane from "./CodeReviewPane";
 import FileViewerPane from "./FileViewerPane";
+import GamePane from "./GamePane";
 
 interface PaneGridProps {
   layout: PaneLayout;
@@ -94,6 +95,39 @@ export default function PaneGrid({
     };
     window.addEventListener("ezydev:open-codereview", handler);
     return () => window.removeEventListener("ezydev:open-codereview", handler);
+  }, [layout, onLayoutChange]);
+
+  // Toggle game pane (open on right / close if already open)
+  useEffect(() => {
+    const handler = () => {
+      const findGameId = (node: PaneLayout): string | null => {
+        if (node.type === "game") return node.id;
+        if (node.type === "split") {
+          return findGameId(node.children[0]) ?? findGameId(node.children[1]);
+        }
+        return null;
+      };
+      const existingId = findGameId(layout);
+      if (existingId) {
+        const newLayout = removePane(layout, existingId);
+        if (newLayout) onLayoutChange(newLayout);
+        return;
+      }
+      const gamePane = {
+        type: "game" as const,
+        id: generatePaneId(),
+      };
+      const newLayout: PaneLayout = {
+        type: "split",
+        id: generatePaneId(),
+        direction: "horizontal",
+        children: [layout, gamePane],
+        sizes: [65, 35],
+      };
+      onLayoutChange(newLayout);
+    };
+    window.addEventListener("ezydev:open-game", handler);
+    return () => window.removeEventListener("ezydev:open-game", handler);
   }, [layout, onLayoutChange]);
 
   // Listen for file viewer open events
@@ -206,6 +240,16 @@ export default function PaneGrid({
           initialFiles={node.files}
           initialActive={node.activeFile}
           onClose={() => handleClose(node.id)}
+        />
+      );
+    }
+
+    if (node.type === "game") {
+      return (
+        <GamePane
+          key={node.id}
+          onClose={() => handleClose(node.id)}
+          initialGame={node.game}
         />
       );
     }

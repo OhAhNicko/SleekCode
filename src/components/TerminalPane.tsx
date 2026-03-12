@@ -64,6 +64,8 @@ interface TerminalPaneProps {
   serverId?: string;
   sessionResumeId?: string;
   onSessionResumeId?: (id: string) => void;
+  /** Per-tab backend override. Falls back to global setting if omitted. */
+  backend?: import("../types").TerminalBackend;
 }
 
 export default function TerminalPane({
@@ -83,6 +85,7 @@ export default function TerminalPane({
   sessionResumeId,
   onSessionResumeId,
   paneCount = 1,
+  backend,
 }: TerminalPaneProps) {
   // Seed claimed set with persisted IDs so new panes don't steal them
   if (sessionResumeId) claimedSessionIds.add(sessionResumeId);
@@ -98,6 +101,8 @@ export default function TerminalPane({
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
   const copyOnSelectRef = useRef(copyOnSelect);
   useEffect(() => { copyOnSelectRef.current = copyOnSelect; }, [copyOnSelect]);
+  const backendRef = useRef(backend);
+  backendRef.current = backend;
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -168,7 +173,7 @@ export default function TerminalPane({
 
       const lookupSession = async (): Promise<boolean> => {
         try {
-          const backend = useAppStore.getState().terminalBackend ?? "wsl";
+          const backend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
           const type = terminalTypeRef.current;
           const excludeIds = [...claimedSessionIds];
           let id: string | null = null;
@@ -244,6 +249,7 @@ export default function TerminalPane({
     ready: termReady,
     restartKey,
     forceYolo: launchedWithYolo,
+    backend,
   });
 
   // Initialize xterm.js (waits for Hack font to load — canvas renderer
@@ -877,7 +883,7 @@ export default function TerminalPane({
     if (!supported) return;
 
     const poll = async () => {
-      const backend = useAppStore.getState().terminalBackend ?? "wsl";
+      const backend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
       const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend);
       if (info !== null) {
         // Merge partial updates — rate_limits and info come from different

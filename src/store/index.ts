@@ -10,9 +10,10 @@ import { createSnippetSlice, type SnippetSlice } from "./snippetSlice";
 import { createHistorySlice, type HistorySlice } from "./historySlice";
 import { createSidebarSlice, type SidebarSlice } from "./sidebarSlice";
 import { createRecentProjectsSlice, type RecentProjectsSlice } from "./recentProjectsSlice";
+import { createGameSlice, type GameSlice } from "./gameSlice";
 import type { Tab } from "../types";
 
-export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice;
+export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice;
 
 function isSystemTab(tab: Tab): boolean {
   return !!(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab);
@@ -31,6 +32,7 @@ export const useAppStore = create<AppStore>()(
       ...createHistorySlice(...a),
       ...createSidebarSlice(...a),
       ...createRecentProjectsSlice(...a),
+      ...createGameSlice(...a),
     }),
     {
       name: "ezydev-storage",
@@ -70,6 +72,9 @@ export const useAppStore = create<AppStore>()(
         shadowAiCli: state.shadowAiCli,
         projectColors: state.projectColors,
         vibrantColors: state.vibrantColors,
+        highscores: state.highscores,
+        completedCrosswordIds: state.completedCrosswordIds,
+        customCrosswords: state.customCrosswords,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;
@@ -106,6 +111,21 @@ export const useAppStore = create<AppStore>()(
         let cliYolo = state.cliYolo ?? {};
         if (persAny.claudeYolo === true && !cliYolo.claude) {
           cliYolo = { ...cliYolo, claude: true };
+        }
+
+        // Migrate legacy RemoteServer fields → single host
+        if (state.servers) {
+          state.servers = (state.servers as unknown as Record<string, unknown>[]).map((server) => {
+            if ('localIp' in server || 'tailscaleHostname' in server) {
+              const host = server.preferTailscale
+                ? ((server.tailscaleHostname as string) || (server.localIp as string) || '')
+                : ((server.localIp as string) || (server.tailscaleHostname as string) || '');
+              // eslint-disable-next-line @typescript-eslint/no-unused-vars
+              const { localIp, tailscaleHostname, preferTailscale, defaultDirectory, ...rest } = server;
+              return { ...rest, host } as unknown as typeof state.servers extends (infer T)[] ? T : never;
+            }
+            return server as unknown as typeof state.servers extends (infer T)[] ? T : never;
+          }) as typeof state.servers;
         }
 
         return {

@@ -213,8 +213,8 @@ export default function GitStatusBar({ workingDir }: Props) {
         </svg>
         <span style={{ color: "var(--ezy-text-secondary)" }}>{stats.filesChanged}</span>
         <span style={{ color: "var(--ezy-text-muted)", opacity: 0.6, fontSize: 10, lineHeight: 1 }}>&bull;</span>
-        <span style={{ color: "var(--ezy-accent)" }}>+{stats.insertions}</span>
-        <span style={{ color: "var(--ezy-red)" }}>-{stats.deletions}</span>
+        <span style={{ color: "#4ade80" }}>+{stats.insertions}</span>
+        <span style={{ color: "#f87171" }}>-{stats.deletions}</span>
       </div>
 
       {/* Branch switcher dropdown */}

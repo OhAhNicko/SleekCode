@@ -190,7 +190,7 @@ export default function App() {
         command,
         workingDir: tab.workingDir,
         port: 0,
-        status: "running",
+        status: "starting",
       });
     }
   }, []);

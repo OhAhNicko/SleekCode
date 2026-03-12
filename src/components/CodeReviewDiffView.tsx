@@ -200,9 +200,9 @@ export default function CodeReviewDiffView({
                     lineHeight: 1,
                   }}
                 >
-                  <span style={{ color: "var(--ezy-accent)" }}>+{stats.add}</span>
+                  <span style={{ color: "#4ade80" }}>+{stats.add}</span>
                   <span style={{ color: "var(--ezy-text-muted)", opacity: 0.5, fontSize: 9 }}>&bull;</span>
-                  <span style={{ color: "var(--ezy-red)" }}>-{stats.del}</span>
+                  <span style={{ color: "#f87171" }}>-{stats.del}</span>
                 </div>
 
                 {/* Right spacer — pushes diff badge to center */}

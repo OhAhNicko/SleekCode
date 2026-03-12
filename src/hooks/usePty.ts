@@ -27,6 +27,8 @@ interface UsePtyOptions {
   restartKey?: number;
   /** When true, YOLO flag is always applied regardless of current global setting. */
   forceYolo?: boolean;
+  /** Per-tab backend override (wsl/windows). Falls back to global setting if omitted. */
+  backend?: TerminalBackend;
 }
 
 export function usePty({
@@ -43,6 +45,7 @@ export function usePty({
   ready = true,
   restartKey = 0,
   forceYolo = false,
+  backend: backendProp,
 }: UsePtyOptions) {
   const ptyIdRef = useRef<number | null>(null);
   const spawnIdRef = useRef(0);
@@ -68,8 +71,8 @@ export function usePty({
   serverIdRef.current = serverId;
   const injectShellIntegrationRef = useRef(injectShellIntegration);
   injectShellIntegrationRef.current = injectShellIntegration;
-  // Read terminal backend setting via ref (never triggers re-spawn)
-  const backendRef = useRef<TerminalBackend>(useAppStore.getState().terminalBackend ?? "wsl");
+  // Per-tab backend takes priority; fall back to global setting
+  const backendRef = useRef<TerminalBackend>(backendProp ?? useAppStore.getState().terminalBackend ?? "wsl");
   // Force YOLO on restart — preserves launch-time YOLO state regardless of global toggle
   const forceYoloRef = useRef(forceYolo);
   forceYoloRef.current = forceYolo;
@@ -124,7 +127,7 @@ export function usePty({
           onExitRef.current(1);
           return;
         }
-        const remoteCwd = currentWorkingDir || server.defaultDirectory;
+        const remoteCwd = currentWorkingDir || undefined;
         const ssh = getSshCommand(server, terminalType, remoteCwd, sessionResumeIdRef.current);
         command = ssh.command;
         args = ssh.args;

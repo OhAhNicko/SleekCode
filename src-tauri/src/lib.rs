@@ -324,6 +324,102 @@ async fn ssh_test_connection(
 }
 
 #[tauri::command]
+async fn ssh_keygen(key_path: String) -> Result<String, String> {
+    let path = std::path::Path::new(&key_path);
+    if path.exists() {
+        return Err(format!("Key already exists at {}", key_path));
+    }
+    // Ensure ~/.ssh directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create .ssh directory: {}", e))?;
+    }
+
+    let output = Command::new("ssh-keygen")
+        .args(["-t", "ed25519", "-f", &key_path, "-N", ""])
+        .output()
+        .map_err(|e| format!("Failed to run ssh-keygen: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ssh-keygen failed: {}", stderr.trim()));
+    }
+
+    // Return the public key content
+    let pub_path = format!("{}.pub", key_path);
+    std::fs::read_to_string(&pub_path)
+        .map_err(|e| format!("Failed to read public key: {}", e))
+}
+
+#[tauri::command]
+async fn ssh_check_key(key_path: String) -> Result<bool, String> {
+    Ok(std::path::Path::new(&key_path).exists())
+}
+
+#[derive(Serialize)]
+struct SshKeyInfo {
+    path: String,
+    name: String,
+    key_type: String,
+    comment: String,
+}
+
+#[tauri::command]
+async fn ssh_list_keys() -> Result<Vec<SshKeyInfo>, String> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map_err(|_| "Cannot determine home directory".to_string())?;
+    let ssh_dir = std::path::PathBuf::from(&home).join(".ssh");
+    if !ssh_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut keys = Vec::new();
+    let entries = std::fs::read_dir(&ssh_dir)
+        .map_err(|e| format!("Failed to read .ssh directory: {}", e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Read error: {}", e))?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.ends_with(".pub") {
+                    let private_name = &name[..name.len() - 4];
+                    let private_path = ssh_dir.join(private_name);
+                    if private_path.exists() && private_path.is_file() {
+                        // Parse .pub file for type + comment
+                        let (key_type, comment) = match std::fs::read_to_string(&path) {
+                            Ok(content) => {
+                                let parts: Vec<&str> = content.trim().splitn(3, ' ').collect();
+                                let kt = parts.first()
+                                    .map(|t| t.strip_prefix("ssh-").unwrap_or(t).to_string())
+                                    .unwrap_or_default();
+                                let cm = if parts.len() >= 3 {
+                                    parts[2].trim().to_string()
+                                } else {
+                                    String::new()
+                                };
+                                (kt, cm)
+                            }
+                            Err(_) => (String::new(), String::new()),
+                        };
+
+                        keys.push(SshKeyInfo {
+                            path: private_path.to_string_lossy().to_string(),
+                            name: private_name.to_string(),
+                            key_type,
+                            comment,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    keys.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(keys)
+}
+
+#[tauri::command]
 async fn read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))
 }
@@ -2345,7 +2441,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, read_session_context_windows, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, read_session_context_windows, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

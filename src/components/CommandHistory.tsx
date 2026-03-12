@@ -178,7 +178,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
                       width: 6,
                       height: 6,
                       borderRadius: "50%",
-                      backgroundColor: isError ? "var(--ezy-red)" : "var(--ezy-accent)",
+                      backgroundColor: isError ? "#f87171" : "#4ade80",
                       flexShrink: 0,
                     }}
                   />
@@ -222,7 +222,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
                         fontWeight: 600,
                         padding: "1px 5px",
                         borderRadius: 3,
-                        backgroundColor: isError ? "var(--ezy-red)" : "var(--ezy-accent-dim)",
+                        backgroundColor: isError ? "#f87171" : "#22c55e",
                         color: "#fff",
                         flexShrink: 0,
                       }}

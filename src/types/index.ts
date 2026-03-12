@@ -1,4 +1,5 @@
 export type TerminalType = "claude" | "codex" | "gemini" | "shell" | "devserver";
+export type GameType = "snake" | "2048" | "sudoku" | "crossword";
 export type TerminalBackend = "wsl" | "windows";
 
 export type AuthMethod = "ssh-key" | "password";
@@ -6,13 +7,10 @@ export type AuthMethod = "ssh-key" | "password";
 export interface RemoteServer {
   id: string;
   name: string;
-  localIp: string;
-  tailscaleHostname: string;
+  host: string;
   username: string;
   authMethod: AuthMethod;
   sshKeyPath?: string;
-  defaultDirectory?: string;
-  preferTailscale: boolean;
 }
 
 export interface TerminalConfig {
@@ -44,7 +42,7 @@ export interface DevServer {
 }
 
 // Recursive pane layout tree
-export type PaneLayout = PaneLeaf | PaneSplit | PaneBrowser | PaneEditor | PaneKanban | PaneCodeReview | PaneFileViewer;
+export type PaneLayout = PaneLeaf | PaneSplit | PaneBrowser | PaneEditor | PaneKanban | PaneCodeReview | PaneFileViewer | PaneGame;
 
 export interface PaneLeaf {
   type: "terminal";
@@ -93,6 +91,29 @@ export interface PaneFileViewer {
   activeFile: string;
 }
 
+export interface PaneGame {
+  type: "game";
+  id: string;
+  game?: GameType; // undefined = show game selector
+}
+
+export interface CrosswordClue {
+  number: number;
+  clue: string;
+  answer: string;
+  row: number;
+  col: number;
+}
+
+export interface CrosswordPuzzle {
+  id: string;
+  grid: string[][]; // '#' = black cell, letter = white cell
+  clues: {
+    across: CrosswordClue[];
+    down: CrosswordClue[];
+  };
+}
+
 export interface Tab {
   id: string;
   name: string;
@@ -104,6 +125,8 @@ export interface Tab {
   isPinned?: boolean;
   serverId?: string;
   serverCommand?: string;
+  /** Terminal backend stamped at tab creation time. Determines WSL vs Windows for all panes in this tab. */
+  backend?: TerminalBackend;
 }
 
 export interface TaskCard {

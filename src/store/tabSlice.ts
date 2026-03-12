@@ -74,7 +74,7 @@ const SERVERS_TAB_ID = "servers-tab";
 const KANBAN_TAB_ID = "kanban-tab";
 
 export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
-  set
+  set, get
 ) => ({
   tabs: [
     {
@@ -104,10 +104,11 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
   addTab: (name, workingDir, serverId?) => {
     const tabId = `tab-${Date.now()}`;
     const { layout } = createDefaultLayout(workingDir);
+    const backend = ((get() as unknown as Record<string, unknown>).terminalBackend as string | undefined) ?? "wsl";
     set((state) => ({
       tabs: [
         ...state.tabs,
-        { id: tabId, name, workingDir, layout, serverId },
+        { id: tabId, name, workingDir, layout, serverId, backend } as Tab,
       ],
       activeTabId: tabId,
     }));
@@ -116,10 +117,11 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
 
   addTabWithLayout: (name, workingDir, layout, serverId?) => {
     const tabId = `tab-${Date.now()}`;
+    const backend = ((get() as unknown as Record<string, unknown>).terminalBackend as string | undefined) ?? "wsl";
     set((state) => ({
       tabs: [
         ...state.tabs,
-        { id: tabId, name, workingDir, layout, serverId },
+        { id: tabId, name, workingDir, layout, serverId, backend } as Tab,
       ],
       activeTabId: tabId,
     }));

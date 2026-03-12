@@ -255,12 +255,12 @@ function getRemoteExecCommand(type: TerminalType, sessionResumeId?: string): str
  * Uses native Windows ssh.exe (no WSL wrapping needed).
  */
 export function getSshCommand(
-  server: { username: string; localIp: string; tailscaleHostname: string; preferTailscale: boolean; authMethod: string; sshKeyPath?: string },
+  server: { username: string; host: string; authMethod: string; sshKeyPath?: string },
   terminalType: TerminalType,
   remoteCwd?: string,
   sessionResumeId?: string
 ): { command: string; args: string[] } {
-  const host = server.preferTailscale ? server.tailscaleHostname : server.localIp;
+  const host = server.host;
   const userHost = `${server.username}@${host}`;
 
   const args: string[] = ["-t"];
