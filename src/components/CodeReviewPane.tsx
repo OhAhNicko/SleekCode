@@ -41,7 +41,7 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
   const [showCommitPopover, setShowCommitPopover] = useState(false);
   const [aheadBehind, setAheadBehind] = useState<GitAheadBehind | null>(null);
   const [pushing, setPushing] = useState(false);
-  const [pushResult, setPushResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [pushResult, setPushResult] = useState<{ ok: boolean; msg: string; branch?: string; count?: number } | null>(null);
   const [pushError, setPushError] = useState<string | null>(null);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -196,20 +196,23 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
     setPushing(true);
     setPushError(null);
     setPushResult(null);
+    // Capture pre-push snapshot for the report
+    const prePushBranch = branches?.current ?? "";
+    const prePushCount = aheadBehind?.ahead ?? 0;
     try {
       const msg = await invoke<string>("git_push", {
         directory: workingDir,
         setUpstream: !aheadBehind?.hasRemote,
       });
-      setPushResult({ ok: true, msg });
+      setPushResult({ ok: true, msg, branch: prePushBranch, count: prePushCount });
       window.dispatchEvent(new Event("ezydev:git-refresh"));
-      setTimeout(() => setPushResult(null), 2000);
+      setTimeout(() => setPushResult(null), 3000);
     } catch (err) {
       setPushError(String(err));
     } finally {
       setPushing(false);
     }
-  }, [workingDir, aheadBehind, pushing]);
+  }, [workingDir, aheadBehind, branches, pushing]);
 
   // Close push error on outside click
   useEffect(() => {
@@ -421,6 +424,39 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
                   ? `Push ${aheadBehind.ahead}`
                   : "Push"}
             </button>
+
+            {/* Push success popover */}
+            {pushResult?.ok && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 4px)",
+                  right: 0,
+                  width: 200,
+                  zIndex: 50,
+                  backgroundColor: "var(--ezy-surface-raised)",
+                  border: "1px solid var(--ezy-border)",
+                  borderRadius: 6,
+                  boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                  padding: "8px 10px",
+                }}
+              >
+                <div className="flex items-center gap-1.5">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                    <path d="M3 8.5L6.5 12L13 4" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span className="text-[10px] font-medium" style={{ color: "#34d399" }}>
+                    Push successful
+                  </span>
+                </div>
+                {pushResult.branch && (
+                  <div className="text-[10px] mt-1" style={{ color: "var(--ezy-text-secondary)" }}>
+                    {pushResult.branch}
+                    {pushResult.count ? ` — ${pushResult.count} commit${pushResult.count === 1 ? "" : "s"} pushed` : ""}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Push error popover */}
             {pushError && (

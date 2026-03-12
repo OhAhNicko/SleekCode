@@ -893,6 +893,74 @@ async fn git_run_typecheck(directory: String) -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+async fn git_run_lint(directory: String) -> Result<String, String> {
+    let script = r#"
+if [ -f Makefile ] && grep -q '^lint:' Makefile 2>/dev/null; then
+  make lint 2>&1; echo "EXITCODE:$?"
+elif [ -f package.json ] && grep -q '"lint"' package.json 2>/dev/null; then
+  PM="npm"
+  [ -f pnpm-lock.yaml ] && PM="pnpm"
+  [ -f yarn.lock ] && PM="yarn"
+  $PM run lint 2>&1; echo "EXITCODE:$?"
+else
+  echo "EXITCODE:SKIP"
+fi
+"#;
+    let output = run_bash_script(&directory, script)?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if let Some(pos) = text.rfind("EXITCODE:") {
+        let code_str = text[pos + 9..].trim();
+        if code_str == "SKIP" {
+            Ok("__SKIP__".to_string())
+        } else {
+            let code: i32 = code_str.parse().unwrap_or(-1);
+            let errors = text[..pos].trim().to_string();
+            if code == 0 {
+                Ok(String::new())
+            } else {
+                Ok(errors)
+            }
+        }
+    } else {
+        Err(format!("Lint check failed unexpectedly: {}", text))
+    }
+}
+
+#[tauri::command]
+async fn git_run_tests(directory: String) -> Result<String, String> {
+    let script = r#"
+if [ -f Makefile ] && grep -q '^test:' Makefile 2>/dev/null; then
+  make test 2>&1; echo "EXITCODE:$?"
+elif [ -f package.json ] && grep -q '"test"' package.json 2>/dev/null; then
+  PM="npm"
+  [ -f pnpm-lock.yaml ] && PM="pnpm"
+  [ -f yarn.lock ] && PM="yarn"
+  CI=true $PM run test 2>&1; echo "EXITCODE:$?"
+else
+  echo "EXITCODE:SKIP"
+fi
+"#;
+    let output = run_bash_script(&directory, script)?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if let Some(pos) = text.rfind("EXITCODE:") {
+        let code_str = text[pos + 9..].trim();
+        if code_str == "SKIP" {
+            Ok("__SKIP__".to_string())
+        } else {
+            let code: i32 = code_str.parse().unwrap_or(-1);
+            let errors = text[..pos].trim().to_string();
+            if code == 0 {
+                Ok(String::new())
+            } else {
+                Ok(errors)
+            }
+        }
+    } else {
+        Err(format!("Test check failed unexpectedly: {}", text))
+    }
+}
+
 #[derive(Serialize)]
 struct ClipboardImageResult {
     path: String,
@@ -2262,7 +2330,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, wsl_resolve_cli_env, windows_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, read_session_context_windows, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, read_session_context_windows, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

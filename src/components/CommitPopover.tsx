@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { statusBadge } from "./CodeReviewFileList";
 import { generateCommitMsg } from "../lib/generate-commit-msg";
@@ -13,7 +13,118 @@ interface CommitPopoverProps {
   onCommitSuccess: () => void;
 }
 
-type TypecheckStatus = "idle" | "running" | "passed" | "failed";
+type CheckStatus = "idle" | "running" | "passed" | "failed" | "skipped";
+
+interface CheckState {
+  status: CheckStatus;
+  output: string;
+  expanded: boolean;
+}
+
+const INITIAL_CHECK: CheckState = { status: "idle", output: "", expanded: false };
+
+/** Reusable row for a single safety check */
+function CheckRow({
+  label,
+  state,
+  onToggleExpanded,
+  isFirst,
+}: {
+  label: string;
+  state: CheckState;
+  onToggleExpanded: () => void;
+  isFirst: boolean;
+}) {
+  const { status, output, expanded } = state;
+  return (
+    <>
+      <div
+        className="flex items-center gap-1.5"
+        style={{
+          padding: "8px 10px",
+          ...(isFirst ? { borderTop: "1px solid var(--ezy-border-subtle)", marginTop: 6 } : {}),
+        }}
+      >
+        {/* Icon */}
+        {status === "running" && (
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ animation: "ezy-spin 0.8s linear infinite", flexShrink: 0 }}>
+            <circle cx="8" cy="8" r="6" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" />
+          </svg>
+        )}
+        {status === "passed" && (
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <path d="M3 8.5L6.5 12L13 4" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        )}
+        {status === "failed" && (
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <path d="M4 4L12 12M12 4L4 12" stroke="#f87171" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+        )}
+        {status === "skipped" && (
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <path d="M4 8h8" stroke="var(--ezy-text-muted)" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        )}
+        {status === "idle" && (
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+            <circle cx="8" cy="8" r="6" stroke="var(--ezy-text-muted)" strokeWidth="1.5" />
+          </svg>
+        )}
+
+        <span className="text-[10px]" style={{ color: "var(--ezy-text-secondary)" }}>
+          {label}:
+        </span>
+        <span
+          className="text-[10px] font-medium"
+          style={{
+            color:
+              status === "passed" ? "#34d399"
+                : status === "failed" ? "#f87171"
+                  : "var(--ezy-text-muted)",
+          }}
+        >
+          {status === "idle" && "Waiting"}
+          {status === "running" && "Running..."}
+          {status === "passed" && "Passed"}
+          {status === "failed" && "Failed"}
+          {status === "skipped" && "Skipped"}
+        </span>
+
+        {status === "failed" && output && (
+          <button
+            onClick={onToggleExpanded}
+            className="text-[10px] hover:opacity-80 transition-opacity ml-auto"
+            style={{ color: "var(--ezy-text-muted)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+          >
+            {expanded ? "Hide" : "Show"}
+          </button>
+        )}
+      </div>
+
+      {/* Error output */}
+      {expanded && output && (
+        <div style={{ maxHeight: 120, overflowY: "auto", padding: "0 10px 8px 10px" }}>
+          <pre
+            className="text-[10px]"
+            style={{
+              color: "#f87171",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              margin: 0,
+              backgroundColor: "var(--ezy-bg)",
+              borderRadius: 4,
+              padding: "6px 8px",
+              lineHeight: 1.4,
+            }}
+          >
+            {output}
+          </pre>
+        </div>
+      )}
+    </>
+  );
+}
 
 /** Generate a conventional commit message from file statuses */
 function generateCommitMessage(files: GitFileStatus[]): string {
@@ -95,9 +206,9 @@ export default function CommitPopover({
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(
     () => new Set(gitFiles.map((f) => f.path))
   );
-  const [typecheckStatus, setTypecheckStatus] = useState<TypecheckStatus>("idle");
-  const [typecheckOutput, setTypecheckOutput] = useState("");
-  const [typecheckExpanded, setTypecheckExpanded] = useState(false);
+  const [typecheckState, setTypecheckState] = useState<CheckState>(INITIAL_CHECK);
+  const [lintState, setLintState] = useState<CheckState>(INITIAL_CHECK);
+  const [testState, setTestState] = useState<CheckState>(INITIAL_CHECK);
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [confirmBypass, setConfirmBypass] = useState(false);
@@ -110,27 +221,60 @@ export default function CommitPopover({
     textareaRef.current?.focus();
   }, []);
 
-  // Auto-run typecheck on mount
+  // Auto-run all three checks in parallel on mount
   useEffect(() => {
     let cancelled = false;
-    setTypecheckStatus("running");
-    invoke<string>("git_run_typecheck", { directory: workingDir })
-      .then((output) => {
-        if (cancelled) return;
-        if (output === "") {
-          setTypecheckStatus("passed");
-        } else {
-          setTypecheckStatus("failed");
-          setTypecheckOutput(output);
-        }
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setTypecheckStatus("failed");
-        setTypecheckOutput(String(err));
-      });
+
+    // Helper to run a check and update its state setter
+    const runCheck = (
+      command: string,
+      setState: React.Dispatch<React.SetStateAction<CheckState>>,
+    ) => {
+      setState((s) => ({ ...s, status: "running" }));
+      invoke<string>(command, { directory: workingDir })
+        .then((output) => {
+          if (cancelled) return;
+          if (output === "__SKIP__") {
+            setState({ status: "skipped", output: "", expanded: false });
+          } else if (output === "") {
+            setState({ status: "passed", output: "", expanded: false });
+          } else {
+            setState({ status: "failed", output, expanded: false });
+          }
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          setState({ status: "failed", output: String(err), expanded: false });
+        });
+    };
+
+    runCheck("git_run_typecheck", setTypecheckState);
+    runCheck("git_run_lint", setLintState);
+    runCheck("git_run_tests", setTestState);
+
     return () => { cancelled = true; };
   }, [workingDir]);
+
+  // Secrets scanning (frontend-only, informational)
+  const secretsWarnings = useMemo(() => {
+    const warnings: string[] = [];
+    const patterns: [RegExp, string][] = [
+      [/AKIA[0-9A-Z]{16}/, "AWS access key"],
+      [/sk_live_[a-zA-Z0-9]+/, "Stripe live key"],
+      [/BEGIN (RSA |OPENSSH )?PRIVATE KEY/, "Private key"],
+      [/(password|secret|token|api_key)\s*[:=]\s*["'][^"']{4,}/i, "Credential value"],
+    ];
+    for (const [re, label] of patterns) {
+      if (re.test(diffText)) warnings.push(label);
+    }
+    // Check for .env files in staged list
+    for (const f of gitFiles) {
+      if (/\.env($|\.)/.test(f.path)) {
+        warnings.push(`.env file (${f.path})`);
+      }
+    }
+    return warnings;
+  }, [diffText, gitFiles]);
 
   // Reusable AI generation trigger
   const cancelRef = useRef(false);
@@ -197,11 +341,14 @@ export default function CommitPopover({
     });
   }, [gitFiles]);
 
+  const anyCheckFailed = typecheckState.status === "failed" || lintState.status === "failed" || testState.status === "failed";
+  const anyCheckRunning = typecheckState.status === "running" || lintState.status === "running" || testState.status === "running";
+
   const handleCommit = useCallback(async () => {
     if (!message.trim() || selectedFiles.size === 0) return;
 
-    // If typecheck failed and user hasn't confirmed bypass
-    if (typecheckStatus === "failed" && !confirmBypass) {
+    // If any check failed and user hasn't confirmed bypass
+    if (anyCheckFailed && !confirmBypass) {
       setConfirmBypass(true);
       return;
     }
@@ -233,10 +380,10 @@ export default function CommitPopover({
     } finally {
       setCommitting(false);
     }
-  }, [message, selectedFiles, typecheckStatus, confirmBypass, workingDir, onCommitSuccess]);
+  }, [message, selectedFiles, anyCheckFailed, confirmBypass, workingDir, onCommitSuccess, gitFiles]);
 
   const allSelected = selectedFiles.size === gitFiles.length;
-  const canCommit = message.trim().length > 0 && selectedFiles.size > 0 && !committing;
+  const canCommit = message.trim().length > 0 && selectedFiles.size > 0 && !committing && !anyCheckRunning;
 
   return (
     <div
@@ -465,100 +612,47 @@ export default function CommitPopover({
         })}
       </div>
 
-      {/* Typecheck row */}
-      <div
-        className="flex items-center gap-1.5"
-        style={{
-          padding: "8px 10px",
-          borderTop: "1px solid var(--ezy-border-subtle)",
-          marginTop: 6,
-        }}
-      >
-        {/* Icon */}
-        {typecheckStatus === "running" && (
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            style={{ animation: "ezy-spin 0.8s linear infinite", flexShrink: 0 }}
-          >
-            <circle cx="8" cy="8" r="6" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeDasharray="28" strokeDashoffset="8" strokeLinecap="round" />
-          </svg>
-        )}
-        {typecheckStatus === "passed" && (
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-            <path d="M3 8.5L6.5 12L13 4" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        )}
-        {typecheckStatus === "failed" && (
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-            <path d="M4 4L12 12M12 4L4 12" stroke="#f87171" strokeWidth="2" strokeLinecap="round" />
-          </svg>
-        )}
-        {typecheckStatus === "idle" && (
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-            <circle cx="8" cy="8" r="6" stroke="var(--ezy-text-muted)" strokeWidth="1.5" />
-          </svg>
-        )}
-
-        <span className="text-[10px]" style={{ color: "var(--ezy-text-secondary)" }}>
-          Typecheck:
-        </span>
-        <span
-          className="text-[10px] font-medium"
-          style={{
-            color:
-              typecheckStatus === "passed"
-                ? "#34d399"
-                : typecheckStatus === "failed"
-                  ? "#f87171"
-                  : "var(--ezy-text-muted)",
-          }}
-        >
-          {typecheckStatus === "idle" && "Waiting"}
-          {typecheckStatus === "running" && "Running..."}
-          {typecheckStatus === "passed" && "Passed"}
-          {typecheckStatus === "failed" && "Failed"}
-        </span>
-
-        {typecheckStatus === "failed" && typecheckOutput && (
-          <button
-            onClick={() => setTypecheckExpanded((v) => !v)}
-            className="text-[10px] hover:opacity-80 transition-opacity ml-auto"
-            style={{ color: "var(--ezy-text-muted)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-          >
-            {typecheckExpanded ? "Hide" : "Show"}
-          </button>
-        )}
-      </div>
-
-      {/* Typecheck error output */}
-      {typecheckExpanded && typecheckOutput && (
+      {/* Secrets warning banner — always visible when secrets detected */}
+      {secretsWarnings.length > 0 && (
         <div
+          className="flex items-start gap-1.5 rounded"
           style={{
-            maxHeight: 120,
-            overflowY: "auto",
-            padding: "0 10px 8px 10px",
+            margin: "6px 10px 0 10px",
+            padding: "6px 8px",
+            backgroundColor: "#3b1418",
+            border: "1px solid #7f1d1d",
           }}
         >
-          <pre
-            className="text-[10px]"
-            style={{
-              color: "#f87171",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              margin: 0,
-              backgroundColor: "var(--ezy-bg)",
-              borderRadius: 4,
-              padding: "6px 8px",
-              lineHeight: 1.4,
-            }}
-          >
-            {typecheckOutput}
-          </pre>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
+            <path d="M8 1L15 14H1L8 1Z" stroke="#f87171" strokeWidth="1.5" strokeLinejoin="round" />
+            <path d="M8 6V9" stroke="#f87171" strokeWidth="1.5" strokeLinecap="round" />
+            <circle cx="8" cy="11.5" r="0.75" fill="#f87171" />
+          </svg>
+          <span className="text-[10px]" style={{ color: "#fca5a5", lineHeight: 1.4 }}>
+            Possible secrets detected: {secretsWarnings.join(", ")}
+          </span>
         </div>
       )}
+
+      {/* Safety check rows */}
+      <CheckRow
+        label="Typecheck"
+        state={typecheckState}
+        onToggleExpanded={() => setTypecheckState((s) => ({ ...s, expanded: !s.expanded }))}
+        isFirst
+      />
+      <CheckRow
+        label="Lint"
+        state={lintState}
+        onToggleExpanded={() => setLintState((s) => ({ ...s, expanded: !s.expanded }))}
+        isFirst={false}
+      />
+      <CheckRow
+        label="Tests"
+        state={testState}
+        onToggleExpanded={() => setTestState((s) => ({ ...s, expanded: !s.expanded }))}
+        isFirst={false}
+      />
 
       {/* Commit error */}
       {commitError && (
@@ -580,7 +674,7 @@ export default function CommitPopover({
           borderTop: "1px solid var(--ezy-border-subtle)",
         }}
       >
-        {/* Bypass warning banner — shown when typecheck failed and user clicked Commit once */}
+        {/* Bypass warning banner — shown when any check failed and user clicked Commit once */}
         {confirmBypass && (
           <div
             className="flex items-center gap-1.5 rounded mb-2"
@@ -596,7 +690,12 @@ export default function CommitPopover({
               <circle cx="8" cy="11.5" r="0.75" fill="#f87171" />
             </svg>
             <span className="text-[10px]" style={{ color: "#fca5a5" }}>
-              Typecheck has errors. Commit with caution.
+              {[
+                typecheckState.status === "failed" && "Typecheck",
+                lintState.status === "failed" && "Lint",
+                testState.status === "failed" && "Tests",
+              ].filter(Boolean).join(", ")}{" "}
+              {[typecheckState.status, lintState.status, testState.status].filter((s) => s === "failed").length === 1 ? "has" : "have"} errors. Commit with caution.
             </span>
           </div>
         )}
