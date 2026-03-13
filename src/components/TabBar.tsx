@@ -5,6 +5,7 @@ import { useAppStore } from "../store";
 import { THEMES, getTheme } from "../lib/themes";
 import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, generateTerminalId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes, hasGamePane } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
+import { isWindows } from "../lib/platform";
 import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
@@ -73,6 +74,8 @@ export default function TabBar() {
   const setShadowAiCli = useAppStore((s) => s.setShadowAiCli);
   const openPanesInBackground = useAppStore((s) => s.openPanesInBackground);
   const setOpenPanesInBackground = useAppStore((s) => s.setOpenPanesInBackground);
+  const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
+  const setAutoMinimizeGameOnAiDone = useAppStore((s) => s.setAutoMinimizeGameOnAiDone);
   const terminalBackend = useAppStore((s) => s.terminalBackend ?? "wsl");
   const setTerminalBackend = useAppStore((s) => s.setTerminalBackend);
   const devServers = useAppStore((s) => s.devServers);
@@ -1506,7 +1509,7 @@ export default function TabBar() {
                 <span>Terminal</span>
                 <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.terminal ? "rotate(-90deg)" : "rotate(0deg)" }} />
               </div>
-              {!collapsedSections.terminal && <div style={{ padding: "8px 10px" }}>
+              {!collapsedSections.terminal && isWindows() && <div style={{ padding: "8px 10px" }}>
                 <div
                   style={{
                     display: "flex",
@@ -1750,6 +1753,19 @@ export default function TabBar() {
                 </span>
                 <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: openPanesInBackground ? "var(--ezy-accent)" : "transparent", border: openPanesInBackground ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
                   <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: openPanesInBackground ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: openPanesInBackground ? 16 : 2, transition: "left 150ms ease" }} />
+                </div>
+              </div>
+              <div
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
+                onClick={() => setAutoMinimizeGameOnAiDone(!autoMinimizeGameOnAiDone)}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  Auto-hide games when AI done
+                </span>
+                <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: autoMinimizeGameOnAiDone ? "var(--ezy-accent)" : "transparent", border: autoMinimizeGameOnAiDone ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
+                  <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: autoMinimizeGameOnAiDone ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: autoMinimizeGameOnAiDone ? 16 : 2, transition: "left 150ms ease" }} />
                 </div>
               </div>
 

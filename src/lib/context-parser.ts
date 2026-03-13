@@ -58,7 +58,13 @@ export async function readSessionContext(
 
   try {
     let raw: string;
-    if (backend === "windows") {
+    if (backend === "native") {
+      // macOS/Linux: read session context directly (same as Windows path but uses $HOME)
+      raw = await invoke<string>("read_session_context_native", {
+        terminalType,
+        sessionId: sessionId || "__latest__",
+      });
+    } else if (backend === "windows") {
       raw = await invoke<string>("read_session_context_windows", {
         terminalType,
         sessionId: sessionId || "__latest__",

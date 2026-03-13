@@ -245,8 +245,10 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
     }
   }, [completed, paused, currentGuess, submitGuess]);
 
-  // Physical keyboard
+  // Physical keyboard — scoped to container so keys don't steal from CLI panes
   useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
     const handler = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const key = e.key.toUpperCase();
@@ -255,8 +257,8 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
         handleKey(key);
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    container.addEventListener("keydown", handler);
+    return () => container.removeEventListener("keydown", handler);
   }, [handleKey]);
 
   useEffect(() => { containerRef.current?.focus(); }, [mode]);

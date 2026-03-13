@@ -1,31 +1,43 @@
 #!/usr/bin/env bash
-# Launches Tauri dev from WSL by delegating to Windows PowerShell.
-# Tauri needs Windows-native cargo (MSVC target) and Windows npm shims,
-# so we can't run it directly from WSL.
+# Launches Tauri dev. On WSL, delegates to Windows PowerShell.
+# On macOS/Linux, runs directly.
 
 set -e
 
-WIN_DIR=$(wslpath -w "$(pwd)")
+# Detect platform
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  # WSL → delegate to Windows PowerShell
+  WIN_DIR=$(wslpath -w "$(pwd)")
 
-echo "[EzyDev] Launching Tauri dev via Windows PowerShell..."
-echo "[EzyDev] Project: $WIN_DIR"
-echo ""
+  echo "[EzyDev] Launching Tauri dev via Windows PowerShell..."
+  echo "[EzyDev] Project: $WIN_DIR"
+  echo ""
 
-# Use cmd.exe /c so child processes are in the same job object
-# and get killed when the parent terminates
-powershell.exe -NoProfile -Command "
-  \$env:Path = \"\$env:USERPROFILE\\.cargo\\bin;\" + \$env:Path
-  Set-Location '$WIN_DIR'
+  powershell.exe -NoProfile -Command "
+    \$env:Path = \"\$env:USERPROFILE\\.cargo\\bin;\" + \$env:Path
+    Set-Location '$WIN_DIR'
 
-  # Kill any stale node on our dev port before starting
-  \$port = 5420
-  Get-NetTCPConnection -LocalPort \$port -ErrorAction SilentlyContinue |
-    Where-Object { \$_.OwningProcess -ne 0 } |
-    ForEach-Object {
-      try { Stop-Process -Id \$_.OwningProcess -Force -ErrorAction Stop }
-      catch { Write-Host \"[EzyDev] Could not kill PID \$(\$_.OwningProcess) - may need admin rights\" }
-    }
+    # Kill any stale node on our dev port before starting
+    \$port = 5420
+    Get-NetTCPConnection -LocalPort \$port -ErrorAction SilentlyContinue |
+      Where-Object { \$_.OwningProcess -ne 0 } |
+      ForEach-Object {
+        try { Stop-Process -Id \$_.OwningProcess -Force -ErrorAction Stop }
+        catch { Write-Host \"[EzyDev] Could not kill PID \$(\$_.OwningProcess) - may need admin rights\" }
+      }
+
+    npm install --prefer-offline
+    npx tauri dev
+  "
+else
+  # macOS / Linux → run directly
+  echo "[EzyDev] Launching Tauri dev..."
+  echo "[EzyDev] Project: $(pwd)"
+  echo ""
+
+  # Kill any stale node on our dev port
+  lsof -ti:5420 2>/dev/null | xargs kill -9 2>/dev/null || true
 
   npm install --prefer-offline
   npx tauri dev
-"
+fi

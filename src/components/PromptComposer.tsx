@@ -98,6 +98,7 @@ interface PromptComposerProps {
   workingDir: string;
   scrollToPrompt: () => void;
   scrollToNextPrompt: () => void;
+  isActive: boolean;
   didStealRef: React.MutableRefObject<boolean>;
   /** When true, skip auto-focus on mount (pane opened in background). */
   suppressAutoFocus?: boolean;
@@ -119,12 +120,15 @@ export default function PromptComposer({
   workingDir,
   scrollToPrompt,
   scrollToNextPrompt,
+  isActive,
   didStealRef,
   suppressAutoFocus = false,
 }: PromptComposerProps) {
   const promptHistory = useAppStore((s) => s.promptHistory);
   const addPromptHistory = useAppStore((s) => s.addPromptHistory);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
   const [value, setValue] = useState("");
   // Start offscreen (-9999) until first valid prompt is found; avoids flash at top
   const [topOffset, setTopOffset] = useState<number>(-9999);
@@ -410,15 +414,19 @@ export default function PromptComposer({
         textareaRef.current?.blur();
         // Focus the terminal so keyboard input goes to the interactive dialogue
         // (e.g. Gemini permission prompts, plan acceptance, tool approvals)
-        terminal.focus();
+        if (isActiveRef.current) terminal.focus();
         return;
       }
 
-      // Transitioning from hidden → visible: scroll to bottom so prompt is in view
+      // Transitioning from hidden → visible: scroll to bottom so prompt is in view.
+      // Only scroll/focus for the active pane — background pane scrolls can cascade
+      // into layout recalculations that displace the viewport in the active pane.
       if (hiddenRef.current) {
-        terminal.scrollToBottom();
+        if (isActiveRef.current) {
+          terminal.scrollToBottom();
+          setTimeout(() => textareaRef.current?.focus(), 30);
+        }
         showTimeRef.current = Date.now();
-        setTimeout(() => textareaRef.current?.focus(), 30);
       }
       setHidden(false);
       hiddenRef.current = false;
@@ -432,7 +440,7 @@ export default function PromptComposer({
       // Position changed → new prompt appeared (e.g. after Claude finished or ESC cancel)
       if (result.offset !== lastOffsetRef.current) {
         lastOffsetRef.current = result.offset;
-        if (alwaysVisible) {
+        if (alwaysVisible && isActiveRef.current) {
           setTimeout(() => textareaRef.current?.focus(), 30);
         }
       }

@@ -47,7 +47,7 @@ export const useAppStore = create<AppStore>()(
         commandHistory: state.commandHistory,
         sidebarOpen: state.sidebarOpen,
         sidebarTab: state.sidebarTab,
-        devServerPanelOpen: state.devServerPanelOpen,
+        // devServerPanelOpen intentionally not persisted — always starts closed
         expandedDirs: state.expandedDirs,
         recentProjects: state.recentProjects,
         alwaysShowTemplatePicker: state.alwaysShowTemplatePicker,
@@ -67,6 +67,7 @@ export const useAppStore = create<AppStore>()(
         confirmQuit: state.confirmQuit,
         codeReviewCollapseAll: state.codeReviewCollapseAll,
         openPanesInBackground: state.openPanesInBackground,
+        autoMinimizeGameOnAiDone: state.autoMinimizeGameOnAiDone,
         terminalBackend: state.terminalBackend,
         commitMsgMode: state.commitMsgMode,
         shadowAiCli: state.shadowAiCli,
@@ -136,6 +137,11 @@ export const useAppStore = create<AppStore>()(
           tabs: filteredTabs,
           activeTabId,
           cliYolo,
+          // When session restore is off, reset all panel/sidebar state to defaults
+          ...(!state.restoreLastSession && {
+            devServerPanelOpen: false,
+            sidebarOpen: false,
+          }),
         };
       },
     }

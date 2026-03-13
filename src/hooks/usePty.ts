@@ -4,6 +4,7 @@ import type { TerminalType } from "../types";
 import { getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
 import { wslReady } from "../lib/wsl-cache";
 import { windowsReady } from "../lib/windows-cli-cache";
+import { nativeReady } from "../lib/macos-cli-cache";
 import { useAppStore } from "../store";
 import type { TerminalBackend } from "../types";
 import { getShellIntegrationCommand } from "../lib/shell-integration";
@@ -108,7 +109,10 @@ export function usePty({
       const backend = backendRef.current;
 
       // Wait for the correct CLI cache to be ready before spawning
-      if (backend === "windows") {
+      if (backend === "native") {
+        await nativeReady;
+        if (isStale()) return;
+      } else if (backend === "windows") {
         await windowsReady;
         if (isStale()) return;
       } else if (isWslTerminal(terminalType, backend) && sessionResumeIdRef.current) {
@@ -142,7 +146,13 @@ export function usePty({
         const resumeId = sessionResumeIdRef.current;
         cwd = currentWorkingDir || undefined;
 
-        if (backend === "windows") {
+        if (backend === "native") {
+          // macOS/Linux native: use resolved CLI path directly, native cwd
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, undefined, "native");
+          command = config.command;
+          args = [...config.args];
+          // cwd stays as native path
+        } else if (backend === "windows") {
           // Windows native: use resolved CLI path directly, native Windows cwd
           const config = getTerminalConfig(terminalType, resumeId, extraArgs, undefined, "windows");
           command = config.command;

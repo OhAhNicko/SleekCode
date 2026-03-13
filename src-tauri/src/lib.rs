@@ -1215,7 +1215,7 @@ extern "system" {
 }
 
 /// Fast clipboard poll: check if clipboard changed since `last_seq`.
-/// Only reads the image (slow PowerShell call) when the sequence number changes.
+/// Only reads the image (slow call) when the sequence number changes.
 /// Returns the current sequence number and optionally the new image.
 #[tauri::command]
 async fn poll_clipboard_image(last_seq: u32) -> Result<ClipboardPollResult, String> {
@@ -1239,27 +1239,74 @@ async fn poll_clipboard_image(last_seq: u32) -> Result<ClipboardPollResult, Stri
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: use NSPasteboard changeCount (increments on each clipboard change)
+        let output = Command::new("osascript")
+            .args(["-e", "tell application \"System Events\" to return (the clipboard info)"])
+            .output();
+        // Simple hash of clipboard info as change counter
+        let seq = match output {
+            Ok(o) => {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let mut hash: u32 = 0;
+                for b in s.bytes() { hash = hash.wrapping_mul(31).wrapping_add(b as u32); }
+                hash
+            }
+            Err(_) => 0,
+        };
+
+        if seq == last_seq {
+            return Ok(ClipboardPollResult { seq, image: None });
+        }
+
+        match save_clipboard_image().await {
+            Ok(result) => Ok(ClipboardPollResult { seq, image: Some(result) }),
+            Err(_) => Ok(ClipboardPollResult { seq, image: None }),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     {
         let _ = last_seq;
-        Err("Clipboard polling only supported on Windows".to_string())
+        Err("Clipboard polling not yet supported on Linux".to_string())
     }
 }
 
-/// Launch the Windows Snipping Tool region-select overlay (Win+Shift+S).
+/// Launch the screenshot tool (Snipping Tool on Windows, screencapture on macOS).
 #[tauri::command]
 async fn launch_snipping_tool() -> Result<(), String> {
-    // Start the Screen Sketch / Snip & Sketch overlay directly.
-    // This opens the region-selection UI (same as Win+Shift+S).
-    let _ = Command::new("cmd.exe")
-        .args(["/C", "start", "ms-screenclip:"])
-        .output();
+    #[cfg(target_os = "windows")]
+    {
+        // Start the Screen Sketch / Snip & Sketch overlay directly.
+        // This opens the region-selection UI (same as Win+Shift+S).
+        let _ = Command::new("cmd.exe")
+            .args(["/C", "start", "ms-screenclip:"])
+            .output();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // macOS interactive screenshot (region select, saves to clipboard)
+        let _ = Command::new("screencapture")
+            .args(["-i", "-c"])
+            .output();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Try common Linux screenshot tools
+        let _ = Command::new("gnome-screenshot")
+            .args(["-a", "-c"])
+            .output()
+            .or_else(|_| Command::new("xfce4-screenshooter")
+                .args(["-r", "-c"])
+                .output());
+    }
     Ok(())
 }
 
-/// Read image from the Windows clipboard via PowerShell, save as PNG.
+/// Read image from the clipboard and save as PNG.
+/// Uses PowerShell on Windows, osascript/pngpaste on macOS.
 /// Returns the file path and a data URI for thumbnail preview.
-/// This avoids web Clipboard API permission prompts.
 #[tauri::command]
 async fn save_clipboard_image() -> Result<ClipboardImageResult, String> {
     let dir = std::env::temp_dir().join("ezydev");
@@ -1274,24 +1321,70 @@ async fn save_clipboard_image() -> Result<ClipboardImageResult, String> {
     let path = dir.join(&filename);
     let path_str = path.to_string_lossy().to_string();
 
-    // Use PowerShell to read image from Windows clipboard and save as PNG.
-    // Single-quoted paths in PS: double the single-quotes to escape.
-    let ps_path = path_str.replace('\'', "''");
-    let script = format!(
-        "Add-Type -AssemblyName System.Windows.Forms; \
-         $img = [System.Windows.Forms.Clipboard]::GetImage(); \
-         if ($img) {{ $img.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png) }} \
-         else {{ exit 1 }}",
-        ps_path
-    );
+    #[cfg(target_os = "windows")]
+    {
+        // Use PowerShell to read image from Windows clipboard and save as PNG.
+        let ps_path = path_str.replace('\'', "''");
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; \
+             $img = [System.Windows.Forms.Clipboard]::GetImage(); \
+             if ($img) {{ $img.Save('{}', [System.Drawing.Imaging.ImageFormat]::Png) }} \
+             else {{ exit 1 }}",
+            ps_path
+        );
 
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
+        let output = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .map_err(|e| format!("Failed to run PowerShell: {}", e))?;
 
-    if !output.status.success() || !path.exists() {
-        return Err("No image in clipboard".to_string());
+        if !output.status.success() || !path.exists() {
+            return Err("No image in clipboard".to_string());
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // Try pngpaste first (brew install pngpaste), fall back to osascript
+        let pngpaste = Command::new("pngpaste")
+            .arg(&path_str)
+            .output();
+
+        if pngpaste.is_err() || !pngpaste.as_ref().unwrap().status.success() || !path.exists() {
+            // Fallback: use osascript to save clipboard image
+            let script = format!(
+                "use framework \"AppKit\"\n\
+                 set pb to current application's NSPasteboard's generalPasteboard()\n\
+                 set imgData to pb's dataForType:(current application's NSPasteboardTypePNG)\n\
+                 if imgData is missing value then error \"No image\"\n\
+                 imgData's writeToFile:\"{}\" atomically:true",
+                path_str.replace('"', "\\\"")
+            );
+            let output = Command::new("osascript")
+                .args(["-l", "AppleScript", "-e", &script])
+                .output()
+                .map_err(|e| format!("Failed to run osascript: {}", e))?;
+
+            if !output.status.success() || !path.exists() {
+                return Err("No image in clipboard".to_string());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Try xclip first, fall back to xsel
+        let output = Command::new("xclip")
+            .args(["-selection", "clipboard", "-t", "image/png", "-o"])
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() && !o.stdout.is_empty() => {
+                std::fs::write(&path, &o.stdout)
+                    .map_err(|e| format!("Failed to write clipboard image: {}", e))?;
+            }
+            _ => return Err("No image in clipboard".to_string()),
+        }
     }
 
     // Read the saved PNG and encode as data URI for frontend thumbnail
@@ -2302,21 +2395,35 @@ echo "INSTALLED"
         b64 = b64
     );
 
-    let mut args = Vec::new();
-    if let Some(ref d) = distro {
-        args.push("-d".to_string());
-        args.push(d.clone());
-    }
-    args.extend(["--".to_string(), "bash".to_string()]);
+    // On macOS/Linux (no distro param), run bash directly.
+    // On Windows (with or without distro), pipe through wsl.exe.
+    #[cfg(not(target_os = "windows"))]
+    let mut child = {
+        let _ = &distro; // unused on non-Windows
+        Command::new("bash")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn bash: {}", e))?
+    };
 
-    // Pipe the script via stdin — wsl.exe breaks multi-statement arguments to bash -c
-    let mut child = wsl_command()
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to spawn wsl: {}", e))?;
+    #[cfg(target_os = "windows")]
+    let mut child = {
+        let mut args = Vec::new();
+        if let Some(ref d) = distro {
+            args.push("-d".to_string());
+            args.push(d.clone());
+        }
+        args.extend(["--".to_string(), "bash".to_string()]);
+        wsl_command()
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn wsl: {}", e))?
+    };
 
     if let Some(ref mut stdin) = child.stdin {
         use std::io::Write;
@@ -2325,7 +2432,7 @@ echo "INSTALLED"
     drop(child.stdin.take()); // Close stdin to signal EOF
 
     let output = child.wait_with_output()
-        .map_err(|e| format!("Failed to wait for wsl: {}", e))?;
+        .map_err(|e| format!("Failed to wait for shell: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -2677,6 +2784,596 @@ echo "$inp|$window|$model|$rpd|$summary|$thoughts|$reset_time"
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+// =====================================================================
+// Native (macOS / Linux) commands — direct filesystem access, no WSL
+// =====================================================================
+
+/// Resolve CLI paths on macOS/Linux using `which`.
+/// Returns a BTreeMap<String, String> with cli_name → resolved_path entries.
+#[tauri::command]
+async fn native_resolve_cli_env(cli_names: Vec<String>) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut result = std::collections::BTreeMap::new();
+
+    for name in &cli_names {
+        let output = Command::new("which")
+            .arg(name)
+            .output();
+
+        if let Ok(o) = output {
+            if o.status.success() {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                if let Some(first_line) = stdout.lines().next() {
+                    let path = first_line.trim();
+                    if !path.is_empty() {
+                        result.insert(name.clone(), path.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+/// Find the most recent Claude session ID on macOS/Linux (native filesystem).
+/// Claude stores sessions at $HOME/.claude/projects/<encoded-path>/<uuid>.jsonl
+#[tauri::command]
+async fn get_claude_session_id_native(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let encoded = project_path.replace('/', "-");
+    let encoded = encoded.trim_start_matches('-').to_string();
+    let session_dir = std::path::Path::new(&home).join(".claude").join("projects").join(&encoded);
+
+    if !session_dir.exists() {
+        // Try case-insensitive match
+        let projects_dir = std::path::Path::new(&home).join(".claude").join("projects");
+        if !projects_dir.exists() { return Ok(None); }
+        let encoded_lower = encoded.to_lowercase();
+        let mut found_dir: Option<std::path::PathBuf> = None;
+        if let Ok(entries) = std::fs::read_dir(&projects_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                if entry.file_name().to_string_lossy().to_lowercase() == encoded_lower {
+                    found_dir = Some(entry.path());
+                    break;
+                }
+            }
+        }
+        if found_dir.is_none() { return Ok(None); }
+        return find_newest_uuid_jsonl(&found_dir.unwrap(), &exclude_ids);
+    }
+
+    find_newest_uuid_jsonl(&session_dir, &exclude_ids)
+}
+
+/// Helper: find the newest UUID.jsonl in a directory, excluding given IDs.
+fn find_newest_uuid_jsonl(dir: &std::path::Path, exclude_ids: &[String]) -> Result<Option<String>, String> {
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read session dir: {}", e))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
+        .filter_map(|e| {
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((e, mtime))
+        })
+        .collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (entry, _) in entries {
+        if let Some(stem) = entry.path().file_stem().and_then(|s| s.to_str()) {
+            if is_valid_uuid(stem) && !exclude_ids.iter().any(|ex| ex == stem) {
+                return Ok(Some(stem.to_string()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Find the most recent Codex session ID on macOS/Linux (native filesystem).
+#[tauri::command]
+async fn get_codex_session_id_native(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let codex_dir = std::path::Path::new(&home).join(".codex");
+
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    // Primary: query SQLite via python3
+    let db_path = codex_dir.join("state_5.sqlite");
+    if db_path.exists() {
+        let exclude_csv = exclude_ids.join(",");
+        let py_script = format!(
+            r#"import sqlite3,sys;c=sqlite3.connect(r'{}');exclude=set(sys.argv[1].split(',')) if sys.argv[1] else set();path=sys.argv[2];rows=c.execute('SELECT id FROM threads WHERE cwd=? ORDER BY updated_at DESC LIMIT 20',(path,)).fetchall();
+[print(r[0]) or sys.exit(0) for r in rows if r[0] not in exclude]"#,
+            db_path.display()
+        );
+        let output = Command::new("python3")
+            .args(["-c", &py_script, &exclude_csv, &project_path])
+            .output();
+        if let Ok(o) = output {
+            let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            for line in stdout.lines() {
+                let id = line.trim();
+                if is_valid_uuid(id) {
+                    return Ok(Some(id.to_string()));
+                }
+            }
+        }
+    }
+
+    // Fallback: scan JSONL files
+    let sessions_dir = codex_dir.join("sessions");
+    if !sessions_dir.exists() {
+        return Ok(None);
+    }
+
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    fn walk_native(dir: &std::path::Path, files: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_dir() { walk_native(&path, files); }
+                else if path.extension().map_or(false, |ext| ext == "jsonl") {
+                    if let Ok(m) = entry.metadata() {
+                        if let Ok(t) = m.modified() { files.push((path, t)); }
+                    }
+                }
+            }
+        }
+    }
+    walk_native(&sessions_dir, &mut files);
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (path, _) in files.iter().take(20) {
+        if let Ok(file) = std::fs::File::open(path) {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(file);
+            if let Some(Ok(first_line)) = reader.lines().next() {
+                let cwd_match = format!("\"cwd\":\"{}\"", project_path);
+                let cwd_match_spaced = format!("\"cwd\": \"{}\"", project_path);
+                if !first_line.contains(&cwd_match) && !first_line.contains(&cwd_match_spaced) {
+                    continue;
+                }
+                // Extract UUID from "id":"<uuid>" in the line
+                if let Some(id_start) = first_line.find("\"id\":\"").or_else(|| first_line.find("\"id\": \"")) {
+                    let after = &first_line[id_start..];
+                    // Skip past "id":" to find the UUID
+                    let colon_quote = after.find(':').unwrap_or(0);
+                    let remaining = &after[colon_quote+1..];
+                    let remaining = remaining.trim().trim_start_matches('"');
+                    if let Some(end) = remaining.find('"') {
+                        let id = &remaining[..end];
+                        if is_valid_uuid(id) && !exclude_ids.iter().any(|ex| ex == id) {
+                            return Ok(Some(id.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Find the most recent Gemini session ID on macOS/Linux (native filesystem).
+#[tauri::command]
+async fn get_gemini_session_id_native(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let tmp_dir = std::path::Path::new(&home).join(".gemini").join("tmp");
+
+    if !tmp_dir.exists() {
+        return Ok(None);
+    }
+
+    let basename = project_path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+
+    let is_valid_uuid = |s: &str| -> bool {
+        s.len() == 36
+            && s.split('-').count() == 5
+            && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+    };
+
+    // Collect matching project dirs
+    let mut session_files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    if let Ok(projects) = std::fs::read_dir(&tmp_dir) {
+        for proj in projects.filter_map(|e| e.ok()) {
+            let name = proj.file_name().to_string_lossy().to_lowercase();
+            if !basename.is_empty() && name != basename && !name.starts_with(&format!("{}-", basename)) {
+                continue;
+            }
+            let chats = proj.path().join("chats");
+            if chats.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&chats) {
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        let path = entry.path();
+                        if path.extension().map_or(false, |ext| ext == "json") {
+                            if let Ok(m) = entry.metadata() {
+                                if let Ok(t) = m.modified() { session_files.push((path, t)); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    session_files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    for (path, _) in session_files.iter().take(20) {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            // Look for "sessionId" in JSON
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(sid) = v.get("sessionId").and_then(|v| v.as_str()) {
+                    if is_valid_uuid(sid) && !exclude_ids.iter().any(|ex| ex == sid) {
+                        return Ok(Some(sid.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Read session context on macOS/Linux (native filesystem).
+/// Same logic as read_session_context_windows but uses $HOME instead of %USERPROFILE%.
+#[tauri::command]
+async fn read_session_context_native(
+    terminal_type: String,
+    session_id: String,
+) -> Result<String, String> {
+    if session_id.is_empty() {
+        return Ok(String::new());
+    }
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+
+    // Delegate to the same logic as Windows, just using $HOME
+    // We reuse the read_session_context_windows logic by setting USERPROFILE temporarily
+    // Actually, let's just inline the same pattern with $HOME
+
+    let is_latest = session_id == "__latest__";
+
+    match terminal_type.as_str() {
+        "claude" => {
+            // Read statusline JSON if available
+            let sl_path = std::path::Path::new(&home).join(".ezydev").join("claude-statusline.json");
+            let mut sl_window: Option<u64> = None;
+            let mut sl_model: Option<String> = None;
+            let mut sl_used_pct: Option<u64> = None;
+            let mut sl_cost: Option<f64> = None;
+            let mut sl_duration: Option<u64> = None;
+            let mut sl_version: Option<String> = None;
+            let mut sl_session_id: Option<String> = None;
+            if let Ok(content) = std::fs::read_to_string(&sl_path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                    sl_window = v.pointer("/context_window/context_window_size").and_then(|v| v.as_u64());
+                    sl_model = v.pointer("/model/display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    sl_used_pct = v.pointer("/context_window/used_percentage").and_then(|v| v.as_u64());
+                    sl_cost = v.pointer("/cost/total_cost_usd").and_then(|v| v.as_f64());
+                    sl_duration = v.pointer("/cost/total_duration_ms").and_then(|v| v.as_u64());
+                    sl_version = v.pointer("/version").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    sl_session_id = v.pointer("/session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    if let (Some(ref sid), Some(cost)) = (&sl_session_id, sl_cost) {
+                        let cache_path = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", sid));
+                        let dur_str = sl_duration.map(|d| d.to_string()).unwrap_or_default();
+                        let _ = std::fs::write(&cache_path, format!("{:.6}|{}", cost, dur_str));
+                    }
+                }
+            }
+
+            let used_pct_str = sl_used_pct.map(|v| v.to_string()).unwrap_or_default();
+            let ver_str = sl_version.unwrap_or_default();
+
+            if is_latest {
+                if let Some(w) = sl_window {
+                    return Ok(format!("0|{}|{}|{}|||{}||||", w, sl_model.as_deref().unwrap_or(""), used_pct_str, ver_str));
+                }
+                return Ok(String::new());
+            }
+
+            // Find session file
+            let claude_dir = std::path::Path::new(&home).join(".claude").join("projects");
+            let mut session_file: Option<std::path::PathBuf> = None;
+            if claude_dir.exists() {
+                if let Ok(projects) = std::fs::read_dir(&claude_dir) {
+                    for proj in projects.filter_map(|e| e.ok()) {
+                        let candidate = proj.path().join(format!("{}.jsonl", session_id));
+                        if candidate.exists() {
+                            session_file = Some(candidate);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let f = match session_file {
+                Some(f) => f,
+                None => return Ok(String::new()),
+            };
+
+            let content = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
+            let mut total: u64 = 0;
+            let mut service_tier = String::new();
+            let mut speed = String::new();
+            for line in content.lines().rev() {
+                if line.contains("\"message\"") && line.contains("\"usage\"") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(usage) = v.pointer("/message/usage") {
+                            let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let cache_create = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            total = input + cache_create + cache_read + output;
+                            if let Some(st) = usage.get("service_tier").and_then(|v| v.as_str()) {
+                                service_tier = st.to_string();
+                            }
+                            if let Some(sp) = usage.get("speed").and_then(|v| v.as_str()) {
+                                speed = sp.to_string();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let compact_count = content.lines().filter(|l| l.contains("compact_boundary")).count();
+
+            let (sess_cost, sess_duration): (Option<f64>, Option<u64>) =
+                if sl_session_id.as_deref() == Some(&session_id) {
+                    (sl_cost, sl_duration)
+                } else {
+                    let cache_path = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", session_id));
+                    if let Ok(cached) = std::fs::read_to_string(&cache_path) {
+                        let parts: Vec<&str> = cached.trim().split('|').collect();
+                        let c = parts.first().and_then(|s| s.parse::<f64>().ok());
+                        let d = parts.get(1).and_then(|s| s.parse::<u64>().ok());
+                        (c, d)
+                    } else {
+                        (None, None)
+                    }
+                };
+
+            let proj_cost: Option<f64> = {
+                let proj_dir = f.parent();
+                if let Some(dir) = proj_dir {
+                    let mut total_cost: f64 = 0.0;
+                    let mut found_any = false;
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.extension().map_or(true, |ext| ext != "jsonl") { continue; }
+                            let sid = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                            let sc = if sl_session_id.as_deref() == Some(&sid) {
+                                sl_cost
+                            } else {
+                                let cp = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", sid));
+                                std::fs::read_to_string(&cp).ok()
+                                    .and_then(|c| c.trim().split('|').next().and_then(|s| s.parse::<f64>().ok()))
+                            };
+                            if let Some(c) = sc { total_cost += c; found_any = true; }
+                        }
+                    }
+                    if found_any { Some(total_cost) } else { None }
+                } else { None }
+            };
+
+            let cost_str = sess_cost.map(|c| format!("{:.6}", c)).unwrap_or_default();
+            let dur_str = sess_duration.map(|d| d.to_string()).unwrap_or_default();
+            let proj_str = proj_cost.map(|c| format!("{:.6}", c)).unwrap_or_default();
+
+            if total == 0 {
+                if let Some(w) = sl_window {
+                    return Ok(format!("0|{}|{}|{}|{}|{}|{}|||{}|{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, cost_str, dur_str, ver_str, compact_count, proj_str));
+                }
+                return Ok(String::new());
+            }
+
+            let window = sl_window.unwrap_or(200000);
+            let model_str = sl_model.unwrap_or_default();
+            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", total, window, model_str, used_pct_str, cost_str, dur_str, ver_str, service_tier, speed, compact_count, proj_str))
+        },
+        "codex" => {
+            let sessions_dir = std::path::Path::new(&home).join(".codex").join("sessions");
+            if !sessions_dir.exists() {
+                return Ok(String::new());
+            }
+
+            let target_file: Option<std::path::PathBuf>;
+            if is_latest {
+                let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+                fn walk_n(dir: &std::path::Path, files: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.is_dir() { walk_n(&path, files); }
+                            else if path.extension().map_or(false, |ext| ext == "jsonl") {
+                                if let Ok(m) = entry.metadata() {
+                                    if let Ok(t) = m.modified() { files.push((path, t)); }
+                                }
+                            }
+                        }
+                    }
+                }
+                walk_n(&sessions_dir, &mut files);
+                files.sort_by(|a, b| b.1.cmp(&a.1));
+                target_file = files.into_iter().next().map(|(p, _)| p);
+            } else {
+                fn walk_n2(dir: &std::path::Path, uuid: &str) -> Option<std::path::PathBuf> {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.is_dir() {
+                                if let Some(found) = walk_n2(&path, uuid) { return Some(found); }
+                            } else if path.file_name().map_or(false, |n| n.to_string_lossy().contains(uuid)) {
+                                return Some(path);
+                            }
+                        }
+                    }
+                    None
+                }
+                target_file = walk_n2(&sessions_dir, &session_id);
+            }
+
+            let f = match target_file {
+                Some(f) => f,
+                None => return Ok(String::new()),
+            };
+
+            let content = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
+            let mut used: Option<u64> = None;
+            let mut window: Option<u64> = None;
+            let mut model = String::new();
+            let mut effort = String::new();
+            let mut collab_mode = String::new();
+
+            for line in content.lines().rev() {
+                if window.is_some() && (used.is_some() || is_latest) { break; }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    if window.is_none() {
+                        if let Some(w) = v.pointer("/payload/info/model_context_window").and_then(|v| v.as_u64()) {
+                            if w > 0 { window = Some(w); }
+                        }
+                        if used.is_none() && !is_latest {
+                            if let Some(u) = v.pointer("/payload/info/last_token_usage/total_tokens").and_then(|v| v.as_u64()) {
+                                if u > 0 { used = Some(u); }
+                            }
+                        }
+                    }
+                    if model.is_empty() {
+                        if let Some(m) = v.pointer("/payload/model").and_then(|v| v.as_str()) {
+                            model = m.to_string();
+                        }
+                    }
+                    if effort.is_empty() {
+                        if let Some(e) = v.pointer("/payload/effort").and_then(|v| v.as_str()) {
+                            effort = e.to_string();
+                        }
+                    }
+                    if collab_mode.is_empty() {
+                        if let Some(cm) = v.pointer("/payload/collaboration_mode/mode").and_then(|v| v.as_str()) {
+                            collab_mode = cm.to_string();
+                        }
+                    }
+                }
+            }
+
+            if is_latest { used = None; }
+            let used_val = used.unwrap_or(0);
+            let window_val = match window {
+                Some(w) => w,
+                None => return Ok(String::new()),
+            };
+
+            let mut rl5h: Option<f64> = None;
+            let mut rlweek: Option<f64> = None;
+            {
+                let mut all_files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+                fn walk_nrl(dir: &std::path::Path, files: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
+                    if let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.is_dir() { walk_nrl(&path, files); }
+                            else if path.extension().map_or(false, |ext| ext == "jsonl") {
+                                if let Ok(m) = entry.metadata() {
+                                    if let Ok(t) = m.modified() { files.push((path, t)); }
+                                }
+                            }
+                        }
+                    }
+                }
+                walk_nrl(&sessions_dir, &mut all_files);
+                all_files.sort_by(|a, b| b.1.cmp(&a.1));
+                for (rf, _) in all_files.iter().take(15) {
+                    if let Ok(rc) = std::fs::read_to_string(rf) {
+                        for line in rc.lines().rev() {
+                            if !line.contains("\"rate_limits\"") || line.contains("\"rate_limits\":null") { continue; }
+                            if !line.contains("\"used_percent\"") { continue; }
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                                rl5h = v.pointer("/payload/rate_limits/primary/used_percent").and_then(|v| v.as_f64());
+                                rlweek = v.pointer("/payload/rate_limits/secondary/used_percent").and_then(|v| v.as_f64());
+                                break;
+                            }
+                        }
+                    }
+                    if rl5h.is_some() { break; }
+                }
+            }
+            let rl5h_str = rl5h.map(|v| format!("{:.2}", v)).unwrap_or_default();
+            let rlweek_str = rlweek.map(|v| format!("{:.2}", v)).unwrap_or_default();
+
+            Ok(format!("{}|{}|{}|{}|{}|{}|{}", used_val, window_val, model, rl5h_str, rlweek_str, effort, collab_mode))
+        },
+        "gemini" => {
+            let tmp_dir = std::path::Path::new(&home).join(".gemini").join("tmp");
+            if !tmp_dir.exists() {
+                return Ok(String::new());
+            }
+
+            let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+            if let Ok(projects) = std::fs::read_dir(&tmp_dir) {
+                for proj in projects.filter_map(|e| e.ok()) {
+                    let chats = proj.path().join("chats");
+                    if chats.is_dir() {
+                        if let Ok(entries) = std::fs::read_dir(&chats) {
+                            for entry in entries.filter_map(|e| e.ok()) {
+                                let path = entry.path();
+                                if path.extension().map_or(false, |ext| ext == "json") {
+                                    if let Ok(m) = entry.metadata() {
+                                        if let Ok(t) = m.modified() { files.push((path, t)); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            files.sort_by(|a, b| b.1.cmp(&a.1));
+
+            let f = match files.into_iter().next() {
+                Some((p, _)) => p,
+                None => return Ok(String::new()),
+            };
+
+            let content = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
+            let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+
+            let inp = v.pointer("/messages")
+                .and_then(|m| m.as_array())
+                .map(|msgs| msgs.iter().rev().find_map(|m| m.pointer("/tokens/input").and_then(|v| v.as_u64())).unwrap_or(0))
+                .unwrap_or(0);
+            if inp == 0 { return Ok(String::new()); }
+
+            let model = v.pointer("/messages")
+                .and_then(|m| m.as_array())
+                .map(|msgs| msgs.iter().rev().find_map(|m| m.get("model").and_then(|v| v.as_str())).unwrap_or(""))
+                .unwrap_or("");
+
+            let summary = v.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+
+            let thoughts = v.pointer("/messages")
+                .and_then(|m| m.as_array())
+                .map(|msgs| msgs.iter().rev().find_map(|m| m.pointer("/tokens/thoughts").and_then(|v| v.as_u64())).unwrap_or(0))
+                .unwrap_or(0);
+
+            Ok(format!("{}|1000000|{}||{}|{}|", inp, model, summary, thoughts))
+        },
+        _ => Ok(String::new()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2684,7 +3381,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, read_session_context_windows, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {
@@ -2725,6 +3422,14 @@ pub fn run() {
                         .spawn();
                 });
             }
+
+            // macOS: no special window setup needed — using native decorations
+            // via tauri.macos.conf.json overlay. No WSL VM to warm.
+            #[cfg(target_os = "macos")]
+            {
+                let _ = app; // suppress unused warning
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

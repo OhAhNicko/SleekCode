@@ -101,8 +101,10 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
     return () => ro.disconnect();
   }, []);
 
-  // Key handlers
+  // Key handlers — scoped to container so they don't steal keys from CLI panes
   useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
     const down = (e: KeyboardEvent) => {
       if (["ArrowUp", "ArrowDown", "w", "W", "s", "S"].includes(e.key)) {
         e.preventDefault();
@@ -110,11 +112,11 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
       }
     };
     const up = (e: KeyboardEvent) => keysDown.current.delete(e.key);
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
+    container.addEventListener("keydown", down);
+    container.addEventListener("keyup", up);
     return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
+      container.removeEventListener("keydown", down);
+      container.removeEventListener("keyup", up);
     };
   }, []);
 

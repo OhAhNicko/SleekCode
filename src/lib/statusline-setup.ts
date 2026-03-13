@@ -1,15 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCachedDistro } from "./wsl-cache";
+import { isWindows } from "./platform";
 
 /**
- * Install the EzyDev statusline wrapper in WSL.
+ * Install the EzyDev statusline wrapper.
+ * On Windows/WSL: installs via wsl.exe with optional distro.
+ * On macOS/Linux: installs directly via bash.
+ *
  * Creates ~/.ezydev/statusline-wrapper.sh and updates ~/.claude/settings.json
  * to chain through our wrapper before the user's original statusline script.
  *
  * Safe to call multiple times — skips if already installed.
  */
 export async function installStatuslineWrapper(): Promise<void> {
-  const distro = getCachedDistro();
+  const distro = isWindows() ? getCachedDistro() : null;
   try {
     const result = await invoke<string>("install_statusline_wrapper", {
       distro: distro || null,
@@ -25,7 +29,7 @@ export async function installStatuslineWrapper(): Promise<void> {
  * Returns a number 0-100, or null if no data available.
  */
 export async function readContextPercent(terminalId: string): Promise<number | null> {
-  const distro = getCachedDistro();
+  const distro = isWindows() ? getCachedDistro() : null;
   try {
     const raw = await invoke<string>("read_context_percent", {
       terminalId,

@@ -69,6 +69,7 @@ export function recordTerminalActivity(terminalId: string, terminalType: Termina
     // Refresh git status bar so file/diff counts update immediately.
     if (isConfirmedActive(s, s.lastOutput)) {
       window.dispatchEvent(new Event("ezydev:git-refresh"));
+      window.dispatchEvent(new Event("ezydev:ai-done"));
     }
     s.burstStart = 0;
     s.burstBytes = 0;

@@ -1,5 +1,6 @@
 import type { StateCreator } from "zustand";
 import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, PaneLayout } from "../types";
+import { getDefaultBackend } from "../lib/platform";
 
 export interface RecentProjectTemplate {
   templateId: string;
@@ -94,6 +95,7 @@ export interface RecentProjectsSlice {
   slashCommandGhostText: boolean;
   codeReviewCollapseAll: boolean;
   openPanesInBackground: boolean;
+  autoMinimizeGameOnAiDone: boolean;
   terminalBackend: TerminalBackend;
   commitMsgMode: CommitMsgMode;
   shadowAiCli: ShadowAiCli;
@@ -122,6 +124,7 @@ export interface RecentProjectsSlice {
   setSlashCommandGhostText: (value: boolean) => void;
   setCodeReviewCollapseAll: (value: boolean) => void;
   setOpenPanesInBackground: (value: boolean) => void;
+  setAutoMinimizeGameOnAiDone: (value: boolean) => void;
   setTerminalBackend: (value: TerminalBackend) => void;
   setCommitMsgMode: (value: CommitMsgMode) => void;
   setShadowAiCli: (value: ShadowAiCli) => void;
@@ -155,7 +158,8 @@ export const createRecentProjectsSlice: StateCreator<
   slashCommandGhostText: false,
   codeReviewCollapseAll: false,
   openPanesInBackground: false,
-  terminalBackend: "wsl",
+  autoMinimizeGameOnAiDone: false,
+  terminalBackend: getDefaultBackend(),
   commitMsgMode: "simple",
   shadowAiCli: "claude",
   projectColors: {},
@@ -291,6 +295,10 @@ export const createRecentProjectsSlice: StateCreator<
 
   setOpenPanesInBackground: (value) => {
     set({ openPanesInBackground: value });
+  },
+
+  setAutoMinimizeGameOnAiDone: (value) => {
+    set({ autoMinimizeGameOnAiDone: value });
   },
 
   setTerminalBackend: (value) => {

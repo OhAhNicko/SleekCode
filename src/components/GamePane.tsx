@@ -17,6 +17,7 @@ import { FaXmark, FaChevronLeft, FaPause, FaPlay } from "react-icons/fa6";
 interface GamePaneProps {
   onClose: () => void;
   initialGame?: GameType;
+  startPaused?: boolean;
 }
 
 interface GameCardDef {
@@ -227,9 +228,10 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-export default function GamePane({ onClose, initialGame }: GamePaneProps) {
+export default function GamePane({ onClose, initialGame, startPaused }: GamePaneProps) {
   const [activeGame, setActiveGame] = useState<GameType | null>(initialGame ?? null);
-  const [paused, setPaused] = useState(false);
+  const [paused, setPaused] = useState(startPaused ?? false);
+  const gamePaneRef = useRef<HTMLDivElement>(null);
   const highscores = useAppStore((s) => s.highscores);
   const timedHighscores = useAppStore((s) => s.timedHighscores);
   const gameStats = useAppStore((s) => s.gameStats);
@@ -245,17 +247,20 @@ export default function GamePane({ onClose, initialGame }: GamePaneProps) {
 
   const handleBack = useCallback(() => { setActiveGame(null); setPaused(false); }, []);
 
-  // Space key toggles pause when a game is active
+  // Space key toggles pause when a game is active AND the game pane is focused.
+  // Uses the container ref instead of window to avoid stealing Space from CLI panes.
   useEffect(() => {
     if (!activeGame) return;
+    const container = gamePaneRef.current;
+    if (!container) return;
     const handler = (e: KeyboardEvent) => {
       if (e.code === "Space" && !e.repeat) {
         e.preventDefault();
         setPaused((p) => !p);
       }
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    container.addEventListener("keydown", handler);
+    return () => container.removeEventListener("keydown", handler);
   }, [activeGame]);
 
   // Broadcast active game to PaneGrid for pause/resume tracking
@@ -388,6 +393,8 @@ export default function GamePane({ onClose, initialGame }: GamePaneProps) {
 
   return (
     <div
+      ref={gamePaneRef}
+      tabIndex={-1}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -396,7 +403,9 @@ export default function GamePane({ onClose, initialGame }: GamePaneProps) {
         backgroundColor: "var(--ezy-bg)",
         borderLeft: "1px solid var(--ezy-border)",
         overflow: "hidden",
+        outline: "none",
       }}
+      onMouseDown={() => gamePaneRef.current?.focus()}
     >
       {/* Header */}
       <div

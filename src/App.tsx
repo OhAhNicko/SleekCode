@@ -15,6 +15,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
 import { resolveWindowsCliPaths } from "./lib/windows-cli-cache";
+import { resolveNativeCliPaths } from "./lib/macos-cli-cache";
 import { installStatuslineWrapper } from "./lib/statusline-setup";
 import { generateTerminalId } from "./lib/layout-utils";
 import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
@@ -128,7 +129,11 @@ export default function App() {
   // Pre-warm CLI paths at startup (background) — branches on terminal backend
   useEffect(() => {
     const backend = useAppStore.getState().terminalBackend ?? "wsl";
-    if (backend === "windows") {
+    if (backend === "native") {
+      resolveNativeCliPaths();
+      // Install statusline wrapper directly on macOS/Linux
+      installStatuslineWrapper();
+    } else if (backend === "windows") {
       resolveWindowsCliPaths();
       // Statusline wrapper is WSL-only — skip in Windows mode
     } else {

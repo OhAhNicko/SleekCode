@@ -6,6 +6,7 @@ import {
   generatePaneId,
   repositionKanbanPane,
 } from "../lib/layout-utils";
+import { useAppStore } from "../store";
 import { snapshotPane } from "../store/undoCloseStore";
 import BrowserPreview from "./BrowserPreview";
 import EditorPane from "./EditorPane";
@@ -16,6 +17,8 @@ import GamePane from "./GamePane";
 
 // Remember last active game so toggling off/on resumes it
 let lastActiveGame: GameType | undefined;
+// When game pane was auto-closed by AI-done, reopen it paused
+let shouldStartPaused = false;
 
 interface PaneGridProps {
   layout: PaneLayout;
@@ -30,6 +33,8 @@ export default function PaneGrid({
   onLayoutChange,
   getTerminalSlot,
 }: PaneGridProps) {
+  const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
+
   const handleClose = useCallback(
     (paneId: string) => {
       snapshotPane(tabId, layout);
@@ -123,7 +128,9 @@ export default function PaneGrid({
         type: "game" as const,
         id: generatePaneId(),
         game: lastActiveGame, // resume previous game if any
+        startPaused: shouldStartPaused,
       };
+      shouldStartPaused = false;
       const newLayout: PaneLayout = {
         type: "split",
         id: generatePaneId(),
@@ -148,6 +155,29 @@ export default function PaneGrid({
       window.removeEventListener("ezydev:game-active", gameActiveHandler);
     };
   }, [layout, onLayoutChange]);
+
+  // Auto-minimize game pane when AI finishes working
+  useEffect(() => {
+    if (!autoMinimizeGameOnAiDone) return;
+    const handler = () => {
+      const findGameNode = (node: PaneLayout): { id: string; game?: GameType } | null => {
+        if (node.type === "game") return { id: node.id, game: node.game };
+        if (node.type === "split") {
+          return findGameNode(node.children[0]) ?? findGameNode(node.children[1]);
+        }
+        return null;
+      };
+      const existing = findGameNode(layout);
+      if (!existing) return;
+      // Save game and mark for paused restart
+      if (existing.game) lastActiveGame = existing.game;
+      shouldStartPaused = true;
+      const newLayout = removePane(layout, existing.id);
+      if (newLayout) onLayoutChange(newLayout);
+    };
+    window.addEventListener("ezydev:ai-done", handler);
+    return () => window.removeEventListener("ezydev:ai-done", handler);
+  }, [layout, onLayoutChange, autoMinimizeGameOnAiDone]);
 
   // Listen for file viewer open events
   useEffect(() => {
@@ -269,6 +299,7 @@ export default function PaneGrid({
           key={node.id}
           onClose={() => handleClose(node.id)}
           initialGame={node.game}
+          startPaused={node.startPaused}
         />
       );
     }

@@ -178,7 +178,19 @@ export default function TerminalPane({
           const excludeIds = [...claimedSessionIds];
           let id: string | null = null;
 
-          if (backend === "windows") {
+          if (backend === "native") {
+            // macOS/Linux native: use native paths and native session commands
+            const nativeCwd = workingDirRef.current;
+            console.log(`[SessionResume] lookup for ${type} (native), cwd="${nativeCwd}"`);
+            if (!nativeCwd) { console.log(`[SessionResume] no cwd, skipping`); return false; }
+            if (type === "claude") {
+              id = await invoke<string | null>("get_claude_session_id_native", { projectPath: nativeCwd, excludeIds });
+            } else if (type === "codex") {
+              id = await invoke<string | null>("get_codex_session_id_native", { projectPath: nativeCwd, excludeIds });
+            } else if (type === "gemini") {
+              id = await invoke<string | null>("get_gemini_session_id_native", { projectPath: nativeCwd, excludeIds });
+            }
+          } else if (backend === "windows") {
             // Windows native: use native Windows path and Windows session commands
             const winCwd = workingDirRef.current;
             console.log(`[SessionResume] lookup for ${type} (windows), cwd="${winCwd}"`);
@@ -746,8 +758,12 @@ export default function TerminalPane({
         }
         // Preserve scroll position across fit — layout changes (e.g. browser
         // preview toggle) resize the container, and fit() can reset viewport.
+        // Use a small tolerance (3 lines) for the "at bottom" check — during rapid
+        // output (AI working, prompt sent), viewportY can briefly lag behind baseY.
+        // Without tolerance, fit() would preserve the stale viewport position,
+        // causing the terminal to scroll up unexpectedly.
         const buf = term.buffer.active;
-        const wasAtBottom = buf.viewportY >= buf.baseY;
+        const wasAtBottom = buf.baseY - buf.viewportY <= 3;
         const savedViewport = buf.viewportY;
         fitAddon.fit();
         if (wasAtBottom) {
@@ -1022,13 +1038,16 @@ export default function TerminalPane({
     // Codex/Gemini TUI editors process keystrokes asynchronously — sending text+\r
     // in one write causes \r to arrive before the editor finishes ingesting text.
     // Split into text first, then Enter after a delay.
-    const needsDelayedEnter = terminalType === "codex" || terminalType === "gemini";
+    const needsDelayedEnter = terminalType === "codex" || terminalType === "gemini" || terminalType === "claude";
 
     if (text.includes("\n")) {
       // Multi-line: use bracketed paste so the CLI treats it as one input,
-      // then send Enter after a short delay (immediate \r gets swallowed)
+      // then send Enter after a short delay (immediate \r gets swallowed).
+      // Claude Code's Node.js REPL needs extra time to ingest bracketed paste
+      // into its internal multi-line composer before Enter will submit it.
+      const pasteDelay = terminalType === "claude" ? 150 : 50;
       write("\x1b[200~" + text + "\x1b[201~");
-      setTimeout(() => write("\r"), 50);
+      setTimeout(() => write("\r"), pasteDelay);
     } else if (needsDelayedEnter) {
       write(text + (terminalType === "gemini" ? " " : ""));
       setTimeout(() => write("\r"), 80);
@@ -1134,6 +1153,7 @@ export default function TerminalPane({
             workingDir={workingDir}
             scrollToPrompt={() => scrollToPromptRef.current()}
             scrollToNextPrompt={() => scrollToNextPromptRef.current()}
+            isActive={isActive}
             didStealRef={composerDidStealRef}
             suppressAutoFocus={!!focusSuppressedRef.current}
           />

@@ -1,7 +1,9 @@
 import type { TerminalConfig, TerminalType, TerminalBackend } from "../types";
 import { getCachedWslPath, getCachedCliPath, getCachedDistro } from "./wsl-cache";
 import { getCachedWindowsCliPath } from "./windows-cli-cache";
+import { getCachedNativeCliPath } from "./macos-cli-cache";
 import { getResumeFlag, supportsSessionResume } from "./session-resume";
+import { isWindows } from "./platform";
 
 /** Returns the YOLO/skip-permissions flag for a given CLI, or null if not applicable. */
 export function getYoloFlag(type: TerminalType): string | null {
@@ -81,13 +83,66 @@ const TERMINAL_CONFIGS_WINDOWS: Record<TerminalType, TerminalConfig> = {
   },
 };
 
+// Base configs for native backend (macOS/Linux — direct shell, no WSL).
+const TERMINAL_CONFIGS_NATIVE: Record<TerminalType, TerminalConfig> = {
+  claude: {
+    command: "claude",
+    args: [],
+    label: "Claude Code",
+    description: "Anthropic's AI coding assistant",
+  },
+  codex: {
+    command: "codex",
+    args: [],
+    label: "Codex CLI",
+    description: "OpenAI's coding CLI",
+  },
+  gemini: {
+    command: "gemini",
+    args: [],
+    label: "Gemini CLI",
+    description: "Google's AI coding CLI",
+  },
+  shell: {
+    command: "/bin/zsh",
+    args: ["-l"],
+    label: "Shell",
+    description: "Default shell",
+  },
+  devserver: {
+    command: "/bin/zsh",
+    args: ["-l"],
+    label: "Dev Server",
+    description: "Shell for dev servers",
+  },
+};
+
 /**
  * Get terminal config for a given type.
+ * When backend is "native", uses direct macOS/Linux executables.
  * When backend is "windows", uses native Windows executables directly.
  * When backend is "wsl" (default), uses cached PATH + absolute CLI path
  * when available (fast path), falls back to bash -lic (slow path) otherwise.
  */
 export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string, backend?: TerminalBackend): TerminalConfig {
+  // Native backend (macOS/Linux) — direct spawn, no WSL
+  if (backend === "native") {
+    const nativeBase = TERMINAL_CONFIGS_NATIVE[type];
+    if (type === "shell" || type === "devserver") return nativeBase;
+
+    const cliPath = getCachedNativeCliPath(type);
+    const resumeArgs = sessionResumeId && supportsSessionResume(type)
+      ? getResumeFlag(type, sessionResumeId).split(" ")
+      : [];
+    const extra = extraArgs ?? [];
+
+    return {
+      ...nativeBase,
+      command: cliPath ?? nativeBase.command,
+      args: [...extra, ...resumeArgs],
+    };
+  }
+
   // Windows native backend — use resolved .exe/.cmd path directly
   if (backend === "windows") {
     const winBase = TERMINAL_CONFIGS_WINDOWS[type];
@@ -199,6 +254,7 @@ export function toWslPath(winPath: string): string {
 export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessionResumeId?: string, extraArgs?: string[], backend?: TerminalBackend): string | null {
   if (type === "shell") return null;
   if (backend === "windows") return null; // No WSL pool in Windows mode
+  if (backend === "native") return null;  // No WSL pool on macOS/Linux
 
   const cachedPath = getCachedWslPath();
   const cliPath = getCachedCliPath(type);
@@ -228,6 +284,7 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
 /** Returns true if the terminal type runs inside WSL */
 export function isWslTerminal(type: TerminalType, backend?: TerminalBackend): boolean {
   if (backend === "windows") return false;
+  if (backend === "native") return false;
   return type !== "shell";
 }
 
@@ -252,7 +309,7 @@ function getRemoteExecCommand(type: TerminalType, sessionResumeId?: string): str
 
 /**
  * Build SSH command + args for spawning a remote terminal.
- * Uses native Windows ssh.exe (no WSL wrapping needed).
+ * Uses ssh.exe on Windows, ssh on macOS/Linux.
  */
 export function getSshCommand(
   server: { username: string; host: string; authMethod: string; sshKeyPath?: string },
@@ -284,5 +341,5 @@ export function getSshCommand(
     args.push(`${envExport} ${remoteCmd}`);
   }
 
-  return { command: "ssh.exe", args };
+  return { command: isWindows() ? "ssh.exe" : "ssh", args };
 }
