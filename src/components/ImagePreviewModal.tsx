@@ -1,8 +1,9 @@
 interface ImagePreviewModalProps {
   dataUri: string;
   winPath: string;
-  onInsert: () => void;
+  onInsert?: () => void;
   onClose: () => void;
+  onDelete?: () => void;
 }
 
 export default function ImagePreviewModal({
@@ -10,6 +11,7 @@ export default function ImagePreviewModal({
   winPath,
   onInsert,
   onClose,
+  onDelete,
 }: ImagePreviewModalProps) {
   const fileName = winPath.split(/[\\/]/).pop() ?? winPath;
 
@@ -61,18 +63,34 @@ export default function ImagePreviewModal({
             {fileName}
           </span>
           <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-            <button
-              onClick={onInsert}
-              className="text-xs px-3 py-1 rounded"
-              style={{
-                backgroundColor: "var(--ezy-accent)",
-                color: "#fff",
-                border: "none",
-                cursor: "pointer",
-              }}
-            >
-              Insert path
-            </button>
+            {onInsert && (
+              <button
+                onClick={onInsert}
+                className="text-xs px-3 py-1 rounded"
+                style={{
+                  backgroundColor: "var(--ezy-accent)",
+                  color: "#fff",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                Insert path
+              </button>
+            )}
+            {onDelete && (
+              <button
+                onClick={() => { onDelete(); onClose(); }}
+                className="text-xs px-3 py-1 rounded"
+                style={{
+                  backgroundColor: "#dc2626",
+                  color: "#fff",
+                  border: "none",
+                  cursor: "pointer",
+                }}
+              >
+                Delete
+              </button>
+            )}
             <button
               onClick={onClose}
               className="text-xs px-3 py-1 rounded"

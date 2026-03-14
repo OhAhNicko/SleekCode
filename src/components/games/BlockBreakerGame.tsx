@@ -32,14 +32,16 @@ interface Paddle {
 
 type GameState = "idle" | "playing" | "over" | "levelClear";
 
-const INITIAL_BALL_SPEED = 4.5;
+const INITIAL_BALL_SPEED = 10;
 const PADDLE_HEIGHT = 12;
 const BALL_RADIUS = 5;
 const BLOCK_ROWS = 6;
 const BLOCK_COLS = 10;
 const BLOCK_PADDING = 3;
 const MAX_LIVES = 3;
-const MIN_VY = 1.5;
+const MIN_VY = 2.5;
+const PADDLE_HIT_SPEEDUP = 1.03; // 3% faster on each paddle hit
+const MAX_SPEED_MULT = 2.0; // cap at 2x initial speed
 
 function getComputedColor(varName: string, fallback: string): string {
   const val = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
@@ -176,6 +178,7 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const mouseXRef = useRef<number | null>(null);
+  const lastBallSpeedRef = useRef<number>(INITIAL_BALL_SPEED);
   const canvasSizeRef = useRef(canvasSize);
   canvasSizeRef.current = canvasSize;
 
@@ -195,7 +198,7 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
     return () => ro.disconnect();
   }, []);
 
-  const resetBallAndPaddle = useCallback((cw: number, ch: number) => {
+  const resetBallAndPaddle = useCallback((cw: number, ch: number, speedOverride?: number) => {
     const pw = cw * 0.15;
     paddleRef.current = {
       x: (cw - pw) / 2,
@@ -203,7 +206,8 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
       w: pw,
       h: PADDLE_HEIGHT,
     };
-    const speed = INITIAL_BALL_SPEED * (1 + (levelRef.current - 1) * 0.1);
+    const speed = speedOverride ?? INITIAL_BALL_SPEED * (1 + (levelRef.current - 1) * 0.15);
+    lastBallSpeedRef.current = speed;
     const angle = -Math.PI / 2 + (Math.random() - 0.5) * 0.6;
     ballRef.current = {
       x: cw / 2,
@@ -258,32 +262,12 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
     canvas.height = h;
 
     const bgColor = getComputedColor("--ezy-bg", "#0d0d0d");
-    const borderColor = getComputedColor("--ezy-border", "#2a2a2a");
     const accentColor = getComputedColor("--ezy-accent", "#5eead4");
     const surfaceRaised = getComputedColor("--ezy-surface-raised", "#1e1e1e");
 
     // Background
     ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, w, h);
-
-    // Subtle grid
-    ctx.strokeStyle = borderColor;
-    ctx.globalAlpha = 0.1;
-    ctx.lineWidth = 1;
-    const gridStep = 30;
-    for (let x = 0; x <= w; x += gridStep) {
-      ctx.beginPath();
-      ctx.moveTo(x + 0.5, 0);
-      ctx.lineTo(x + 0.5, h);
-      ctx.stroke();
-    }
-    for (let y = 0; y <= h; y += gridStep) {
-      ctx.beginPath();
-      ctx.moveTo(0, y + 0.5);
-      ctx.lineTo(w, y + 0.5);
-      ctx.stroke();
-    }
-    ctx.globalAlpha = 1;
 
     // Blocks
     const blocks = blocksRef.current;
@@ -361,7 +345,7 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
       return;
     }
 
-    const PADDLE_SPEED = 7;
+    const PADDLE_SPEED = 10;
 
     function gameLoop(time: number) {
       if (gameStateRef.current !== "playing" || pausedRef.current) return;
@@ -408,6 +392,8 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
 
       // Ball fell below
       if (ball.y + ball.radius > h) {
+        // Save the speed the ball was traveling at when lost
+        const lostSpeed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
         livesRef.current -= 1;
         setLives(livesRef.current);
         if (livesRef.current <= 0) {
@@ -419,8 +405,8 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
           draw();
           return;
         }
-        // Reset ball/paddle, continue
-        resetBallAndPaddle(w, h);
+        // Reset ball/paddle at the same speed the ball was lost on
+        resetBallAndPaddle(w, h, lostSpeed);
         lastTimeRef.current = 0;
         draw();
         rafRef.current = requestAnimationFrame(gameLoop);
@@ -438,7 +424,10 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
         // Calculate angle based on hit position
         const hitPos = (ball.x - paddle.x) / paddle.w; // 0..1
         const angle = -Math.PI / 3 + hitPos * (2 * Math.PI / 3); // -60deg to +60deg
-        const speed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+        const curSpeed = Math.sqrt(ball.vx * ball.vx + ball.vy * ball.vy);
+        const levelBase = INITIAL_BALL_SPEED * (1 + (levelRef.current - 1) * 0.15);
+        const maxSpeed = levelBase * MAX_SPEED_MULT;
+        const speed = Math.min(curSpeed * PADDLE_HIT_SPEEDUP, maxSpeed);
         ball.vx = Math.sin(angle) * speed;
         ball.vy = -Math.cos(angle) * speed;
         // Ensure vy has minimum magnitude to prevent stuck loops

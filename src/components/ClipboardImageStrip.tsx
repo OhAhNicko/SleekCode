@@ -1,15 +1,17 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { BiScreenshot } from "react-icons/bi";
 import { FaExpand } from "react-icons/fa";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
-import { insertImagePath } from "../lib/clipboard-insert";
+import { insertImagePath, resolveImagePath } from "../lib/clipboard-insert";
 import { useAppStore } from "../store";
 import ImagePreviewModal from "./ImagePreviewModal";
 
 /** Shows a snip button + the 3 most recent session clipboard images in the TabBar. */
 export default function ClipboardImageStrip() {
   const images = useClipboardImageStore((s) => s.images);
+  const removeImage = useClipboardImageStore((s) => s.removeImage);
   const setPendingComposerImage = useClipboardImageStore((s) => s.setPendingComposerImage);
   const composerEnabled = useAppStore((s) => s.promptComposerEnabled);
   const activeComposerId = useClipboardImageStore((s) => s.activeComposerTerminalId);
@@ -17,8 +19,19 @@ export default function ClipboardImageStrip() {
     dataUri: string;
     winPath: string;
   } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
 
   const latest3 = images.slice(0, 3);
+
+  const attachToPrompt = (imgId: string) => {
+    const img = images.find((i) => i.id === imgId);
+    if (!img) return;
+    if (composerEnabled && activeComposerId) {
+      setPendingComposerImage({ image: img, terminalId: activeComposerId });
+    } else {
+      insertImagePath(img.winPath);
+    }
+  };
 
   return (
     <>
@@ -73,12 +86,11 @@ export default function ClipboardImageStrip() {
               flexShrink: 0,
             }}
             title={composerEnabled ? "Click to attach to prompt" : "Click to insert path into active terminal"}
-            onClick={() => {
-              if (composerEnabled && activeComposerId) {
-                setPendingComposerImage({ image: img, terminalId: activeComposerId });
-              } else {
-                insertImagePath(img.winPath);
-              }
+            onClick={() => attachToPrompt(img.id)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setCtxMenu({ x: e.clientX, y: e.clientY, imgId: img.id });
             }}
           >
             <img
@@ -162,9 +174,102 @@ export default function ClipboardImageStrip() {
             }
             setPreviewImage(null);
           }}
+          onDelete={() => {
+            const img = images.find((i) => i.winPath === previewImage.winPath);
+            if (img) removeImage(img.id);
+            setPreviewImage(null);
+          }}
           onClose={() => setPreviewImage(null)}
         />
       )}
+
+      {/* Right-click context menu — portaled to body */}
+      {ctxMenu && (() => {
+        const ctxImg = images.find((im) => im.id === ctxMenu.imgId);
+        if (!ctxImg) return null;
+        const items: { label: string; action: () => void; color?: string }[] = [
+          {
+            label: "Expand",
+            action: () => {
+              setPreviewImage({ dataUri: ctxImg.dataUri, winPath: ctxImg.winPath });
+              setCtxMenu(null);
+            },
+          },
+          {
+            label: "Copy",
+            action: () => {
+              fetch(ctxImg.dataUri)
+                .then((r) => r.blob())
+                .then((blob) => navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]))
+                .catch(() => {});
+              setCtxMenu(null);
+            },
+          },
+          {
+            label: "Copy filepath",
+            action: () => {
+              navigator.clipboard.writeText(resolveImagePath(ctxImg.winPath)).catch(() => {});
+              setCtxMenu(null);
+            },
+          },
+          {
+            label: "Attach to prompt",
+            action: () => {
+              attachToPrompt(ctxImg.id);
+              setCtxMenu(null);
+            },
+          },
+          {
+            label: "Delete",
+            action: () => {
+              removeImage(ctxImg.id);
+              setCtxMenu(null);
+            },
+            color: "#f87171",
+          },
+        ];
+        return createPortal(
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 210 }}
+            onClick={() => setCtxMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }}
+          >
+            <div
+              style={{
+                position: "absolute",
+                top: Math.min(ctxMenu.y, window.innerHeight - 200),
+                left: Math.min(ctxMenu.x, window.innerWidth - 170),
+                backgroundColor: "var(--ezy-surface-raised)",
+                border: "1px solid var(--ezy-border)",
+                borderRadius: 6,
+                padding: "4px 0",
+                minWidth: 160,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {items.map((item) => (
+                <div
+                  key={item.label}
+                  onClick={item.action}
+                  style={{
+                    padding: "6px 12px",
+                    fontSize: 12,
+                    color: item.color ?? "var(--ezy-text)",
+                    cursor: "pointer",
+                    transition: "background-color 80ms ease",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                >
+                  {item.label}
+                </div>
+              ))}
+            </div>
+          </div>,
+          document.body,
+        );
+      })()}
     </>
   );
 }

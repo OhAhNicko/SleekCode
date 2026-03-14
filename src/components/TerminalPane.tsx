@@ -178,13 +178,18 @@ export default function TerminalPane({
           const excludeIds = [...claimedSessionIds];
           let id: string | null = null;
 
+          // For Claude, only claim sessions modified within the last 2 minutes.
+          // This prevents new panes from picking up old sessions (whose cost
+          // would be incorrectly shown as this pane's cost).
+          const claudeMaxAge = type === "claude" ? 120 : undefined;
+
           if (backend === "native") {
             // macOS/Linux native: use native paths and native session commands
             const nativeCwd = workingDirRef.current;
             console.log(`[SessionResume] lookup for ${type} (native), cwd="${nativeCwd}"`);
             if (!nativeCwd) { console.log(`[SessionResume] no cwd, skipping`); return false; }
             if (type === "claude") {
-              id = await invoke<string | null>("get_claude_session_id_native", { projectPath: nativeCwd, excludeIds });
+              id = await invoke<string | null>("get_claude_session_id_native", { projectPath: nativeCwd, excludeIds, maxAgeSecs: claudeMaxAge });
             } else if (type === "codex") {
               id = await invoke<string | null>("get_codex_session_id_native", { projectPath: nativeCwd, excludeIds });
             } else if (type === "gemini") {
@@ -196,7 +201,7 @@ export default function TerminalPane({
             console.log(`[SessionResume] lookup for ${type} (windows), cwd="${winCwd}"`);
             if (!winCwd) { console.log(`[SessionResume] no cwd, skipping`); return false; }
             if (type === "claude") {
-              id = await invoke<string | null>("get_claude_session_id_windows", { projectPath: winCwd, excludeIds });
+              id = await invoke<string | null>("get_claude_session_id_windows", { projectPath: winCwd, excludeIds, maxAgeSecs: claudeMaxAge });
             } else if (type === "codex") {
               id = await invoke<string | null>("get_codex_session_id_windows", { projectPath: winCwd, excludeIds });
             } else if (type === "gemini") {
@@ -208,7 +213,7 @@ export default function TerminalPane({
             console.log(`[SessionResume] lookup for ${type}, wslCwd="${wslCwd}", workingDir="${workingDirRef.current}"`);
             if (!wslCwd) { console.log(`[SessionResume] no wslCwd, skipping`); return false; }
             if (type === "claude") {
-              id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
+              id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds, maxAgeSecs: claudeMaxAge });
             } else if (type === "codex") {
               id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
             } else if (type === "gemini") {
@@ -228,10 +233,16 @@ export default function TerminalPane({
         return false;
       };
 
-      // First attempt after 5s, retry at 20s if session file wasn't created yet
+      // First attempt after 5s, retry at 20s, final attempt at 60s.
+      // The recency filter (120s) prevents claiming old sessions, so retries
+      // give the new session time to create its JSONL file.
       setTimeout(async () => {
         if (!(await lookupSession())) {
-          setTimeout(lookupSession, 15000);
+          setTimeout(async () => {
+            if (!(await lookupSession())) {
+              setTimeout(lookupSession, 40000);
+            }
+          }, 15000);
         }
       }, 5000);
     }
@@ -429,12 +440,20 @@ export default function TerminalPane({
     const webglTimer = setTimeout(() => {
       try {
         if (!disposed && el.offsetHeight) {
+          const buf = term.buffer.active;
+          const wasAtBottom = buf.baseY - buf.viewportY <= 3;
+          const savedViewport = buf.viewportY;
           const webgl = new WebglAddon();
           term.loadAddon(webgl);
           // Force WebGL to rebuild glyph atlas with the correct font
           term.options.fontFamily = "Hack, monospace";
           term.options.fontSize = baseFontSize;
           fitAddon.fit();
+          if (wasAtBottom) {
+            term.scrollToBottom();
+          } else {
+            term.scrollToLine(Math.min(savedViewport, buf.baseY));
+          }
         }
       } catch {
         // Context limit exceeded — canvas/DOM renderer is the fallback
@@ -756,22 +775,35 @@ export default function TerminalPane({
           currentFontSize = targetSize;
           term.options.fontSize = targetSize;
         }
-        // Preserve scroll position across fit — layout changes (e.g. browser
-        // preview toggle) resize the container, and fit() can reset viewport.
-        // Use a small tolerance (3 lines) for the "at bottom" check — during rapid
-        // output (AI working, prompt sent), viewportY can briefly lag behind baseY.
-        // Without tolerance, fit() would preserve the stale viewport position,
-        // causing the terminal to scroll up unexpectedly.
+        // Preserve scroll position across fit — layout changes (e.g. game pane
+        // toggle, browser preview) resize the container, and fit() resets viewport.
+        // Save BEFORE fit, restore AFTER fit + after a rAF to ensure xterm has
+        // processed the resize internally.
         const buf = term.buffer.active;
         const wasAtBottom = buf.baseY - buf.viewportY <= 3;
         const savedViewport = buf.viewportY;
         fitAddon.fit();
+        // Immediate restore
         if (wasAtBottom) {
           term.scrollToBottom();
         } else {
-          const target = Math.min(savedViewport, buf.baseY);
-          term.scrollToLine(target);
+          term.scrollToLine(Math.min(savedViewport, buf.baseY));
         }
+        // Deferred restore — xterm may process the resize asynchronously
+        // (especially with WebGL renderer), resetting scroll after our
+        // immediate restore. Double-rAF ensures we restore after xterm settles.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            try {
+              const buf2 = term.buffer.active;
+              if (wasAtBottom) {
+                term.scrollToBottom();
+              } else {
+                term.scrollToLine(Math.min(savedViewport, buf2.baseY));
+              }
+            } catch { /* disposed */ }
+          });
+        });
         lastWidth = el.clientWidth;
         lastHeight = el.clientHeight;
       } catch {
@@ -981,7 +1013,18 @@ export default function TerminalPane({
       if (!term) return;
       term.refresh(0, term.rows - 1);
       if (fit) {
-        try { fit.fit(); } catch { /* container may be detached */ }
+        try {
+          // Preserve scroll position across fit — same pattern as ResizeObserver
+          const buf = term.buffer.active;
+          const wasAtBottom = buf.baseY - buf.viewportY <= 3;
+          const savedViewport = buf.viewportY;
+          fit.fit();
+          if (wasAtBottom) {
+            term.scrollToBottom();
+          } else {
+            term.scrollToLine(Math.min(savedViewport, buf.baseY));
+          }
+        } catch { /* container may be detached */ }
       }
     };
     document.addEventListener("visibilitychange", onVisible);
@@ -1007,9 +1050,21 @@ export default function TerminalPane({
 
   // Live font-size update when user changes CLI font size in settings
   useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.options.fontSize = cliFontSize;
-      fitAddonRef.current?.fit();
+    const term = terminalRef.current;
+    const fit = fitAddonRef.current;
+    if (term) {
+      term.options.fontSize = cliFontSize;
+      if (fit) {
+        const buf = term.buffer.active;
+        const wasAtBottom = buf.baseY - buf.viewportY <= 3;
+        const savedViewport = buf.viewportY;
+        fit.fit();
+        if (wasAtBottom) {
+          term.scrollToBottom();
+        } else {
+          term.scrollToLine(Math.min(savedViewport, buf.baseY));
+        }
+      }
     }
   }, [cliFontSize]);
 
@@ -1035,24 +1090,19 @@ export default function TerminalPane({
   }, [pastedImage, dismissPreview]);
 
   const handleComposerSubmit = useCallback((text: string) => {
-    // Codex/Gemini TUI editors process keystrokes asynchronously — sending text+\r
-    // in one write causes \r to arrive before the editor finishes ingesting text.
-    // Split into text first, then Enter after a delay.
-    const needsDelayedEnter = terminalType === "codex" || terminalType === "gemini" || terminalType === "claude";
+    const isCli = terminalType === "codex" || terminalType === "gemini" || terminalType === "claude";
 
-    if (text.includes("\n")) {
-      // Multi-line: use bracketed paste so the CLI treats it as one input,
-      // then send Enter after a short delay (immediate \r gets swallowed).
-      // Claude Code's Node.js REPL needs extra time to ingest bracketed paste
-      // into its internal multi-line composer before Enter will submit it.
-      const pasteDelay = terminalType === "claude" ? 150 : 50;
-      write("\x1b[200~" + text + "\x1b[201~");
+    if (isCli) {
+      // Always use bracketed paste for CLI terminals so the TUI ingests the
+      // entire input atomically.  Without it, long text (e.g. file paths for
+      // image attachments) may not be fully processed before Enter arrives,
+      // causing incomplete submissions.
+      const content = text + (terminalType === "gemini" ? " " : "");
+      const pasteDelay = terminalType === "claude" ? 150 : 80;
+      write("\x1b[200~" + content + "\x1b[201~");
       setTimeout(() => write("\r"), pasteDelay);
-    } else if (needsDelayedEnter) {
-      write(text + (terminalType === "gemini" ? " " : ""));
-      setTimeout(() => write("\r"), 80);
     } else {
-      // Single-line: write directly (no bracketed paste needed)
+      // Shell terminals: write directly (no bracketed paste needed)
       write(text + "\r");
     }
     // Don't steal focus from textarea when always-visible — the composer handles its own focus

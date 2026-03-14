@@ -1,5 +1,5 @@
 export type TerminalType = "claude" | "codex" | "gemini" | "shell" | "devserver";
-export type GameType = "snake" | "2048" | "sudoku" | "crossword" | "minesweeper" | "wordle" | "ticTacToe" | "blockBreaker" | "solitaire" | "pong";
+export type GameType = "snake" | "2048" | "sudoku" | "crossword" | "minesweeper" | "wordle" | "ticTacToe" | "blockBreaker" | "solitaire" | "pong" | "chess" | "memory";
 export type TerminalBackend = "wsl" | "windows" | "native";
 
 export type AuthMethod = "ssh-key" | "password";
@@ -210,6 +210,7 @@ export interface FileDiff {
 
 export type CommitMsgMode = "empty" | "simple" | "advanced";
 export type ShadowAiCli = "claude" | "codex";
+export type ComposerExpansion = "up" | "down" | "scroll";
 
 export interface GitAheadBehind {
   ahead: number;

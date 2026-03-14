@@ -8,11 +8,11 @@ interface PongGameProps {
 type Difficulty = "easy" | "medium" | "hard";
 type GamePhase = "select" | "idle" | "playing" | "scored" | "over";
 
-const WIN_SCORE = 11;
+const WIN_SCORE = 6;
 
 const AI_CONFIG: Record<Difficulty, { speed: number; reaction: number; maxSpeed: number; errorMargin: number }> = {
-  easy: { speed: 0.55, reaction: 12, maxSpeed: 3, errorMargin: 40 },
-  medium: { speed: 0.78, reaction: 6, maxSpeed: 5.5, errorMargin: 16 },
+  easy: { speed: 0.35, reaction: 18, maxSpeed: 2, errorMargin: 60 },
+  medium: { speed: 0.55, reaction: 12, maxSpeed: 3, errorMargin: 40 },
   hard: { speed: 0.94, reaction: 2, maxSpeed: 7.5, errorMargin: 4 },
 };
 
@@ -29,6 +29,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
   const [playerScore, setPlayerScore] = useState(0);
   const [aiScore, setAiScore] = useState(0);
   const [canvasSize, setCanvasSize] = useState({ w: 400, h: 300 });
+  const [useMouse, setUseMouse] = useState(false);
 
   const phaseRef = useRef<GamePhase>("select");
   const pausedRef = useRef(paused);
@@ -49,13 +50,17 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
   const rafRef = useRef(0);
   const lastTimeRef = useRef(0);
   const serveDir = useRef<1 | -1>(1); // 1 = toward AI, -1 = toward player
+  const serveHitRef = useRef(false); // true after first paddle hit of a rally
+  const mouseYRef = useRef<number | null>(null);
+  const useMouseRef = useRef(useMouse);
+  useMouseRef.current = useMouse;
 
   const PADDLE_W = 10;
   const PADDLE_H_RATIO = 0.18; // proportion of canvas height
   const BALL_R = 5;
   const PADDLE_MARGIN = 16;
-  const BASE_BALL_SPEED = 280; // px/sec
-  const PLAYER_PADDLE_SPEED = 420; // px/sec
+  const BASE_BALL_SPEED = 480; // px/sec
+  const PLAYER_PADDLE_SPEED = 520; // px/sec
 
   const getPaddleH = useCallback(() => Math.max(40, canvasSize.h * PADDLE_H_RATIO), [canvasSize.h]);
 
@@ -63,8 +68,9 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
     const { w, h } = canvasSize;
     ballX.current = w / 2;
     ballY.current = h / 2;
+    serveHitRef.current = false;
     const angle = (Math.random() * 0.8 - 0.4); // -0.4 to 0.4 radians
-    const speed = BASE_BALL_SPEED;
+    const speed = BASE_BALL_SPEED * 0.5; // slow serve, jumps to full speed on first hit
     ballVX.current = Math.cos(angle) * speed * dir;
     ballVY.current = Math.sin(angle) * speed;
   }, [canvasSize]);
@@ -85,21 +91,25 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
     lastTimeRef.current = 0;
   }, [canvasSize, getPaddleH, resetBall]);
 
-  // ResizeObserver
+  // ResizeObserver — measure canvas area, full width, proportional height
+  const canvasAreaRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const container = containerRef.current?.querySelector("[data-canvas-area]") as HTMLElement | null;
-    if (!container) return;
+    const area = canvasAreaRef.current;
+    if (!area) return;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const { width, height } = entry.contentRect;
         if (width > 0 && height > 0) {
-          setCanvasSize({ w: Math.floor(width), h: Math.floor(height) });
+          const cw = Math.floor(width);
+          const ch = Math.floor(height);
+          const canvasH = Math.min(Math.floor(cw * 0.55), ch);
+          setCanvasSize({ w: cw, h: canvasH });
         }
       }
     });
-    ro.observe(container);
+    ro.observe(area);
     return () => ro.disconnect();
-  }, []);
+  }, [phase]);
 
   // Key handlers — scoped to container so they don't steal keys from CLI panes
   useEffect(() => {
@@ -119,6 +129,23 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
       container.removeEventListener("keyup", up);
     };
   }, []);
+
+  // Mouse tracking for mouse control mode — listen on canvas directly
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      mouseYRef.current = e.clientY - rect.top;
+    };
+    const handleMouseLeave = () => { mouseYRef.current = null; };
+    canvas.addEventListener("mousemove", handleMouseMove);
+    canvas.addEventListener("mouseleave", handleMouseLeave);
+    return () => {
+      canvas.removeEventListener("mousemove", handleMouseMove);
+      canvas.removeEventListener("mouseleave", handleMouseLeave);
+    };
+  }, [phase]);
 
   // Game loop
   useEffect(() => {
@@ -140,12 +167,19 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
       const pH = getPaddleH();
 
       // --- Player paddle movement ---
-      const keys = keysDown.current;
-      if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) {
-        playerY.current = Math.max(0, playerY.current - PLAYER_PADDLE_SPEED * dt);
-      }
-      if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) {
-        playerY.current = Math.min(h - pH, playerY.current + PLAYER_PADDLE_SPEED * dt);
+      if (useMouseRef.current && mouseYRef.current !== null) {
+        // Mouse mode: paddle center follows mouse Y
+        const targetY = mouseYRef.current - pH / 2;
+        playerY.current = Math.max(0, Math.min(h - pH, targetY));
+      } else {
+        // Keyboard mode
+        const keys = keysDown.current;
+        if (keys.has("ArrowUp") || keys.has("w") || keys.has("W")) {
+          playerY.current = Math.max(0, playerY.current - PLAYER_PADDLE_SPEED * dt);
+        }
+        if (keys.has("ArrowDown") || keys.has("s") || keys.has("S")) {
+          playerY.current = Math.min(h - pH, playerY.current + PLAYER_PADDLE_SPEED * dt);
+        }
       }
 
       // --- AI paddle movement ---
@@ -160,6 +194,17 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
       aiY.current = Math.max(0, Math.min(h - pH, aiY.current + aiMove));
 
       // --- Ball movement ---
+      // Time-based acceleration: only after first paddle hit
+      if (serveHitRef.current) {
+        const maxSpeed = BASE_BALL_SPEED * 1.6;
+        const currentSpeed = Math.sqrt(ballVX.current ** 2 + ballVY.current ** 2);
+        if (currentSpeed < maxSpeed) {
+          const accel = 1 + 0.005 * dt; // 0.5% per second
+          ballVX.current *= accel;
+          ballVY.current *= accel;
+        }
+      }
+
       ballX.current += ballVX.current * dt;
       ballY.current += ballVY.current * dt;
 
@@ -186,11 +231,13 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
         ballX.current = pRight + BALL_R;
         const hitPos = (ballY.current - playerY.current) / pH; // 0..1
         const angle = (hitPos - 0.5) * 1.2; // -0.6 to 0.6 radians
-        const speed = Math.sqrt(ballVX.current ** 2 + ballVY.current ** 2) * 1.04; // slight speedup
-        const cappedSpeed = Math.min(speed, BASE_BALL_SPEED * 1.6);
+        const curSpeed = Math.sqrt(ballVX.current ** 2 + ballVY.current ** 2);
+        // First hit: jump to full speed. After: 4% bump per hit
+        const newSpeed = !serveHitRef.current ? BASE_BALL_SPEED : curSpeed * 1.04;
+        const cappedSpeed = Math.min(newSpeed, BASE_BALL_SPEED * 1.6);
+        serveHitRef.current = true;
         ballVX.current = Math.cos(angle) * cappedSpeed;
         ballVY.current = Math.sin(angle) * cappedSpeed;
-        // Ensure moving right
         if (ballVX.current < 0) ballVX.current = -ballVX.current;
       }
 
@@ -207,8 +254,10 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
         ballX.current = aLeft - BALL_R;
         const hitPos = (ballY.current - aiY.current) / pH;
         const angle = (hitPos - 0.5) * 1.2;
-        const speed = Math.sqrt(ballVX.current ** 2 + ballVY.current ** 2) * 1.04;
-        const cappedSpeed = Math.min(speed, BASE_BALL_SPEED * 1.6);
+        const curSpeed = Math.sqrt(ballVX.current ** 2 + ballVY.current ** 2);
+        const newSpeed = !serveHitRef.current ? BASE_BALL_SPEED : curSpeed * 1.04;
+        const cappedSpeed = Math.min(newSpeed, BASE_BALL_SPEED * 1.6);
+        serveHitRef.current = true;
         ballVX.current = -Math.cos(angle) * cappedSpeed;
         ballVY.current = Math.sin(angle) * cappedSpeed;
         if (ballVX.current > 0) ballVX.current = -ballVX.current;
@@ -287,6 +336,20 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
     ctx.lineTo(w / 2, h);
     ctx.stroke();
     ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+
+    // Top & bottom borders
+    ctx.strokeStyle = borderColor;
+    ctx.globalAlpha = 0.5;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, 1);
+    ctx.lineTo(w, 1);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, h - 1);
+    ctx.lineTo(w, h - 1);
+    ctx.stroke();
     ctx.globalAlpha = 1;
 
     // Score text
@@ -426,8 +489,28 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
         <span>
           You: <span style={{ color: "var(--ezy-accent)" }}>{playerScore}</span>
         </span>
-        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
-          First to {WIN_SCORE} {difficulty ? `(${difficulty})` : ""}
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+            First to {WIN_SCORE} {difficulty ? `(${difficulty})` : ""}
+          </span>
+          <span
+            onClick={() => setUseMouse((v) => !v)}
+            style={{
+              fontSize: 9,
+              fontWeight: 600,
+              padding: "1px 6px",
+              borderRadius: 3,
+              cursor: "pointer",
+              backgroundColor: useMouse ? "var(--ezy-accent)" : "var(--ezy-surface-raised)",
+              color: useMouse ? "var(--ezy-bg)" : "var(--ezy-text-muted)",
+              border: useMouse ? "none" : "1px solid var(--ezy-border)",
+              transition: "background-color 150ms ease, color 150ms ease",
+              userSelect: "none",
+            }}
+            title={useMouse ? "Switch to keyboard controls" : "Switch to mouse controls"}
+          >
+            {useMouse ? "MOUSE" : "KEYS"}
+          </span>
         </span>
         <span>
           AI: <span style={{ color: "#f87171" }}>{aiScore}</span>
@@ -435,8 +518,18 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
       </div>
 
       {/* Canvas area */}
-      <div data-canvas-area style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-        <canvas ref={canvasRef} style={{ display: "block", width: "100%", height: "100%" }} />
+      <div ref={canvasAreaRef} data-canvas-area style={{
+        flex: 1,
+        position: "relative",
+        overflow: "hidden",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "var(--ezy-bg)",
+        minHeight: 0,
+        cursor: useMouse && phase === "playing" && !paused ? "none" : "default",
+      }}>
+        <canvas ref={canvasRef} style={{ display: "block" }} />
 
         {/* Idle overlay */}
         {phase === "idle" && (
@@ -453,7 +546,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
             }}
           >
             <div style={{ fontSize: 14, color: "var(--ezy-text-secondary)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
-              W/S or Arrow keys to move
+              {useMouse ? "Move mouse to control paddle" : "W/S or Arrow keys to move"}
             </div>
             <div
               onClick={() => { initGame(); setTimeout(() => containerRef.current?.focus(), 50); }}

@@ -1515,21 +1515,36 @@ async fn wsl_resolve_cli_env(cli_names: Vec<String>) -> Result<std::collections:
 /// where <encoded-path> replaces '/' with '-' in the absolute project path.
 /// Case can vary (e.g. "Documents" vs "documents") on WSL with Windows paths.
 #[tauri::command]
-async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>, max_age_secs: Option<u64>) -> Result<Option<String>, String> {
     let encoded = project_path.replace('/', "-");
 
     // Try exact match first, then case-insensitive glob for /mnt/ paths where
     // Windows case folding creates multiple folder variants (Documents vs documents).
-    let script = format!(
-        "ls -1t ~/.claude/projects/{}/*.jsonl 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'; \
-         for d in ~/.claude/projects/*/; do \
-           base=$(basename \"$d\"); \
-           if [ \"$(echo \"$base\" | tr '[:upper:]' '[:lower:]')\" = \"$(echo '{}' | tr '[:upper:]' '[:lower:]')\" ] && [ \"$base\" != '{}' ]; then \
-             ls -1t \"$d\"*.jsonl 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'; \
-           fi; \
-         done",
-        encoded, encoded, encoded
-    );
+    // When max_age_secs is set, use find -mmin to filter out stale sessions.
+    let script = if let Some(age) = max_age_secs {
+        let mmin_val = (age + 59) / 60; // ceiling division to minutes
+        format!(
+            "find ~/.claude/projects/{enc}/ -maxdepth 1 -name '*.jsonl' -mmin -{mmin} 2>/dev/null | xargs -r ls -1t 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'; \
+             for d in ~/.claude/projects/*/; do \
+               base=$(basename \"$d\"); \
+               if [ \"$(echo \"$base\" | tr '[:upper:]' '[:lower:]')\" = \"$(echo '{enc}' | tr '[:upper:]' '[:lower:]')\" ] && [ \"$base\" != '{enc}' ]; then \
+                 find \"$d\" -maxdepth 1 -name '*.jsonl' -mmin -{mmin} 2>/dev/null | xargs -r ls -1t 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'; \
+               fi; \
+             done",
+            enc = encoded, mmin = mmin_val
+        )
+    } else {
+        format!(
+            "ls -1t ~/.claude/projects/{}/*.jsonl 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'; \
+             for d in ~/.claude/projects/*/; do \
+               base=$(basename \"$d\"); \
+               if [ \"$(echo \"$base\" | tr '[:upper:]' '[:lower:]')\" = \"$(echo '{}' | tr '[:upper:]' '[:lower:]')\" ] && [ \"$base\" != '{}' ]; then \
+                 ls -1t \"$d\"*.jsonl 2>/dev/null | sed 's|.*/||;s|\\.jsonl$||'; \
+               fi; \
+             done",
+            encoded, encoded, encoded
+        )
+    };
 
     let output = wsl_command()
         .args(["--", "bash", "-lic", &script])
@@ -1715,7 +1730,7 @@ async fn windows_resolve_cli_env(cli_names: Vec<String>) -> Result<std::collecti
 /// Find the most recent Claude session ID on native Windows.
 /// Claude stores sessions at %USERPROFILE%\.claude\projects\<encoded-path>\<uuid>.jsonl
 #[tauri::command]
-async fn get_claude_session_id_windows(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+async fn get_claude_session_id_windows(project_path: String, exclude_ids: Vec<String>, max_age_secs: Option<u64>) -> Result<Option<String>, String> {
     let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
     let encoded = project_path.replace('\\', "-").replace('/', "-");
     // Strip leading dash if present (from paths starting with C:\)
@@ -1732,6 +1747,8 @@ async fn get_claude_session_id_windows(project_path: String, exclude_ids: Vec<St
             && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
     };
 
+    let now = std::time::SystemTime::now();
+
     // Read directory entries sorted by modification time (newest first)
     let mut entries: Vec<_> = std::fs::read_dir(&session_dir)
         .map_err(|e| format!("Failed to read session dir: {}", e))?
@@ -1739,6 +1756,14 @@ async fn get_claude_session_id_windows(project_path: String, exclude_ids: Vec<St
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
         .filter_map(|e| {
             let mtime = e.metadata().ok()?.modified().ok()?;
+            // Apply recency filter: skip files older than max_age_secs
+            if let Some(max_age) = max_age_secs {
+                if let Ok(age) = now.duration_since(mtime) {
+                    if age.as_secs() > max_age {
+                        return None;
+                    }
+                }
+            }
             Some((e, mtime))
         })
         .collect();
@@ -1990,10 +2015,19 @@ async fn read_session_context_windows(
             let used_pct_str = sl_used_pct.map(|v| v.to_string()).unwrap_or_default();
             let ver_str = sl_version.unwrap_or_default();
 
+            // Read effortLevel from ~/.claude/settings.json
+            let effort_level: String = {
+                let settings_path = std::path::Path::new(&home).join(".claude").join("settings.json");
+                std::fs::read_to_string(&settings_path).ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|v| v.get("effortLevel").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_default()
+            };
+
             if is_latest {
-                // 0|window|model|used_pct|||version||||
+                // 0|window|model|used_pct|||version|||||effort
                 if let Some(w) = sl_window {
-                    return Ok(format!("0|{}|{}|{}|||{}||||", w, sl_model.as_deref().unwrap_or(""), used_pct_str, ver_str));
+                    return Ok(format!("0|{}|{}|{}|||{}|||||{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, ver_str, effort_level));
                 }
                 return Ok(String::new());
             }
@@ -2045,8 +2079,19 @@ async fn read_session_context_windows(
                 }
             }
 
-            // Count context compactions
+            // Count context compactions + extract custom title
             let compact_count = content.lines().filter(|l| l.contains("compact_boundary")).count();
+            let mut custom_title = String::new();
+            for line in content.lines().rev() {
+                if line.contains("\"custom-title\"") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(t) = v.get("customTitle").and_then(|v| v.as_str()) {
+                            custom_title = t.to_string();
+                            break;
+                        }
+                    }
+                }
+            }
 
             // Per-session cost: use statusline if session matches, else cached
             let (sess_cost, sess_duration): (Option<f64>, Option<u64>) =
@@ -2095,16 +2140,16 @@ async fn read_session_context_windows(
 
             if total == 0 {
                 if let Some(w) = sl_window {
-                    // 0|window|model|used_pct|cost|dur|version|||compact|proj
-                    return Ok(format!("0|{}|{}|{}|{}|{}|{}|||{}|{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, cost_str, dur_str, ver_str, compact_count, proj_str));
+                    // 0|window|model|used_pct|cost|dur|version|||compact|proj|effort|custom_title
+                    return Ok(format!("0|{}|{}|{}|{}|{}|{}|||{}|{}|{}|{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, cost_str, dur_str, ver_str, compact_count, proj_str, effort_level, custom_title));
                 }
                 return Ok(String::new());
             }
 
             let window = sl_window.unwrap_or(200000);
             let model_str = sl_model.unwrap_or_default();
-            // total|window|model|used_pct|cost|dur|version|tier|speed|compact|proj
-            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", total, window, model_str, used_pct_str, cost_str, dur_str, ver_str, service_tier, speed, compact_count, proj_str))
+            // total|window|model|used_pct|cost|dur|version|tier|speed|compact|proj|effort|custom_title
+            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", total, window, model_str, used_pct_str, cost_str, dur_str, ver_str, service_tier, speed, compact_count, proj_str, effort_level, custom_title))
         },
         "codex" => {
             let sessions_dir = std::path::Path::new(&home).join(".codex").join("sessions");
@@ -2240,7 +2285,22 @@ async fn read_session_context_windows(
             let rl5h_str = rl5h.map(|v| format!("{:.2}", v)).unwrap_or_default();
             let rlweek_str = rlweek.map(|v| format!("{:.2}", v)).unwrap_or_default();
 
-            Ok(format!("{}|{}|{}|{}|{}|{}|{}", used_val, window_val, model, rl5h_str, rlweek_str, effort, collab_mode))
+            // Read session title from SQLite
+            let mut title = String::new();
+            if !is_latest {
+                let db_path = std::path::Path::new(&home).join(".codex").join("state_5.sqlite");
+                if db_path.exists() {
+                    let py = format!(
+                        r#"import sqlite3,sys;c=sqlite3.connect(r'{}');r=c.execute('SELECT title FROM threads WHERE id=?',(sys.argv[1],)).fetchone();print(r[0] if r else '')"#,
+                        db_path.display()
+                    );
+                    if let Ok(out) = std::process::Command::new("python3").args(["-c", &py, &session_id]).output() {
+                        title = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    }
+                }
+            }
+
+            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}", used_val, window_val, model, rl5h_str, rlweek_str, effort, collab_mode, title))
         },
         "gemini" => {
             let tmp_dir = std::path::Path::new(&home).join(".gemini").join("tmp");
@@ -2472,6 +2532,13 @@ async fn read_session_context(
             r#"
 command -v jq >/dev/null 2>&1 || exit 0
 
+# Read effortLevel from ~/.claude/settings.json
+effort_level=""
+SETTINGS="$HOME/.claude/settings.json"
+if [ -f "$SETTINGS" ]; then
+  effort_level=$(jq -r '.effortLevel // empty' "$SETTINGS" 2>/dev/null)
+fi
+
 # Read statusline JSON (if available)
 SL="/tmp/ezydev-claude-statusline.json"
 sl_window=""
@@ -2500,7 +2567,7 @@ SID='{session_id}'
 if [ "$SID" = "__latest__" ]; then
   # No specific session (new pane) — no per-session cost yet.
   if [ -n "$sl_window" ]; then
-    echo "0|$sl_window|$sl_model|$sl_used_pct|||$sl_version||||"
+    echo "0|$sl_window|$sl_model|$sl_used_pct|||$sl_version|||||$effort_level"
   fi
   exit 0
 else
@@ -2544,10 +2611,13 @@ if [ -d "$proj_dir" ]; then
   done
 fi
 
+# Extract custom title (from /rename command)
+custom_title=$(tac "$f" 2>/dev/null | grep '"custom-title"' | head -1 | jq -r '.customTitle // empty' 2>/dev/null)
+
 line=$(tac "$f" 2>/dev/null | grep '"message"' | grep '"usage"' | head -1)
 if [ -z "$line" ]; then
   if [ -n "$sl_window" ]; then
-    echo "0|$sl_window|$sl_model|$sl_used_pct|$sess_cost|$sess_duration|$sl_version|||0|$proj_cost"
+    echo "0|$sl_window|$sl_model|$sl_used_pct|$sess_cost|$sess_duration|$sl_version|||0|$proj_cost|$effort_level|$custom_title"
   fi
   exit 0
 fi
@@ -2558,7 +2628,7 @@ speed=$(echo "$line" | jq -r '.message.usage.speed // empty' 2>/dev/null)
 window="${{sl_window:-200000}}"
 model="${{sl_model:-$(echo "$line" | jq -r '.message.model // empty' 2>/dev/null)}}"
 compact_count=$(grep -c 'compact_boundary' "$f" 2>/dev/null || echo 0)
-echo "$total|$window|$model|$sl_used_pct|$sess_cost|$sess_duration|$sl_version|$service_tier|$speed|$compact_count|$proj_cost"
+echo "$total|$window|$model|$sl_used_pct|$sess_cost|$sess_duration|$sl_version|$service_tier|$speed|$compact_count|$proj_cost|$effort_level|$custom_title"
 "#,
             session_id = session_id
         ),
@@ -2637,7 +2707,13 @@ if [ -n "$rl_line" ]; then
   rl5h=$(echo "$rl_line" | jq -r '.payload.rate_limits.primary.used_percent // empty' 2>/dev/null)
   rlweek=$(echo "$rl_line" | jq -r '.payload.rate_limits.secondary.used_percent // empty' 2>/dev/null)
 fi
-echo "$used|$window|$model|$rl5h|$rlweek|$effort|$collab_mode"
+# Read session title from SQLite
+title=""
+if [ "$SID" != "__latest__" ]; then
+  db="$HOME/.codex/state_5.sqlite"
+  [ -f "$db" ] && title=$(python3 -c "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);r=c.execute('SELECT title FROM threads WHERE id=?',(sys.argv[2],)).fetchone();print(r[0] if r else '')" "$db" "$SID" 2>/dev/null)
+fi
+echo "$used|$window|$model|$rl5h|$rlweek|$effort|$collab_mode|$title"
 "#,
             session_id = session_id
         ),
@@ -2818,7 +2894,7 @@ async fn native_resolve_cli_env(cli_names: Vec<String>) -> Result<std::collectio
 /// Find the most recent Claude session ID on macOS/Linux (native filesystem).
 /// Claude stores sessions at $HOME/.claude/projects/<encoded-path>/<uuid>.jsonl
 #[tauri::command]
-async fn get_claude_session_id_native(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+async fn get_claude_session_id_native(project_path: String, exclude_ids: Vec<String>, max_age_secs: Option<u64>) -> Result<Option<String>, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     let encoded = project_path.replace('/', "-");
     let encoded = encoded.trim_start_matches('-').to_string();
@@ -2839,19 +2915,22 @@ async fn get_claude_session_id_native(project_path: String, exclude_ids: Vec<Str
             }
         }
         if found_dir.is_none() { return Ok(None); }
-        return find_newest_uuid_jsonl(&found_dir.unwrap(), &exclude_ids);
+        return find_newest_uuid_jsonl(&found_dir.unwrap(), &exclude_ids, max_age_secs);
     }
 
-    find_newest_uuid_jsonl(&session_dir, &exclude_ids)
+    find_newest_uuid_jsonl(&session_dir, &exclude_ids, max_age_secs)
 }
 
 /// Helper: find the newest UUID.jsonl in a directory, excluding given IDs.
-fn find_newest_uuid_jsonl(dir: &std::path::Path, exclude_ids: &[String]) -> Result<Option<String>, String> {
+/// If `max_age_secs` is provided, only consider files modified within the last N seconds.
+fn find_newest_uuid_jsonl(dir: &std::path::Path, exclude_ids: &[String], max_age_secs: Option<u64>) -> Result<Option<String>, String> {
     let is_valid_uuid = |s: &str| -> bool {
         s.len() == 36
             && s.split('-').count() == 5
             && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
     };
+
+    let now = std::time::SystemTime::now();
 
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .map_err(|e| format!("Failed to read session dir: {}", e))?
@@ -2859,6 +2938,14 @@ fn find_newest_uuid_jsonl(dir: &std::path::Path, exclude_ids: &[String]) -> Resu
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "jsonl"))
         .filter_map(|e| {
             let mtime = e.metadata().ok()?.modified().ok()?;
+            // Apply recency filter: skip files older than max_age_secs
+            if let Some(max_age) = max_age_secs {
+                if let Ok(age) = now.duration_since(mtime) {
+                    if age.as_secs() > max_age {
+                        return None;
+                    }
+                }
+            }
             Some((e, mtime))
         })
         .collect();
@@ -3077,9 +3164,18 @@ async fn read_session_context_native(
             let used_pct_str = sl_used_pct.map(|v| v.to_string()).unwrap_or_default();
             let ver_str = sl_version.unwrap_or_default();
 
+            // Read effortLevel from ~/.claude/settings.json
+            let effort_level: String = {
+                let settings_path = std::path::Path::new(&home).join(".claude").join("settings.json");
+                std::fs::read_to_string(&settings_path).ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|v| v.get("effortLevel").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_default()
+            };
+
             if is_latest {
                 if let Some(w) = sl_window {
-                    return Ok(format!("0|{}|{}|{}|||{}||||", w, sl_model.as_deref().unwrap_or(""), used_pct_str, ver_str));
+                    return Ok(format!("0|{}|{}|{}|||{}|||||{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, ver_str, effort_level));
                 }
                 return Ok(String::new());
             }
@@ -3104,6 +3200,7 @@ async fn read_session_context_native(
                 None => return Ok(String::new()),
             };
 
+            // Read last usage line + extract service_tier/speed
             let content = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
             let mut total: u64 = 0;
             let mut service_tier = String::new();
@@ -3129,7 +3226,19 @@ async fn read_session_context_native(
                 }
             }
 
+            // Count context compactions + extract custom title
             let compact_count = content.lines().filter(|l| l.contains("compact_boundary")).count();
+            let mut custom_title = String::new();
+            for line in content.lines().rev() {
+                if line.contains("\"custom-title\"") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(t) = v.get("customTitle").and_then(|v| v.as_str()) {
+                            custom_title = t.to_string();
+                            break;
+                        }
+                    }
+                }
+            }
 
             let (sess_cost, sess_duration): (Option<f64>, Option<u64>) =
                 if sl_session_id.as_deref() == Some(&session_id) {
@@ -3176,14 +3285,16 @@ async fn read_session_context_native(
 
             if total == 0 {
                 if let Some(w) = sl_window {
-                    return Ok(format!("0|{}|{}|{}|{}|{}|{}|||{}|{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, cost_str, dur_str, ver_str, compact_count, proj_str));
+                    // 0|window|model|used_pct|cost|dur|version|||compact|proj|effort|custom_title
+                    return Ok(format!("0|{}|{}|{}|{}|{}|{}|||{}|{}|{}|{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, cost_str, dur_str, ver_str, compact_count, proj_str, effort_level, custom_title));
                 }
                 return Ok(String::new());
             }
 
             let window = sl_window.unwrap_or(200000);
             let model_str = sl_model.unwrap_or_default();
-            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", total, window, model_str, used_pct_str, cost_str, dur_str, ver_str, service_tier, speed, compact_count, proj_str))
+            // total|window|model|used_pct|cost|dur|version|tier|speed|compact|proj|effort|custom_title
+            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", total, window, model_str, used_pct_str, cost_str, dur_str, ver_str, service_tier, speed, compact_count, proj_str, effort_level, custom_title))
         },
         "codex" => {
             let sessions_dir = std::path::Path::new(&home).join(".codex").join("sessions");
@@ -3314,7 +3425,22 @@ async fn read_session_context_native(
             let rl5h_str = rl5h.map(|v| format!("{:.2}", v)).unwrap_or_default();
             let rlweek_str = rlweek.map(|v| format!("{:.2}", v)).unwrap_or_default();
 
-            Ok(format!("{}|{}|{}|{}|{}|{}|{}", used_val, window_val, model, rl5h_str, rlweek_str, effort, collab_mode))
+            // Read session title from SQLite
+            let mut title = String::new();
+            if !is_latest {
+                let db_path = std::path::Path::new(&home).join(".codex").join("state_5.sqlite");
+                if db_path.exists() {
+                    let py = format!(
+                        r#"import sqlite3,sys;c=sqlite3.connect(r'{}');r=c.execute('SELECT title FROM threads WHERE id=?',(sys.argv[1],)).fetchone();print(r[0] if r else '')"#,
+                        db_path.display()
+                    );
+                    if let Ok(out) = std::process::Command::new("python3").args(["-c", &py, &session_id]).output() {
+                        title = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    }
+                }
+            }
+
+            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}", used_val, window_val, model, rl5h_str, rlweek_str, effort, collab_mode, title))
         },
         "gemini" => {
             let tmp_dir = std::path::Path::new(&home).join(".gemini").join("tmp");

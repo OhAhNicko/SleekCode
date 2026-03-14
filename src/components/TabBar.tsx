@@ -54,6 +54,8 @@ export default function TabBar() {
   const setPromptComposerEnabled = useAppStore((s) => s.setPromptComposerEnabled);
   const promptComposerAlwaysVisible = useAppStore((s) => s.promptComposerAlwaysVisible);
   const setPromptComposerAlwaysVisible = useAppStore((s) => s.setPromptComposerAlwaysVisible);
+  const composerExpansion = useAppStore((s) => s.composerExpansion);
+  const setComposerExpansion = useAppStore((s) => s.setComposerExpansion);
   const setAutoStartServerCommand = useAppStore((s) => s.setAutoStartServerCommand);
   const toggleProjectQuickOpen = useAppStore((s) => s.toggleProjectQuickOpen);
   const browserFullColumn = useAppStore((s) => s.browserFullColumn);
@@ -1782,7 +1784,7 @@ export default function TabBar() {
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
               >
                 <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Prompt composer (Ctrl+I)
+                  EzyComposer (Ctrl+I)
                 </span>
                 {/* Toggle switch */}
                 <div
@@ -1853,6 +1855,44 @@ export default function TabBar() {
                       transition: "left 150ms ease",
                     }}
                   />
+                </div>
+              </div>
+              )}
+
+              {/* Composer expansion mode — 3-way toggle (only when composer is enabled) */}
+              {promptComposerEnabled && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "8px 10px 8px 22px",
+                }}
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  Expansion
+                </span>
+                <div style={{ display: "flex", gap: 2, backgroundColor: "rgba(255,255,255,0.06)", borderRadius: 4, padding: 2 }}>
+                  {([["up", "Up"], ["down", "Down"], ["scroll", "Scroll"]] as const).map(([mode, label]) => (
+                    <div
+                      key={mode}
+                      onClick={() => setComposerExpansion(mode)}
+                      onMouseEnter={(e) => { if (composerExpansion !== mode) e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)"; }}
+                      onMouseLeave={(e) => { if (composerExpansion !== mode) e.currentTarget.style.backgroundColor = "transparent"; }}
+                      style={{
+                        fontSize: 10,
+                        padding: "2px 8px",
+                        borderRadius: 3,
+                        cursor: "pointer",
+                        color: composerExpansion === mode ? "#fff" : "var(--ezy-text-muted)",
+                        backgroundColor: composerExpansion === mode ? "var(--ezy-accent)" : "transparent",
+                        transition: "all 150ms ease",
+                        userSelect: "none",
+                      }}
+                    >
+                      {label}
+                    </div>
+                  ))}
                 </div>
               </div>
               )}

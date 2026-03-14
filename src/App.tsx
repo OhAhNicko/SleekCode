@@ -19,6 +19,7 @@ import { resolveNativeCliPaths } from "./lib/macos-cli-cache";
 import { installStatuslineWrapper } from "./lib/statusline-setup";
 import { generateTerminalId } from "./lib/layout-utils";
 import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
+import { useFileDrop } from "./hooks/useFileDrop";
 import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
 import UndoCloseToast from "./components/UndoCloseToast";
 import KeyboardShortcutsModal from "./components/KeyboardShortcutsModal";
@@ -215,6 +216,9 @@ export default function App() {
 
   // Watch Windows clipboard for new images (adds to TabBar strip automatically)
   useClipboardWatcher();
+
+  // Handle file drops from OS onto terminal panes / EzyComposer
+  useFileDrop();
 
   // Inject theme CSS variables into :root
   useEffect(() => {
@@ -442,6 +446,11 @@ export default function App() {
             // Ctrl+Shift+3 → New Gemini pane (horizontal split)
             consume();
             window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "gemini", direction: "vertical" } }));
+            return;
+          case "G":
+            // Ctrl+Shift+G → Toggle Mini Games pane
+            consume();
+            window.dispatchEvent(new CustomEvent("ezydev:open-game"));
             return;
           case "Tab":
             // Ctrl+Shift+Tab → previous tab

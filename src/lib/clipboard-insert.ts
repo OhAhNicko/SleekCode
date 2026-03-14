@@ -1,10 +1,12 @@
 import { useAppStore } from "../store";
 import { getPtyWrite } from "../store/terminalSlice";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
+import { toWslPath } from "./terminal-config";
 
 /**
- * Get the display label for a clipboard image (e.g. "[Image #1]").
+ * Get the display label for a clipboard image (e.g. "[Img 1]").
  * Image number is based on position in the store (newest = #1).
+ * Used for visual display in the composer — NOT for sending to CLIs.
  */
 export function getImageLabel(winPath: string): string {
   const images = useClipboardImageStore.getState().images;
@@ -14,9 +16,17 @@ export function getImageLabel(winPath: string): string {
 }
 
 /**
- * Insert a clipboard image label into the active terminal.
+ * Resolve a Windows image path to the correct format for the current terminal backend.
+ */
+export function resolveImagePath(winPath: string): string {
+  const backend = useAppStore.getState().terminalBackend ?? "wsl";
+  return backend === "windows" ? winPath : toWslPath(winPath);
+}
+
+/**
+ * Insert a clipboard image file path into the active terminal.
  * Records the insertion for undo support.
- * Returns the inserted label, or null if no active terminal.
+ * Returns the inserted text, or null if no active terminal.
  */
 export function insertImagePath(winPath: string): string | null {
   const terminals = useAppStore.getState().terminals;
@@ -26,17 +36,17 @@ export function insertImagePath(winPath: string): string | null {
   const writeFn = getPtyWrite(activeTerminal.id);
   if (!writeFn) return null;
 
-  const label = getImageLabel(winPath);
-  writeFn(label);
+  const filePath = resolveImagePath(winPath);
+  writeFn(filePath);
 
   // Record for undo
   useClipboardImageStore.getState().setLastInsertion({
-    text: label,
+    text: filePath,
     terminalId: activeTerminal.id,
     timestamp: Date.now(),
   });
 
-  return label;
+  return filePath;
 }
 
 /**

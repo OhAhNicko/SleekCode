@@ -191,6 +191,16 @@ function formatGeminiModel(raw: string): string {
   return `Gemini ${version} ${variant}${isPreview ? " Preview" : ""}`;
 }
 
+/** Format context window size into compact label, e.g. 1000000 → "1M", 200000 → "200K" */
+function formatContextWindow(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    const m = tokens / 1_000_000;
+    return m % 1 === 0 ? `${m}M` : `${m.toFixed(1)}M`;
+  }
+  const k = tokens / 1_000;
+  return k % 1 === 0 ? `${k}K` : `${k.toFixed(1)}K`;
+}
+
 /** Extract last N segments from a file path */
 function truncatePath(path: string, maxSegments = 3): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -397,7 +407,7 @@ export default function TerminalHeader({
             >
               {terminalType === "gemini"
                 ? formatGeminiModel(contextInfo.model ?? "")
-                : (contextInfo.model?.replace(/^gpt-/i, "GPT ") ?? "")}{contextInfo.effort ? ` - ${contextInfo.effort}` : ""}
+                : (contextInfo.model?.replace(/^gpt-/i, "GPT ").replace(/\s*\([\d.]+[KMB]?\s*context\)/i, "") ?? "")}{contextInfo.window ? <span title={`Total context window: ${contextInfo.window.toLocaleString()} tokens`}>{` - ${formatContextWindow(contextInfo.window)}`}</span> : ""}{contextInfo.effort ? ` - ${contextInfo.effort}` : ""}
             </span>
           )}
           {/* Claude: version */}
@@ -470,6 +480,25 @@ export default function TerminalHeader({
               }}
             >
               C:{contextInfo.compactCount}
+            </span>
+          )}
+          {/* Session name (Claude slug / Codex title) — flexible width, truncates */}
+          {contextInfo.sessionName && (
+            <span
+              title={contextInfo.sessionName}
+              style={{
+                fontSize: 9,
+                color: "var(--ezy-text-muted)",
+                lineHeight: 1.2,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                minWidth: 0,
+                flexShrink: 1,
+                opacity: 0.6,
+              }}
+            >
+              {contextInfo.sessionName}
             </span>
           )}
           {/* Gemini: summary — flexible width, truncates only when pane is narrow */}

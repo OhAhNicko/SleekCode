@@ -11,6 +11,8 @@ import MinesweeperGame from "./games/MinesweeperGame";
 import BlockBreakerGame from "./games/BlockBreakerGame";
 import SolitaireGame from "./games/SolitaireGame";
 import PongGame from "./games/PongGame";
+import ChessGame from "./games/ChessGame";
+import MemoryGame from "./games/MemoryGame";
 import { CROSSWORD_PUZZLES } from "../lib/crossword-puzzles";
 import { FaXmark, FaChevronLeft, FaPause, FaPlay } from "react-icons/fa6";
 
@@ -207,6 +209,38 @@ const GAME_CARDS: GameCardDef[] = [
       </svg>
     ),
   },
+  {
+    type: "chess",
+    name: "Chess",
+    description: "Classic chess vs AI. Three difficulty levels.",
+    statType: "chess" as GameCardDef["statType"],
+    icon: (
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="4" width="10" height="10" fill="var(--ezy-surface-raised)" />
+        <rect x="14" y="4" width="10" height="10" fill="var(--ezy-surface)" stroke="var(--ezy-border)" strokeWidth="0.5" />
+        <rect x="4" y="14" width="10" height="10" fill="var(--ezy-surface)" stroke="var(--ezy-border)" strokeWidth="0.5" />
+        <rect x="14" y="14" width="10" height="10" fill="var(--ezy-surface-raised)" />
+        <text x="14" y="18" textAnchor="middle" fill="var(--ezy-accent)" fontSize="14" fontFamily="serif">{"\u2658"}</text>
+      </svg>
+    ),
+  },
+  {
+    type: "memory",
+    name: "Memory",
+    description: "Flip cards and find matching pairs.",
+    statType: "timedHighscore",
+    statKey: "memoryEasy",
+    icon: (
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="3" y="4" width="9" height="9" rx="2" fill="var(--ezy-accent)" />
+        <rect x="16" y="4" width="9" height="9" rx="2" fill="var(--ezy-surface-raised)" stroke="var(--ezy-border)" strokeWidth="1" />
+        <rect x="3" y="16" width="9" height="9" rx="2" fill="var(--ezy-surface-raised)" stroke="var(--ezy-border)" strokeWidth="1" />
+        <rect x="16" y="16" width="9" height="9" rx="2" fill="var(--ezy-accent)" />
+        <text x="7.5" y="11" textAnchor="middle" fontSize="7" fontWeight="700" fill="var(--ezy-bg)">?</text>
+        <text x="20.5" y="23" textAnchor="middle" fontSize="7" fontWeight="700" fill="var(--ezy-bg)">?</text>
+      </svg>
+    ),
+  },
 ];
 
 const GAME_LABELS: Record<GameType, string> = {
@@ -220,6 +254,8 @@ const GAME_LABELS: Record<GameType, string> = {
   blockBreaker: "Block Breaker",
   solitaire: "Solitaire",
   pong: "Pong",
+  chess: "Chess",
+  memory: "Memory",
 };
 
 function formatTime(seconds: number): string {
@@ -242,6 +278,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
   const updateWordleStats = useAppStore((s) => s.updateWordleStats);
   const updateTicTacToeStats = useAppStore((s) => s.updateTicTacToeStats);
   const updatePongStats = useAppStore((s) => s.updatePongStats);
+  const updateChessStats = useAppStore((s) => s.updateChessStats);
   const markCrosswordCompleted = useAppStore((s) => s.markCrosswordCompleted);
   const addCustomCrossword = useAppStore((s) => s.addCustomCrossword);
 
@@ -254,7 +291,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
     const container = gamePaneRef.current;
     if (!container) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.code === "Space" && !e.repeat) {
+      if ((e.code === "Space" || e.key === "Escape") && !e.repeat) {
         e.preventDefault();
         setPaused((p) => !p);
       }
@@ -320,6 +357,10 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         );
       case "pong":
         return <PongGame onUpdateStats={updatePongStats} paused={paused} />;
+      case "chess":
+        return <ChessGame onUpdateStats={updateChessStats} paused={paused} />;
+      case "memory":
+        return <MemoryGame onAddTimedHighscore={addTimedHighscore} paused={paused} />;
       default:
         return null;
     }
@@ -378,11 +419,24 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         );
       }
       case "pong": {
-        const ps = gameStats.pong;
+        const ps = gameStats.pong ?? { wins: 0, losses: 0 };
         if (ps.wins + ps.losses === 0) return null;
         return (
           <div style={{ fontSize: 10, color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
             {ps.wins}W {ps.losses}L
+          </div>
+        );
+      }
+      case "chess" as string: {
+        const cs = gameStats.chess;
+        if (!cs) return null;
+        const tw = cs.easy.wins + cs.medium.wins + cs.hard.wins;
+        const tl = cs.easy.losses + cs.medium.losses + cs.hard.losses;
+        const td = cs.easy.draws + cs.medium.draws + cs.hard.draws;
+        if (tw + tl + td === 0) return null;
+        return (
+          <div style={{ fontSize: 10, color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+            {tw}W {tl}L {td}D
           </div>
         );
       }
@@ -588,12 +642,13 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
 
             {/* Best Times section */}
             {(timedHighscores.minesweeperEasy.length > 0 || timedHighscores.minesweeperMedium.length > 0 || timedHighscores.minesweeperHard.length > 0 ||
-              timedHighscores.solitaireKlondike.length > 0 || timedHighscores.solitaireSpider.length > 0 || timedHighscores.solitaireFreecell.length > 0) && (
+              timedHighscores.solitaireKlondike.length > 0 || timedHighscores.solitaireSpider.length > 0 || timedHighscores.solitaireFreecell.length > 0 ||
+              timedHighscores.memoryEasy.length > 0 || timedHighscores.memoryMedium.length > 0 || timedHighscores.memoryHard.length > 0) && (
               <div style={{ marginTop: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
                   Best Times
                 </div>
-                {(["minesweeperEasy", "minesweeperMedium", "minesweeperHard", "solitaireKlondike", "solitaireSpider", "solitaireFreecell"] as const).map((key) => {
+                {(["minesweeperEasy", "minesweeperMedium", "minesweeperHard", "solitaireKlondike", "solitaireSpider", "solitaireFreecell", "memoryEasy", "memoryMedium", "memoryHard"] as const).map((key) => {
                   const list = timedHighscores[key];
                   if (list.length === 0) return null;
                   const labels: Record<string, string> = {
@@ -603,6 +658,9 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
                     solitaireKlondike: "Klondike",
                     solitaireSpider: "Spider",
                     solitaireFreecell: "FreeCell",
+                    memoryEasy: "Memory Easy",
+                    memoryMedium: "Memory Medium",
+                    memoryHard: "Memory Hard",
                   };
                   return (
                     <div key={key} style={{ marginBottom: 8 }}>

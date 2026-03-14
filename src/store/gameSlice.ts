@@ -12,7 +12,7 @@ export interface TimedHighscoreEntry {
 }
 
 type HighscoreGame = "snake" | "twentyFortyEight" | "sudoku" | "blockBreaker" | "solitairePyramid";
-type TimedHighscoreGame = "minesweeperEasy" | "minesweeperMedium" | "minesweeperHard" | "solitaireKlondike" | "solitaireSpider" | "solitaireFreecell";
+type TimedHighscoreGame = "minesweeperEasy" | "minesweeperMedium" | "minesweeperHard" | "solitaireKlondike" | "solitaireSpider" | "solitaireFreecell" | "memoryEasy" | "memoryMedium" | "memoryHard";
 
 export interface WordleStats {
   played: number;
@@ -32,6 +32,12 @@ export interface PongStats {
   losses: number;
 }
 
+export interface ChessStats {
+  wins: number;
+  losses: number;
+  draws: number;
+}
+
 export interface GameStats {
   wordle: {
     tech: WordleStats;
@@ -42,10 +48,16 @@ export interface GameStats {
     "5x5": TicTacToeStats;
   };
   pong: PongStats;
+  chess: {
+    easy: ChessStats;
+    medium: ChessStats;
+    hard: ChessStats;
+  };
 }
 
 const emptyWordleStats = (): WordleStats => ({ played: 0, won: 0, currentStreak: 0, maxStreak: 0 });
 const emptyTicTacToeStats = (): TicTacToeStats => ({ wins: 0, losses: 0, draws: 0 });
+const emptyChessStats = (): ChessStats => ({ wins: 0, losses: 0, draws: 0 });
 
 export interface GameSlice {
   highscores: {
@@ -62,6 +74,9 @@ export interface GameSlice {
     solitaireKlondike: TimedHighscoreEntry[];
     solitaireSpider: TimedHighscoreEntry[];
     solitaireFreecell: TimedHighscoreEntry[];
+    memoryEasy: TimedHighscoreEntry[];
+    memoryMedium: TimedHighscoreEntry[];
+    memoryHard: TimedHighscoreEntry[];
   };
   gameStats: GameStats;
   completedCrosswordIds: string[];
@@ -71,6 +86,7 @@ export interface GameSlice {
   updateWordleStats: (mode: "tech" | "classic", won: boolean) => void;
   updateTicTacToeStats: (variant: "3x3" | "5x5", result: "win" | "loss" | "draw") => void;
   updatePongStats: (result: "win" | "loss") => void;
+  updateChessStats: (difficulty: "easy" | "medium" | "hard", result: "win" | "loss" | "draw") => void;
   markCrosswordCompleted: (id: string) => void;
   addCustomCrossword: (puzzle: CrosswordPuzzle) => void;
 }
@@ -90,6 +106,9 @@ export const createGameSlice: StateCreator<GameSlice, [], [], GameSlice> = (set)
     solitaireKlondike: [],
     solitaireSpider: [],
     solitaireFreecell: [],
+    memoryEasy: [],
+    memoryMedium: [],
+    memoryHard: [],
   },
   gameStats: {
     wordle: {
@@ -101,6 +120,11 @@ export const createGameSlice: StateCreator<GameSlice, [], [], GameSlice> = (set)
       "5x5": emptyTicTacToeStats(),
     },
     pong: { wins: 0, losses: 0 },
+    chess: {
+      easy: emptyChessStats(),
+      medium: emptyChessStats(),
+      hard: emptyChessStats(),
+    },
   },
   completedCrosswordIds: [],
   customCrosswords: [],
@@ -177,6 +201,24 @@ export const createGameSlice: StateCreator<GameSlice, [], [], GameSlice> = (set)
         },
       },
     })),
+
+  updateChessStats: (difficulty, result) =>
+    set((state) => {
+      const prev = state.gameStats.chess[difficulty];
+      return {
+        gameStats: {
+          ...state.gameStats,
+          chess: {
+            ...state.gameStats.chess,
+            [difficulty]: {
+              wins: prev.wins + (result === "win" ? 1 : 0),
+              losses: prev.losses + (result === "loss" ? 1 : 0),
+              draws: prev.draws + (result === "draw" ? 1 : 0),
+            },
+          },
+        },
+      };
+    }),
 
   markCrosswordCompleted: (id) =>
     set((state) => ({

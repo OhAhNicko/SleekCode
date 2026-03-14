@@ -1,17 +1,20 @@
 import { useRef, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Terminal } from "@xterm/xterm";
 import { promptify } from "../lib/promptify";
 import { useAppStore } from "../store";
 import { useClipboardImageStore, type ClipboardImage } from "../store/clipboardImageStore";
 import { useBrowserConsoleStore } from "../store/browserConsoleStore";
-import { getImageLabel } from "../lib/clipboard-insert";
+import { getImageLabel, resolveImagePath } from "../lib/clipboard-insert";
+import { toWslPath } from "../lib/terminal-config";
 import { SLASH_COMMANDS, SLASH_ARG_HINTS, loadUserSkills, type SlashCommand } from "../lib/slash-commands";
 import type { TerminalType } from "../types";
 import { HiMiniArrowLongRight, HiMiniArrowLongLeft } from "react-icons/hi2";
 import { FaWandMagicSparkles } from "react-icons/fa6";
 import { BiSolidSend } from "react-icons/bi";
 import { AiFillCode } from "react-icons/ai";
-import { FaAngleRight } from "react-icons/fa";
+import { FaAngleRight, FaExpand } from "react-icons/fa";
+import ImagePreviewModal from "./ImagePreviewModal";
 
 const PLACEHOLDER_SUGGESTIONS = [
   "Fix the bug in...",
@@ -126,7 +129,9 @@ export default function PromptComposer({
 }: PromptComposerProps) {
   const promptHistory = useAppStore((s) => s.promptHistory);
   const addPromptHistory = useAppStore((s) => s.addPromptHistory);
+  const composerExpansion = useAppStore((s) => s.composerExpansion);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
   const [value, setValue] = useState("");
@@ -135,6 +140,7 @@ export default function PromptComposer({
   const [cellHeight, setCellHeight] = useState(0);
   const [hidden, setHidden] = useState(false);
   const hiddenRef = useRef(false);
+  const notAtBottomSinceRef = useRef(0); // hysteresis: timestamp when isAtBottom first failed
   const showTimeRef = useRef(0); // timestamp when composer last became visible
   const didStealText = didStealRef;
   // History navigation: -1 = composing new text, 0 = most recent, 1 = second most recent, etc.
@@ -156,6 +162,8 @@ export default function PromptComposer({
   const imgCycleRef = useRef<{ num: number } | null>(null); // tracks current [Img N] for Tab cycling
   const slashTokenRef = useRef<{ start: number; end: number } | null>(null); // position of current slash token in value
   const [localImages, setLocalImages] = useState<ClipboardImage[]>([]);
+  const [previewImage, setPreviewImage] = useState<{ dataUri: string; winPath: string } | null>(null);
+  const [imgCtxMenu, setImgCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
   const [consoleSnippet, setConsoleSnippet] = useState<{ tag: string; formatted: string } | null>(null);
   const consoleTagRef = useRef<string | null>(null); // current tag text in textarea
   const browserPreviewOpen = useBrowserConsoleStore((s) => s.active);
@@ -163,6 +171,20 @@ export default function PromptComposer({
   const consoleSelectMode = useBrowserConsoleStore((s) => s.selectMode);
   const consoleSelectedIds = useBrowserConsoleStore((s) => s.selectedIds);
   const pendingImage = useClipboardImageStore((s) => s.pendingComposerImage);
+
+  // Listen for file-drop events dispatched by the global useFileDrop hook
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    const handler = (e: Event) => {
+      const paths = (e as CustomEvent<{ paths: string[] }>).detail.paths;
+      if (!paths.length) return;
+      const insertion = paths.join(" ");
+      setValue((prev) => (prev ? prev + " " + insertion : insertion));
+    };
+    el.addEventListener("ezydev:file-drop", handler);
+    return () => el.removeEventListener("ezydev:file-drop", handler);
+  }, []);
 
   // Detect dim/ghost cell: SGR dim, palette grays, or RGB grays.
   function isCellDim(cell: { isDim(): number; isFgPalette(): boolean; isFgRGB(): boolean; getFgColor(): number }): boolean {
@@ -390,11 +412,33 @@ export default function PromptComposer({
   useEffect(() => {
     if (!terminal) return;
     const disposable = terminal.onRender(() => {
-      // When scrolled up, hide the composer (the CLI input prompt isn't visible)
-      // and skip all prompt scanning / auto-focus / repositioning.
       const buf = terminal.buffer.active;
       const isAtBottom = buf.viewportY + terminal.rows >= buf.length;
+
+      // ── Background panes: lightweight tracking only ──
+      // Skip scanning, focus, and scroll — prevents cascading layout effects.
+      // Position updates happen on the first render after the pane becomes active.
+      if (!isActiveRef.current) {
+        if (!isAtBottom && !hiddenRef.current) {
+          hiddenRef.current = true;
+          setHidden(true);
+        } else if (isAtBottom && hiddenRef.current) {
+          hiddenRef.current = false;
+          setHidden(false);
+        }
+        notAtBottomSinceRef.current = isAtBottom ? 0 : (notAtBottomSinceRef.current || Date.now());
+        return;
+      }
+
+      // ── Active pane: full processing with hysteresis ──
+      // During rapid AI output, viewportY briefly lags behind buffer growth,
+      // making isAtBottom flicker. Without hysteresis, each flicker triggers
+      // hide (blur) → show (focus + scrollToBottom) cycles that can displace
+      // the viewport. Wait 200ms before hiding to filter out transient lag.
       if (!isAtBottom) {
+        if (notAtBottomSinceRef.current === 0) notAtBottomSinceRef.current = Date.now();
+        // Grace period: don't hide during brief viewport lag (< 200ms)
+        if (!hiddenRef.current && Date.now() - notAtBottomSinceRef.current < 200) return;
         if (!hiddenRef.current) {
           setHidden(true);
           hiddenRef.current = true;
@@ -402,6 +446,7 @@ export default function PromptComposer({
         }
         return;
       }
+      notAtBottomSinceRef.current = 0;
 
       const result = scanPromptPosition();
       if (!result) return;
@@ -414,18 +459,14 @@ export default function PromptComposer({
         textareaRef.current?.blur();
         // Focus the terminal so keyboard input goes to the interactive dialogue
         // (e.g. Gemini permission prompts, plan acceptance, tool approvals)
-        if (isActiveRef.current) terminal.focus();
+        terminal.focus();
         return;
       }
 
-      // Transitioning from hidden → visible: scroll to bottom so prompt is in view.
-      // Only scroll/focus for the active pane — background pane scrolls can cascade
-      // into layout recalculations that displace the viewport in the active pane.
+      // Transitioning from hidden → visible (AI finished, prompt reappeared)
       if (hiddenRef.current) {
-        if (isActiveRef.current) {
-          terminal.scrollToBottom();
-          setTimeout(() => textareaRef.current?.focus(), 30);
-        }
+        terminal.scrollToBottom();
+        setTimeout(() => textareaRef.current?.focus(), 30);
         showTimeRef.current = Date.now();
       }
       setHidden(false);
@@ -440,7 +481,7 @@ export default function PromptComposer({
       // Position changed → new prompt appeared (e.g. after Claude finished or ESC cancel)
       if (result.offset !== lastOffsetRef.current) {
         lastOffsetRef.current = result.offset;
-        if (alwaysVisible && isActiveRef.current) {
+        if (alwaysVisible) {
           setTimeout(() => textareaRef.current?.focus(), 30);
         }
       }
@@ -514,13 +555,50 @@ export default function PromptComposer({
     return () => container.removeEventListener("click", onClick);
   }, [containerRef, alwaysVisible, terminal]);
 
-  // Auto-resize textarea height
+  // Auto-resize textarea height based on expansion mode
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-  }, [value]);
+    if (composerExpansion === "scroll") {
+      // Max height + internal scroll
+      ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
+      ta.style.overflowY = ta.scrollHeight > 120 ? "auto" : "hidden";
+    } else {
+      // "up" and "down" both grow freely (capped at 200px for sanity)
+      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+      ta.style.overflowY = "hidden";
+    }
+  }, [value, composerExpansion]);
+
+  // "down" mode: add paddingBottom to the xterm parent so the terminal shrinks,
+  // making room for the composer at the bottom. The existing ResizeObserver on the
+  // xterm container detects the size change and calls fitAddon.fit() automatically.
+  useEffect(() => {
+    if (composerExpansion !== "down") {
+      // Reset padding when not in "down" mode
+      const parent = containerRef.current?.parentElement;
+      if (parent) parent.style.paddingBottom = "";
+      return;
+    }
+    const composerEl = composerRef.current;
+    const parent = containerRef.current?.parentElement;
+    if (!composerEl || !parent) return;
+
+    const ro = new ResizeObserver(() => {
+      const h = composerEl.offsetHeight;
+      parent.style.paddingBottom = h > 0 ? `${h}px` : "";
+    });
+    ro.observe(composerEl);
+    // Set initial padding
+    const h = composerEl.offsetHeight;
+    parent.style.paddingBottom = h > 0 ? `${h}px` : "";
+
+    return () => {
+      ro.disconnect();
+      parent.style.paddingBottom = "";
+    };
+  }, [composerExpansion, containerRef]);
 
   // Dynamically update [Console, N rows] tag as user selects/deselects entries
   useEffect(() => {
@@ -648,13 +726,28 @@ export default function PromptComposer({
     if (!ta) return;
     let text = ta.value.trim();
     if (!text) return;
-    // Append image labels for attached images (skip if already in text via autocomplete)
+    // Resolve attached images: replace [Img N] labels with actual file paths
+    // so CLIs (Claude, Codex, Gemini) can read the image files
     if (localImages.length > 0) {
-      const missing = localImages
-        .map((img) => getImageLabel(img.winPath))
-        .filter((label) => !text.includes(label));
-      if (missing.length > 0) {
-        text = text + " " + missing.join(" ");
+      const backend = useAppStore.getState().terminalBackend ?? "wsl";
+      const resolvePath = (winPath: string) =>
+        backend === "windows" ? winPath : toWslPath(winPath);
+
+      // Replace any [Img N] labels already in text (from autocomplete) with file paths
+      for (const img of localImages) {
+        const label = getImageLabel(img.winPath);
+        if (text.includes(label)) {
+          text = text.split(label).join(resolvePath(img.winPath));
+        }
+      }
+
+      // Append file paths for attached images not yet referenced in text
+      const unreferenced = localImages.filter((img) => {
+        const filePath = resolvePath(img.winPath);
+        return !text.includes(filePath);
+      });
+      if (unreferenced.length > 0) {
+        text = text + " " + unreferenced.map((img) => resolvePath(img.winPath)).join(" ");
       }
     }
     // Expand console snippet placeholder into formatted text
@@ -1052,24 +1145,34 @@ export default function PromptComposer({
   const cardLeft = useCard ? 8 : 0;
   const cardRight = isCodex ? 11 : isGemini ? 10 : 14;
   const cardPadding = isCodex
-    ? `${Math.round((cellHeight + 12) / 2) - 3}px 10px ${Math.round((cellHeight + 12) / 2) - 5}px 10px`
+    ? `${Math.round((cellHeight + 12) / 2) - 4}px 10px`
     : isGemini
-      ? `${Math.round((cellHeight * 0.4 + 6) / 2) - 1}px 10px ${Math.round((cellHeight * 0.4 + 6) / 2) - 4}px 10px`
-      : "0 10px 2px 10px";
+      ? `${Math.round((cellHeight * 0.4 + 6) / 2) - 2}px 10px`
+      : "3px 10px";
+
+  // Expansion mode positioning:
+  // "down" — top-anchored at prompt row (grows downward, paddingBottom creates space)
+  // "up" / "scroll" — bottom-anchored at prompt row bottom (grows upward)
+  const positionStyle: React.CSSProperties =
+    composerExpansion === "down"
+      ? { top: `${cardTop}px` }
+      : { bottom: `calc(100% - ${cardTop + cellHeight}px)` };
 
   return (
+    <>
     <div
+      ref={composerRef}
       data-composer
       style={{
         position: "absolute",
-        top: cardTop,
+        ...positionStyle,
         left: cardLeft,
         right: cardRight,
         zIndex: 20,
         backgroundColor: useCard ? lightenHex(terminalBg, 20) : terminalBg,
         padding: cardPadding,
         display: hidden ? "none" : "flex",
-        alignItems: useCard ? "center" : "flex-start",
+        alignItems: "center",
         gap: 8,
         ...(useCard
           ? {
@@ -1190,7 +1293,7 @@ export default function PromptComposer({
           opacity: 0.7,
           userSelect: "none",
           position: "relative",
-          top: useCard ? -1 : 2,
+          top: 0,
           transform: "scale(1.2)",
         }}
       />
@@ -1262,8 +1365,8 @@ export default function PromptComposer({
             resize: "none",
             padding: 0,
             margin: 0,
-            marginTop: useCard ? 7 : 0,
-            overflowY: "auto",
+            marginTop: 0,
+            overflowY: composerExpansion === "scroll" ? "auto" : "hidden",
             overflowX: "hidden",
             caretColor: terminalCursor,
             animation: promptifying ? "promptify-pulse 1.5s ease-in-out infinite" : "none",
@@ -1290,7 +1393,7 @@ export default function PromptComposer({
                 letterSpacing: 1,
                 padding: 0,
                 margin: 0,
-                marginTop: useCard ? 7 : 0,
+                marginTop: 0,
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
               }}
@@ -1317,7 +1420,7 @@ export default function PromptComposer({
               letterSpacing: 1,
               padding: 0,
               margin: 0,
-              marginTop: useCard ? 7 : 0,
+              marginTop: 0,
                 whiteSpace: "pre-wrap",
               wordBreak: "break-word",
             }}
@@ -1343,7 +1446,7 @@ export default function PromptComposer({
               letterSpacing: 1,
               padding: 0,
               margin: 0,
-              marginTop: useCard ? 7 : 0,
+              marginTop: 0,
                 whiteSpace: "pre-wrap",
               wordBreak: "break-word",
               color: terminalFg,
@@ -1368,7 +1471,7 @@ export default function PromptComposer({
               letterSpacing: 1,
               padding: 0,
               margin: 0,
-              marginTop: useCard ? 7 : 0,
+              marginTop: 0,
               whiteSpace: "nowrap",
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -1398,7 +1501,7 @@ export default function PromptComposer({
               letterSpacing: 1,
               padding: 0,
               margin: 0,
-              marginTop: useCard ? 7 : 0,
+              marginTop: 0,
               whiteSpace: "nowrap",
               overflow: "hidden",
               color: terminalFg,
@@ -1415,11 +1518,16 @@ export default function PromptComposer({
           50% { opacity: 0.35; }
         }`}</style>
       )}
-      {/* Attached image thumbnails — click to remove */}
+      {/* Attached image thumbnails */}
       {localImages.map((img, i) => (
           <div
             key={img.id}
             onClick={() => setLocalImages((prev) => prev.filter((im) => im.id !== img.id))}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setImgCtxMenu({ x: e.clientX, y: e.clientY, imgId: img.id });
+            }}
             style={{
               position: "relative",
               width: 26,
@@ -1430,13 +1538,14 @@ export default function PromptComposer({
               border: `1px solid ${terminalCursor}`,
               flexShrink: 0,
             }}
-            title={`Image ${i + 1} attached — click to remove`}
+            title={`Image ${i + 1} attached — click to remove, right-click for options`}
           >
             <img
               src={img.dataUri}
               alt={`Image ${i + 1}`}
               style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
             />
+            {/* Number badge (top-left) */}
             <div
               style={{
                 position: "absolute",
@@ -1456,6 +1565,32 @@ export default function PromptComposer({
               }}
             >
               {i + 1}
+            </div>
+            {/* View full image button (top-right) */}
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                setPreviewImage({ dataUri: img.dataUri, winPath: img.winPath });
+              }}
+              title="View full image"
+              style={{
+                position: "absolute",
+                top: 0,
+                right: 0,
+                width: 14,
+                height: 14,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "rgba(0,0,0,0.6)",
+                borderBottomLeftRadius: 3,
+                opacity: 0,
+                transition: "opacity 120ms ease",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = "0"; }}
+            >
+              <FaExpand size={8} color="white" />
             </div>
           </div>
         ))}
@@ -1481,7 +1616,7 @@ export default function PromptComposer({
           }}
           style={{
             flexShrink: 0,
-            marginTop: useCard ? 0 : 1,
+            marginTop: 0,
             cursor: "pointer",
             opacity: consoleSelectMode ? 1 : consoleEntryCount > 0 ? 0.6 : 0.2,
             transition: "opacity 120ms ease",
@@ -1515,7 +1650,7 @@ export default function PromptComposer({
         }}
         style={{
           flexShrink: 0,
-          marginTop: useCard ? 0 : 1,
+          marginTop: 0,
           cursor: value.trim() && !promptifying ? "pointer" : "default",
           opacity: promptifying ? 1 : value.trim() ? 0.6 : 0.2,
           transition: "opacity 120ms ease",
@@ -1543,7 +1678,7 @@ export default function PromptComposer({
         onClick={submit}
         style={{
           flexShrink: 0,
-          marginTop: useCard ? 0 : 2,
+          marginTop: 0,
           cursor: value.trim() ? "pointer" : "default",
           opacity: value.trim() ? 0.8 : 0.25,
           transition: "opacity 120ms ease",
@@ -1559,5 +1694,102 @@ export default function PromptComposer({
         <BiSolidSend size={16} color={terminalCursor} />
       </div>
     </div>
+    {previewImage && (
+      <ImagePreviewModal
+        dataUri={previewImage.dataUri}
+        winPath={previewImage.winPath}
+        onDelete={() => {
+          setLocalImages((prev) => prev.filter((im) => im.winPath !== previewImage.winPath));
+          setPreviewImage(null);
+        }}
+        onClose={() => setPreviewImage(null)}
+      />
+    )}
+    {/* Right-click context menu for image thumbnails — portaled to body to avoid clipping */}
+    {imgCtxMenu && (() => {
+      const ctxImg = localImages.find((im) => im.id === imgCtxMenu.imgId);
+      if (!ctxImg) return null;
+      const items: { label: string; action: () => void; color?: string }[] = [
+        {
+          label: "Expand",
+          action: () => {
+            setPreviewImage({ dataUri: ctxImg.dataUri, winPath: ctxImg.winPath });
+            setImgCtxMenu(null);
+          },
+        },
+        {
+          label: "Copy",
+          action: () => {
+            fetch(ctxImg.dataUri)
+              .then((r) => r.blob())
+              .then((blob) => navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]))
+              .catch(() => {});
+            setImgCtxMenu(null);
+          },
+        },
+        {
+          label: "Copy filepath",
+          action: () => {
+            navigator.clipboard.writeText(resolveImagePath(ctxImg.winPath)).catch(() => {});
+            setImgCtxMenu(null);
+          },
+        },
+        {
+          label: "Attached to prompt",
+          action: () => setImgCtxMenu(null),
+          color: "var(--ezy-text-muted)",
+        },
+        {
+          label: "Delete",
+          action: () => {
+            setLocalImages((prev) => prev.filter((im) => im.id !== ctxImg.id));
+            setImgCtxMenu(null);
+          },
+          color: "#f87171",
+        },
+      ];
+      return createPortal(
+        <div
+          style={{ position: "fixed", inset: 0, zIndex: 210 }}
+          onClick={() => setImgCtxMenu(null)}
+          onContextMenu={(e) => { e.preventDefault(); setImgCtxMenu(null); }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: Math.min(imgCtxMenu.y, window.innerHeight - 200),
+              left: Math.min(imgCtxMenu.x, window.innerWidth - 170),
+              backgroundColor: "var(--ezy-surface-raised)",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: 6,
+              padding: "4px 0",
+              minWidth: 160,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {items.map((item) => (
+              <div
+                key={item.label}
+                onClick={item.action}
+                style={{
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  color: item.color ?? "var(--ezy-text)",
+                  cursor: "pointer",
+                  transition: "background-color 80ms ease",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+              >
+                {item.label}
+              </div>
+            ))}
+          </div>
+        </div>,
+        document.body,
+      );
+    })()}
+    </>
   );
 }

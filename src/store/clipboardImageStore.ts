@@ -33,6 +33,7 @@ interface ClipboardImageStore {
   /** Terminal ID of the last focused EzyComposer (set by composer on focus) */
   activeComposerTerminalId: string | null;
   addImage: (image: Omit<ClipboardImage, "id" | "timestamp">, seq: number) => void;
+  removeImage: (id: string) => void;
   setLastSeq: (seq: number) => void;
   setLastInsertion: (insertion: LastInsertion | null) => void;
   setPendingComposerImage: (pending: { image: ClipboardImage; terminalId: string } | null) => void;
@@ -55,6 +56,8 @@ export const useClipboardImageStore = create<ClipboardImageStore>((set) => ({
       ],
       lastImageSeq: seq,
     })),
+  removeImage: (id) =>
+    set((state) => ({ images: state.images.filter((img) => img.id !== id) })),
   setLastSeq: (seq) => set({ lastSeq: seq }),
   setLastInsertion: (insertion) => set({ lastInsertion: insertion }),
   setPendingComposerImage: (pending) => set({ pendingComposerImage: pending }),

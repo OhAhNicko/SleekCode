@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, PaneLayout } from "../types";
+import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, ComposerExpansion, PaneLayout } from "../types";
 import { getDefaultBackend } from "../lib/platform";
 
 export interface RecentProjectTemplate {
@@ -84,6 +84,7 @@ export interface RecentProjectsSlice {
   cliYolo: Partial<Record<TerminalType, boolean>>;
   promptComposerEnabled: boolean;
   promptComposerAlwaysVisible: boolean;
+  composerExpansion: ComposerExpansion;
   promptHistory: string[];
   autoStartServerCommand: boolean;
   previewInProjectTab: boolean;
@@ -111,6 +112,7 @@ export interface RecentProjectsSlice {
   setCliYolo: (type: TerminalType, value: boolean) => void;
   setPromptComposerEnabled: (value: boolean) => void;
   setPromptComposerAlwaysVisible: (value: boolean) => void;
+  setComposerExpansion: (value: ComposerExpansion) => void;
   addPromptHistory: (text: string) => void;
   setAutoStartServerCommand: (value: boolean) => void;
   setPreviewInProjectTab: (value: boolean) => void;
@@ -147,6 +149,7 @@ export const createRecentProjectsSlice: StateCreator<
   cliYolo: {},
   promptComposerEnabled: false,
   promptComposerAlwaysVisible: false,
+  composerExpansion: "up" as ComposerExpansion,
   promptHistory: [],
   autoStartServerCommand: true,
   previewInProjectTab: true,
@@ -249,6 +252,10 @@ export const createRecentProjectsSlice: StateCreator<
 
   setPromptComposerAlwaysVisible: (value) => {
     set({ promptComposerAlwaysVisible: value });
+  },
+
+  setComposerExpansion: (value) => {
+    set({ composerExpansion: value });
   },
 
   addPromptHistory: (text) => {

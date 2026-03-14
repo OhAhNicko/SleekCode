@@ -57,6 +57,7 @@ export const useAppStore = create<AppStore>()(
         cliYolo: state.cliYolo,
         promptComposerEnabled: state.promptComposerEnabled,
         promptComposerAlwaysVisible: state.promptComposerAlwaysVisible,
+        composerExpansion: state.composerExpansion,
         promptHistory: state.promptHistory,
         autoStartServerCommand: state.autoStartServerCommand,
         previewInProjectTab: state.previewInProjectTab,
@@ -131,12 +132,30 @@ export const useAppStore = create<AppStore>()(
           }) as typeof state.servers;
         }
 
+        // Deep-merge game-related objects so new entries (e.g. pong, blockBreaker)
+        // get defaults even when persisted state was saved before they existed
+        const gameStats = {
+          ...current.gameStats,
+          ...state.gameStats,
+        };
+        const highscores = {
+          ...current.highscores,
+          ...state.highscores,
+        };
+        const timedHighscores = {
+          ...current.timedHighscores,
+          ...state.timedHighscores,
+        };
+
         return {
           ...current,
           ...state,
           tabs: filteredTabs,
           activeTabId,
           cliYolo,
+          gameStats,
+          highscores,
+          timedHighscores,
           // When session restore is off, reset all panel/sidebar state to defaults
           ...(!state.restoreLastSession && {
             devServerPanelOpen: false,

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import type { TerminalType } from "../types";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
-import { undoLastInsertion, getImageLabel } from "../lib/clipboard-insert";
+import { undoLastInsertion, getImageLabel, resolveImagePath } from "../lib/clipboard-insert";
 
 export interface PastedImage {
   /** Data URI for the thumbnail preview */
@@ -86,13 +86,14 @@ export function useClipboardImagePaste({
         e.preventDefault();
         e.stopPropagation();
 
+        const filePath = resolveImagePath(latestImage.winPath);
         const label = getImageLabel(latestImage.winPath);
-        write(label);
+        write(filePath);
         setPastedImage({ thumbnailUrl: latestImage.dataUri, filePath: label });
 
         // Record for undo
         store.setLastInsertion({
-          text: label,
+          text: filePath,
           terminalId,
           timestamp: Date.now(),
         });
