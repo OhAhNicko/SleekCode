@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useAppStore } from "../store";
+import type { AiTimeBurst } from "../store/aiTimeSlice";
 import { THEMES, getTheme } from "../lib/themes";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { isWindows } from "../lib/platform";
+import { currentIsoWeek } from "../lib/iso-week";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { FaCheck } from "react-icons/fa";
 import { STATUSLINE_FEATURES } from "./TerminalHeader";
@@ -132,6 +134,201 @@ function SettingsRow({ label, description, children }: {
   );
 }
 
+// ─── Duration formatter ──────────────────────────────────────────────────
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return "0s";
+  const totalSec = Math.round(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+
+const CLI_COLORS: Record<string, string> = {
+  claude: "#e87b35",  // orange
+  codex: "#34d399",   // emerald/green
+  gemini: "#a78bfa",  // purple
+};
+
+const CLI_LABELS: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  gemini: "Gemini",
+};
+
+function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClear: () => void }) {
+  const [showConfirm, setShowConfirm] = useState(false);
+  const weekKey = useMemo(() => currentIsoWeek(), []);
+
+  // Aggregate data outside selectors (per feedback_zustand_selector_no_filter)
+  const { weekTotal, weekByCli, allTotal, allByCli, projects } = useMemo(() => {
+    let weekTotal = 0;
+    const weekByCli: Record<string, number> = {};
+    let allTotal = 0;
+    const allByCli: Record<string, number> = {};
+    const projectMap: Record<string, number> = {};
+
+    for (const b of bursts) {
+      allTotal += b.durationMs;
+      allByCli[b.cli] = (allByCli[b.cli] || 0) + b.durationMs;
+      projectMap[b.project] = (projectMap[b.project] || 0) + b.durationMs;
+      if (b.week === weekKey) {
+        weekTotal += b.durationMs;
+        weekByCli[b.cli] = (weekByCli[b.cli] || 0) + b.durationMs;
+      }
+    }
+
+    const projects = Object.entries(projectMap)
+      .sort((a, b) => b[1] - a[1])
+      .map(([path, ms]) => ({ path, ms, name: path.split("/").pop() || path }));
+
+    return { weekTotal, weekByCli, allTotal, allByCli, projects };
+  }, [bursts, weekKey]);
+
+  return (
+    <SettingsSection id="statistics" title="Statistics" description="AI working time tracked from terminal output bursts.">
+      {/* This Week */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
+          This Week
+        </div>
+        <div style={{ fontSize: 28, fontWeight: 700, color: "var(--ezy-text)", letterSpacing: "-0.02em", marginBottom: 8 }}>
+          {formatDuration(weekTotal)}
+        </div>
+        <div style={{ display: "flex", gap: 16 }}>
+          {(["claude", "codex", "gemini"] as const).map((cli) => {
+            const ms = weekByCli[cli] || 0;
+            if (ms === 0 && weekTotal === 0) return null;
+            return (
+              <div key={cli} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: CLI_COLORS[cli] }} />
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  {CLI_LABELS[cli]}: {formatDuration(ms)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* All Time */}
+      <div style={{ marginBottom: 24, paddingTop: 16, borderTop: "1px solid var(--ezy-border-subtle)" }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
+          All Time
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--ezy-text)", letterSpacing: "-0.02em", marginBottom: 8 }}>
+          {formatDuration(allTotal)}
+        </div>
+        <div style={{ display: "flex", gap: 16 }}>
+          {(["claude", "codex", "gemini"] as const).map((cli) => {
+            const ms = allByCli[cli] || 0;
+            if (ms === 0 && allTotal === 0) return null;
+            return (
+              <div key={cli} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: CLI_COLORS[cli] }} />
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  {CLI_LABELS[cli]}: {formatDuration(ms)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Per Project */}
+      {projects.length > 0 && (
+        <div style={{ marginBottom: 24, paddingTop: 16, borderTop: "1px solid var(--ezy-border-subtle)" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+            Per Project
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {projects.map((p) => (
+              <div
+                key={p.path}
+                title={p.path}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "6px 0",
+                  borderBottom: "1px solid var(--ezy-border-subtle)",
+                }}
+              >
+                <span style={{ fontSize: 13, color: "var(--ezy-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1, marginRight: 12 }}>
+                  {p.name}
+                </span>
+                <span style={{ fontSize: 13, fontWeight: 500, color: "var(--ezy-text)", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
+                  {formatDuration(p.ms)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {bursts.length === 0 && (
+        <div style={{ padding: "24px 0", textAlign: "center", color: "var(--ezy-text-muted)", fontSize: 13 }}>
+          No AI time tracked yet. Open an AI terminal and let it work to start tracking.
+        </div>
+      )}
+
+      {/* Reset */}
+      {bursts.length > 0 && (
+        <div style={{ paddingTop: 16, borderTop: "1px solid var(--ezy-border-subtle)" }}>
+          {!showConfirm ? (
+            <div
+              onClick={() => setShowConfirm(true)}
+              style={{
+                fontSize: 12,
+                color: "var(--ezy-red, #e55)",
+                cursor: "pointer",
+                padding: "6px 0",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.8"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
+            >
+              Reset all statistics
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>Are you sure?</span>
+              <div
+                onClick={() => { onClear(); setShowConfirm(false); }}
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "#fff",
+                  backgroundColor: "var(--ezy-red, #e55)",
+                  padding: "4px 10px",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                }}
+              >
+                Reset
+              </div>
+              <div
+                onClick={() => setShowConfirm(false)}
+                style={{
+                  fontSize: 12,
+                  color: "var(--ezy-text-muted)",
+                  cursor: "pointer",
+                }}
+              >
+                Cancel
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </SettingsSection>
+  );
+}
+
 // ─── Nav sections ──────────────────────────────────────────────────────────
 
 const NAV_SECTIONS = [
@@ -143,6 +340,7 @@ const NAV_SECTIONS = [
   { id: "ai", label: "AI Sessions" },
   { id: "cli", label: "CLI Options" },
   { id: "theme", label: "Theme" },
+  { id: "statistics", label: "Statistics" },
   { id: "links", label: "Snippets & Shortcuts" },
 ];
 
@@ -200,6 +398,8 @@ export default function SettingsPane() {
   const setTheme = useAppStore((s) => s.setTheme);
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const setVibrantColors = useAppStore((s) => s.setVibrantColors);
+  const aiTimeBursts = useAppStore((s) => s.aiTimeBursts);
+  const clearAiTimeStats = useAppStore((s) => s.clearAiTimeStats);
   const theme = getTheme(themeId);
 
   // Render only the active section content
@@ -496,6 +696,9 @@ export default function SettingsPane() {
           </SettingsSection>
         );
 
+      case "statistics":
+        return <AiTimeStatsSection bursts={aiTimeBursts} onClear={clearAiTimeStats} />;
+
       case "links":
         return (
           <SettingsSection id="links" title="Snippets & Shortcuts">
@@ -571,13 +774,43 @@ export default function SettingsPane() {
         gap: 1,
       }}>
         <div style={{
-          fontSize: 11,
-          fontWeight: 600,
-          textTransform: "uppercase",
-          letterSpacing: "0.06em",
-          color: "var(--ezy-text-muted)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
           padding: "0 16px 12px",
-        }}>Settings</div>
+        }}>
+          <span style={{
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.06em",
+            color: "var(--ezy-text-muted)",
+          }}>Settings</span>
+          <div
+            onClick={() => {
+              useAppStore.getState().setSettingsGearMode("dropdown");
+              useAppStore.getState().setSettingsPanelOpen(false);
+            }}
+            title="Switch to dropdown menu"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 22,
+              height: 22,
+              borderRadius: 4,
+              cursor: "pointer",
+              color: "var(--ezy-text-muted)",
+              transition: "background-color 120ms ease",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 6l4 4 4-4" />
+            </svg>
+          </div>
+        </div>
         {NAV_SECTIONS.map((s) => {
           const isActive = activeSection === s.id;
           return (

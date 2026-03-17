@@ -1,5 +1,6 @@
 import type { StateCreator } from "zustand";
 import type { TerminalInstance, TerminalType, DevServer } from "../types";
+import { clearTerminalActivity } from "../lib/terminal-activity";
 
 // PTY write callbacks — runtime only, not persisted.
 // Stored outside Zustand to avoid unnecessary re-renders.
@@ -89,6 +90,8 @@ export const createTerminalSlice: StateCreator<
   },
 
   removeTerminal: (id) => {
+    clearTerminalActivity(id);
+    unregisterPtyWrite(id);
     set((state) => {
       const { [id]: _, ...rest } = state.terminals;
       return {

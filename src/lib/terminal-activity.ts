@@ -18,6 +18,7 @@ interface ActivityState {
   lastOutput: number;
   burstBytes: number;
   lockoutUntil: number;
+  terminalType: TerminalType;
 }
 
 const state = new Map<string, ActivityState>();
@@ -60,7 +61,7 @@ export function recordTerminalActivity(terminalId: string, terminalType: Termina
   const now = Date.now();
   let s = state.get(terminalId);
   if (!s) {
-    s = { burstStart: 0, lastOutput: 0, burstBytes: 0, lockoutUntil: 0 };
+    s = { burstStart: 0, lastOutput: 0, burstBytes: 0, lockoutUntil: 0, terminalType };
     state.set(terminalId, s);
   }
 
@@ -68,8 +69,7 @@ export function recordTerminalActivity(terminalId: string, terminalType: Termina
     // AI output gap detected — the AI likely finished working.
     // Refresh git status bar so file/diff counts update immediately.
     if (isConfirmedActive(s, s.lastOutput)) {
-      window.dispatchEvent(new Event("ezydev:git-refresh"));
-      window.dispatchEvent(new Event("ezydev:ai-done"));
+      dispatchBurstEvents(terminalId, s);
     }
     s.burstStart = 0;
     s.burstBytes = 0;
@@ -85,7 +85,34 @@ export function recordTerminalActivity(terminalId: string, terminalType: Termina
 }
 
 export function clearTerminalActivity(terminalId: string): void {
+  const s = state.get(terminalId);
+  if (s && isConfirmedActive(s, Date.now())) {
+    dispatchBurstEvents(terminalId, s);
+  }
   state.delete(terminalId);
+}
+
+/** Dispatch enriched ai-done and git-refresh events with burst metadata. */
+function dispatchBurstEvents(terminalId: string, s: ActivityState): void {
+  const durationMs = s.lastOutput - s.burstStart;
+  const detail = { terminalId, terminalType: s.terminalType, durationMs };
+  window.dispatchEvent(new CustomEvent("ezydev:git-refresh", { detail }));
+  window.dispatchEvent(new CustomEvent("ezydev:ai-done", { detail }));
+}
+
+/**
+ * Sweep all tracked terminals for stale bursts (no new data for > GAP_MS)
+ * and dispatch events. Call this periodically to catch idle terminals.
+ */
+export function flushStaleBursts(): void {
+  const now = Date.now();
+  for (const [terminalId, s] of state) {
+    if (s.lastOutput > 0 && now - s.lastOutput > GAP_MS && isConfirmedActive(s, s.lastOutput)) {
+      dispatchBurstEvents(terminalId, s);
+      s.burstStart = 0;
+      s.burstBytes = 0;
+    }
+  }
 }
 
 function isConfirmedActive(s: ActivityState, now: number): boolean {

@@ -101,9 +101,13 @@ export interface RecentProjectsSlice {
   openPanesInBackground: boolean;
   autoMinimizeGameOnAiDone: boolean;
   showMiniGamesButton: boolean;
+  onboardingCompleted: boolean;
+  setOnboardingCompleted: (value: boolean) => void;
   settingsPanelOpen: boolean;
   toggleSettingsPanel: () => void;
   setSettingsPanelOpen: (value: boolean) => void;
+  settingsGearMode: "sidebar" | "dropdown";
+  setSettingsGearMode: (value: "sidebar" | "dropdown") => void;
   terminalBackend: TerminalBackend;
   commitMsgMode: CommitMsgMode;
   shadowAiCli: ShadowAiCli;
@@ -176,9 +180,13 @@ export const createRecentProjectsSlice: StateCreator<
   openPanesInBackground: false,
   autoMinimizeGameOnAiDone: false,
   showMiniGamesButton: false,
+  onboardingCompleted: false,
+  setOnboardingCompleted: (value) => set({ onboardingCompleted: value }),
   settingsPanelOpen: false,
   toggleSettingsPanel: () => set((s) => ({ settingsPanelOpen: !s.settingsPanelOpen })),
   setSettingsPanelOpen: (value) => set({ settingsPanelOpen: value }),
+  settingsGearMode: "sidebar",
+  setSettingsGearMode: (value) => set({ settingsGearMode: value }),
   terminalBackend: getDefaultBackend(),
   commitMsgMode: "simple",
   shadowAiCli: "claude",

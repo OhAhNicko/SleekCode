@@ -963,7 +963,11 @@ async fn git_switch_branch(directory: String, branch: String) -> Result<(), Stri
 #[tauri::command]
 async fn git_revert_hunk(directory: String, patch: String) -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
-    let temp_path = temp_dir.join(format!("ezydev-patch-{}.patch", std::process::id()));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_path = temp_dir.join(format!("ezydev-patch-{}-{}.patch", std::process::id(), nanos));
 
     std::fs::write(&temp_path, &patch)
         .map_err(|e| format!("Failed to write temp patch: {}", e))?;

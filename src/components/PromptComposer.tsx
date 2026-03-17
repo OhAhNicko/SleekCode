@@ -131,6 +131,9 @@ export default function PromptComposer({
   didStealRef,
   suppressAutoFocus = false,
 }: PromptComposerProps) {
+  // Use the terminal's actual font size (may differ from the store value when
+  // TerminalPane's doFit() scales font down for narrow panes).
+  const effectiveFontSize = terminal?.options.fontSize ?? fontSize;
   const panePromptHistory = useAppStore((s) => s.panePromptHistory);
   const promptHistory = panePromptHistory[terminalId] ?? EMPTY_HISTORY;
   const addPromptHistory = useAppStore((s) => s.addPromptHistory);
@@ -145,6 +148,7 @@ export default function PromptComposer({
   const [cellHeight, setCellHeight] = useState(0);
   const [hidden, setHidden] = useState(false);
   const hiddenRef = useRef(false);
+  const resizingUntilRef = useRef(0); // timestamp until which auto-hide is suppressed (resize transition)
   const notAtBottomSinceRef = useRef(0); // hysteresis: timestamp when isAtBottom first failed
   const showTimeRef = useRef(0); // timestamp when composer last became visible
   const didStealText = didStealRef;
@@ -418,6 +422,7 @@ export default function PromptComposer({
   // Initial scan + steal text on mount.
   // Also poll quickly until the prompt is found (Claude CLI takes a few seconds to start).
   const foundPromptRef = useRef(false);
+  const seenPass1Ref = useRef(false); // tracks if we've ever found a Pass 1 prompt (real "> " prompt)
   useEffect(() => {
     function tryFind() {
       const result = scanPromptPosition();
@@ -474,9 +479,9 @@ export default function PromptComposer({
       const promptIdx = promptLineIdxRef.current;
       const isPromptVisible = promptIdx >= 0 && promptIdx >= vpStart && promptIdx <= vpEnd;
 
-      // Helper: compute pixel offset for a known buffer line index
+      // Helper: compute pixel offset + cellHeight for a known buffer line index
       // without re-scanning (avoids matching old > chars when scrolled)
-      function offsetForLine(lineIdx: number): number | null {
+      function offsetForLine(lineIdx: number): { offset: number; cellHeight: number } | null {
         const container = containerRef.current;
         if (!container) return null;
         const scr = container.querySelector(".xterm-screen") as HTMLElement | null;
@@ -492,7 +497,7 @@ export default function PromptComposer({
         const rows = terminal!.rows;
         const ch = rCellH ?? (cH > 0 ? cH / rows : scr.clientHeight / rows);
         const row = lineIdx - vpStart;
-        return Math.round(sTop + row * ch);
+        return { offset: Math.round(sTop + row * ch), cellHeight: ch };
       }
 
       // ── Background panes: lightweight tracking only ──
@@ -522,8 +527,18 @@ export default function PromptComposer({
         // Found a new prompt — clear the skip marker
         submittedLineIdxRef.current = -1;
 
-        // For always-visible CLI composers, hide during interactive mode
-        if (alwaysVisible && (result.promptPass !== 1 || isInteractiveMode(result.promptLineIdx))) {
+        // For always-visible CLI composers, hide during interactive mode.
+        // Only auto-hide on Pass 2/3 if we've previously seen a Pass 1 prompt —
+        // during startup the CLI hasn't rendered its real prompt yet, so Pass 2/3
+        // matches are just banner text, not interactive dialogs.
+        // Skip auto-hide during resize transitions — CLIs like Gemini clear and
+        // redraw the screen on SIGWINCH, causing mid-redraw scans to find Pass 2/3.
+        if (result.promptPass === 1) seenPass1Ref.current = true;
+        const isResizing = Date.now() < resizingUntilRef.current;
+        if (alwaysVisible && !isResizing && (
+          isInteractiveMode(result.promptLineIdx) ||
+          (result.promptPass !== 1 && seenPass1Ref.current)
+        )) {
           setHidden(true);
           hiddenRef.current = true;
           textareaRef.current?.blur();
@@ -554,16 +569,43 @@ export default function PromptComposer({
         return;
       }
 
-      // Case 2: Scrolled but prompt line still visible — reposition without re-scanning
+      // Case 2: Scrolled but prompt line still visible — reposition without re-scanning.
+      // First verify the stored line still looks like a prompt (it may have become
+      // stale if the CLI output new content and the prompt moved to a new line).
       if (isPromptVisible) {
         notAtBottomSinceRef.current = 0;
-        const off = offsetForLine(promptIdx);
-        if (off != null) {
-          setTopOffset(off);
+        // Quick validation: does the stored line still start with a prompt char?
+        const storedLine = buf.getLine(promptIdx);
+        const storedText = storedLine?.translateToString().trim() ?? "";
+        const stillLooksLikePrompt = /^[>❯›»]/.test(storedText);
+
+        if (stillLooksLikePrompt) {
+          const result = offsetForLine(promptIdx);
+          if (result != null) {
+            setTopOffset(result.offset);
+            setCellHeight(result.cellHeight);
+            if (hiddenRef.current) {
+              setHidden(false);
+              hiddenRef.current = false;
+            }
+          }
+          return;
+        }
+        // Stored prompt line is stale — fall through to full scan
+        const freshResult = scanPromptPosition();
+        if (freshResult) {
+          setTopOffset(freshResult.offset);
+          setCellHeight(freshResult.cellHeight);
+          promptLineIdxRef.current = freshResult.promptLineIdx;
           if (hiddenRef.current) {
             setHidden(false);
             hiddenRef.current = false;
           }
+        } else if (!hiddenRef.current) {
+          // Can't find prompt — hide
+          hiddenRef.current = true;
+          setHidden(true);
+          textareaRef.current?.blur();
         }
         return;
       }
@@ -583,21 +625,83 @@ export default function PromptComposer({
   // Re-scan when the xterm screen is resized (fitAddon.fit ran, layout settled).
   // This corrects stale topOffset/cellHeight when 16 panes open simultaneously and
   // the CSS grid layout wasn't stable when the initial tryFind() fired.
+  //
+  // Also observe the container's parent (the position:relative wrapper) — this
+  // element resizes immediately during pane drag, while .xterm-screen only resizes
+  // after fitAddon.fit() runs (debounced 100ms). Without this, the composer stays
+  // at its old position during the entire drag.
   useEffect(() => {
     if (!terminal) return;
     const container = containerRef.current;
     if (!container) return;
     const screen = container.querySelector(".xterm-screen") as HTMLElement | null;
     if (!screen) return;
-    const observer = new ResizeObserver(() => {
+
+    function doScan() {
       const result = scanPromptPosition();
       if (result) {
         setTopOffset(result.offset);
         setCellHeight(result.cellHeight);
       }
+    }
+
+    // Scan that also unhides the composer if a valid prompt is found.
+    // Used by resize observers to recover from mid-resize auto-hide.
+    function doScanAndUnhide() {
+      const result = scanPromptPosition();
+      if (result) {
+        setTopOffset(result.offset);
+        setCellHeight(result.cellHeight);
+        if (result.promptPass === 1 && hiddenRef.current) {
+          setHidden(false);
+          hiddenRef.current = false;
+        }
+      }
+    }
+
+    // Observer on .xterm-screen: fires after fitAddon.fit().
+    // Double-rAF matches the settling pattern in TerminalPane's doFit() —
+    // WebGL renderer processes resize asynchronously and needs two frames.
+    let rafId1 = 0;
+    let rafId2 = 0;
+    const screenObserver = new ResizeObserver(() => {
+      // Suppress auto-hide during resize transitions — CLIs like Gemini
+      // clear and redraw the screen on SIGWINCH, causing mid-redraw scans
+      // to find Pass 2/3 and hide the composer permanently.
+      resizingUntilRef.current = Date.now() + 500;
+      cancelAnimationFrame(rafId1);
+      cancelAnimationFrame(rafId2);
+      rafId1 = requestAnimationFrame(() => {
+        rafId2 = requestAnimationFrame(doScan);
+      });
     });
-    observer.observe(screen);
-    return () => observer.disconnect();
+    screenObserver.observe(screen);
+
+    // Observer on container parent: fires immediately during pane drag.
+    // The terminal re-fits after 100ms debounce, then needs ~2 frames to settle.
+    // Schedule two scans: one at 150ms (during drag, best-effort) and a final
+    // correction at 250ms (guaranteed settled after fit + WebGL double-rAF).
+    // The final scan also unhides the composer if it was hidden mid-resize.
+    let parentTimer1: ReturnType<typeof setTimeout> | undefined;
+    let parentTimer2: ReturnType<typeof setTimeout> | undefined;
+    const parent = container.parentElement;
+    const parentObserver = parent ? new ResizeObserver(() => {
+      resizingUntilRef.current = Date.now() + 500;
+      clearTimeout(parentTimer1);
+      clearTimeout(parentTimer2);
+      parentTimer1 = setTimeout(doScan, 150);
+      parentTimer2 = setTimeout(doScanAndUnhide, 350);
+    }) : null;
+    parentObserver?.observe(parent!);
+
+    return () => {
+      cancelAnimationFrame(rafId1);
+      cancelAnimationFrame(rafId2);
+      clearTimeout(parentTimer1);
+      clearTimeout(parentTimer2);
+      screenObserver.disconnect();
+      parentObserver?.disconnect();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terminal]);
 
@@ -1298,7 +1402,13 @@ export default function PromptComposer({
   // Mode differences (up vs down vs scroll) only affect textarea height behavior
   // and whether paddingBottom is used — NOT the anchor position.
   // Per-CLI vertical nudge to align with each CLI's input prompt
-  const promptNudge = isCodex ? -21 : isGemini ? -10 : -2;
+  // Nudge derived from card padding formulas so it auto-scales with cellHeight.
+  // Compensates for: card top-padding + border (1px) + textarea wrapper top (4px).
+  const promptNudge = isCodex
+    ? -(Math.round((cellHeight + 12) / 2) + 6)
+    : isGemini
+      ? -(Math.round((cellHeight * 0.4 + 6) / 2) + 3)
+      : -2;
   const positionStyle: React.CSSProperties = { top: `${topOffset + promptNudge}px` };
 
   return (
@@ -1372,7 +1482,7 @@ export default function PromptComposer({
                   <span
                     style={{
                       fontFamily: "Hack, monospace",
-                      fontSize: fontSize - 1,
+                      fontSize: effectiveFontSize - 1,
                       minWidth: 90,
                       flexShrink: 0,
                     }}
@@ -1391,7 +1501,7 @@ export default function PromptComposer({
                   </span>
                   <span
                     style={{
-                      fontSize: fontSize - 2,
+                      fontSize: effectiveFontSize - 2,
                       color: terminalFg,
                       opacity: 0.5,
                       overflow: "hidden",
@@ -1411,7 +1521,7 @@ export default function PromptComposer({
                 alignItems: "center",
                 gap: 6,
                 padding: "3px 10px 4px",
-                fontSize: fontSize - 2,
+                fontSize: effectiveFontSize - 2,
                 color: terminalFg,
                 opacity: 0.45,
               }}
@@ -1432,7 +1542,7 @@ export default function PromptComposer({
       <FaAngleRight
         style={{
           color: terminalCursor,
-          fontSize,
+          fontSize: effectiveFontSize,
           flexShrink: 0,
           opacity: 0.7,
           userSelect: "none",
@@ -1470,7 +1580,15 @@ export default function PromptComposer({
             setSlashSelectedIdx(0); setSlashScrollOffset(0);
           }}
           onKeyDown={handleKeyDown}
-          onFocus={() => useClipboardImageStore.getState().setActiveComposerTerminalId(terminalId)}
+          onFocus={() => {
+            useClipboardImageStore.getState().setActiveComposerTerminalId(terminalId);
+            // Re-scan position on focus to correct any accumulated drift
+            const result = scanPromptPosition();
+            if (result) {
+              setTopOffset(result.offset);
+              setCellHeight(result.cellHeight);
+            }
+          }}
           onBlur={() => { setSlashMatches([]); setSlashSelectedIdx(0); setSlashScrollOffset(0); }}
           onAuxClick={(e) => {
             if (e.button !== 1) return; // middle-click only
@@ -1501,7 +1619,7 @@ export default function PromptComposer({
             backgroundColor: "transparent",
             color: (consoleTagRef.current && value.includes(consoleTagRef.current)) || styledSegments || hasArrows ? "transparent" : terminalFg,
             fontFamily: "Hack, monospace",
-            fontSize,
+            fontSize: effectiveFontSize,
             lineHeight: 1.4,
             letterSpacing: 1,
             border: "none",
@@ -1532,7 +1650,7 @@ export default function PromptComposer({
                 right: 0,
                 pointerEvents: "none",
                 fontFamily: "Hack, monospace",
-                fontSize,
+                fontSize: effectiveFontSize,
                 lineHeight: 1.4,
                 letterSpacing: 1,
                 padding: 0,
@@ -1559,7 +1677,7 @@ export default function PromptComposer({
               right: 0,
               pointerEvents: "none",
               fontFamily: "Hack, monospace",
-              fontSize,
+              fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
               padding: 0,
@@ -1585,7 +1703,7 @@ export default function PromptComposer({
               right: 0,
               pointerEvents: "none",
               fontFamily: "Hack, monospace",
-              fontSize,
+              fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
               padding: 0,
@@ -1610,7 +1728,7 @@ export default function PromptComposer({
               right: 0,
               pointerEvents: "none",
               fontFamily: "Hack, monospace",
-              fontSize,
+              fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
               padding: 0,
@@ -1640,7 +1758,7 @@ export default function PromptComposer({
               right: 0,
               pointerEvents: "none",
               fontFamily: "Hack, monospace",
-              fontSize,
+              fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
               padding: 0,

@@ -35,6 +35,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
   const scoreRef = useRef(0);
   const gameStateRef = useRef<"idle" | "playing" | "over">("idle");
   const tickTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const boostRef = useRef(false);
 
   const spawnFood = useCallback((snake: Coord[], cols: number, rows: number): Coord => {
     const occupied = new Set(snake.map(([x, y]) => `${x},${y}`));
@@ -120,7 +121,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
       ctx.fillStyle = accentColor;
       if (isHead) {
         ctx.shadowColor = accentColor;
-        ctx.shadowBlur = 5;
+        ctx.shadowBlur = boostRef.current ? 12 : 5;
       }
       const pad = isHead ? 0.5 : 1;
       const radius = isHead ? 2.5 : 1.5;
@@ -148,6 +149,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
     snakeRef.current = [[startX, startY], [startX - 1, startY], [startX - 2, startY]];
     dirRef.current = "right";
     nextDirRef.current = "right";
+    boostRef.current = false;
     foodRef.current = spawnFood(snakeRef.current, cols, rows);
     scoreRef.current = 0;
     setScore(0);
@@ -161,6 +163,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
   // Game loop with dynamic speed via setTimeout chain
   useEffect(() => {
     if (gameState !== "playing" || paused) return;
+    boostRef.current = false;
 
     function tick() {
       if (gameStateRef.current !== "playing" || pausedRef.current) return;
@@ -208,11 +211,13 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
       snakeRef.current = newSnake;
       draw();
 
-      // Schedule next tick at dynamic speed
-      tickTimerRef.current = setTimeout(tick, getTick(scoreRef.current));
+      // Schedule next tick at dynamic speed (boost = 2x)
+      const baseMs = getTick(scoreRef.current);
+      tickTimerRef.current = setTimeout(tick, boostRef.current ? Math.round(baseMs * 0.5) : baseMs);
     }
 
-    tickTimerRef.current = setTimeout(tick, getTick(scoreRef.current));
+    const initMs = getTick(scoreRef.current);
+    tickTimerRef.current = setTimeout(tick, boostRef.current ? Math.round(initMs * 0.5) : initMs);
     return () => clearTimeout(tickTimerRef.current);
   }, [gameState, paused, gridSize, draw, spawnFood, onAddHighscore]);
 
@@ -221,31 +226,55 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
     const container = containerRef.current;
     if (!container) return;
 
-    const handleKey = (e: KeyboardEvent) => {
-      if (gameStateRef.current !== "playing") return;
-      const dir = dirRef.current;
-      let newDir: Direction | null = null;
+    const opposite: Record<Direction, Direction> = { up: "down", down: "up", left: "right", right: "left" };
 
-      switch (e.key) {
-        case "ArrowUp": case "w": case "W":
-          if (dir !== "down") newDir = "up"; break;
-        case "ArrowDown": case "s": case "S":
-          if (dir !== "up") newDir = "down"; break;
-        case "ArrowLeft": case "a": case "A":
-          if (dir !== "right") newDir = "left"; break;
-        case "ArrowRight": case "d": case "D":
-          if (dir !== "left") newDir = "right"; break;
-      }
-
-      if (newDir) {
-        e.preventDefault();
-        e.stopPropagation();
-        nextDirRef.current = newDir;
+    const keyToDir = (key: string): Direction | null => {
+      switch (key) {
+        case "ArrowUp": case "w": case "W": return "up";
+        case "ArrowDown": case "s": case "S": return "down";
+        case "ArrowLeft": case "a": case "A": return "left";
+        case "ArrowRight": case "d": case "D": return "right";
+        default: return null;
       }
     };
 
+    const handleKey = (e: KeyboardEvent) => {
+      if (gameStateRef.current !== "playing") return;
+      const pressedDir = keyToDir(e.key);
+      if (!pressedDir) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Block 180-degree reversal
+      if (pressedDir === opposite[dirRef.current]) return;
+
+      // Same direction as intended: boost
+      if (pressedDir === nextDirRef.current) {
+        boostRef.current = true;
+      } else {
+        nextDirRef.current = pressedDir;
+        boostRef.current = false;
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      const releasedDir = keyToDir(e.key);
+      if (releasedDir && releasedDir === nextDirRef.current) {
+        boostRef.current = false;
+      }
+    };
+
+    const handleBlur = () => { boostRef.current = false; };
+
     container.addEventListener("keydown", handleKey);
-    return () => container.removeEventListener("keydown", handleKey);
+    container.addEventListener("keyup", handleKeyUp);
+    container.addEventListener("blur", handleBlur);
+    return () => {
+      container.removeEventListener("keydown", handleKey);
+      container.removeEventListener("keyup", handleKeyUp);
+      container.removeEventListener("blur", handleBlur);
+    };
   }, []);
 
   useEffect(() => { draw(); }, [draw]);
@@ -315,7 +344,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
             )}
             {gameState === "idle" && (
               <div style={{ fontSize: 14, color: "var(--ezy-text-secondary)", marginBottom: 4 }}>
-                Arrow keys or WASD to move
+                Arrow keys or WASD to move &middot; hold to boost
               </div>
             )}
             <button

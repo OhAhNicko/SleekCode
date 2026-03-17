@@ -1521,7 +1521,13 @@ export default function TabBar() {
             onClick={() => {
               setShowNewTabMenu(false);
               setShowRecentMenu(false);
-              setShowSettingsMenu((v) => !v);
+              const mode = useAppStore.getState().settingsGearMode;
+              if (mode === "sidebar") {
+                setShowSettingsMenu(false);
+                useAppStore.getState().toggleSettingsPanel();
+              } else {
+                setShowSettingsMenu((v) => !v);
+              }
             }}
             title="Settings"
             style={{
@@ -1532,17 +1538,17 @@ export default function TabBar() {
               height: 26,
               cursor: "pointer",
               borderRadius: 4,
-              backgroundColor: showSettingsMenu ? "var(--ezy-surface)" : "transparent",
+              backgroundColor: (showSettingsMenu || settingsPanelOpen) ? "var(--ezy-surface)" : "transparent",
               transition: "background-color 120ms ease",
             }}
             onMouseEnter={(e) => {
-              if (!showSettingsMenu) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+              if (!showSettingsMenu && !settingsPanelOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
             }}
             onMouseLeave={(e) => {
-              if (!showSettingsMenu) e.currentTarget.style.backgroundColor = "transparent";
+              if (!showSettingsMenu && !settingsPanelOpen) e.currentTarget.style.backgroundColor = "transparent";
             }}
           >
-            <FaGear size={14} color={showSettingsMenu ? "var(--ezy-text)" : "var(--ezy-text-muted)"} />
+            <FaGear size={14} color={(showSettingsMenu || settingsPanelOpen) ? "var(--ezy-text)" : "var(--ezy-text-muted)"} />
           </div>
 
           {showSettingsMenu && (
@@ -1564,7 +1570,7 @@ export default function TabBar() {
                 zIndex: 9999,
               }}
             >
-              {/* Open Settings full page link */}
+              {/* Open Settings sidebar + subtle "set sidebar as default" icon */}
               <div
                 style={{
                   display: "flex",
@@ -1588,6 +1594,35 @@ export default function TabBar() {
                 </svg>
                 <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", flex: 1 }}>Open Settings</span>
                 <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>Ctrl+,</span>
+                {/* Small icon to set sidebar as default — mirrors the chevron in SettingsPane */}
+                <div
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    useAppStore.getState().setSettingsGearMode("sidebar");
+                    setShowSettingsMenu(false);
+                    useAppStore.getState().setSettingsPanelOpen(true);
+                  }}
+                  title="Set sidebar as default"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    width: 22,
+                    height: 22,
+                    borderRadius: 4,
+                    cursor: "pointer",
+                    color: "var(--ezy-text-muted)",
+                    transition: "background-color 120ms ease",
+                    marginLeft: 2,
+                    flexShrink: 0,
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M2 4h12M2 8h12M2 12h12" />
+                  </svg>
+                </div>
               </div>
               {/* Terminal Backend section */}
               <div

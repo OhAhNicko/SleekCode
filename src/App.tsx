@@ -20,6 +20,7 @@ import { installStatuslineWrapper } from "./lib/statusline-setup";
 import { generateTerminalId } from "./lib/layout-utils";
 import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
 import { useFileDrop } from "./hooks/useFileDrop";
+import { useAiTimeTracker } from "./hooks/useAiTimeTracker";
 import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
 import UndoCloseToast from "./components/UndoCloseToast";
 import UndoClearToast from "./components/UndoClearToast";
@@ -27,6 +28,8 @@ import KeyboardShortcutsModal from "./components/KeyboardShortcutsModal";
 import PromptHistorySearch from "./components/PromptHistorySearch";
 import DevServerTerminalHost from "./components/DevServerTerminalHost";
 import SettingsPane from "./components/SettingsPane";
+import WelcomeModal from "./components/WelcomeModal";
+import GlobalContextMenu from "./components/GlobalContextMenu";
 
 export default function App() {
   const tabs = useAppStore((s) => s.tabs);
@@ -45,6 +48,8 @@ export default function App() {
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const recentProjects = useAppStore((s) => s.recentProjects);
+  const onboardingCompleted = useAppStore((s) => s.onboardingCompleted);
+  const setOnboardingCompleted = useAppStore((s) => s.setOnboardingCompleted);
 
   const projectTabs = useMemo(() => tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab), [tabs]);
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? projectTabs[0] ?? tabs[0];
@@ -239,6 +244,9 @@ export default function App() {
   // Handle file drops from OS onto terminal panes / EzyComposer
   useFileDrop();
 
+  // Track AI working time from burst events
+  useAiTimeTracker();
+
   // Inject theme CSS variables into :root
   useEffect(() => {
     const root = document.documentElement;
@@ -274,10 +282,20 @@ export default function App() {
     return () => window.removeEventListener("ezydev:open-shortcuts", handler);
   }, []);
 
+  // Listen for command palette open events from GlobalContextMenu
+  useEffect(() => {
+    const handler = () => setShowPalette(true);
+    window.addEventListener("ezydev:open-palette", handler);
+    return () => window.removeEventListener("ezydev:open-palette", handler);
+  }, []);
+
 
   // Global keyboard shortcuts (capture phase — fires before xterm/composer handlers)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // Block all shortcuts while WelcomeModal is showing
+      if (!useAppStore.getState().onboardingCompleted) return;
+
       const { ctrlKey, shiftKey, altKey, key } = e;
       // Helper: prevent default AND stop propagation (capture phase blocks xterm)
       const consume = () => { e.preventDefault(); e.stopPropagation(); };
@@ -631,7 +649,14 @@ export default function App() {
       <ImageInsertUndoToast />
       <UndoCloseToast />
       <UndoClearToast />
+      <GlobalContextMenu />
       <DevServerTerminalHost />
+      {!onboardingCompleted && (
+        <WelcomeModal
+          onComplete={() => setOnboardingCompleted(true)}
+          onSkip={() => setOnboardingCompleted(true)}
+        />
+      )}
     </div>
   );
 }

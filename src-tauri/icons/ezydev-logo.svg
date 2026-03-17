@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#151b23"/>
+      <stop offset="100%" stop-color="#0a0e14"/>
+    </linearGradient>
+    <linearGradient id="accentMain" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7ee787"/>
+      <stop offset="50%" stop-color="#39d353"/>
+      <stop offset="100%" stop-color="#2ea043"/>
+    </linearGradient>
+    <linearGradient id="accentCursor" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#58d5c1"/>
+      <stop offset="100%" stop-color="#39d353"/>
+    </linearGradient>
+    <linearGradient id="borderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#30363d"/>
+      <stop offset="50%" stop-color="#39d35340"/>
+      <stop offset="100%" stop-color="#30363d"/>
+    </linearGradient>
+    <filter id="promptGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="10"/>
+    </filter>
+    <filter id="cursorGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="8"/>
+    </filter>
+    <filter id="innerShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="20" result="blur"/>
+      <feOffset dx="0" dy="4" result="offsetBlur"/>
+      <feComposite in="SourceGraphic" in2="offsetBlur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Background rounded square with subtle depth -->
+  <rect x="6" y="6" width="500" height="500" rx="112" fill="url(#bg)"/>
+
+  <!-- Subtle inner highlight at top -->
+  <rect x="6" y="6" width="500" height="250" rx="112" fill="#ffffff" opacity="0.02"/>
+
+  <!-- Border with accent tint -->
+  <rect x="6" y="6" width="500" height="500" rx="112" fill="none" stroke="url(#borderGrad)" stroke-width="2.5"/>
+
+  <!-- Ambient glow behind prompt -->
+  <g opacity="0.25" filter="url(#promptGlow)">
+    <path d="M 138 178 L 268 264 L 138 350" fill="none" stroke="#39d353" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- Ambient glow behind cursor -->
+  <g opacity="0.3" filter="url(#cursorGlow)">
+    <rect x="296" y="322" width="100" height="36" rx="18" fill="#39d353"/>
+  </g>
+
+  <!-- Main prompt chevron > -->
+  <path d="M 138 178 L 268 264 L 138 350"
+        fill="none"
+        stroke="url(#accentMain)"
+        stroke-width="40"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+
+  <!-- Cursor block _ -->
+  <rect x="296" y="322" width="100" height="34" rx="6" fill="url(#accentCursor)" opacity="0.9"/>
+
+  <!-- Tiny sparkle dot (AI hint) -->
+  <circle cx="382" cy="168" r="8" fill="#7ee787" opacity="0.6"/>
+  <circle cx="382" cy="168" r="4" fill="#ffffff" opacity="0.8"/>
+</svg>

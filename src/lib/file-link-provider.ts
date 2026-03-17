@@ -138,9 +138,13 @@ export function createFilePathLinkProvider(
 
           const tooltip = document.createElement("div");
           tooltip.className = "xterm-hover ezy-file-link-tooltip";
-          tooltip.innerHTML =
-            `<span class="ezy-flt-label">Open in EzyDev</span>` +
-            `<kbd class="ezy-flt-kbd">${navigator.platform.includes("Mac") ? "Cmd" : "Ctrl"}+Click</kbd>`;
+          const label = document.createElement("span");
+          label.className = "ezy-flt-label";
+          label.textContent = "Open in EzyDev";
+          const kbd = document.createElement("kbd");
+          kbd.className = "ezy-flt-kbd";
+          kbd.textContent = `${navigator.platform.includes("Mac") ? "Cmd" : "Ctrl"}+Click`;
+          tooltip.append(label, kbd);
 
           // Find the terminal container to position within
           const xtermEl = term.element;

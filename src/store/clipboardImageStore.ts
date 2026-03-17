@@ -34,11 +34,14 @@ interface ClipboardImageStore {
   activeComposerTerminalId: string | null;
   addImage: (image: Omit<ClipboardImage, "id" | "timestamp">, seq: number) => void;
   removeImage: (id: string) => void;
+  clearAll: () => void;
   setLastSeq: (seq: number) => void;
   setLastInsertion: (insertion: LastInsertion | null) => void;
   setPendingComposerImage: (pending: { image: ClipboardImage; terminalId: string } | null) => void;
   setActiveComposerTerminalId: (id: string | null) => void;
 }
+
+const MAX_CLIPBOARD_IMAGES = 50;
 
 /** Session-only store for clipboard images (not persisted across restarts) */
 export const useClipboardImageStore = create<ClipboardImageStore>((set) => ({
@@ -53,11 +56,12 @@ export const useClipboardImageStore = create<ClipboardImageStore>((set) => ({
       images: [
         { ...image, id: crypto.randomUUID(), timestamp: Date.now() },
         ...state.images,
-      ],
+      ].slice(0, MAX_CLIPBOARD_IMAGES),
       lastImageSeq: seq,
     })),
   removeImage: (id) =>
     set((state) => ({ images: state.images.filter((img) => img.id !== id) })),
+  clearAll: () => set({ images: [] }),
   setLastSeq: (seq) => set({ lastSeq: seq }),
   setLastInsertion: (insertion) => set({ lastInsertion: insertion }),
   setPendingComposerImage: (pending) => set({ pendingComposerImage: pending }),

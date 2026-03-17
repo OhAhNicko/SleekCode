@@ -12,9 +12,10 @@ import { createSidebarSlice, type SidebarSlice } from "./sidebarSlice";
 import { createRecentProjectsSlice, type RecentProjectsSlice } from "./recentProjectsSlice";
 import { createGameSlice, type GameSlice } from "./gameSlice";
 import { createSessionSlice, type SessionSlice } from "./sessionSlice";
+import { createAiTimeSlice, type AiTimeSlice } from "./aiTimeSlice";
 import type { Tab } from "../types";
 
-export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice;
+export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice;
 
 function isSystemTab(tab: Tab): boolean {
   return !!(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab);
@@ -35,6 +36,7 @@ export const useAppStore = create<AppStore>()(
       ...createRecentProjectsSlice(...a),
       ...createGameSlice(...a),
       ...createSessionSlice(...a),
+      ...createAiTimeSlice(...a),
     }),
     {
       name: "ezydev-storage",
@@ -85,6 +87,8 @@ export const useAppStore = create<AppStore>()(
         completedCrosswordIds: state.completedCrosswordIds,
         customCrosswords: state.customCrosswords,
         projectSessions: state.projectSessions,
+        aiTimeBursts: state.aiTimeBursts,
+        onboardingCompleted: state.onboardingCompleted,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;
@@ -164,6 +168,11 @@ export const useAppStore = create<AppStore>()(
           ...state.projectSessions,
         };
 
+        const aiTimeBursts = state.aiTimeBursts ?? current.aiTimeBursts;
+
+        // Auto-complete onboarding for existing users who already have persisted state
+        const onboardingCompleted = state.onboardingCompleted ?? true;
+
         return {
           ...current,
           ...state,
@@ -174,6 +183,8 @@ export const useAppStore = create<AppStore>()(
           highscores,
           timedHighscores,
           projectSessions,
+          aiTimeBursts,
+          onboardingCompleted,
           // When session restore is off, reset all panel/sidebar state to defaults
           ...(!state.restoreLastSession && {
             devServerPanelOpen: false,
