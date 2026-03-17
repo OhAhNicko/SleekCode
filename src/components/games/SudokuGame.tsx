@@ -424,14 +424,18 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
               height: Math.max(28, cellSize - 4),
               fontSize: 11,
               fontWeight: 600,
-              color: "var(--ezy-text-muted)",
-              backgroundColor: "var(--ezy-surface)",
-              border: "1px solid var(--ezy-border)",
+              color: "#fff",
+              backgroundColor: "var(--ezy-red, #dc2626)",
+              border: "1px solid transparent",
               borderRadius: 4,
               cursor: "pointer",
+              opacity: 0.85,
+              transition: "opacity 120ms ease",
             }}
+            onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+            onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.85")}
           >
-            CLR
+            Clear
           </button>
         </div>
 

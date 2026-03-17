@@ -22,6 +22,12 @@ import { PiKanbanDuotone, PiGameControllerDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
 import { BiSidebar, BiExpandVertical } from "react-icons/bi";
 
+function truncateTabPath(path: string, maxSegments = 3): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const segments = normalized.split("/").filter(Boolean);
+  return segments.slice(-maxSegments).join("/");
+}
+
 export default function TabBar() {
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
@@ -78,6 +84,7 @@ export default function TabBar() {
   const setOpenPanesInBackground = useAppStore((s) => s.setOpenPanesInBackground);
   const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
   const setAutoMinimizeGameOnAiDone = useAppStore((s) => s.setAutoMinimizeGameOnAiDone);
+  const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
   const terminalBackend = useAppStore((s) => s.terminalBackend ?? "wsl");
   const setTerminalBackend = useAppStore((s) => s.setTerminalBackend);
   const devServers = useAppStore((s) => s.devServers);
@@ -85,6 +92,9 @@ export default function TabBar() {
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
   const projectColors = useAppStore((s) => s.projectColors);
   const setProjectColor = useAppStore((s) => s.setProjectColor);
+  const settingsPanelOpen = useAppStore((s) => s.settingsPanelOpen);
+  const showTabPath = useAppStore((s) => s.showTabPath);
+  const renameTab = useAppStore((s) => s.renameTab);
 
   const [isMaximized, setIsMaximized] = useState(false);
   const [showQuitConfirm, setShowQuitConfirm] = useState(false);
@@ -95,6 +105,9 @@ export default function TabBar() {
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showServersTab] = useState(false);
   const [pendingDir, setPendingDir] = useState<{ name: string; dir: string; serverId?: string } | null>(null);
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const [expandedCli, setExpandedCli] = useState<Record<string, boolean>>({});
   const [themeExpanded, setThemeExpanded] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({ terminal: true, behavior: true, preview: true, codereview: true, ai: true, cli: true });
@@ -135,13 +148,6 @@ export default function TabBar() {
     setShowRecentMenu(false);
     setShowSettingsMenu(false);
     setColorPickerTab(null);
-  }, []);
-
-  // Listen for Ctrl+, toggle-settings event
-  useEffect(() => {
-    const handler = () => setShowSettingsMenu((v) => !v);
-    window.addEventListener("ezydev:toggle-settings", handler);
-    return () => window.removeEventListener("ezydev:toggle-settings", handler);
   }, []);
 
   const getInsertBeforeId = useCallback((clientX: number, excludeId: string): string | null => {
@@ -441,6 +447,9 @@ export default function TabBar() {
         </svg>
       );
     }
+    if (tab.isSettingsTab) {
+      return <FaGear size={13} color={color} style={{ flexShrink: 0 }} />;
+    }
     if (tab.isServersTab) {
       return (
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke={isActive ? "var(--ezy-cyan)" : inactiveColor} strokeWidth="1.3" style={{ flexShrink: 0 }}>
@@ -568,12 +577,12 @@ export default function TabBar() {
             // Build a local color map so tabs assigned in the same render pass see each other
             const localColors = { ...projectColors };
             const pendingAssigns: Array<[string, ProjectColorId]> = [];
-            const visibleTabs = tabs.filter((t) => !t.isDevServerTab && !t.isKanbanTab && (!t.isServersTab || showServersTab));
+            const visibleTabs = tabs.filter((t) => !t.isDevServerTab && !t.isKanbanTab && (!t.isServersTab || showServersTab) && (!t.isSettingsTab || settingsPanelOpen));
 
             // Collect unique project dirs for visible non-system tabs
             const visibleDirs = new Set<string>();
             for (const tab of visibleTabs) {
-              if (!(tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab)) {
+              if (!(tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab || tab.isSettingsTab)) {
                 const dir = tab.workingDir.replace(/\\/g, "/");
                 if (dir) visibleDirs.add(dir);
               }
@@ -614,7 +623,7 @@ export default function TabBar() {
             }
             return visibleTabs.map((tab) => {
             const isActive = tab.id === activeTabId;
-            const isSystemTab = tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab;
+            const isSystemTab = tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab || tab.isSettingsTab;
             const isUserPinned = !!tab.isPinned;
             const normalizedDir = tab.workingDir.replace(/\\/g, "/");
             const tabColor = (!isSystemTab && normalizedDir) ? getProjectColor(localColors[normalizedDir] ?? null) : null;
@@ -634,7 +643,12 @@ export default function TabBar() {
                   onClick={() => {
                     if (didDragRef.current) return;
                     closeAllMenus();
-                    setActiveTab(tab.id);
+                    if (tab.isSettingsTab) {
+                      // No-op: settings tab is only visible when panel is open,
+                      // close via X button or Ctrl+,
+                    } else {
+                      setActiveTab(tab.id);
+                    }
                   }}
                   onPointerDown={(e) => {
                     if (e.button !== 0 || isSystemTab) return;
@@ -704,10 +718,10 @@ export default function TabBar() {
                   }}
                 >
                   {/* Tab icon (special tabs only — no icon for regular project tabs) */}
-                  {(tab.isKanbanTab || tab.isServersTab || tab.isDevServerTab || tab.serverId) && renderTabIcon(tab, isActive)}
+                  {(tab.isKanbanTab || tab.isServersTab || tab.isDevServerTab || tab.isSettingsTab || tab.serverId) && renderTabIcon(tab, isActive)}
 
                   {/* Label with pane count and activity indicator */}
-                  {!tab.isServersTab && (
+                  {!tab.isServersTab && !tab.isSettingsTab && (
                   <span
                     style={{
                       overflow: "visible",
@@ -728,7 +742,50 @@ export default function TabBar() {
                       const activeCount = termIds.filter((id) => isTerminalActive(id)).length;
                       return (
                         <>
-                          <span>{tab.name}</span>
+                          {showTabPath && !isSystemTab && renamingTabId === tab.id ? (
+                            <input
+                              ref={renameInputRef}
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onBlur={() => {
+                                if (renameValue.trim()) renameTab(tab.id, renameValue.trim());
+                                setRenamingTabId(null);
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  if (renameValue.trim()) renameTab(tab.id, renameValue.trim());
+                                  setRenamingTabId(null);
+                                }
+                                if (e.key === "Escape") setRenamingTabId(null);
+                                e.stopPropagation();
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                fontSize: 12,
+                                fontFamily: "inherit",
+                                backgroundColor: "var(--ezy-bg)",
+                                border: "1px solid var(--ezy-accent)",
+                                borderRadius: 3,
+                                color: "var(--ezy-text)",
+                                outline: "none",
+                                padding: "0 4px",
+                                width: 80,
+                                lineHeight: "18px",
+                              }}
+                            />
+                          ) : (
+                            <span
+                              onDoubleClick={(e) => {
+                                if (isSystemTab || !showTabPath) return;
+                                e.stopPropagation();
+                                setRenameValue(tab.customName ?? tab.name);
+                                setRenamingTabId(tab.id);
+                                setTimeout(() => renameInputRef.current?.select(), 0);
+                              }}
+                            >
+                              {showTabPath && tab.customName ? tab.customName : tab.name}
+                            </span>
+                          )}
                           {cliCount > 1 && (
                             <span
                               style={{
@@ -769,12 +826,30 @@ export default function TabBar() {
                               )}
                             </span>
                           )}
+                          {showTabPath && !isSystemTab && tab.workingDir && (
+                            <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", opacity: 0.5, whiteSpace: "nowrap" }}>
+                              {truncateTabPath(tab.workingDir, 2)}
+                            </span>
+                          )}
                         </>
                       );
                     })()}
                   </span>
                   )}
 
+                  {/* Settings tab: X to close panel (hover reveal) */}
+                  {tab.isSettingsTab && (
+                    <FaXmark
+                      size={10}
+                      color="currentColor"
+                      className="opacity-0 group-hover:opacity-40 hover:!opacity-100"
+                      style={{ cursor: "pointer", transition: "opacity 120ms ease", flexShrink: 0, marginLeft: 6 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        useAppStore.getState().setSettingsPanelOpen(false);
+                      }}
+                    />
+                  )}
                   {/* Right column: close (top) + pin (bottom) — hover reveal */}
                   {!isSystemTab && (
                     <div
@@ -855,7 +930,7 @@ export default function TabBar() {
           if (!ghostTab) return null;
           const gIsActive = ghostTab.id === activeTabId;
           const gIsUserPinned = !!ghostTab.isPinned;
-          const gIsSystemTab = ghostTab.isKanbanTab || ghostTab.isDevServerTab || ghostTab.isServersTab;
+          const gIsSystemTab = ghostTab.isKanbanTab || ghostTab.isDevServerTab || ghostTab.isServersTab || ghostTab.isSettingsTab;
           const gTermIds = findAllTerminalIds(ghostTab.layout);
           const gCliCount = gTermIds.length;
           return (
@@ -888,8 +963,8 @@ export default function TabBar() {
                 overflow: "hidden",
               }}
             >
-              {(ghostTab.isKanbanTab || ghostTab.isServersTab || ghostTab.isDevServerTab || ghostTab.serverId) && renderTabIcon(ghostTab, gIsActive)}
-              {!ghostTab.isServersTab && (
+              {(ghostTab.isKanbanTab || ghostTab.isServersTab || ghostTab.isDevServerTab || ghostTab.isSettingsTab || ghostTab.serverId) && renderTabIcon(ghostTab, gIsActive)}
+              {!ghostTab.isServersTab && !ghostTab.isSettingsTab && (
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 4 }}>
                   <span>{ghostTab.name}</span>
                   {gCliCount > 1 && (
@@ -1129,7 +1204,7 @@ export default function TabBar() {
           )}
 
           {/* Chevron — opens dropdown menu (only when a project is open) */}
-          {tabs.some(t => !t.isKanbanTab && !t.isDevServerTab && !t.isServersTab) && <><div
+          {tabs.some(t => !t.isKanbanTab && !t.isDevServerTab && !t.isServersTab && !t.isSettingsTab) && <><div
             style={{
               display: "flex",
               alignItems: "center",
@@ -1298,7 +1373,7 @@ export default function TabBar() {
         {/* Git Status Bar — only for project tabs with workingDir */}
         {(() => {
           const at = tabs.find((t) => t.id === activeTabId);
-          return at && at.workingDir && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab;
+          return at && at.workingDir && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
         })() && (
           <GitStatusBar workingDir={tabs.find((t) => t.id === activeTabId)!.workingDir!} />
         )}
@@ -1311,7 +1386,7 @@ export default function TabBar() {
           onClick={() => {
             const store = useAppStore.getState();
             const tab = store.tabs.find((t) => t.id === activeTabId);
-            if (!tab || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab) return;
+            if (!tab || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
 
             // Toggle: if kanban already exists, remove it
             const existingId = findKanbanPaneId(tab.layout);
@@ -1347,13 +1422,13 @@ export default function TabBar() {
         {/* Browser Preview — only for project tabs */}
         {(() => {
           const at = tabs.find((t) => t.id === activeTabId);
-          return at && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab;
+          return at && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
         })() && (
           <div
             onClick={() => {
               const store = useAppStore.getState();
               const tab = store.tabs.find((t) => t.id === store.activeTabId);
-              if (!tab || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab) return;
+              if (!tab || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
 
               // If browser pane already exists, remove it (toggle off)
               const existing = findAllBrowserPanes(tab.layout);
@@ -1408,9 +1483,9 @@ export default function TabBar() {
         )}
 
         {/* Mini Games — only for project tabs */}
-        {(() => {
+        {showMiniGamesButton && (() => {
           const at = tabs.find((t) => t.id === activeTabId);
-          return at && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab;
+          return at && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
         })() && (
           <div
             onClick={() => {
@@ -1489,6 +1564,31 @@ export default function TabBar() {
                 zIndex: 9999,
               }}
             >
+              {/* Open Settings full page link */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 10px",
+                  cursor: "pointer",
+                  borderBottom: "1px solid var(--ezy-border)",
+                }}
+                onClick={() => {
+                  setShowSettingsMenu(false);
+                  useAppStore.getState().setSettingsPanelOpen(true);
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="2" width="12" height="12" rx="2" />
+                  <line x1="2" y1="6" x2="14" y2="6" />
+                  <line x1="6" y1="6" x2="6" y2="14" />
+                </svg>
+                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", flex: 1 }}>Open Settings</span>
+                <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>Ctrl+,</span>
+              </div>
               {/* Terminal Backend section */}
               <div
                 style={{
@@ -2506,7 +2606,17 @@ export default function TabBar() {
         <div style={{ display: "flex", alignItems: "stretch" }}>
           {/* Minimize */}
           <div
-            onClick={() => getCurrentWindow().minimize()}
+            onClick={async () => {
+              const win = getCurrentWindow();
+              if (await win.isMaximized()) {
+                // Minimize directly without flashing the restored window,
+                // then set restored state to normal so taskbar restore isn't maximized
+                const { invoke } = await import("@tauri-apps/api/core");
+                invoke("minimize_from_maximized").catch(() => win.minimize());
+              } else {
+                win.minimize();
+              }
+            }}
             style={{
               display: "flex",
               alignItems: "center",

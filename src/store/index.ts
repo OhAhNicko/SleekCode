@@ -11,12 +11,13 @@ import { createHistorySlice, type HistorySlice } from "./historySlice";
 import { createSidebarSlice, type SidebarSlice } from "./sidebarSlice";
 import { createRecentProjectsSlice, type RecentProjectsSlice } from "./recentProjectsSlice";
 import { createGameSlice, type GameSlice } from "./gameSlice";
+import { createSessionSlice, type SessionSlice } from "./sessionSlice";
 import type { Tab } from "../types";
 
-export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice;
+export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice;
 
 function isSystemTab(tab: Tab): boolean {
-  return !!(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab);
+  return !!(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab);
 }
 
 export const useAppStore = create<AppStore>()(
@@ -33,6 +34,7 @@ export const useAppStore = create<AppStore>()(
       ...createSidebarSlice(...a),
       ...createRecentProjectsSlice(...a),
       ...createGameSlice(...a),
+      ...createSessionSlice(...a),
     }),
     {
       name: "ezydev-storage",
@@ -58,7 +60,8 @@ export const useAppStore = create<AppStore>()(
         promptComposerEnabled: state.promptComposerEnabled,
         promptComposerAlwaysVisible: state.promptComposerAlwaysVisible,
         composerExpansion: state.composerExpansion,
-        promptHistory: state.promptHistory,
+        panePromptHistory: state.panePromptHistory,
+        globalPromptHistory: state.globalPromptHistory,
         autoStartServerCommand: state.autoStartServerCommand,
         previewInProjectTab: state.previewInProjectTab,
         customServerCommands: state.customServerCommands,
@@ -67,18 +70,21 @@ export const useAppStore = create<AppStore>()(
         copyOnSelect: state.copyOnSelect,
         confirmQuit: state.confirmQuit,
         codeReviewCollapseAll: state.codeReviewCollapseAll,
+        showTabPath: state.showTabPath,
         openPanesInBackground: state.openPanesInBackground,
         autoMinimizeGameOnAiDone: state.autoMinimizeGameOnAiDone,
         terminalBackend: state.terminalBackend,
         commitMsgMode: state.commitMsgMode,
         shadowAiCli: state.shadowAiCli,
         projectColors: state.projectColors,
+        statuslineToggles: state.statuslineToggles,
         vibrantColors: state.vibrantColors,
         highscores: state.highscores,
         timedHighscores: state.timedHighscores,
         gameStats: state.gameStats,
         completedCrosswordIds: state.completedCrosswordIds,
         customCrosswords: state.customCrosswords,
+        projectSessions: state.projectSessions,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;
@@ -106,7 +112,7 @@ export const useAppStore = create<AppStore>()(
             : filteredTabs[0]?.id ?? current.activeTabId;
         // Dev server tab is no longer a full page — redirect to first non-system tab
         if (activeTabId === "dev-server-tab") {
-          const nonSystem = filteredTabs.find((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
+          const nonSystem = filteredTabs.find((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab);
           activeTabId = nonSystem?.id ?? filteredTabs[0]?.id ?? current.activeTabId;
         }
 
@@ -115,6 +121,12 @@ export const useAppStore = create<AppStore>()(
         let cliYolo = state.cliYolo ?? {};
         if (persAny.claudeYolo === true && !cliYolo.claude) {
           cliYolo = { ...cliYolo, claude: true };
+        }
+
+        // Migrate legacy promptHistory → panePromptHistory + globalPromptHistory
+        if (persAny.promptHistory && Array.isArray(persAny.promptHistory) && !state.globalPromptHistory) {
+          (state as Record<string, unknown>).globalPromptHistory = persAny.promptHistory;
+          (state as Record<string, unknown>).panePromptHistory = {};
         }
 
         // Migrate legacy RemoteServer fields → single host
@@ -147,6 +159,11 @@ export const useAppStore = create<AppStore>()(
           ...state.timedHighscores,
         };
 
+        const projectSessions = {
+          ...current.projectSessions,
+          ...state.projectSessions,
+        };
+
         return {
           ...current,
           ...state,
@@ -156,6 +173,7 @@ export const useAppStore = create<AppStore>()(
           gameStats,
           highscores,
           timedHighscores,
+          projectSessions,
           // When session restore is off, reset all panel/sidebar state to defaults
           ...(!state.restoreLastSession && {
             devServerPanelOpen: false,

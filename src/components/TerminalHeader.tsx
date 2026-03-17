@@ -1,12 +1,32 @@
-import { useState, useEffect } from "react";
-import type { TerminalType } from "../types";
+import { useState, useEffect, useRef, useMemo } from "react";
+import type { TerminalType, ProjectSession } from "../types";
 import type { ContextInfo } from "../lib/context-parser";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
-import { FaChevronDown, FaCheck } from "react-icons/fa";
-import { FaXmark, FaGripVertical } from "react-icons/fa6";
+import { supportsSessionResume } from "../lib/session-resume";
+import { useAppStore } from "../store";
+import { FaChevronDown, FaCheck, FaPen } from "react-icons/fa";
+import { FaXmark, FaGripVertical, FaPlus } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
 
 const TOOL_ORDER: TerminalType[] = ["claude", "codex", "gemini", "shell"];
+
+/** All statusline toggle keys per CLI */
+export const STATUSLINE_FEATURES: Record<string, { label: string; clis: TerminalType[] }> = {
+  filePath:       { label: "File path",            clis: ["claude", "codex", "gemini"] },
+  sessionPicker:  { label: "Session picker",       clis: ["claude", "codex", "gemini"] },
+  model:          { label: "Model name",           clis: ["claude", "codex", "gemini"] },
+  version:        { label: "CLI version",          clis: ["claude"] },
+  speed:          { label: "Speed mode",           clis: ["claude"] },
+  cost:           { label: "Session cost",         clis: ["claude"] },
+  compactCount:   { label: "Compact count",        clis: ["claude"] },
+  effort:         { label: "Effort level",         clis: ["claude", "codex"] },
+  rateLimit:      { label: "Rate limits",          clis: ["codex", "gemini"] },
+  collabMode:     { label: "Collaboration mode",   clis: ["codex"] },
+  summary:        { label: "Session summary",      clis: ["gemini"] },
+  thinkingTokens: { label: "Thinking tokens",      clis: ["gemini"] },
+  quotaReset:     { label: "Quota reset timer",    clis: ["gemini"] },
+  contextBar:     { label: "Context bar",          clis: ["claude", "codex", "gemini"] },
+};
 
 /** Brand colors for each CLI — used for header underline */
 export const CLI_BRAND_COLORS: Record<TerminalType, string> = {
@@ -30,6 +50,10 @@ interface TerminalHeaderProps {
   isYolo?: boolean;
   contextInfo?: ContextInfo | null;
   workingDir?: string;
+  sessionResumeId?: string;
+  /** True when sessionResumeId came from restore/explicit switch; false when detected from disk (may be stale). */
+  sessionTrusted?: boolean;
+  onSwitchSession?: (sessionId: string | undefined) => void;
 }
 
 function TerminalIcon({ type }: { type: TerminalType }) {
@@ -181,6 +205,262 @@ function CliPicker({
   );
 }
 
+/** Session picker dropdown — lists saved sessions for current project + CLI type */
+function SessionPicker({
+  sessions,
+  currentSessionId,
+  contextSessionName,
+  anchorRef,
+  onSelect,
+  onRename,
+  onNew,
+  onClose,
+}: {
+  sessions: ProjectSession[];
+  currentSessionId?: string;
+  /** Live session name from contextInfo — used as fallback for current session display */
+  contextSessionName?: string;
+  anchorRef?: React.RefObject<HTMLDivElement | null>;
+  onSelect: (sessionId: string) => void;
+  onRename: (sessionId: string, newName: string) => void;
+  onNew: () => void;
+  onClose: () => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Position dropdown below the anchor element using fixed positioning
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  useEffect(() => {
+    if (anchorRef?.current) {
+      const rect = anchorRef.current.getBoundingClientRect();
+      setPos({ top: rect.bottom + 2, left: Math.max(8, rect.right - 220) });
+    }
+  }, [anchorRef]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (editingId) {
+          setEditingId(null);
+        } else {
+          onClose();
+        }
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose, editingId]);
+
+  useEffect(() => {
+    if (editingId && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editingId]);
+
+  const submitRename = () => {
+    if (editingId && editValue.trim()) {
+      onRename(editingId, editValue.trim());
+    }
+    setEditingId(null);
+  };
+
+  if (!pos) return null;
+
+  return (
+    <>
+      <div
+        style={{ position: "fixed", inset: 0, zIndex: 199 }}
+        onMouseDown={onClose}
+      />
+      <div
+        className="dropdown-enter"
+        style={{
+          position: "fixed",
+          top: pos.top,
+          left: pos.left,
+          width: 220,
+          backgroundColor: "var(--ezy-surface-raised)",
+          border: "1px solid var(--ezy-border)",
+          borderRadius: 8,
+          overflow: "hidden",
+          boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
+          zIndex: 200,
+          maxHeight: 300,
+        }}
+      >
+        <div style={{ overflowY: "auto", maxHeight: 256 }}>
+          {sessions.length === 0 && (
+            <div
+              style={{
+                padding: "8px 10px",
+                fontSize: 11,
+                color: "var(--ezy-text-muted)",
+                opacity: 0.6,
+              }}
+            >
+              No saved sessions
+            </div>
+          )}
+          {sessions.map((session) => {
+            const isCurrent = session.id === currentSessionId;
+            const isEditing = editingId === session.id;
+            const displayName = session.name || (isCurrent && contextSessionName) || session.id.slice(0, 8);
+            return (
+              <div
+                key={session.id}
+                className="group/session"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "0 4px 0 0",
+                  backgroundColor: isCurrent ? "var(--ezy-accent-glow)" : "transparent",
+                }}
+                onMouseEnter={(e) => {
+                  if (!isCurrent) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
+                }}
+                onMouseLeave={(e) => {
+                  if (!isCurrent) e.currentTarget.style.backgroundColor = "transparent";
+                }}
+              >
+                {isEditing ? (
+                  <input
+                    ref={inputRef}
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onBlur={submitRename}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") submitRename();
+                      if (e.key === "Escape") setEditingId(null);
+                      e.stopPropagation();
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: "5px 10px",
+                      fontSize: 12,
+                      fontFamily: "inherit",
+                      backgroundColor: "var(--ezy-bg)",
+                      border: "1px solid var(--ezy-accent)",
+                      borderRadius: 4,
+                      color: "var(--ezy-text)",
+                      outline: "none",
+                      margin: "2px 0",
+                    }}
+                  />
+                ) : (
+                  <>
+                    <button
+                      className="w-full text-left"
+                      style={{
+                        flex: 1,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: "6px 10px",
+                        backgroundColor: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        fontWeight: isCurrent ? 600 : 400,
+                        color: isCurrent ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
+                        fontFamily: "inherit",
+                        overflow: "hidden",
+                      }}
+                      onClick={() => {
+                        if (!isCurrent) onSelect(session.id);
+                        onClose();
+                      }}
+                    >
+                      {/* Green dot = session has a saved ID (will resume) */}
+                      <span
+                        title="Session saved"
+                        style={{
+                          width: 5,
+                          height: 5,
+                          borderRadius: "50%",
+                          backgroundColor: "var(--ezy-accent)",
+                          flexShrink: 0,
+                          opacity: 0.7,
+                        }}
+                      />
+                      <span
+                        style={{
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          flex: 1,
+                        }}
+                        title={displayName}
+                      >
+                        {displayName}
+                      </span>
+                      {isCurrent && (
+                        <FaCheck size={10} color="var(--ezy-accent)" style={{ flexShrink: 0 }} />
+                      )}
+                    </button>
+                    <div
+                      role="button"
+                      className="opacity-0 group-hover/session:opacity-100 transition-opacity"
+                      style={{
+                        cursor: "pointer",
+                        padding: 4,
+                        borderRadius: 4,
+                        flexShrink: 0,
+                        display: "flex",
+                        alignItems: "center",
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditingId(session.id);
+                        setEditValue(displayName);
+                      }}
+                      title="Rename session"
+                    >
+                      <FaPen size={9} color="var(--ezy-text-muted)" />
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        {/* Divider + New Session */}
+        <div style={{ borderTop: "1px solid var(--ezy-border)" }}>
+          <button
+            className="w-full text-left"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "6px 10px",
+              backgroundColor: "transparent",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 12,
+              color: "var(--ezy-text-secondary)",
+              fontFamily: "inherit",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+            onClick={() => {
+              onNew();
+              onClose();
+            }}
+          >
+            <FaPlus size={10} color="var(--ezy-text-muted)" />
+            <span>New session</span>
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
 /** Format Gemini model ID into human-readable name, e.g. "gemini-2.5-pro-preview-05-06" → "Gemini 2.5 Pro Preview" */
 function formatGeminiModel(raw: string): string {
   const m = raw.match(/^gemini-([0-9.]+)-(\w+)(?:-preview)?/i);
@@ -220,10 +500,54 @@ export default function TerminalHeader({
   isYolo = false,
   contextInfo,
   workingDir,
+  sessionResumeId,
+  sessionTrusted = false,
+  onSwitchSession,
 }: TerminalHeaderProps) {
   const contextPercent = contextInfo?.percent ?? null;
   const config = TERMINAL_CONFIGS[terminalType];
+  const slToggles = useAppStore((s) => s.statuslineToggles[terminalType]);
+  /** Check if a statusline feature is shown (defaults to true) */
+  const sl = (key: string) => slToggles?.[key] ?? true;
   const [showTypePicker, setShowTypePicker] = useState(false);
+  const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [inlineRenaming, setInlineRenaming] = useState(false);
+  const [inlineRenameValue, setInlineRenameValue] = useState("");
+  const inlineInputRef = useRef<HTMLInputElement>(null);
+  const sessionNameRef = useRef<HTMLDivElement>(null);
+  const isResumable = supportsSessionResume(terminalType);
+
+  // Read sessions for this project + type from the store
+  const normalizedDir = workingDir?.replace(/\\/g, "/") ?? "";
+  const allSessions = useAppStore((s) => s.projectSessions[normalizedDir]);
+  const sessions = useMemo(
+    () => (allSessions ?? []).filter((sess) => sess.type === terminalType),
+    [allSessions, terminalType]
+  );
+  const renameSession = useAppStore((s) => s.renameProjectSession);
+
+  // Current session's custom name from registry
+  const currentSession = sessions.find((s) => s.id === sessionResumeId);
+  // For untrusted sessions (detected from disk — may be stale), only show the name
+  // if the user explicitly renamed it. Auto-detected names come from old session files.
+  // For trusted sessions (restored from persist or explicit switch), show everything.
+  const sessionDisplayName = sessionTrusted
+    ? (currentSession?.name || contextInfo?.sessionName || contextInfo?.summary || (sessionResumeId ? sessionResumeId.slice(0, 8) : null))
+    : ((currentSession?.isRenamed ? currentSession.name : null) || (sessionResumeId ? sessionResumeId.slice(0, 8) : null));
+
+  useEffect(() => {
+    if (inlineRenaming && inlineInputRef.current) {
+      inlineInputRef.current.focus();
+      inlineInputRef.current.select();
+    }
+  }, [inlineRenaming]);
+
+  const submitInlineRename = () => {
+    if (sessionResumeId && inlineRenameValue.trim() && workingDir) {
+      renameSession(workingDir, sessionResumeId, inlineRenameValue.trim());
+    }
+    setInlineRenaming(false);
+  };
   return (
     <div
       className="flex items-center select-none group"
@@ -339,7 +663,7 @@ export default function TerminalHeader({
               YOLO
             </span>
           )}
-          {contextInfo?.collabMode && contextInfo.collabMode !== "default" && (
+          {sl("collabMode") && contextInfo?.collabMode && contextInfo.collabMode !== "default" && (
             <span
               style={{
                 fontSize: 9,
@@ -370,7 +694,7 @@ export default function TerminalHeader({
       </div>
 
       {/* File path — max 3 segments from end */}
-      {workingDir && (
+      {sl("filePath") && workingDir && (
         <span
           style={{
             fontSize: 10,
@@ -395,7 +719,7 @@ export default function TerminalHeader({
           className="ml-auto flex items-center gap-2"
           style={{ marginRight: 6, minWidth: 0, overflow: "hidden" }}
         >
-          {contextInfo.model && (
+          {sl("model") && contextInfo.model && (
             <span
               style={{
                 fontSize: 10,
@@ -407,11 +731,11 @@ export default function TerminalHeader({
             >
               {terminalType === "gemini"
                 ? formatGeminiModel(contextInfo.model ?? "")
-                : (contextInfo.model?.replace(/^gpt-/i, "GPT ").replace(/\s*\([\d.]+[KMB]?\s*context\)/i, "") ?? "")}{contextInfo.window ? <span title={`Total context window: ${contextInfo.window.toLocaleString()} tokens`}>{` - ${formatContextWindow(contextInfo.window)}`}</span> : ""}{contextInfo.effort ? ` - ${contextInfo.effort}` : ""}
+                : (contextInfo.model?.replace(/^gpt-/i, "GPT ").replace(/\s*\([\d.]+[KMB]?\s*context\)/i, "") ?? "")}{contextInfo.window ? <span title={`Total context window: ${contextInfo.window.toLocaleString()} tokens`}>{` - ${formatContextWindow(contextInfo.window)}`}</span> : ""}{sl("effort") && contextInfo.effort ? ` - ${contextInfo.effort}` : ""}
             </span>
           )}
           {/* Claude: version */}
-          {contextInfo.cliVersion && (
+          {sl("version") && contextInfo.cliVersion && (
             <span
               style={{
                 fontSize: 9,
@@ -425,7 +749,7 @@ export default function TerminalHeader({
             </span>
           )}
           {/* Claude: speed mode */}
-          {contextInfo.speed && (
+          {sl("speed") && contextInfo.speed && (
             <span
               style={{
                 fontSize: 9,
@@ -439,7 +763,7 @@ export default function TerminalHeader({
             </span>
           )}
           {/* Claude: per-pane session cost + cost/hr (project total in tooltip) */}
-          {contextInfo.costUsd != null && (
+          {sl("cost") && contextInfo.costUsd != null && (
             <span
               title={(() => {
                 const parts: string[] = [`$${contextInfo.costUsd.toFixed(2)} this session`];
@@ -467,7 +791,7 @@ export default function TerminalHeader({
             </span>
           )}
           {/* Claude: compact count */}
-          {contextInfo.compactCount != null && contextInfo.compactCount > 0 && (
+          {sl("compactCount") && contextInfo.compactCount != null && contextInfo.compactCount > 0 && (
             <span
               title={`Context compacted ${contextInfo.compactCount} time${contextInfo.compactCount !== 1 ? "s" : ""}`}
               style={{
@@ -482,8 +806,90 @@ export default function TerminalHeader({
               C:{contextInfo.compactCount}
             </span>
           )}
-          {/* Session name (Claude slug / Codex title) — flexible width, truncates */}
-          {contextInfo.sessionName && (
+          {/* Session picker — always visible for resumable CLIs, shows name when available */}
+          {isResumable && (
+            <div ref={sessionNameRef} style={{ minWidth: 0, flexShrink: 1 }}>
+              {inlineRenaming ? (
+                <input
+                  ref={inlineInputRef}
+                  value={inlineRenameValue}
+                  onChange={(e) => setInlineRenameValue(e.target.value)}
+                  onBlur={submitInlineRename}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") submitInlineRename();
+                    if (e.key === "Escape") setInlineRenaming(false);
+                    e.stopPropagation();
+                  }}
+                  style={{
+                    fontSize: 9,
+                    lineHeight: 1.2,
+                    fontFamily: "inherit",
+                    backgroundColor: "var(--ezy-bg)",
+                    border: "1px solid var(--ezy-accent)",
+                    borderRadius: 3,
+                    color: "var(--ezy-text)",
+                    outline: "none",
+                    padding: "1px 4px",
+                    width: 120,
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 3,
+                    cursor: "pointer",
+                    borderRadius: 3,
+                    padding: "1px 4px",
+                    margin: "-1px -4px",
+                  }}
+                  onClick={() => setShowSessionPicker((v) => !v)}
+                  onDoubleClick={() => {
+                    if (sessionResumeId) {
+                      setInlineRenameValue(currentSession?.name || contextInfo?.sessionName || "");
+                      setInlineRenaming(true);
+                    }
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
+                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                  title={sessionDisplayName ? `${sessionDisplayName} — click to switch sessions, double-click to rename` : "Click to switch sessions"}
+                >
+                  <span
+                    style={{
+                      fontSize: 9,
+                      color: "var(--ezy-text-muted)",
+                      lineHeight: 1.2,
+                      whiteSpace: "nowrap",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      minWidth: 0,
+                      opacity: 0.6,
+                    }}
+                  >
+                    {sessionDisplayName || "New"}
+                  </span>
+                  {/* Green dot = sessionId detected (session will persist on restart) */}
+                  {sessionResumeId && (
+                    <span
+                      title="Session saved — will resume on restart"
+                      style={{
+                        width: 5,
+                        height: 5,
+                        borderRadius: "50%",
+                        backgroundColor: "var(--ezy-accent)",
+                        flexShrink: 0,
+                        opacity: 0.7,
+                      }}
+                    />
+                  )}
+                  <FaChevronDown size={6} color="var(--ezy-text-muted)" style={{ opacity: 0.4, flexShrink: 0 }} />
+                </div>
+              )}
+            </div>
+          )}
+          {/* Fallback: show session name for non-resumable or when no sessions yet */}
+          {sl("sessionPicker") && !isResumable && contextInfo.sessionName && (
             <span
               title={contextInfo.sessionName}
               style={{
@@ -501,8 +907,8 @@ export default function TerminalHeader({
               {contextInfo.sessionName}
             </span>
           )}
-          {/* Gemini: summary — flexible width, truncates only when pane is narrow */}
-          {contextInfo.summary && (
+          {/* Gemini: summary — hidden for resumable CLIs where it's already the session name */}
+          {sl("summary") && contextInfo.summary && !isResumable && (
             <span
               title={contextInfo.summary}
               style={{
@@ -521,7 +927,7 @@ export default function TerminalHeader({
             </span>
           )}
           {/* Gemini: thinking tokens */}
-          {contextInfo.thinkingTokens != null && (
+          {sl("thinkingTokens") && contextInfo.thinkingTokens != null && (
             <span
               title={`Last response used ${contextInfo.thinkingTokens.toLocaleString()} thinking tokens`}
               style={{
@@ -537,7 +943,7 @@ export default function TerminalHeader({
             </span>
           )}
           {/* Gemini: quota reset time */}
-          {contextInfo.quotaResetTime && (() => {
+          {sl("quotaReset") && contextInfo.quotaResetTime && (() => {
             const reset = new Date(contextInfo.quotaResetTime);
             const now = new Date();
             const diffMs = reset.getTime() - now.getTime();
@@ -562,7 +968,7 @@ export default function TerminalHeader({
             );
           })()}
           {/* Rate limits — left of context bar (show remaining, not used) */}
-          {contextInfo.rateLimitFiveHour != null && (() => {
+          {sl("rateLimit") && contextInfo.rateLimitFiveHour != null && (() => {
             const left = Math.round((100 - contextInfo.rateLimitFiveHour) * 100) / 100;
             const isGemini = terminalType === "gemini";
             const label = isGemini ? "RPD" : "5h";
@@ -585,7 +991,7 @@ export default function TerminalHeader({
               </span>
             );
           })()}
-          {contextInfo.rateLimitWeekly != null && terminalType !== "gemini" && (() => {
+          {sl("rateLimit") && contextInfo.rateLimitWeekly != null && terminalType !== "gemini" && (() => {
             const left = Math.round((100 - contextInfo.rateLimitWeekly) * 100) / 100;
             return (
               <span
@@ -604,7 +1010,7 @@ export default function TerminalHeader({
             );
           })()}
           {/* Context bar + percentage — tooltip only on this section */}
-          <div
+          {sl("contextBar") && <div
             className="flex items-center gap-2"
             title={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%`}
             style={{ flexShrink: 0 }}
@@ -651,7 +1057,7 @@ export default function TerminalHeader({
             >
               {contextPercent.toFixed(2)}%
             </span>
-          </div>
+          </div>}
 
         </div>
       )}
@@ -683,6 +1089,22 @@ export default function TerminalHeader({
           />
         </button>
       </div>
+
+      {/* Session picker — rendered outside overflow-hidden context info area */}
+      {showSessionPicker && isResumable && (
+        <SessionPicker
+          sessions={sessions}
+          currentSessionId={sessionResumeId}
+          contextSessionName={contextInfo?.sessionName ?? contextInfo?.summary ?? undefined}
+          anchorRef={sessionNameRef}
+          onSelect={(id) => onSwitchSession?.(id)}
+          onRename={(id, name) => {
+            if (workingDir) renameSession(workingDir, id, name);
+          }}
+          onNew={() => onSwitchSession?.(undefined)}
+          onClose={() => setShowSessionPicker(false)}
+        />
+      )}
     </div>
   );
 }

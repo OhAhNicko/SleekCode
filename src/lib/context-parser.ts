@@ -166,6 +166,7 @@ export async function readSessionContext(
       const th = parts[5] ? parseInt(parts[5], 10) : null;
       thinkingTokens = th !== null && !isNaN(th) && th > 0 ? th : null;
       quotaResetTime = parts[6] || null;
+      sessionName = summary;
     }
 
     return {

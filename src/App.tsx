@@ -22,26 +22,31 @@ import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
 import { useFileDrop } from "./hooks/useFileDrop";
 import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
 import UndoCloseToast from "./components/UndoCloseToast";
+import UndoClearToast from "./components/UndoClearToast";
 import KeyboardShortcutsModal from "./components/KeyboardShortcutsModal";
+import PromptHistorySearch from "./components/PromptHistorySearch";
 import DevServerTerminalHost from "./components/DevServerTerminalHost";
+import SettingsPane from "./components/SettingsPane";
 
 export default function App() {
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
   const themeId = useAppStore((s) => s.themeId);
   const [showPalette, setShowPalette] = useState(false);
+  const settingsOpen = useAppStore((s) => s.settingsPanelOpen);
   const launchConfigs = useAppStore((s) => s.launchConfigs);
   const loadLaunchConfig = useAppStore((s) => s.loadLaunchConfig);
   const snippets = useAppStore((s) => s.snippets);
   const [showHistory, setShowHistory] = useState(false);
   const [showSnippets, setShowSnippets] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showPromptSearch, setShowPromptSearch] = useState(false);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const recentProjects = useAppStore((s) => s.recentProjects);
 
-  const projectTabs = useMemo(() => tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab), [tabs]);
+  const projectTabs = useMemo(() => tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab), [tabs]);
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? projectTabs[0] ?? tabs[0];
   const theme = getTheme(themeId);
 
@@ -49,10 +54,11 @@ export default function App() {
   const isSystemTab = activeTabId === "dev-server-tab" || activeTabId === "kanban-tab" || activeTabId === "servers-tab";
   const hasActiveProjectTab = !isSystemTab && !!activeTabId && projectTabs.some((t) => t.id === activeTabId);
 
-  // On startup: if activeTabId is a system tab, redirect to first project tab.
+  // On startup: if activeTabId is a system tab (except settings), redirect to first project tab.
   // If no project tabs exist, force activeTabId to "" so the startup screen shows.
+  const isRedirectableSystemTab = activeTabId === "dev-server-tab" || activeTabId === "kanban-tab" || activeTabId === "servers-tab";
   useEffect(() => {
-    if (isSystemTab || !activeTabId) {
+    if (isRedirectableSystemTab || !activeTabId) {
       const fallback = projectTabs[0];
       if (fallback) {
         useAppStore.getState().setActiveTab(fallback.id);
@@ -62,7 +68,20 @@ export default function App() {
       }
       if (activeTabId === "dev-server-tab" && !devServerPanelOpen) useAppStore.getState().toggleDevServerPanel();
     }
-  }, [activeTabId, projectTabs, isSystemTab, devServerPanelOpen]);
+  }, [activeTabId, projectTabs, isRedirectableSystemTab, devServerPanelOpen]);
+
+  // Settings panel and sidebars are mutually exclusive
+  useEffect(() => {
+    if (settingsOpen && (sidebarOpen || devServerPanelOpen)) {
+      if (sidebarOpen) useAppStore.getState().toggleSidebar();
+      if (devServerPanelOpen) useAppStore.getState().toggleDevServerPanel();
+    }
+  }, [settingsOpen]);
+  useEffect(() => {
+    if ((sidebarOpen || devServerPanelOpen) && settingsOpen) {
+      useAppStore.getState().setSettingsPanelOpen(false);
+    }
+  }, [sidebarOpen, devServerPanelOpen]);
 
   // Build extra palette actions from launch configs, snippets, and history
   const paletteExtraActions = useMemo<PaletteAction[]>(() => {
@@ -162,7 +181,7 @@ export default function App() {
     }
 
     const projectTabs = state.tabs.filter(
-      (t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && t.workingDir
+      (t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab && t.workingDir
     );
 
     const seenDirs = new Set<string>();
@@ -255,6 +274,7 @@ export default function App() {
     return () => window.removeEventListener("ezydev:open-shortcuts", handler);
   }, []);
 
+
   // Global keyboard shortcuts (capture phase — fires before xterm/composer handlers)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -270,7 +290,7 @@ export default function App() {
         if (code >= "Digit1" && code <= "Digit9") {
           consume();
           const store = useAppStore.getState();
-          const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
+          const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab);
           const idx = parseInt(code.slice(5)) - 1; // "Digit1" → 0
           if (idx < cycleable.length) {
             store.setActiveTab(cycleable[idx].id);
@@ -300,9 +320,14 @@ export default function App() {
             setShowShortcuts((v) => !v);
             return;
           case ",":
-            // Ctrl+, → Toggle Settings
+            // Ctrl+, → Toggle Settings panel
             consume();
-            window.dispatchEvent(new Event("ezydev:toggle-settings"));
+            useAppStore.getState().toggleSettingsPanel();
+            return;
+          case "r":
+            // Ctrl+R → Search prompt history
+            consume();
+            setShowPromptSearch((v) => !v);
             return;
           case "1":
             // Ctrl+1 → new Claude pane (vertical / grid)
@@ -350,7 +375,7 @@ export default function App() {
             consume();
             {
               const store = useAppStore.getState();
-              const cycleable = store.tabs.filter((t) => !t.isDevServerTab);
+              const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isSettingsTab);
               const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
               const nextIndex = (currentIndex + 1) % cycleable.length;
               store.setActiveTab(cycleable[nextIndex].id);
@@ -374,8 +399,8 @@ export default function App() {
             consume();
             window.dispatchEvent(new Event("ezydev:new-tab"));
             return;
-          case "G":
-            // Ctrl+Shift+G → Open Code Review
+          case "F":
+            // Ctrl+Shift+F → Open Code Review
             consume();
             window.dispatchEvent(new Event("ezydev:open-codereview"));
             return;
@@ -448,15 +473,15 @@ export default function App() {
             window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "gemini", direction: "vertical" } }));
             return;
           case "G":
-            // Ctrl+Shift+G → Toggle Mini Games pane
+            // Ctrl+Shift+G → Toggle Mini Games button visibility
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:open-game"));
+            store.toggleMiniGamesButton();
             return;
           case "Tab":
             // Ctrl+Shift+Tab → previous tab
             consume();
             {
-              const cycleable = store.tabs.filter((t) => !t.isDevServerTab);
+              const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isSettingsTab);
               const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
               const prevIndex = (currentIndex - 1 + cycleable.length) % cycleable.length;
               store.setActiveTab(cycleable[prevIndex].id);
@@ -490,6 +515,7 @@ export default function App() {
           />
         )}
         {devServerPanelOpen && <DevServerTab />}
+        {settingsOpen && <SettingsPane />}
         <div className="flex-1 min-w-0 relative">
           {/* System tabs: rendered standalone, only when explicitly active */}
           {activeTabId === "kanban-tab" && (
@@ -569,7 +595,7 @@ export default function App() {
           )}
           {/* Project tabs */}
           {tabs.map((tab) => {
-            if (tab.isDevServerTab || tab.isKanbanTab || tab.isServersTab) return null;
+            if (tab.isDevServerTab || tab.isKanbanTab || tab.isServersTab || tab.isSettingsTab) return null;
             const isActive = tab.id === activeTabId;
             return (
               <div
@@ -594,8 +620,17 @@ export default function App() {
       {showSnippets && <SnippetPanel onClose={() => setShowSnippets(false)} />}
       {showHistory && <CommandHistory onClose={() => setShowHistory(false)} />}
       {showShortcuts && <KeyboardShortcutsModal onClose={() => setShowShortcuts(false)} />}
+      {showPromptSearch && (
+        <PromptHistorySearch
+          onClose={() => setShowPromptSearch(false)}
+          onSelect={(text) => {
+            window.dispatchEvent(new CustomEvent("ezydev:insert-prompt", { detail: text }));
+          }}
+        />
+      )}
       <ImageInsertUndoToast />
       <UndoCloseToast />
+      <UndoClearToast />
       <DevServerTerminalHost />
     </div>
   );

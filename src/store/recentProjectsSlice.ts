@@ -85,7 +85,8 @@ export interface RecentProjectsSlice {
   promptComposerEnabled: boolean;
   promptComposerAlwaysVisible: boolean;
   composerExpansion: ComposerExpansion;
-  promptHistory: string[];
+  panePromptHistory: Record<string, string[]>;
+  globalPromptHistory: string[];
   autoStartServerCommand: boolean;
   previewInProjectTab: boolean;
   customServerCommands: string[];
@@ -95,12 +96,20 @@ export interface RecentProjectsSlice {
   confirmQuit: boolean;
   slashCommandGhostText: boolean;
   codeReviewCollapseAll: boolean;
+  showTabPath: boolean;
+  setShowTabPath: (value: boolean) => void;
   openPanesInBackground: boolean;
   autoMinimizeGameOnAiDone: boolean;
+  showMiniGamesButton: boolean;
+  settingsPanelOpen: boolean;
+  toggleSettingsPanel: () => void;
+  setSettingsPanelOpen: (value: boolean) => void;
   terminalBackend: TerminalBackend;
   commitMsgMode: CommitMsgMode;
   shadowAiCli: ShadowAiCli;
   projectColors: Record<string, ProjectColorId>;
+  statuslineToggles: Partial<Record<TerminalType, Record<string, boolean>>>;
+  setStatuslineToggle: (cliType: TerminalType, key: string, value: boolean) => void;
   setProjectColor: (workingDir: string, colorId: ProjectColorId) => void;
   addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string }) => void;
   removeRecentProject: (path: string) => void;
@@ -113,7 +122,7 @@ export interface RecentProjectsSlice {
   setPromptComposerEnabled: (value: boolean) => void;
   setPromptComposerAlwaysVisible: (value: boolean) => void;
   setComposerExpansion: (value: ComposerExpansion) => void;
-  addPromptHistory: (text: string) => void;
+  addPromptHistory: (terminalId: string, text: string) => void;
   setAutoStartServerCommand: (value: boolean) => void;
   setPreviewInProjectTab: (value: boolean) => void;
   addCustomServerCommand: (command: string) => void;
@@ -127,6 +136,7 @@ export interface RecentProjectsSlice {
   setCodeReviewCollapseAll: (value: boolean) => void;
   setOpenPanesInBackground: (value: boolean) => void;
   setAutoMinimizeGameOnAiDone: (value: boolean) => void;
+  toggleMiniGamesButton: () => void;
   setTerminalBackend: (value: TerminalBackend) => void;
   setCommitMsgMode: (value: CommitMsgMode) => void;
   setShadowAiCli: (value: ShadowAiCli) => void;
@@ -150,7 +160,8 @@ export const createRecentProjectsSlice: StateCreator<
   promptComposerEnabled: false,
   promptComposerAlwaysVisible: false,
   composerExpansion: "up" as ComposerExpansion,
-  promptHistory: [],
+  panePromptHistory: {},
+  globalPromptHistory: [],
   autoStartServerCommand: true,
   previewInProjectTab: true,
   customServerCommands: [],
@@ -160,12 +171,28 @@ export const createRecentProjectsSlice: StateCreator<
   confirmQuit: true,
   slashCommandGhostText: false,
   codeReviewCollapseAll: false,
+  showTabPath: false,
+  setShowTabPath: (value) => set({ showTabPath: value }),
   openPanesInBackground: false,
   autoMinimizeGameOnAiDone: false,
+  showMiniGamesButton: false,
+  settingsPanelOpen: false,
+  toggleSettingsPanel: () => set((s) => ({ settingsPanelOpen: !s.settingsPanelOpen })),
+  setSettingsPanelOpen: (value) => set({ settingsPanelOpen: value }),
   terminalBackend: getDefaultBackend(),
   commitMsgMode: "simple",
   shadowAiCli: "claude",
   projectColors: {},
+  statuslineToggles: {},
+
+  setStatuslineToggle: (cliType, key, value) => {
+    set((state) => ({
+      statuslineToggles: {
+        ...state.statuslineToggles,
+        [cliType]: { ...state.statuslineToggles[cliType], [key]: value },
+      },
+    }));
+  },
 
   setProjectColor: (workingDir, colorId) => {
     const key = normalizePath(workingDir);
@@ -258,13 +285,28 @@ export const createRecentProjectsSlice: StateCreator<
     set({ composerExpansion: value });
   },
 
-  addPromptHistory: (text) => {
+  addPromptHistory: (terminalId, text) => {
     set((state) => {
-      // Avoid consecutive duplicates
-      if (state.promptHistory[0] === text) return state;
-      const updated = [text, ...state.promptHistory];
-      if (updated.length > 50) updated.length = 50;
-      return { promptHistory: updated };
+      const paneHist = state.panePromptHistory[terminalId] ?? [];
+      const globalHist = state.globalPromptHistory;
+
+      // Avoid consecutive duplicates on both
+      const paneChanged = paneHist[0] !== text;
+      const globalChanged = globalHist[0] !== text;
+      if (!paneChanged && !globalChanged) return state;
+
+      const result: Partial<typeof state> = {};
+      if (paneChanged) {
+        const updatedPane = [text, ...paneHist];
+        if (updatedPane.length > 50) updatedPane.length = 50;
+        result.panePromptHistory = { ...state.panePromptHistory, [terminalId]: updatedPane };
+      }
+      if (globalChanged) {
+        const updatedGlobal = [text, ...globalHist];
+        if (updatedGlobal.length > 100) updatedGlobal.length = 100;
+        result.globalPromptHistory = updatedGlobal;
+      }
+      return result;
     });
   },
 
@@ -306,6 +348,10 @@ export const createRecentProjectsSlice: StateCreator<
 
   setAutoMinimizeGameOnAiDone: (value) => {
     set({ autoMinimizeGameOnAiDone: value });
+  },
+
+  toggleMiniGamesButton: () => {
+    set((state) => ({ showMiniGamesButton: !state.showMiniGamesButton }));
   },
 
   setTerminalBackend: (value) => {

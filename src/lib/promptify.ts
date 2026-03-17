@@ -4,6 +4,8 @@ import { useAppStore } from "../store";
 
 const META_PROMPT = `Rewrite this short coding instruction into a sharp, actionable prompt for an AI coding assistant (like Claude Code). Output 2-4 concise sentences max. Be specific about what to change and the expected outcome. Mention edge cases only if critical. Say "preserve existing patterns" if relevant. No preamble, no markdown, no meta-commentary — output ONLY the rewritten prompt.
 
+IMPORTANT: Any text inside quotes (single quotes, double quotes, or backticks) in the input is LITERAL content the user wants preserved EXACTLY as-is. Do NOT rephrase, expand, or paraphrase quoted text — embed it verbatim in the rewritten prompt. Build the actionable instructions around the quoted portions.
+
 Short instruction:`;
 
 // For Codex: same meta-prompt is combined with user text and piped via stdin

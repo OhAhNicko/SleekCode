@@ -448,6 +448,12 @@ export default function Workspace({ tab }: WorkspaceProps) {
                 updateTabLayout(tab.id, setSessionResumeIdInLayout(currentTab.layout, termId, id));
               }
             }}
+            onSwitchSession={(newSessionId) => {
+              const currentTab = useAppStore.getState().tabs.find(t => t.id === tab.id);
+              if (currentTab) {
+                updateTabLayout(tab.id, setSessionResumeIdInLayout(currentTab.layout, termId, newSessionId));
+              }
+            }}
           />,
           slotEl,
           termId

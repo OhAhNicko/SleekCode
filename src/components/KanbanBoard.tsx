@@ -97,17 +97,21 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
       <div
         className="flex items-center justify-between select-none"
         style={{
-          padding: "12px 16px",
+          height: 36,
+          minHeight: 36,
+          padding: "0 8px",
           borderBottom: "1px solid var(--ezy-border)",
+          backgroundColor: "var(--ezy-surface)",
           flexShrink: 0,
         }}
       >
         <span
           style={{
-            fontSize: 14,
+            fontSize: 11,
             fontWeight: 600,
-            color: "var(--ezy-text)",
-            letterSpacing: "0.02em",
+            color: "var(--ezy-text-muted)",
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
           }}
         >
           Task Board

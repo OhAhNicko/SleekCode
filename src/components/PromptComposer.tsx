@@ -10,7 +10,8 @@ import { toWslPath } from "../lib/terminal-config";
 import { SLASH_COMMANDS, SLASH_ARG_HINTS, loadUserSkills, type SlashCommand } from "../lib/slash-commands";
 import type { TerminalType } from "../types";
 import { HiMiniArrowLongRight, HiMiniArrowLongLeft } from "react-icons/hi2";
-import { FaWandMagicSparkles } from "react-icons/fa6";
+import { FaWandMagicSparkles, FaCopy, FaDeleteLeft } from "react-icons/fa6";
+import { useUndoClearStore } from "../store/undoClearStore";
 import { BiSolidSend } from "react-icons/bi";
 import { AiFillCode } from "react-icons/ai";
 import { FaAngleRight, FaExpand } from "react-icons/fa";
@@ -38,6 +39,9 @@ const PLACEHOLDER_SUGGESTIONS = [
   "Move this into a shared utility",
   "Add caching to reduce API calls",
 ];
+
+/** Stable empty array to avoid selector re-renders when pane has no history. */
+const EMPTY_HISTORY: string[] = [];
 
 function randomPlaceholder(): string {
   return PLACEHOLDER_SUGGESTIONS[Math.floor(Math.random() * PLACEHOLDER_SUGGESTIONS.length)];
@@ -127,7 +131,8 @@ export default function PromptComposer({
   didStealRef,
   suppressAutoFocus = false,
 }: PromptComposerProps) {
-  const promptHistory = useAppStore((s) => s.promptHistory);
+  const panePromptHistory = useAppStore((s) => s.panePromptHistory);
+  const promptHistory = panePromptHistory[terminalId] ?? EMPTY_HISTORY;
   const addPromptHistory = useAppStore((s) => s.addPromptHistory);
   const composerExpansion = useAppStore((s) => s.composerExpansion);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -157,6 +162,7 @@ export default function PromptComposer({
   const [userSkills, setUserSkills] = useState<SlashCommand[]>([]);
   const slashGhostEnabled = useAppStore((s) => s.slashCommandGhostText);
   const promptLineIdxRef = useRef(-1); // last known prompt line for re-scanning
+  const submittedLineIdxRef = useRef(-1); // line to skip after submit (old echoed >)
   const valueRef = useRef(value);
   valueRef.current = value;
   const imgCycleRef = useRef<{ num: number } | null>(null); // tracks current [Img N] for Tab cycling
@@ -184,6 +190,38 @@ export default function PromptComposer({
     };
     el.addEventListener("ezydev:file-drop", handler);
     return () => el.removeEventListener("ezydev:file-drop", handler);
+  }, []);
+
+  // Listen for global prompt insert (from Ctrl+R search modal)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if (!isActiveRef.current) return;
+      const text = (e as CustomEvent<string>).detail;
+      if (text) {
+        setValue(text);
+        setHistoryIdx(-1);
+        draftRef.current = "";
+        setTimeout(() => textareaRef.current?.focus(), 30);
+      }
+    };
+    window.addEventListener("ezydev:insert-prompt", handler);
+    return () => window.removeEventListener("ezydev:insert-prompt", handler);
+  }, []);
+
+  // Listen for undo-clear-composer events (from UndoClearToast Ctrl+Z / Undo button)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if (!isActiveRef.current) return;
+      const text = (e as CustomEvent<string>).detail;
+      if (text) {
+        setValue(text);
+        setHistoryIdx(-1);
+        draftRef.current = "";
+        setTimeout(() => textareaRef.current?.focus(), 30);
+      }
+    };
+    window.addEventListener("ezydev:undo-clear-composer", handler);
+    return () => window.removeEventListener("ezydev:undo-clear-composer", handler);
   }, []);
 
   // Detect dim/ghost cell: SGR dim, palette grays, or RGB grays.
@@ -241,7 +279,15 @@ export default function PromptComposer({
     const screen = container.querySelector(".xterm-screen") as HTMLElement | null;
     if (!screen) return null;
 
-    const cellHeight = screen.clientHeight / terminal.rows;
+    // Get accurate cell height. The xterm canvas is sized to exactly
+    // rows * cellHeight (no unused space), unlike screen.clientHeight which
+    // may include unused pixels at the bottom that cause drift.
+    const canvas = screen.querySelector("canvas") as HTMLCanvasElement | null;
+    const core = (terminal as any)._core;
+    const rendererCellH: number | undefined = core?._renderService?.dimensions?.css?.cell?.height;
+    const canvasH = canvas?.style.height ? parseFloat(canvas.style.height) : 0;
+    const cellHeight = rendererCellH
+      ?? (canvasH > 0 ? canvasH / terminal.rows : screen.clientHeight / terminal.rows);
     const buf = terminal.buffer.active;
     const parentEl = container.parentElement;
     const screenTopPx = parentEl
@@ -379,6 +425,13 @@ export default function PromptComposer({
         foundPromptRef.current = true;
         setTopOffset(result.offset);
         setCellHeight(result.cellHeight);
+        promptLineIdxRef.current = result.promptLineIdx;
+        // Show the composer (background pane onRender may have hidden it
+        // before the poll found the prompt)
+        if (hiddenRef.current) {
+          hiddenRef.current = false;
+          setHidden(false);
+        }
         if (result.existing && !didStealText.current) {
           didStealText.current = true;
           setValue(result.existing);
@@ -404,7 +457,7 @@ export default function PromptComposer({
     }, 200);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [terminal]);
 
   // Continuously reposition when terminal renders (prompt may move after commands).
   // When position changes (new prompt appeared), auto-focus the textarea.
@@ -413,77 +466,114 @@ export default function PromptComposer({
     if (!terminal) return;
     const disposable = terminal.onRender(() => {
       const buf = terminal.buffer.active;
-      const isAtBottom = buf.viewportY + terminal.rows >= buf.length;
+      const vpStart = buf.viewportY;
+      const vpEnd = vpStart + terminal.rows - 1;
+      const isAtBottom = vpStart + terminal.rows >= buf.length;
+
+      // Known prompt line — check if it's within the visible viewport
+      const promptIdx = promptLineIdxRef.current;
+      const isPromptVisible = promptIdx >= 0 && promptIdx >= vpStart && promptIdx <= vpEnd;
+
+      // Helper: compute pixel offset for a known buffer line index
+      // without re-scanning (avoids matching old > chars when scrolled)
+      function offsetForLine(lineIdx: number): number | null {
+        const container = containerRef.current;
+        if (!container) return null;
+        const scr = container.querySelector(".xterm-screen") as HTMLElement | null;
+        if (!scr) return null;
+        const parentEl = container.parentElement;
+        const sTop = parentEl
+          ? scr.getBoundingClientRect().top - parentEl.getBoundingClientRect().top
+          : 0;
+        const canvas = scr.querySelector("canvas") as HTMLCanvasElement | null;
+        const core = (terminal as any)._core;
+        const rCellH: number | undefined = core?._renderService?.dimensions?.css?.cell?.height;
+        const cH = canvas?.style.height ? parseFloat(canvas.style.height) : 0;
+        const rows = terminal!.rows;
+        const ch = rCellH ?? (cH > 0 ? cH / rows : scr.clientHeight / rows);
+        const row = lineIdx - vpStart;
+        return Math.round(sTop + row * ch);
+      }
 
       // ── Background panes: lightweight tracking only ──
-      // Skip scanning, focus, and scroll — prevents cascading layout effects.
-      // Position updates happen on the first render after the pane becomes active.
       if (!isActiveRef.current) {
-        if (!isAtBottom && !hiddenRef.current) {
+        if (!isPromptVisible && !hiddenRef.current) {
           hiddenRef.current = true;
           setHidden(true);
-        } else if (isAtBottom && hiddenRef.current) {
+        } else if (isPromptVisible && hiddenRef.current) {
           hiddenRef.current = false;
           setHidden(false);
         }
-        notAtBottomSinceRef.current = isAtBottom ? 0 : (notAtBottomSinceRef.current || Date.now());
+        notAtBottomSinceRef.current = isPromptVisible ? 0 : (notAtBottomSinceRef.current || Date.now());
         return;
       }
 
-      // ── Active pane: full processing with hysteresis ──
-      // During rapid AI output, viewportY briefly lags behind buffer growth,
-      // making isAtBottom flicker. Without hysteresis, each flicker triggers
-      // hide (blur) → show (focus + scrollToBottom) cycles that can displace
-      // the viewport. Wait 200ms before hiding to filter out transient lag.
-      if (!isAtBottom) {
-        if (notAtBottomSinceRef.current === 0) notAtBottomSinceRef.current = Date.now();
-        // Grace period: don't hide during brief viewport lag (< 200ms)
-        if (!hiddenRef.current && Date.now() - notAtBottomSinceRef.current < 200) return;
-        if (!hiddenRef.current) {
+      // ── Active pane ──
+
+      // Case 1: At the bottom — do a full scan to find/update the prompt
+      if (isAtBottom) {
+        notAtBottomSinceRef.current = 0;
+
+        const result = scanPromptPosition();
+        if (!result) return;
+
+        // Skip the old echoed prompt line after a submit — wait for the NEW prompt
+        if (submittedLineIdxRef.current >= 0 && result.promptLineIdx === submittedLineIdxRef.current) return;
+        // Found a new prompt — clear the skip marker
+        submittedLineIdxRef.current = -1;
+
+        // For always-visible CLI composers, hide during interactive mode
+        if (alwaysVisible && (result.promptPass !== 1 || isInteractiveMode(result.promptLineIdx))) {
           setHidden(true);
           hiddenRef.current = true;
           textareaRef.current?.blur();
+          terminal.focus();
+          return;
         }
-        return;
-      }
-      notAtBottomSinceRef.current = 0;
 
-      const result = scanPromptPosition();
-      if (!result) return;
-
-      // For always-visible CLI composers, hide when not at the input prompt
-      // (e.g. during interactive questions, plan acceptance, tool permissions)
-      if (alwaysVisible && (result.promptPass !== 1 || isInteractiveMode(result.promptLineIdx))) {
-        setHidden(true);
-        hiddenRef.current = true;
-        textareaRef.current?.blur();
-        // Focus the terminal so keyboard input goes to the interactive dialogue
-        // (e.g. Gemini permission prompts, plan acceptance, tool approvals)
-        terminal.focus();
-        return;
-      }
-
-      // Transitioning from hidden → visible (AI finished, prompt reappeared)
-      if (hiddenRef.current) {
-        terminal.scrollToBottom();
-        setTimeout(() => textareaRef.current?.focus(), 30);
-        showTimeRef.current = Date.now();
-      }
-      setHidden(false);
-      hiddenRef.current = false;
-      setTopOffset(result.offset);
-      setCellHeight(result.cellHeight);
-      // Scan for CLI autocomplete suggestion only when textarea is empty
-      promptLineIdxRef.current = result.promptLineIdx;
-      if (!valueRef.current) {
-        setCliSuggestion(scanCliSuggestion(result.promptLineIdx));
-      }
-      // Position changed → new prompt appeared (e.g. after Claude finished or ESC cancel)
-      if (result.offset !== lastOffsetRef.current) {
-        lastOffsetRef.current = result.offset;
-        if (alwaysVisible) {
+        // Transitioning from hidden → visible (AI finished, prompt reappeared)
+        if (hiddenRef.current) {
+          terminal.scrollToBottom();
           setTimeout(() => textareaRef.current?.focus(), 30);
+          showTimeRef.current = Date.now();
         }
+        setHidden(false);
+        hiddenRef.current = false;
+        setTopOffset(result.offset);
+        setCellHeight(result.cellHeight);
+        promptLineIdxRef.current = result.promptLineIdx;
+        if (!valueRef.current) {
+          setCliSuggestion(scanCliSuggestion(result.promptLineIdx));
+        }
+        if (result.offset !== lastOffsetRef.current) {
+          lastOffsetRef.current = result.offset;
+          if (alwaysVisible) {
+            setTimeout(() => textareaRef.current?.focus(), 30);
+          }
+        }
+        return;
+      }
+
+      // Case 2: Scrolled but prompt line still visible — reposition without re-scanning
+      if (isPromptVisible) {
+        notAtBottomSinceRef.current = 0;
+        const off = offsetForLine(promptIdx);
+        if (off != null) {
+          setTopOffset(off);
+          if (hiddenRef.current) {
+            setHidden(false);
+            hiddenRef.current = false;
+          }
+        }
+        return;
+      }
+
+      // Case 3: Prompt scrolled out of view — hide immediately.
+      // Use setTimeout as fallback in case no more onRender fires after this.
+      if (!hiddenRef.current) {
+        hiddenRef.current = true;
+        setHidden(true);
+        textareaRef.current?.blur();
       }
     });
     return () => disposable.dispose();
@@ -599,6 +689,61 @@ export default function PromptComposer({
       parent.style.paddingBottom = "";
     };
   }, [composerExpansion, containerRef]);
+
+  // Re-scan prompt position after expansion mode changes.
+  // When switching from "down" → "up"/"scroll", the paddingBottom cleanup alters
+  // the layout. Wait one frame for the browser reflow before re-scanning so that
+  // topOffset and cellHeight reflect the actual post-cleanup geometry.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const result = scanPromptPosition();
+      if (result) {
+        setTopOffset(result.offset);
+        setCellHeight(result.cellHeight);
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composerExpansion]);
+
+  // Scan when pane becomes active OR terminal becomes available.
+  // Sets promptLineIdxRef + shows composer (the initial poll and onRender
+  // skip scanning for inactive panes, so this fills the gap).
+  useEffect(() => {
+    if (!terminal) return;
+    requestAnimationFrame(() => {
+      const result = scanPromptPosition();
+      if (result) {
+        setTopOffset(result.offset);
+        setCellHeight(result.cellHeight);
+        promptLineIdxRef.current = result.promptLineIdx;
+        if (hiddenRef.current) {
+          setHidden(false);
+          hiddenRef.current = false;
+        }
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive, terminal]);
+
+  // Re-scan prompt position after font size changes (Ctrl+Scroll zoom).
+  // fitAddon.fit() runs and reflows the terminal, but the ResizeObserver may
+  // fire before xterm finishes re-rendering. Double-rAF waits for xterm to
+  // settle before re-scanning.
+  useEffect(() => {
+    if (!terminal) return;
+    const raf1 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const result = scanPromptPosition();
+        if (result) {
+          setTopOffset(result.offset);
+          setCellHeight(result.cellHeight);
+        }
+      });
+    });
+    return () => cancelAnimationFrame(raf1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fontSize]);
 
   // Dynamically update [Console, N rows] tag as user selects/deselects entries
   useEffect(() => {
@@ -766,12 +911,16 @@ export default function PromptComposer({
       consoleTagRef.current = null;
       useBrowserConsoleStore.getState().clearSelection();
     }
-    addPromptHistory(text);
+    addPromptHistory(terminalId, text);
     onSubmit(text);
     setLocalImages([]);
     setValue("");
     setHistoryIdx(-1);
     draftRef.current = "";
+    // Mark the old prompt line so the scan skips it (it'll be echoed as
+    // command history). Don't reset promptLineIdxRef to -1 — that causes
+    // the composer to vanish entirely in some CLIs (e.g. Gemini).
+    submittedLineIdxRef.current = promptLineIdxRef.current;
     setPlaceholder(randomPlaceholder());
     if (alwaysVisible) {
       setTimeout(() => textareaRef.current?.focus(), 30);
@@ -1135,28 +1284,22 @@ export default function PromptComposer({
   const isGemini = terminalType === "gemini";
   const isCodex = terminalType === "codex";
 
-  // Codex: extend 1 full row up to cover its tall bordered input
-  // Gemini: extend half a row up to cover its compact input area, inset sides
-  const cardTop = isCodex
-    ? topOffset - cellHeight
-    : isGemini
-      ? topOffset - Math.round((cellHeight * 0.4 + 6) / 2) - 4
-      : topOffset;
-  const cardLeft = useCard ? 8 : 0;
+  void (isCodex); // used by cardLeft/cardRight/cardPadding below
+  const cardLeft = isCodex ? 7 : isGemini ? 8 : 0;
   const cardRight = isCodex ? 11 : isGemini ? 10 : 14;
   const cardPadding = isCodex
-    ? `${Math.round((cellHeight + 12) / 2) - 4}px 10px`
+    ? `${Math.round((cellHeight + 12) / 2)}px 10px ${Math.round((cellHeight + 12) / 2) - 1}px`
     : isGemini
-      ? `${Math.round((cellHeight * 0.4 + 6) / 2) - 2}px 10px`
+      ? `${Math.round((cellHeight * 0.4 + 6) / 2) - 2}px 10px ${Math.round((cellHeight * 0.4 + 6) / 2)}px`
       : "3px 10px";
 
-  // Expansion mode positioning:
-  // "down" — top-anchored at prompt row (grows downward, paddingBottom creates space)
-  // "up" / "scroll" — bottom-anchored at prompt row bottom (grows upward)
-  const positionStyle: React.CSSProperties =
-    composerExpansion === "down"
-      ? { top: `${cardTop}px` }
-      : { bottom: `calc(100% - ${cardTop + cellHeight}px)` };
+  // All modes: position the composer so its top edge aligns with the prompt row.
+  // The composer always starts at the prompt and grows downward naturally.
+  // Mode differences (up vs down vs scroll) only affect textarea height behavior
+  // and whether paddingBottom is used — NOT the anchor position.
+  // Per-CLI vertical nudge to align with each CLI's input prompt
+  const promptNudge = isCodex ? -21 : isGemini ? -10 : -2;
+  const positionStyle: React.CSSProperties = { top: `${topOffset + promptNudge}px` };
 
   return (
     <>
@@ -1184,6 +1327,7 @@ export default function PromptComposer({
       }}
       onClick={(e) => e.stopPropagation()}
       onWheel={(e) => {
+        if (e.ctrlKey) return; // let Ctrl+Scroll propagate for zoom
         if (terminal) terminal.scrollLines(e.deltaY > 0 ? 3 : -3);
       }}
     >
@@ -1293,11 +1437,11 @@ export default function PromptComposer({
           opacity: 0.7,
           userSelect: "none",
           position: "relative",
-          top: 0,
+          top: useCard ? 0 : -3,
           transform: "scale(1.2)",
         }}
       />
-      <div style={{ flex: 1, position: "relative", minWidth: 0 }}>
+      <div style={{ flex: 1, position: "relative", minWidth: 0, top: isGemini ? 4 : isCodex ? 4 : 0 }}>
         <textarea
           ref={textareaRef}
           value={value}
@@ -1620,6 +1764,8 @@ export default function PromptComposer({
             cursor: "pointer",
             opacity: consoleSelectMode ? 1 : consoleEntryCount > 0 ? 0.6 : 0.2,
             transition: "opacity 120ms ease",
+            position: "relative",
+            top: useCard ? 0 : -3,
           }}
           onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
           onMouseLeave={(e) => {
@@ -1628,6 +1774,66 @@ export default function PromptComposer({
           title={consoleSelectMode ? "Done selecting" : "Select console entries to insert"}
         >
           <AiFillCode size={16} color={terminalCursor} />
+        </div>
+      )}
+      {/* Copy / Clear — stacked vertically to save space */}
+      {value.trim() && (
+        <div style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 5,
+          flexShrink: 0,
+          position: "relative",
+          top: useCard ? 0 : -3,
+        }}>
+          <div
+            tabIndex={0}
+            onClick={() => {
+              const text = textareaRef.current?.value;
+              if (text) navigator.clipboard.writeText(text).catch(() => {});
+            }}
+            style={{
+              cursor: "pointer",
+              opacity: 0.4,
+              transition: "opacity 120ms ease",
+              lineHeight: 0,
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.4"; }}
+            title="Copy to clipboard"
+          >
+            <FaCopy size={10} color={terminalCursor} />
+          </div>
+          <div
+            tabIndex={0}
+            onClick={() => {
+              const text = textareaRef.current?.value;
+              if (!text?.trim()) return;
+              useUndoClearStore.getState().setClearedText(text);
+              setValue("");
+              setHistoryIdx(-1);
+              draftRef.current = "";
+              imgCycleRef.current = null;
+              setGhostText("");
+              setLocalImages([]);
+              if (consoleSnippet) {
+                setConsoleSnippet(null);
+                consoleTagRef.current = null;
+                useBrowserConsoleStore.getState().clearSelection();
+              }
+            }}
+            style={{
+              cursor: "pointer",
+              opacity: 0.4,
+              transition: "opacity 120ms ease",
+              lineHeight: 0,
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.4"; }}
+            title="Clear (Ctrl+Z to undo)"
+          >
+            <FaDeleteLeft size={11} color={terminalCursor} />
+          </div>
         </div>
       )}
       {/* Promptifier button */}
@@ -1654,6 +1860,8 @@ export default function PromptComposer({
           cursor: value.trim() && !promptifying ? "pointer" : "default",
           opacity: promptifying ? 1 : value.trim() ? 0.6 : 0.2,
           transition: "opacity 120ms ease",
+          position: "relative",
+          top: useCard ? 0 : -3,
         }}
         onMouseEnter={(e) => {
           if (value.trim() && !promptifying) e.currentTarget.style.opacity = "1";
@@ -1682,6 +1890,8 @@ export default function PromptComposer({
           cursor: value.trim() ? "pointer" : "default",
           opacity: value.trim() ? 0.8 : 0.25,
           transition: "opacity 120ms ease",
+          position: "relative",
+          top: useCard ? 0 : -3,
         }}
         onMouseEnter={(e) => {
           if (value.trim()) e.currentTarget.style.opacity = "1";

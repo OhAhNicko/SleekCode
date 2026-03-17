@@ -33,9 +33,15 @@ mod win32_border {
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     const WM_NCCALCSIZE: u32 = 0x0083;
     const WM_SIZE: u32 = 0x0005;
+    const WM_ACTIVATE: u32 = 0x0006;
+    const WM_SHOWWINDOW: u32 = 0x0018;
+    const WM_WINDOWPOSCHANGED: u32 = 0x0047;
+    const WM_NCPAINT: u32 = 0x0085;
     const WM_USER: u32 = 0x0400;
     const WM_WEBVIEW_REPAINT: u32 = WM_USER + 100;
     const SIZE_MINIMIZED: usize = 1;
+    const SIZE_MAXIMIZED: usize = 2;
+    const SIZE_RESTORED: usize = 0;
     const GWL_STYLE: i32 = -16;
     const WS_THICKFRAME: isize = 0x00040000;
     const WS_MAXIMIZE: isize = 0x01000000;
@@ -106,6 +112,43 @@ mod win32_border {
         fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MONITORINFO) -> i32;
         fn GetWindowRect(hwnd: *mut c_void, rect: *mut RECT) -> i32;
         fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
+        fn ShowWindow(hwnd: *mut c_void, cmd_show: i32) -> i32;
+        fn GetWindowPlacement(hwnd: *mut c_void, lpwndpl: *mut WINDOWPLACEMENT) -> i32;
+        fn SetWindowPlacement(hwnd: *mut c_void, lpwndpl: *const WINDOWPLACEMENT) -> i32;
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct POINT { x: i32, y: i32 }
+
+    #[repr(C)]
+    #[derive(Copy, Clone)]
+    struct WINDOWPLACEMENT {
+        length: u32,
+        flags: u32,
+        show_cmd: u32,
+        pt_min_position: POINT,
+        pt_max_position: POINT,
+        rc_normal_position: RECT,
+    }
+
+    const SW_MINIMIZE: i32 = 6;
+    const SW_SHOWNORMAL: u32 = 1;
+
+    /// Minimize from maximized state without flashing the restored window.
+    /// Sets the placement's show_cmd to SW_SHOWNORMAL so that when the user
+    /// clicks the taskbar icon, the window restores to its normal size — not maximized.
+    pub fn minimize_to_normal(hwnd: *mut c_void) {
+        unsafe {
+            let mut wp: WINDOWPLACEMENT = std::mem::zeroed();
+            wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
+            GetWindowPlacement(hwnd, &mut wp);
+            // Minimize directly (no visual unmaximize)
+            ShowWindow(hwnd, SW_MINIMIZE);
+            // Override the restored state so taskbar restore goes to normal, not maximized
+            wp.show_cmd = SW_SHOWNORMAL;
+            SetWindowPlacement(hwnd, &wp);
+        }
     }
 
     /// Window subclass proc that intercepts WM_NCCALCSIZE to remove the
@@ -134,12 +177,50 @@ mod win32_border {
         // surface after restore. We detect restore and post a deferred
         // message that forces a 1px resize cycle, which triggers
         // WebView2's put_Bounds and repaints the content.
+        // Aggressively re-apply border suppression on every window state change.
+        // Windows resets DWMWA_BORDER_COLOR during transitions (maximize, minimize,
+        // activate, snap) causing the system accent border to flash.
+        if msg == WM_SIZE || msg == WM_ACTIVATE || msg == WM_SHOWWINDOW
+           || msg == WM_WINDOWPOSCHANGED || msg == WM_NCCALCSIZE
+        {
+            // First try COLOR_NONE (hides border entirely on supported builds)
+            let color_none: u32 = DWMWA_COLOR_NONE;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_BORDER_COLOR,
+                &color_none as *const u32 as *const c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+
         if msg == WM_SIZE {
             if wparam == SIZE_MINIMIZED {
                 WAS_MINIMIZED.store(true, Ordering::SeqCst);
-            } else if WAS_MINIMIZED.swap(false, Ordering::SeqCst) {
-                // Defer the resize to after Windows finishes the restore
-                PostMessageW(hwnd, WM_WEBVIEW_REPAINT, 0, 0);
+            } else {
+                if WAS_MINIMIZED.swap(false, Ordering::SeqCst) {
+                    PostMessageW(hwnd, WM_WEBVIEW_REPAINT, 0, 0);
+                }
+                if wparam == SIZE_MAXIMIZED {
+                    let corner_pref = DWMWCP_DONOTROUND;
+                    DwmSetWindowAttribute(
+                        hwnd,
+                        DWMWA_WINDOW_CORNER_PREFERENCE,
+                        &corner_pref as *const u32 as *const c_void,
+                        std::mem::size_of::<u32>() as u32,
+                    );
+                } else if wparam == SIZE_RESTORED {
+                    let corner_pref = DWMWCP_ROUND;
+                    DwmSetWindowAttribute(
+                        hwnd,
+                        DWMWA_WINDOW_CORNER_PREFERENCE,
+                        &corner_pref as *const u32 as *const c_void,
+                        std::mem::size_of::<u32>() as u32,
+                    );
+                    SetWindowPos(
+                        hwnd, std::ptr::null_mut(), 0, 0, 0, 0,
+                        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                    );
+                }
             }
         }
 
@@ -202,6 +283,10 @@ mod win32_border {
             }
             return 0;
         }
+        // Block non-client paint — prevents Windows from drawing the accent border
+        if msg == WM_NCPAINT {
+            return 0;
+        }
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
@@ -228,8 +313,11 @@ mod win32_border {
                 std::mem::size_of::<u32>() as u32,
             );
 
-            // 2) Remove DWM side/bottom border color
-            let color = DWMWA_COLOR_NONE;
+            // 2) Set DWM border color to near-black so it blends with the dark app background.
+            //    DWMWA_COLOR_NONE (0xFFFFFFFE) is unreliable on some Windows builds —
+            //    the accent color still flashes during resize. A dark COLORREF hides it.
+            //    COLORREF is 0x00BBGGRR — #0D0D0D → 0x000D0D0D
+            let color: u32 = 0x000D0D0D;
             DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_BORDER_COLOR,
@@ -251,6 +339,13 @@ mod win32_border {
             );
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn minimize_from_maximized(window: tauri::Window) {
+    let hwnd = window.hwnd().expect("failed to get HWND");
+    win32_border::minimize_to_normal(hwnd.0);
 }
 
 #[tauri::command]
@@ -3507,7 +3602,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

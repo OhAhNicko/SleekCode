@@ -52,6 +52,14 @@ export interface PaneLeaf {
   sessionResumeId?: string;
 }
 
+export interface ProjectSession {
+  id: string;          // session resume ID (UUID)
+  name: string;        // user-given name or auto-detected from CLI
+  type: TerminalType;  // claude | codex | gemini
+  createdAt: number;
+  isRenamed: boolean;   // true = user manually renamed, prevents auto-name override
+}
+
 export interface PaneBrowser {
   type: "browser";
   id: string;
@@ -123,7 +131,9 @@ export interface Tab {
   isDevServerTab?: boolean;
   isServersTab?: boolean;
   isKanbanTab?: boolean;
+  isSettingsTab?: boolean;
   isPinned?: boolean;
+  customName?: string;
   serverId?: string;
   serverCommand?: string;
   /** Terminal backend stamped at tab creation time. Determines WSL vs Windows for all panes in this tab. */

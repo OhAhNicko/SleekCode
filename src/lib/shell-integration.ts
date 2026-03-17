@@ -50,8 +50,14 @@ export function getShellIntegrationCommand(): string {
 
 /**
  * Returns true if shell integration should be injected for this terminal type.
- * Only plain shell terminals get integration — AI agents handle their own prompts.
+ * The integration script is bash-specific (PROMPT_COMMAND, trap DEBUG) —
+ * it only works in bash, not PowerShell or zsh.
+ * Currently shell type spawns PowerShell (WSL/Windows) or zsh (native),
+ * so integration is disabled for all backends.
  */
 export function shouldInjectShellIntegration(terminalType: string): boolean {
-  return terminalType === "shell";
+  // Shell integration uses bash-only features — never inject into non-bash shells.
+  // The "shell" type spawns PowerShell (WSL/Windows) or zsh (native).
+  void terminalType;
+  return false;
 }

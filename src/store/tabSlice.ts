@@ -51,6 +51,7 @@ export interface TabSlice {
   setActiveTab: (tabId: string) => void;
   updateTabLayout: (tabId: string, layout: PaneLayout) => void;
   togglePinTab: (tabId: string) => void;
+  renameTab: (tabId: string, name: string) => void;
   reorderTabs: (draggedId: string, insertBeforeId: string | null) => void;
 }
 
@@ -72,6 +73,7 @@ function createDefaultLayout(_workingDir: string): {
 const DEV_SERVER_TAB_ID = "dev-server-tab";
 const SERVERS_TAB_ID = "servers-tab";
 const KANBAN_TAB_ID = "kanban-tab";
+export const SETTINGS_TAB_ID = "settings-tab";
 
 export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
   set, get
@@ -97,6 +99,13 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       workingDir: "",
       layout: { type: "terminal", id: "servers-pane", terminalId: "" },
       isServersTab: true,
+    },
+    {
+      id: SETTINGS_TAB_ID,
+      name: "Settings",
+      workingDir: "",
+      layout: { type: "terminal", id: "settings-pane", terminalId: "" },
+      isSettingsTab: true,
     },
   ],
   activeTabId: "",  // No default system tab — App.tsx redirect will pick the first project tab
@@ -130,14 +139,14 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
   },
 
   removeTab: (tabId) => {
-    if (tabId === DEV_SERVER_TAB_ID || tabId === SERVERS_TAB_ID || tabId === KANBAN_TAB_ID) return;
+    if (tabId === DEV_SERVER_TAB_ID || tabId === SERVERS_TAB_ID || tabId === KANBAN_TAB_ID || tabId === SETTINGS_TAB_ID) return;
     set((state) => {
       const tab = state.tabs.find((t) => t.id === tabId);
       if (tab?.isPinned) return state;
       snapshotTab(tabId);
 
       // Persist layout to recent project for quick-open restore
-      if (tab && !tab.isDevServerTab && !tab.isServersTab && !tab.isKanbanTab) {
+      if (tab && !tab.isDevServerTab && !tab.isServersTab && !tab.isKanbanTab && !tab.isSettingsTab) {
         import("./index").then(({ useAppStore }) => {
           useAppStore.getState().updateProjectLayout(tab.workingDir, tab.layout);
         });
@@ -149,7 +158,7 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       scheduleDeferredServerKill(tabId, tabServers);
 
       const remaining = state.tabs.filter((t) => t.id !== tabId);
-      const nonSystemRemaining = remaining.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab);
+      const nonSystemRemaining = remaining.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab);
       const newActiveId =
         state.activeTabId === tabId
           ? nonSystemRemaining[nonSystemRemaining.length - 1]?.id ?? ""
@@ -173,6 +182,14 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
     set((state) => ({
       tabs: state.tabs.map((t) =>
         t.id === tabId ? { ...t, isPinned: !t.isPinned } : t
+      ),
+    }));
+  },
+
+  renameTab: (tabId, name) => {
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, customName: name } : t
       ),
     }));
   },

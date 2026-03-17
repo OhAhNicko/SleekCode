@@ -64,6 +64,7 @@ interface TerminalPaneProps {
   serverId?: string;
   sessionResumeId?: string;
   onSessionResumeId?: (id: string) => void;
+  onSwitchSession?: (newSessionId: string | undefined) => void;
   /** Per-tab backend override. Falls back to global setting if omitted. */
   backend?: import("../types").TerminalBackend;
 }
@@ -84,11 +85,31 @@ export default function TerminalPane({
   serverId,
   sessionResumeId,
   onSessionResumeId,
+  onSwitchSession,
   paneCount = 1,
   backend,
 }: TerminalPaneProps) {
   // Seed claimed set with persisted IDs so new panes don't steal them
   if (sessionResumeId) claimedSessionIds.add(sessionResumeId);
+
+  // Track whether the session came from a trusted source (props/restore or explicit switch)
+  // vs detected from disk (may claim old/wrong session). Untrusted sessions don't show names.
+  const [sessionTrusted, setSessionTrusted] = useState(!!sessionResumeId);
+
+  // Register persisted session in per-project registry (deferred to avoid setState during render)
+  const registeredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (sessionResumeId && registeredRef.current !== sessionResumeId) {
+      registeredRef.current = sessionResumeId;
+      useAppStore.getState().registerProjectSession(workingDir, {
+        id: sessionResumeId,
+        name: "",
+        type: terminalType,
+        createdAt: Date.now(),
+        isRenamed: false,
+      });
+    }
+  }, [sessionResumeId, workingDir, terminalType]);
   const serverName = useAppStore((s) => {
     if (!serverId) return undefined;
     return s.servers.find((srv) => srv.id === serverId)?.name;
@@ -128,6 +149,8 @@ export default function TerminalPane({
   const recordedBlocksRef = useRef<Set<string>>(new Set());
   const initialDims = useRef({ cols: 80, rows: 24 });
   const [termReady, setTermReady] = useState(false);
+  const [zoomIndicator, setZoomIndicator] = useState<number | null>(null);
+  const zoomIndicatorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const scrollToPromptRef = useRef<() => void>(() => {});
   const scrollToNextPromptRef = useRef<() => void>(() => {});
@@ -137,6 +160,10 @@ export default function TerminalPane({
   const cliFontSizeRef = useRef(cliFontSize);
   cliFontSizeRef.current = cliFontSize;
   const useShellIntegration = shouldInjectShellIntegration(terminalType);
+  // EzyComposer is only for AI CLI terminals — not plain shell or devserver
+  const composerSupported = terminalType !== "shell" && terminalType !== "devserver";
+  const composerSupportedRef = useRef(composerSupported);
+  composerSupportedRef.current = composerSupported;
 
   // Session resume: look up session ID from Claude's local storage on disk
   const onSessionResumeIdRef = useRef(onSessionResumeId);
@@ -161,7 +188,7 @@ export default function TerminalPane({
     if (awaitingRestartDataRef.current) {
       awaitingRestartDataRef.current = false;
       const s = useAppStore.getState();
-      if (s.promptComposerEnabled && s.promptComposerAlwaysVisible) {
+      if (composerSupported && s.promptComposerEnabled && s.promptComposerAlwaysVisible) {
         setComposerOpen(true);
       }
     }
@@ -171,11 +198,15 @@ export default function TerminalPane({
     if (!sessionLookupDone.current && supportsSessionResume(terminalTypeRef.current) && !sessionResumeIdPropRef.current) {
       sessionLookupDone.current = true;
 
+      // Track IDs skipped because they're already in the session registry.
+      // These get added to excludeIds on retries so the backend returns different results.
+      const skippedIds = new Set<string>();
+
       const lookupSession = async (): Promise<boolean> => {
         try {
           const backend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
           const type = terminalTypeRef.current;
-          const excludeIds = [...claimedSessionIds];
+          const excludeIds = [...claimedSessionIds, ...skippedIds];
           let id: string | null = null;
 
           // For Claude, only claim sessions modified within the last 2 minutes.
@@ -223,7 +254,17 @@ export default function TerminalPane({
 
           console.log(`[SessionResume] ${type} lookup result: id=${id}`);
           if (id) {
+            // Skip IDs that already exist in the session registry — they belong
+            // to old sessions. Only claim truly new sessions created by this pane.
+            const key = workingDirRef.current.replace(/\\/g, "/");
+            const knownSessions = useAppStore.getState().projectSessions[key] ?? [];
+            if (knownSessions.some((s) => s.id === id)) {
+              console.log(`[SessionResume] skipping known session ${id.slice(0, 8)}`);
+              skippedIds.add(id);
+              return false;
+            }
             claimedSessionIds.add(id);
+            setSessionTrusted(true);
             onSessionResumeIdRef.current?.(id);
             return true;
           }
@@ -292,6 +333,12 @@ export default function TerminalPane({
       });
 
     function initTerminal(el: HTMLElement) {
+
+    function showZoomIndicator(size: number) {
+      clearTimeout(zoomIndicatorTimer.current);
+      setZoomIndicator(size);
+      zoomIndicatorTimer.current = setTimeout(() => setZoomIndicator(null), 1200);
+    }
 
     const manyPanes = paneCountRef.current > 6; // used for scrollback budget
     const baseFontSize = cliFontSizeRef.current;
@@ -596,10 +643,10 @@ export default function TerminalPane({
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
       if (e.type !== "keydown") return true;
 
-      // Ctrl+I — toggle prompt composer
+      // Ctrl+I — toggle prompt composer (AI terminals only)
       if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key === "i" || e.key === "I")) {
         const enabled = useAppStore.getState().promptComposerEnabled;
-        if (enabled) {
+        if (enabled && composerSupportedRef.current) {
           setComposerOpen((v) => {
             composerDismissedRef.current = v; // closing → dismissed; opening → clear
             return !v;
@@ -631,6 +678,14 @@ export default function TerminalPane({
       }
       if (e.key === "Delete" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
         write("\x1b[3;3~"); // kill-word forward (same as Alt+Delete)
+        return false;
+      }
+
+      // Ctrl+0 — reset font size to default
+      if (e.key === "0" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        const store = useAppStore.getState();
+        store.setCliFontSize(terminalTypeRef.current, DEFAULT_CLI_FONT_SIZE);
+        showZoomIndicator(DEFAULT_CLI_FONT_SIZE);
         return false;
       }
 
@@ -843,7 +898,25 @@ export default function TerminalPane({
     const scrollDisposable = term.onScroll(updateJumpBtn);
     const renderDisposable = term.onRender(updateJumpBtn);
 
+    // Ctrl+Scroll wheel — zoom font size (per terminal type)
+    const MIN_FONT_SIZE = 8;
+    const MAX_FONT_SIZE = 32;
+    function handleWheel(e: WheelEvent) {
+      if (!e.ctrlKey) return;
+      e.preventDefault(); // prevent browser zoom
+      const store = useAppStore.getState();
+      const currentSize = store.cliFontSizes[terminalTypeRef.current] ?? DEFAULT_CLI_FONT_SIZE;
+      const delta = e.deltaY < 0 ? 1 : -1;
+      const newSize = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, currentSize + delta));
+      if (newSize !== currentSize) {
+        store.setCliFontSize(terminalTypeRef.current, newSize);
+        showZoomIndicator(newSize);
+      }
+    }
+    el.addEventListener("wheel", handleWheel, { passive: false });
+
     cleanupRef.current = () => {
+      el.removeEventListener("wheel", handleWheel);
       disposed = true;
       clearInlineHint();
       clearTimeout(webglTimer);
@@ -941,6 +1014,36 @@ export default function TerminalPane({
           rateLimitFiveHour: info.rateLimitFiveHour ?? prev?.rateLimitFiveHour ?? null,
           rateLimitWeekly: info.rateLimitWeekly ?? prev?.rateLimitWeekly ?? null,
         }));
+        // Auto-update session name in registry from CLI output.
+        // Claude: CUSTOM_TITLE only appears from /rename → authoritative (always overrides).
+        // Codex/Gemini: auto-generated titles → soft update (won't override EzyDev renames).
+        if (sessionResumeId) {
+          const store = useAppStore.getState();
+          const key = workingDir.replace(/\\/g, "/");
+          const existing = (store.projectSessions[key] ?? []).find((s) => s.id === sessionResumeId);
+          const autoName = info.sessionName || info.summary;
+
+          // Ensure session exists in registry (disk detection doesn't register)
+          if (!existing) {
+            store.registerProjectSession(workingDir, {
+              id: sessionResumeId,
+              name: autoName || "",
+              type: terminalType,
+              createdAt: Date.now(),
+              isRenamed: false,
+            });
+          } else if (autoName) {
+            if (terminalType === "claude") {
+              // Claude /rename is intentional — always override, even EzyDev user renames
+              if (existing.name !== autoName) {
+                store.renameProjectSession(workingDir, sessionResumeId, autoName);
+              }
+            } else {
+              // Codex/Gemini auto-titles — only update if user hasn't renamed in EzyDev
+              store.updateProjectSessionAutoName(workingDir, sessionResumeId, autoName);
+            }
+          }
+        }
       }
       // On null, retain previous value (stale > absent)
     };
@@ -971,11 +1074,11 @@ export default function TerminalPane({
       focusRestorerRef.current?.();
       terminalRef.current?.focus();
       // Open composer now that the pane is active (deferred from background open)
-      if (composerAlwaysVisible && !composerDismissedRef.current && !composerOpen) {
+      if (composerSupported && composerAlwaysVisible && !composerDismissedRef.current && !composerOpen) {
         setComposerOpen(true);
       }
     }
-  }, [isActive, composerAlwaysVisible, composerOpen]);
+  }, [isActive, composerAlwaysVisible, composerOpen, composerSupported]);
 
   // Force repaint when container becomes visible (tab switch).
   // xterm.js doesn't render while display:none — IntersectionObserver
@@ -1033,13 +1136,12 @@ export default function TerminalPane({
 
   // Auto-open composer when "always visible" is enabled.
   useEffect(() => {
-    // Don't open composer when pane was opened in background — its many
-    // focus paths (onRender position changes, hidden→visible transitions)
-    // would steal focus from the original pane.  Deferred until isActive.
-    if (composerAlwaysVisible && !composerDismissedRef.current && !focusSuppressedRef.current) {
+    // Open composer for all panes (including background). The suppressAutoFocus
+    // prop on PromptComposer already prevents focus-stealing for background panes.
+    if (composerSupported && composerAlwaysVisible && !composerDismissedRef.current) {
       setComposerOpen(true);
     }
-  }, [composerAlwaysVisible]);
+  }, [composerAlwaysVisible, composerSupported]);
 
   // Theme hot-swap
   useEffect(() => {
@@ -1097,8 +1199,16 @@ export default function TerminalPane({
       // entire input atomically.  Without it, long text (e.g. file paths for
       // image attachments) may not be fully processed before Enter arrives,
       // causing incomplete submissions.
+      //
+      // Claude Code parses bracketed paste asynchronously — long text needs a
+      // proportionally longer delay before Enter, otherwise Enter arrives while
+      // the REPL is still ingesting and the text shows as "[Text #N]" instead
+      // of being submitted.  Scale: 150ms base + 1ms per char over 200 chars,
+      // capped at 2s.
       const content = text + (terminalType === "gemini" ? " " : "");
-      const pasteDelay = terminalType === "claude" ? 150 : 80;
+      const baseDelay = terminalType === "claude" ? 150 : 80;
+      const extraDelay = terminalType === "claude" ? Math.min(Math.max(0, content.length - 200), 1850) : 0;
+      const pasteDelay = baseDelay + extraDelay;
       write("\x1b[200~" + content + "\x1b[201~");
       setTimeout(() => write("\r"), pasteDelay);
     } else {
@@ -1139,6 +1249,40 @@ export default function TerminalPane({
     setRestartKey((k) => k + 1);
   }, [terminalType]);
 
+  const onSwitchSessionRef = useRef(onSwitchSession);
+  onSwitchSessionRef.current = onSwitchSession;
+
+  const handleSwitchSession = useCallback((newSessionId: string | undefined) => {
+    // User explicitly switched — mark as trusted
+    setSessionTrusted(!!newSessionId);
+    // Release old session claim
+    if (sessionResumeIdPropRef.current) {
+      claimedSessionIds.delete(sessionResumeIdPropRef.current);
+    }
+    if (newSessionId) {
+      claimedSessionIds.add(newSessionId);
+      sessionLookupDone.current = true;
+    } else {
+      // New session — allow auto-detection to pick up the fresh session
+      sessionLookupDone.current = false;
+    }
+    // Clear terminal
+    if (terminalRef.current) {
+      terminalRef.current.clear();
+      terminalRef.current.reset();
+    }
+    setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
+    setExited(false);
+    setContextInfo(null);
+    setCommandBlocks([]);
+    awaitingRestartDataRef.current = true;
+    setComposerOpen(false);
+    // Update layout tree (prop will update on re-render)
+    onSwitchSessionRef.current?.(newSessionId);
+    // Trigger PTY re-spawn
+    setRestartKey((k) => k + 1);
+  }, [terminalType]);
+
   const handleClose = useCallback(() => {
     kill();
     onClose();
@@ -1164,6 +1308,9 @@ export default function TerminalPane({
           isYolo={launchedWithYolo}
           contextInfo={contextInfo}
           workingDir={workingDir}
+          sessionResumeId={sessionResumeId}
+          sessionTrusted={sessionTrusted}
+          onSwitchSession={handleSwitchSession}
         />
       )}
       <div className="flex-1 min-h-0 relative" style={{ backgroundColor: "var(--ezy-bg)" }}>
@@ -1207,6 +1354,30 @@ export default function TerminalPane({
             didStealRef={composerDidStealRef}
             suppressAutoFocus={!!focusSuppressedRef.current}
           />
+        )}
+        {/* Zoom indicator — shows briefly when Ctrl+Scroll or Ctrl+0 changes font size */}
+        {zoomIndicator !== null && (
+          <div
+            style={{
+              position: "absolute",
+              top: 8,
+              left: "50%",
+              transform: "translateX(-50%)",
+              padding: "4px 12px",
+              borderRadius: 6,
+              backgroundColor: "var(--ezy-surface-raised)",
+              border: "1px solid var(--ezy-border)",
+              color: "var(--ezy-fg)",
+              fontSize: 12,
+              fontFamily: "system-ui, sans-serif",
+              pointerEvents: "none",
+              zIndex: 20,
+              opacity: 0.9,
+              whiteSpace: "nowrap",
+            }}
+          >
+            {Math.round((zoomIndicator / DEFAULT_CLI_FONT_SIZE) * 100)}%
+          </div>
         )}
         {/* Jump-to-bottom button — appears below scrollbar thumb when scrolled up */}
         <div
