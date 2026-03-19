@@ -113,23 +113,6 @@ mod win32_border {
         fn GetWindowRect(hwnd: *mut c_void, rect: *mut RECT) -> i32;
         fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
         fn ShowWindow(hwnd: *mut c_void, cmd_show: i32) -> i32;
-        fn GetWindowPlacement(hwnd: *mut c_void, lpwndpl: *mut WINDOWPLACEMENT) -> i32;
-        fn SetWindowPlacement(hwnd: *mut c_void, lpwndpl: *const WINDOWPLACEMENT) -> i32;
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct POINT { x: i32, y: i32 }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct WINDOWPLACEMENT {
-        length: u32,
-        flags: u32,
-        show_cmd: u32,
-        pt_min_position: POINT,
-        pt_max_position: POINT,
-        rc_normal_position: RECT,
     }
 
     const SW_MINIMIZE: i32 = 6;

@@ -46,11 +46,17 @@ export function useUpdateChecker() {
         setState((s) => ({ ...s, status: "up-to-date" }));
       }
     } catch (err) {
-      setState((s) => ({
-        ...s,
-        status: "error",
-        error: err instanceof Error ? err.message : String(err),
-      }));
+      const msg = err instanceof Error ? err.message : String(err);
+      // No published release yet or endpoint unreachable — treat as up-to-date
+      const isNoRelease =
+        /fetch.*release/i.test(msg) ||
+        /404/i.test(msg) ||
+        /network/i.test(msg);
+      if (isNoRelease) {
+        setState((s) => ({ ...s, status: "up-to-date" }));
+      } else {
+        setState((s) => ({ ...s, status: "error", error: msg }));
+      }
     }
   }, []);
 

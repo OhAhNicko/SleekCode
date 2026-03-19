@@ -753,6 +753,27 @@ export default function PromptComposer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terminal]);
 
+  // Periodic position correction — catches any alignment drift for all panes
+  // (including background/unfocused). Runs every 10s, lightweight: one buffer
+  // scan + 2 DOM rect reads. Also recovers hidden composers if prompt reappeared.
+  useEffect(() => {
+    if (!terminal) return;
+    const interval = setInterval(() => {
+      const result = scanPromptPosition();
+      if (result) {
+        setTopOffset(result.offset);
+        setCellHeight(result.cellHeight);
+        promptLineIdxRef.current = result.promptLineIdx;
+        if (hiddenRef.current && result.promptPass === 1) {
+          hiddenRef.current = false;
+          setHidden(false);
+        }
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminal]);
+
   // Pick up pending images targeted at this pane
   useEffect(() => {
     if (!pendingImage || pendingImage.terminalId !== terminalId) return;

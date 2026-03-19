@@ -356,8 +356,17 @@ function UpdatesSection() {
         setCheckStatus("up-to-date");
       }
     } catch (err) {
-      setCheckStatus("error");
-      setErrorMsg(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      const isNoRelease =
+        /fetch.*release/i.test(msg) ||
+        /404/i.test(msg) ||
+        /network/i.test(msg);
+      if (isNoRelease) {
+        setCheckStatus("up-to-date");
+      } else {
+        setCheckStatus("error");
+        setErrorMsg(msg);
+      }
     }
   }, []);
 
@@ -370,49 +379,48 @@ function UpdatesSection() {
             <span style={{ color: "var(--ezy-text)", fontWeight: 500 }}>{appVersion}</span>
           </div>
         )}
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <button
-            onClick={handleCheck}
-            disabled={checkStatus === "checking"}
-            style={{
-              height: 30,
-              padding: "0 14px",
-              borderRadius: 6,
-              border: "1px solid var(--ezy-border)",
-              background: "var(--ezy-surface-raised)",
-              color: "var(--ezy-text)",
-              fontSize: 13,
-              fontWeight: 500,
-              cursor: checkStatus === "checking" ? "not-allowed" : "pointer",
-              opacity: checkStatus === "checking" ? 0.6 : 1,
-              transition: "border-color 120ms ease",
-            }}
-            onMouseEnter={(e) => {
-              if (checkStatus !== "checking")
-                e.currentTarget.style.borderColor = "var(--ezy-accent)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = "var(--ezy-border)";
-            }}
-          >
-            {checkStatus === "checking" ? "Checking..." : "Check for Updates"}
-          </button>
-          {checkStatus === "up-to-date" && (
-            <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
-              Up to date
-            </span>
-          )}
-          {checkStatus === "available" && latestVersion && (
-            <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
-              v{latestVersion} available — update via the banner above
-            </span>
-          )}
-          {checkStatus === "error" && (
-            <span style={{ fontSize: 12, color: "var(--ezy-red)" }}>
-              {errorMsg || "Failed to check for updates"}
-            </span>
-          )}
-        </div>
+        <button
+          onClick={handleCheck}
+          disabled={checkStatus === "checking"}
+          style={{
+            height: 30,
+            padding: "0 14px",
+            borderRadius: 6,
+            border: "1px solid var(--ezy-border)",
+            background: "var(--ezy-surface-raised)",
+            color: "var(--ezy-text)",
+            fontSize: 13,
+            fontWeight: 500,
+            cursor: checkStatus === "checking" ? "not-allowed" : "pointer",
+            opacity: checkStatus === "checking" ? 0.6 : 1,
+            transition: "border-color 120ms ease",
+            alignSelf: "flex-start",
+          }}
+          onMouseEnter={(e) => {
+            if (checkStatus !== "checking")
+              e.currentTarget.style.borderColor = "var(--ezy-accent)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.borderColor = "var(--ezy-border)";
+          }}
+        >
+          {checkStatus === "checking" ? "Checking..." : "Check for Updates"}
+        </button>
+        {checkStatus === "up-to-date" && (
+          <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
+            Up to date
+          </span>
+        )}
+        {checkStatus === "available" && latestVersion && (
+          <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
+            v{latestVersion} available — update via the banner above
+          </span>
+        )}
+        {checkStatus === "error" && (
+          <span style={{ fontSize: 12, color: "var(--ezy-red)" }}>
+            {errorMsg || "Failed to check for updates"}
+          </span>
+        )}
       </div>
     </SettingsSection>
   );

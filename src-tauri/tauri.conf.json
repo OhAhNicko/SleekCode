@@ -28,13 +28,25 @@
     "active": true,
     "createUpdaterArtifacts": "v1Compatible",
     "targets": "all",
+    "publisher": "EzyDev",
+    "copyright": "Copyright 2025 EzyDev",
+    "shortDescription": "AI Terminal Workspace",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer-assets/header.bmp",
+        "sidebarImage": "installer-assets/sidebar.bmp",
+        "displayLanguageSelector": false,
+        "compression": "lzma"
+      }
+    }
   },
   "plugins": {
     "updater": {
