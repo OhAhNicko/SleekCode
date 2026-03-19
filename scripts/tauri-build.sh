@@ -12,8 +12,16 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   echo "[EzyDev] Project: $WIN_DIR"
   echo ""
 
+  # Forward signing env vars if set (for update bundle signing)
+  SIGN_VARS=""
+  if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+    SIGN_VARS="\$env:TAURI_SIGNING_PRIVATE_KEY = '$TAURI_SIGNING_PRIVATE_KEY';"
+    SIGN_VARS="$SIGN_VARS \$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}';"
+  fi
+
   powershell.exe -NoProfile -Command "
     \$env:Path = \"\$env:USERPROFILE\\.cargo\\bin;\" + \$env:Path
+    $SIGN_VARS
     Set-Location '$WIN_DIR'
     npm install
     npx tauri build

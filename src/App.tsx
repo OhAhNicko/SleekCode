@@ -30,6 +30,8 @@ import DevServerTerminalHost from "./components/DevServerTerminalHost";
 import SettingsPane from "./components/SettingsPane";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
+import UpdateBanner from "./components/UpdateBanner";
+import { useUpdateChecker } from "./hooks/useUpdateChecker";
 
 export default function App() {
   const tabs = useAppStore((s) => s.tabs);
@@ -246,6 +248,9 @@ export default function App() {
 
   // Track AI working time from burst events
   useAiTimeTracker();
+
+  // Auto-update checker
+  const updateState = useUpdateChecker();
 
   // Inject theme CSS variables into :root
   useEffect(() => {
@@ -532,6 +537,7 @@ export default function App() {
     <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
       <WindowResizeHandles />
       <TabBar />
+      <UpdateBanner {...updateState} />
       <div className="flex-1 min-h-0 flex">
         {sidebarOpen && (
           <Sidebar

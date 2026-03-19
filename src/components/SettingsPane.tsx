@@ -1,4 +1,6 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { check } from "@tauri-apps/plugin-updater";
+import { getVersion } from "@tauri-apps/api/app";
 import { useAppStore } from "../store";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
 import { THEMES, getTheme } from "../lib/themes";
@@ -329,6 +331,93 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
   );
 }
 
+// ─── Updates section ──────────────────────────────────────────────────────
+
+function UpdatesSection() {
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [checkStatus, setCheckStatus] = useState<"idle" | "checking" | "available" | "up-to-date" | "error">("idle");
+  const [latestVersion, setLatestVersion] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Fetch app version on mount
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
+  const handleCheck = useCallback(async () => {
+    setCheckStatus("checking");
+    setErrorMsg(null);
+    try {
+      const update = await check();
+      if (update) {
+        setCheckStatus("available");
+        setLatestVersion(update.version);
+      } else {
+        setCheckStatus("up-to-date");
+      }
+    } catch (err) {
+      setCheckStatus("error");
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  return (
+    <SettingsSection id="updates" title="Updates" description="Check for new versions of EzyDev.">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {appVersion && (
+          <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>
+            Current version:{" "}
+            <span style={{ color: "var(--ezy-text)", fontWeight: 500 }}>{appVersion}</span>
+          </div>
+        )}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            onClick={handleCheck}
+            disabled={checkStatus === "checking"}
+            style={{
+              height: 30,
+              padding: "0 14px",
+              borderRadius: 6,
+              border: "1px solid var(--ezy-border)",
+              background: "var(--ezy-surface-raised)",
+              color: "var(--ezy-text)",
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: checkStatus === "checking" ? "not-allowed" : "pointer",
+              opacity: checkStatus === "checking" ? 0.6 : 1,
+              transition: "border-color 120ms ease",
+            }}
+            onMouseEnter={(e) => {
+              if (checkStatus !== "checking")
+                e.currentTarget.style.borderColor = "var(--ezy-accent)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = "var(--ezy-border)";
+            }}
+          >
+            {checkStatus === "checking" ? "Checking..." : "Check for Updates"}
+          </button>
+          {checkStatus === "up-to-date" && (
+            <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
+              Up to date
+            </span>
+          )}
+          {checkStatus === "available" && latestVersion && (
+            <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
+              v{latestVersion} available — update via the banner above
+            </span>
+          )}
+          {checkStatus === "error" && (
+            <span style={{ fontSize: 12, color: "var(--ezy-red)" }}>
+              {errorMsg || "Failed to check for updates"}
+            </span>
+          )}
+        </div>
+      </div>
+    </SettingsSection>
+  );
+}
+
 // ─── Nav sections ──────────────────────────────────────────────────────────
 
 const NAV_SECTIONS = [
@@ -342,6 +431,7 @@ const NAV_SECTIONS = [
   { id: "theme", label: "Theme" },
   { id: "statistics", label: "Statistics" },
   { id: "links", label: "Snippets & Shortcuts" },
+  { id: "updates", label: "Updates" },
 ];
 
 // ─── Main component ───────────────────────────────────────────────────────
@@ -746,6 +836,9 @@ export default function SettingsPane() {
             </div>
           </SettingsSection>
         );
+
+      case "updates":
+        return <UpdatesSection />;
 
       default:
         return null;
