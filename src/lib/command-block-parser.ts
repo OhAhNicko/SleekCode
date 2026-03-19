@@ -28,6 +28,7 @@ export class CommandBlockParser {
   private currentPromptLine = 0;
   private currentCommandStartLine = 0;
   private blockCounter = 0;
+  private blocksSinceTrim = 0;
   private disposables: IDisposable[] = [];
   private onChange: (blocks: CommandBlock[]) => void;
   private terminal: Terminal;
@@ -103,7 +104,12 @@ export class CommandBlockParser {
               outputText,
             };
 
-            this.blocks = [...this.blocks, block];
+            this.blocks.push(block);
+            this.blocksSinceTrim++;
+            if (this.blocksSinceTrim >= 10) {
+              this.trimBlocks();
+              this.blocksSinceTrim = 0;
+            }
             this.onChange(this.blocks);
           }
         }
@@ -143,6 +149,15 @@ export class CommandBlockParser {
     }
     const text = lines.join("\n").trimEnd();
     return text.length > 0 ? text : null;
+  }
+
+  /** Evict blocks that have scrolled out of the terminal scrollback buffer. */
+  private trimBlocks(): void {
+    const buf = this.terminal.buffer.active;
+    const scrollback = this.terminal.options.scrollback ?? 1000;
+    const minLine = buf.baseY - scrollback;
+    if (minLine <= 0) return;
+    this.blocks = this.blocks.filter((b) => b.commandEndLine >= minLine);
   }
 
   /** Live-read output for a block from the terminal buffer. Fallback if outputText was not captured. */

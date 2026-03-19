@@ -14,7 +14,7 @@ import { FaWandMagicSparkles, FaCopy, FaDeleteLeft } from "react-icons/fa6";
 import { useUndoClearStore } from "../store/undoClearStore";
 import { BiSolidSend } from "react-icons/bi";
 import { AiFillCode } from "react-icons/ai";
-import { FaAngleRight, FaExpand } from "react-icons/fa";
+import { FaAngleRight, FaExpand, FaBug } from "react-icons/fa";
 import ImagePreviewModal from "./ImagePreviewModal";
 
 const PLACEHOLDER_SUGGESTIONS = [
@@ -131,9 +131,10 @@ export default function PromptComposer({
   didStealRef,
   suppressAutoFocus = false,
 }: PromptComposerProps) {
-  // Use the terminal's actual font size (may differ from the store value when
-  // TerminalPane's doFit() scales font down for narrow panes).
-  const effectiveFontSize = terminal?.options.fontSize ?? fontSize;
+  // Track the terminal's actual font size (may differ from the store value when
+  // TerminalPane's doFit() scales font down for narrow panes). Updated by
+  // resize observers so the composer re-renders when the terminal font changes.
+  const [effectiveFontSize, setEffectiveFontSize] = useState(terminal?.options.fontSize ?? fontSize);
   const panePromptHistory = useAppStore((s) => s.panePromptHistory);
   const promptHistory = panePromptHistory[terminalId] ?? EMPTY_HISTORY;
   const addPromptHistory = useAppStore((s) => s.addPromptHistory);
@@ -180,6 +181,10 @@ export default function PromptComposer({
   const consoleEntryCount = useBrowserConsoleStore((s) => s.entries.length);
   const consoleSelectMode = useBrowserConsoleStore((s) => s.selectMode);
   const consoleSelectedIds = useBrowserConsoleStore((s) => s.selectedIds);
+  const autoDebug = useBrowserConsoleStore((s) => s.autoDebug);
+  const consoleErrorCount = useBrowserConsoleStore((s) =>
+    s.entries.reduce((n, e) => n + (e.method === "error" ? 1 : 0), 0),
+  );
   const pendingImage = useClipboardImageStore((s) => s.pendingComposerImage);
 
   // Listen for file-drop events dispatched by the global useFileDrop hook
@@ -262,8 +267,12 @@ export default function PromptComposer({
     if (!terminal) return false;
     const hints = interactiveHints[terminalType] ?? interactiveHints.claude;
     const buf = terminal.buffer.active;
-    const vpEnd = buf.viewportY + terminal.rows - 1;
-    for (let i = promptLineIdx; i <= vpEnd; i++) {
+    // Only check a few lines near the prompt — interactive dialogs show hints
+    // right next to the prompt, not in distant status bars. Scanning the whole
+    // viewport caused false positives (e.g. Gemini's status bar contains
+    // "esc" which matched "esc to cancel", hiding the composer permanently).
+    const checkEnd = Math.min(promptLineIdx + 4, buf.viewportY + terminal.rows - 1);
+    for (let i = promptLineIdx; i <= checkEnd; i++) {
       const line = buf.getLine(i);
       if (!line) continue;
       const text = line.translateToString().toLowerCase();
@@ -500,16 +509,41 @@ export default function PromptComposer({
         return { offset: Math.round(sTop + row * ch), cellHeight: ch };
       }
 
-      // ── Background panes: lightweight tracking only ──
+      // ── Background panes ──
       if (!isActiveRef.current) {
-        if (!isPromptVisible && !hiddenRef.current) {
-          hiddenRef.current = true;
-          setHidden(true);
-        } else if (isPromptVisible && hiddenRef.current) {
-          hiddenRef.current = false;
-          setHidden(false);
+        if (isPromptVisible) {
+          // Prompt at known index — unhide
+          if (hiddenRef.current) {
+
+            hiddenRef.current = false;
+            setHidden(false);
+          }
+          notAtBottomSinceRef.current = 0;
+        } else if (isAtBottom) {
+          // Terminal at bottom but promptLineIdxRef is stale (e.g. Gemini cleared
+          // buffer on SIGWINCH). Scan for prompt at its new position.
+          const check = scanPromptPosition();
+          if (check) {
+            promptLineIdxRef.current = check.promptLineIdx;
+            setTopOffset(check.offset);
+            setCellHeight(check.cellHeight);
+            if (hiddenRef.current) {
+
+              hiddenRef.current = false;
+              setHidden(false);
+            }
+          }
+          // Don't hide even if scan fails — at bottom means prompt will appear
+          notAtBottomSinceRef.current = 0;
+        } else {
+          // Not at bottom, prompt not visible — user scrolled away
+          if (!hiddenRef.current && promptLineIdxRef.current >= 0) {
+
+            hiddenRef.current = true;
+            setHidden(true);
+          }
+          notAtBottomSinceRef.current = notAtBottomSinceRef.current || Date.now();
         }
-        notAtBottomSinceRef.current = isPromptVisible ? 0 : (notAtBottomSinceRef.current || Date.now());
         return;
       }
 
@@ -528,7 +562,7 @@ export default function PromptComposer({
         submittedLineIdxRef.current = -1;
 
         // For always-visible CLI composers, hide during interactive mode.
-        // Only auto-hide on Pass 2/3 if we've previously seen a Pass 1 prompt —
+        // Also hide on Pass 2/3 if we've previously seen a Pass 1 prompt —
         // during startup the CLI hasn't rendered its real prompt yet, so Pass 2/3
         // matches are just banner text, not interactive dialogs.
         // Skip auto-hide during resize transitions — CLIs like Gemini clear and
@@ -539,6 +573,7 @@ export default function PromptComposer({
           isInteractiveMode(result.promptLineIdx) ||
           (result.promptPass !== 1 && seenPass1Ref.current)
         )) {
+
           setHidden(true);
           hiddenRef.current = true;
           textareaRef.current?.blur();
@@ -548,7 +583,13 @@ export default function PromptComposer({
 
         // Transitioning from hidden → visible (AI finished, prompt reappeared)
         if (hiddenRef.current) {
-          terminal.scrollToBottom();
+
+          // Only scroll to bottom when NOT in a resize transition — during resize,
+          // TerminalPane's doFit() manages scroll preservation and scrollToBottom()
+          // here would override the saved viewport position, causing scroll-to-top.
+          if (!isResizing) {
+            terminal.scrollToBottom();
+          }
           setTimeout(() => textareaRef.current?.focus(), 30);
           showTimeRef.current = Date.now();
         }
@@ -570,11 +611,10 @@ export default function PromptComposer({
       }
 
       // Case 2: Scrolled but prompt line still visible — reposition without re-scanning.
-      // First verify the stored line still looks like a prompt (it may have become
+      // Validate the stored line still looks like a prompt (it may have become
       // stale if the CLI output new content and the prompt moved to a new line).
       if (isPromptVisible) {
         notAtBottomSinceRef.current = 0;
-        // Quick validation: does the stored line still start with a prompt char?
         const storedLine = buf.getLine(promptIdx);
         const storedText = storedLine?.translateToString().trim() ?? "";
         const stillLooksLikePrompt = /^[>❯›»]/.test(storedText);
@@ -602,7 +642,7 @@ export default function PromptComposer({
             hiddenRef.current = false;
           }
         } else if (!hiddenRef.current) {
-          // Can't find prompt — hide
+
           hiddenRef.current = true;
           setHidden(true);
           textareaRef.current?.blur();
@@ -610,9 +650,9 @@ export default function PromptComposer({
         return;
       }
 
-      // Case 3: Prompt scrolled out of view — hide immediately.
-      // Use setTimeout as fallback in case no more onRender fires after this.
+      // Case 3: Prompt scrolled out of view — hide.
       if (!hiddenRef.current) {
+
         hiddenRef.current = true;
         setHidden(true);
         textareaRef.current?.blur();
@@ -642,6 +682,12 @@ export default function PromptComposer({
       if (result) {
         setTopOffset(result.offset);
         setCellHeight(result.cellHeight);
+        promptLineIdxRef.current = result.promptLineIdx;
+      }
+      // Sync effective font size — doFit() may have scaled the terminal font
+      // for narrow panes without triggering a React re-render.
+      if (terminal) {
+        setEffectiveFontSize(terminal.options.fontSize ?? fontSize);
       }
     }
 
@@ -652,7 +698,9 @@ export default function PromptComposer({
       if (result) {
         setTopOffset(result.offset);
         setCellHeight(result.cellHeight);
+        promptLineIdxRef.current = result.promptLineIdx;
         if (result.promptPass === 1 && hiddenRef.current) {
+
           setHidden(false);
           hiddenRef.current = false;
         }
@@ -680,7 +728,7 @@ export default function PromptComposer({
     // Observer on container parent: fires immediately during pane drag.
     // The terminal re-fits after 100ms debounce, then needs ~2 frames to settle.
     // Schedule two scans: one at 150ms (during drag, best-effort) and a final
-    // correction at 250ms (guaranteed settled after fit + WebGL double-rAF).
+    // correction at 350ms (guaranteed settled after fit + WebGL double-rAF).
     // The final scan also unhides the composer if it was hidden mid-resize.
     let parentTimer1: ReturnType<typeof setTimeout> | undefined;
     let parentTimer2: ReturnType<typeof setTimeout> | undefined;
@@ -749,18 +797,19 @@ export default function PromptComposer({
     return () => container.removeEventListener("click", onClick);
   }, [containerRef, alwaysVisible, terminal]);
 
-  // Auto-resize textarea height based on expansion mode
+  // Auto-resize textarea height based on expansion mode.
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
     ta.style.height = "auto";
+    const sh = ta.scrollHeight;
     if (composerExpansion === "scroll") {
-      // Max height + internal scroll
-      ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
-      ta.style.overflowY = ta.scrollHeight > 120 ? "auto" : "hidden";
+      const h = Math.min(sh, 120);
+      ta.style.height = `${h}px`;
+      ta.style.overflowY = sh > 120 ? "auto" : "hidden";
     } else {
-      // "up" and "down" both grow freely (capped at 200px for sanity)
-      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+      const h = Math.min(sh, 200);
+      ta.style.height = `${h}px`;
       ta.style.overflowY = "hidden";
     }
   }, [value, composerExpansion]);
@@ -836,6 +885,7 @@ export default function PromptComposer({
   // settle before re-scanning.
   useEffect(() => {
     if (!terminal) return;
+    setEffectiveFontSize(terminal.options.fontSize ?? fontSize);
     const raf1 = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         const result = scanPromptPosition();
@@ -892,6 +942,40 @@ export default function PromptComposer({
     consoleTagRef.current = newTag;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [consoleSelectedIds, consoleSelectMode]);
+
+  // One-click insert all console errors as a placeholder tag
+  const insertErrorDebug = () => {
+    const store = useBrowserConsoleStore.getState();
+    const errors = store.entries.filter((e) => e.method === "error");
+    if (errors.length === 0) return;
+
+    // Exit manual select mode if active
+    if (store.selectMode) store.setSelectMode(false);
+
+    const newTag = `[Error Debug, ${errors.length} error${errors.length > 1 ? "s" : ""}]`;
+    const lines = errors.map((e) => `[error] ${e.text}`).join("\n");
+    const formatted = `--- Browser Console Errors (${errors.length} entr${errors.length > 1 ? "ies" : "y"}) ---\n${lines}\n---`;
+
+    const oldTag = consoleTagRef.current;
+    if (oldTag) {
+      setValue((prev) => prev.replace(oldTag, newTag));
+    } else {
+      const ta = textareaRef.current;
+      if (ta) {
+        const before = ta.value.slice(0, ta.selectionStart);
+        const after = ta.value.slice(ta.selectionEnd);
+        const hasBefore = before.trimEnd().length > 0;
+        const insert = hasBefore ? " " + newTag : newTag + " ";
+        setValue(before + insert + after);
+        setTimeout(() => {
+          ta.selectionStart = ta.selectionEnd = before.length + insert.length;
+          ta.focus();
+        }, 0);
+      }
+    }
+    consoleTagRef.current = newTag;
+    setConsoleSnippet({ tag: newTag, formatted });
+  };
 
   // Re-scan CLI suggestion when textarea empties; clear when user types anything
   useEffect(() => {
@@ -1404,11 +1488,18 @@ export default function PromptComposer({
   // Per-CLI vertical nudge to align with each CLI's input prompt
   // Nudge derived from card padding formulas so it auto-scales with cellHeight.
   // Compensates for: card top-padding + border (1px) + textarea wrapper top (4px).
+  // Claude composer height ≈ 6px padding + effectiveFontSize*1.4.
+  // The overflow beyond one cellHeight goes downward into the statusbar.
+  // Shift the composer up by the overflow amount so it goes into the prompt
+  // line above (which the composer already covers).
+  const actualFont = terminal?.options.fontSize ?? effectiveFontSize;
+  const claudeComposerH = 6 + actualFont * 1.4;
+  const claudeOverflow = cellHeight > 0 ? Math.max(0, claudeComposerH - cellHeight) : 0;
   const promptNudge = isCodex
-    ? -(Math.round((cellHeight + 12) / 2) + 6)
+    ? -(Math.round((cellHeight + 12) / 2) + 4)
     : isGemini
-      ? -(Math.round((cellHeight * 0.4 + 6) / 2) + 3)
-      : -2;
+      ? -(Math.round((cellHeight * 0.4 + 6) / 2) + 2)
+      : -(Math.round(claudeOverflow) - 3);
   const positionStyle: React.CSSProperties = { top: `${topOffset + promptNudge}px` };
 
   return (
@@ -1582,11 +1673,15 @@ export default function PromptComposer({
           onKeyDown={handleKeyDown}
           onFocus={() => {
             useClipboardImageStore.getState().setActiveComposerTerminalId(terminalId);
-            // Re-scan position on focus to correct any accumulated drift
+            // Re-scan position on focus to correct any accumulated drift + unhide
             const result = scanPromptPosition();
             if (result) {
               setTopOffset(result.offset);
               setCellHeight(result.cellHeight);
+              if (hiddenRef.current) {
+                setHidden(false);
+                hiddenRef.current = false;
+              }
             }
           }}
           onBlur={() => { setSlashMatches([]); setSlashSelectedIdx(0); setSlashScrollOffset(0); }}
@@ -1792,6 +1887,7 @@ export default function PromptComposer({
             }}
             style={{
               position: "relative",
+              top: useCard ? 0 : -5,
               width: 26,
               height: 26,
               borderRadius: 4,
@@ -1856,6 +1952,37 @@ export default function PromptComposer({
             </div>
           </div>
         ))}
+      {/* Error Debug button — auto-collects error entries */}
+      {browserPreviewOpen && autoDebug && consoleErrorCount > 0 && (
+        <div
+          tabIndex={0}
+          onClick={insertErrorDebug}
+          style={{
+            flexShrink: 0,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "2px 6px",
+            borderRadius: 4,
+            backgroundColor: "#dc2626",
+            color: "#fff",
+            fontSize: 11,
+            fontWeight: 600,
+            fontVariantNumeric: "tabular-nums",
+            transition: "opacity 120ms ease",
+            opacity: 0.9,
+            position: "relative",
+            top: useCard ? 0 : -3,
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.9"; }}
+          title={`Insert ${consoleErrorCount} console error${consoleErrorCount > 1 ? "s" : ""} into prompt`}
+        >
+          <FaBug size={10} color="#fff" />
+          {consoleErrorCount}
+        </div>
+      )}
       {/* Console insert button — only visible when browser preview is open */}
       {browserPreviewOpen && (
         <div

@@ -27,6 +27,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
   const [gameState, setGameState] = useState<"idle" | "playing" | "over">("idle");
   const [score, setScore] = useState(0);
   const [bestScore, setBestScore] = useState(0);
+  const [wallDeath, setWallDeath] = useState(false);
 
   const snakeRef = useRef<Coord[]>([[5, 5], [4, 5], [3, 5]]);
   const dirRef = useRef<Direction>("right");
@@ -36,6 +37,8 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
   const gameStateRef = useRef<"idle" | "playing" | "over">("idle");
   const tickTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const boostRef = useRef(false);
+  const lastBoostTickRef = useRef(0);
+  const stepRef = useRef<() => boolean>(() => false);
 
   const spawnFood = useCallback((snake: Coord[], cols: number, rows: number): Coord => {
     const occupied = new Set(snake.map(([x, y]) => `${x},${y}`));
@@ -160,66 +163,92 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
 
-  // Game loop with dynamic speed via setTimeout chain
-  useEffect(() => {
-    if (gameState !== "playing" || paused) return;
-    boostRef.current = false;
+  // Stable refs for values used inside the game loop — avoids effect re-runs
+  const gridSizeRef = useRef(gridSize);
+  gridSizeRef.current = gridSize;
+  const drawRef = useRef(draw);
+  drawRef.current = draw;
+  const spawnFoodRef = useRef(spawnFood);
+  spawnFoodRef.current = spawnFood;
+  const onAddHighscoreRef = useRef(onAddHighscore);
+  onAddHighscoreRef.current = onAddHighscore;
+  const wallDeathRef = useRef(wallDeath);
+  wallDeathRef.current = wallDeath;
 
-    function tick() {
-      if (gameStateRef.current !== "playing" || pausedRef.current) return;
+  // One step of snake movement — called by both the tick chain and keydown boost
+  const step = useCallback((): boolean => {
+    if (gameStateRef.current !== "playing" || pausedRef.current) return false;
 
-      const { cols, rows } = gridSize;
-      const snake = snakeRef.current;
-      dirRef.current = nextDirRef.current;
-      const [hx, hy] = snake[0];
+    const { cols, rows } = gridSizeRef.current;
+    const snake = snakeRef.current;
+    dirRef.current = nextDirRef.current;
+    const [hx, hy] = snake[0];
 
-      let nx = hx, ny = hy;
-      switch (dirRef.current) {
-        case "up": ny--; break;
-        case "down": ny++; break;
-        case "left": nx--; break;
-        case "right": nx++; break;
-      }
+    let nx = hx, ny = hy;
+    switch (dirRef.current) {
+      case "up": ny--; break;
+      case "down": ny++; break;
+      case "left": nx--; break;
+      case "right": nx++; break;
+    }
 
-      if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) {
+    // Wall handling: wrap or die
+    if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) {
+      if (wallDeathRef.current) {
         gameStateRef.current = "over";
         setGameState("over");
-        if (scoreRef.current > 0) onAddHighscore(scoreRef.current);
+        if (scoreRef.current > 0) onAddHighscoreRef.current(scoreRef.current);
         setBestScore((prev) => Math.max(prev, scoreRef.current));
-        return;
+        return false;
       }
+      // Wrap around
+      if (nx < 0) nx = cols - 1;
+      else if (nx >= cols) nx = 0;
+      if (ny < 0) ny = rows - 1;
+      else if (ny >= rows) ny = 0;
+    }
 
-      for (let i = 0; i < snake.length - 1; i++) {
-        if (snake[i][0] === nx && snake[i][1] === ny) {
-          gameStateRef.current = "over";
-          setGameState("over");
-          if (scoreRef.current > 0) onAddHighscore(scoreRef.current);
-          setBestScore((prev) => Math.max(prev, scoreRef.current));
-          return;
-        }
+    for (let i = 0; i < snake.length - 1; i++) {
+      if (snake[i][0] === nx && snake[i][1] === ny) {
+        gameStateRef.current = "over";
+        setGameState("over");
+        if (scoreRef.current > 0) onAddHighscoreRef.current(scoreRef.current);
+        setBestScore((prev) => Math.max(prev, scoreRef.current));
+        return false;
       }
+    }
 
-      const newSnake: Coord[] = [[nx, ny], ...snake];
-      const [fx, fy] = foodRef.current;
-      if (nx === fx && ny === fy) {
-        scoreRef.current += FOOD_SCORE;
-        setScore(scoreRef.current);
-        foodRef.current = spawnFood(newSnake, cols, rows);
-      } else {
-        newSnake.pop();
-      }
-      snakeRef.current = newSnake;
-      draw();
+    const newSnake: Coord[] = [[nx, ny], ...snake];
+    const [fx, fy] = foodRef.current;
+    if (nx === fx && ny === fy) {
+      scoreRef.current += FOOD_SCORE;
+      setScore(scoreRef.current);
+      foodRef.current = spawnFoodRef.current(newSnake, cols, rows);
+    } else {
+      newSnake.pop();
+    }
+    snakeRef.current = newSnake;
+    drawRef.current();
+    return true;
+  }, []);
+  stepRef.current = step;
 
-      // Schedule next tick at dynamic speed (boost = 2x)
+  // Game loop — setTimeout chain that calls step()
+  useEffect(() => {
+    if (gameState !== "playing" || paused) {
+      boostRef.current = false;
+      return;
+    }
+
+    function tick() {
+      if (!step()) return;
       const baseMs = getTick(scoreRef.current);
       tickTimerRef.current = setTimeout(tick, boostRef.current ? Math.round(baseMs * 0.5) : baseMs);
     }
 
-    const initMs = getTick(scoreRef.current);
-    tickTimerRef.current = setTimeout(tick, boostRef.current ? Math.round(initMs * 0.5) : initMs);
+    tickTimerRef.current = setTimeout(tick, getTick(scoreRef.current));
     return () => clearTimeout(tickTimerRef.current);
-  }, [gameState, paused, gridSize, draw, spawnFood, onAddHighscore]);
+  }, [gameState, paused, step]);
 
   // Key handler
   useEffect(() => {
@@ -249,9 +278,24 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
       // Block 180-degree reversal
       if (pressedDir === opposite[dirRef.current]) return;
 
-      // Same direction as intended: boost
+      // Same direction as intended: boost — move snake immediately (rate-limited)
       if (pressedDir === nextDirRef.current) {
         boostRef.current = true;
+        const now = performance.now();
+        const minInterval = Math.round(getTick(scoreRef.current) * 0.5);
+        if (now - lastBoostTickRef.current >= minInterval) {
+          lastBoostTickRef.current = now;
+          clearTimeout(tickTimerRef.current);
+          if (stepRef.current()) {
+            // Restart the tick chain at boosted speed
+            const baseMs = getTick(scoreRef.current);
+            tickTimerRef.current = setTimeout(function boostTick() {
+              if (!stepRef.current()) return;
+              const ms = getTick(scoreRef.current);
+              tickTimerRef.current = setTimeout(boostTick, boostRef.current ? Math.round(ms * 0.5) : ms);
+            }, Math.round(baseMs * 0.5));
+          }
+        }
       } else {
         nextDirRef.current = pressedDir;
         boostRef.current = false;
@@ -309,7 +353,20 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
         }}
       >
         <span>Score: <span style={{ color: "var(--ezy-accent)" }}>{score}</span></span>
-        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>{getTick(score)}ms</span>
+        <span
+          onClick={() => { if (gameState !== "playing") setWallDeath((v) => !v); }}
+          style={{
+            fontSize: 10,
+            color: wallDeath ? "#f87171" : "var(--ezy-text-muted)",
+            cursor: gameState === "playing" ? "default" : "pointer",
+            userSelect: "none",
+            opacity: gameState === "playing" ? 0.5 : 1,
+            transition: "color 150ms ease",
+          }}
+          title={gameState === "playing" ? "Cannot change during game" : "Toggle wall death mode"}
+        >
+          {wallDeath ? "Walls: Kill" : "Walls: Wrap"}
+        </span>
         {bestScore > 0 && <span>Best: {bestScore}</span>}
       </div>
 

@@ -11,7 +11,7 @@ export interface TimedHighscoreEntry {
   date: number;
 }
 
-type HighscoreGame = "snake" | "twentyFortyEight" | "sudoku" | "blockBreaker" | "solitairePyramid";
+type HighscoreGame = "snake" | "twentyFortyEight" | "sudoku" | "blockBreaker" | "solitairePyramid" | "flappyBird" | "spaceInvaders" | "tetris" | "asteroids" | "frogger" | "duckHunt" | "donkeyKong";
 type TimedHighscoreGame = "minesweeperEasy" | "minesweeperMedium" | "minesweeperHard" | "solitaireKlondike" | "solitaireSpider" | "solitaireFreecell" | "memoryEasy" | "memoryMedium" | "memoryHard";
 
 export interface WordleStats {
@@ -66,6 +66,13 @@ export interface GameSlice {
     sudoku: HighscoreEntry[];
     blockBreaker: HighscoreEntry[];
     solitairePyramid: HighscoreEntry[];
+    flappyBird: HighscoreEntry[];
+    spaceInvaders: HighscoreEntry[];
+    tetris: HighscoreEntry[];
+    asteroids: HighscoreEntry[];
+    frogger: HighscoreEntry[];
+    duckHunt: HighscoreEntry[];
+    donkeyKong: HighscoreEntry[];
   };
   timedHighscores: {
     minesweeperEasy: TimedHighscoreEntry[];
@@ -98,6 +105,13 @@ export const createGameSlice: StateCreator<GameSlice, [], [], GameSlice> = (set)
     sudoku: [],
     blockBreaker: [],
     solitairePyramid: [],
+    flappyBird: [],
+    spaceInvaders: [],
+    tetris: [],
+    asteroids: [],
+    frogger: [],
+    duckHunt: [],
+    donkeyKong: [],
   },
   timedHighscores: {
     minesweeperEasy: [],

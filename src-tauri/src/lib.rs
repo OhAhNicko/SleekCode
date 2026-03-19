@@ -133,21 +133,13 @@ mod win32_border {
     }
 
     const SW_MINIMIZE: i32 = 6;
-    const SW_SHOWNORMAL: u32 = 1;
 
-    /// Minimize from maximized state without flashing the restored window.
-    /// Sets the placement's show_cmd to SW_SHOWNORMAL so that when the user
-    /// clicks the taskbar icon, the window restores to its normal size — not maximized.
+    /// Minimize directly from maximized state without flashing the restored window.
+    /// Windows preserves the prior state (maximized/normal) automatically —
+    /// restoring from taskbar or Alt+Tab returns to the same state.
     pub fn minimize_to_normal(hwnd: *mut c_void) {
         unsafe {
-            let mut wp: WINDOWPLACEMENT = std::mem::zeroed();
-            wp.length = std::mem::size_of::<WINDOWPLACEMENT>() as u32;
-            GetWindowPlacement(hwnd, &mut wp);
-            // Minimize directly (no visual unmaximize)
             ShowWindow(hwnd, SW_MINIMIZE);
-            // Override the restored state so taskbar restore goes to normal, not maximized
-            wp.show_cmd = SW_SHOWNORMAL;
-            SetWindowPlacement(hwnd, &wp);
         }
     }
 
@@ -3599,6 +3591,140 @@ async fn read_session_context_native(
     }
 }
 
+/// Shared helper: find a project's sessions directory with case-insensitive fallback.
+fn find_claude_project_dir(home: &str, project_path: &str, separator: char) -> Option<std::path::PathBuf> {
+    let encoded = project_path.replace('\\', "-").replace(separator, "-");
+    let encoded = encoded.trim_start_matches('-').to_string();
+    let projects_dir = std::path::Path::new(home).join(".claude").join("projects");
+    let exact = projects_dir.join(&encoded);
+    if exact.exists() { return Some(exact); }
+    // Case-insensitive fallback
+    let lower = encoded.to_lowercase();
+    std::fs::read_dir(&projects_dir).ok()?
+        .filter_map(|e| e.ok())
+        .find(|e| e.file_name().to_string_lossy().to_lowercase() == lower)
+        .map(|e| e.path())
+}
+
+/// Parse sessions-index.json and return a JSON array of entries.
+fn parse_sessions_index(index_path: &std::path::Path) -> Result<String, String> {
+    let content = match std::fs::read_to_string(index_path) {
+        Ok(c) => c,
+        Err(_) => return Ok("[]".to_string()),
+    };
+    let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    let entries = match v.get("entries").and_then(|e| e.as_array()) {
+        Some(arr) => arr,
+        None => return Ok("[]".to_string()),
+    };
+
+    let mut items: Vec<serde_json::Value> = entries.iter()
+        .filter(|e| !e.get("isSidechain").and_then(|v| v.as_bool()).unwrap_or(false))
+        .map(|e| {
+            let first_prompt = e.get("firstPrompt").and_then(|v| v.as_str()).unwrap_or("");
+            let truncated: String = first_prompt.chars().take(100).collect();
+            serde_json::json!({
+                "sessionId": e.get("sessionId").and_then(|v| v.as_str()).unwrap_or(""),
+                "summary": e.get("summary").and_then(|v| v.as_str()).unwrap_or(""),
+                "customTitle": e.get("customTitle").and_then(|v| v.as_str()).unwrap_or(""),
+                "firstPrompt": truncated,
+                "messageCount": e.get("messageCount").and_then(|v| v.as_u64()).unwrap_or(0),
+                "created": e.get("created").and_then(|v| v.as_str()).unwrap_or(""),
+                "modified": e.get("modified").and_then(|v| v.as_str()).unwrap_or(""),
+                "gitBranch": e.get("gitBranch").and_then(|v| v.as_str()).unwrap_or(""),
+                "isSidechain": false,
+            })
+        })
+        .collect();
+
+    // Sort by modified desc, limit to 30
+    items.sort_by(|a, b| {
+        let ma = a.get("modified").and_then(|v| v.as_str()).unwrap_or("");
+        let mb = b.get("modified").and_then(|v| v.as_str()).unwrap_or("");
+        mb.cmp(ma)
+    });
+    items.truncate(30);
+
+    serde_json::to_string(&items).map_err(|e| e.to_string())
+}
+
+/// Read sessions-index.json on native Windows via %USERPROFILE%.
+#[tauri::command]
+async fn read_sessions_index_windows(project_path: String) -> Result<String, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let dir = match find_claude_project_dir(&home, &project_path, '/') {
+        Some(d) => d,
+        None => return Ok("[]".to_string()),
+    };
+    parse_sessions_index(&dir.join("sessions-index.json"))
+}
+
+/// Read sessions-index.json on macOS/Linux via $HOME.
+#[tauri::command]
+async fn read_sessions_index_native(project_path: String) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let dir = match find_claude_project_dir(&home, &project_path, '/') {
+        Some(d) => d,
+        None => return Ok("[]".to_string()),
+    };
+    parse_sessions_index(&dir.join("sessions-index.json"))
+}
+
+/// Read sessions-index.json via WSL.
+#[tauri::command]
+async fn read_sessions_index(project_path: String, distro: Option<String>) -> Result<String, String> {
+    let encoded = project_path.replace('/', "-");
+
+    let script = format!(
+        r#"DIR="$HOME/.claude/projects/{enc}"
+if [ ! -d "$DIR" ]; then
+  enc_lower=$(echo '{enc}' | tr '[:upper:]' '[:lower:]')
+  for d in $HOME/.claude/projects/*/; do
+    base=$(basename "$d")
+    if [ "$(echo "$base" | tr '[:upper:]' '[:lower:]')" = "$enc_lower" ]; then
+      DIR="$d"
+      break
+    fi
+  done
+fi
+FILE="$DIR/sessions-index.json"
+[ -f "$FILE" ] || exit 0
+python3 -c "
+import json,sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+entries = [e for e in data.get('entries', []) if not e.get('isSidechain', False)]
+entries.sort(key=lambda e: e.get('modified', ''), reverse=True)
+out = []
+for e in entries[:30]:
+    fp = (e.get('firstPrompt') or '')[:100]
+    out.append(dict(sessionId=e.get('sessionId',''), summary=e.get('summary',''),
+        customTitle=e.get('customTitle',''), firstPrompt=fp,
+        messageCount=e.get('messageCount',0), created=e.get('created',''),
+        modified=e.get('modified',''), gitBranch=e.get('gitBranch',''), isSidechain=False))
+print(json.dumps(out))
+" "$FILE""#,
+        enc = encoded
+    );
+
+    let mut cmd = wsl_command();
+    if let Some(ref d) = distro {
+        if !d.is_empty() {
+            cmd.args(["-d", d]);
+        }
+    }
+    cmd.args(["--", "bash", "-lic", &script]);
+
+    let output = cmd.output().map_err(|e| format!("Failed to read sessions index: {}", e))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    if stdout.is_empty() {
+        return Ok("[]".to_string());
+    }
+
+    Ok(stdout)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3606,7 +3732,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_window_state::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

@@ -1,5 +1,5 @@
 export type TerminalType = "claude" | "codex" | "gemini" | "shell" | "devserver";
-export type GameType = "snake" | "2048" | "sudoku" | "crossword" | "minesweeper" | "wordle" | "ticTacToe" | "blockBreaker" | "solitaire" | "pong" | "chess" | "memory";
+export type GameType = "snake" | "2048" | "sudoku" | "crossword" | "minesweeper" | "wordle" | "ticTacToe" | "blockBreaker" | "solitaire" | "pong" | "chess" | "memory" | "flappyBird" | "spaceInvaders" | "tetris" | "asteroids" | "frogger" | "duckHunt" | "donkeyKong";
 export type TerminalBackend = "wsl" | "windows" | "native";
 
 export type AuthMethod = "ssh-key" | "password";
@@ -58,6 +58,19 @@ export interface ProjectSession {
   type: TerminalType;  // claude | codex | gemini
   createdAt: number;
   isRenamed: boolean;   // true = user manually renamed, prevents auto-name override
+}
+
+/** Entry from Claude CLI's sessions-index.json */
+export interface SessionIndexEntry {
+  sessionId: string;
+  summary: string;
+  customTitle: string;
+  firstPrompt: string;
+  messageCount: number;
+  created: string;   // ISO datetime
+  modified: string;  // ISO datetime
+  gitBranch: string;
+  isSidechain: boolean;
 }
 
 export interface PaneBrowser {

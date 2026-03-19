@@ -77,6 +77,12 @@ const SettingsIcon = (
   </svg>
 );
 
+const SearchIcon = (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M10.68 11.74a6 6 0 01-7.922-8.982 6 6 0 018.982 7.922l3.04 3.04a.749.749 0 01-.326 1.275.749.749 0 01-.734-.215l-3.04-3.04zM11.5 7a4.499 4.499 0 10-8.997 0A4.499 4.499 0 0011.5 7z"/>
+  </svg>
+);
+
 const KeyboardIcon = (
   <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
     <path d="M0 3.75C0 2.784.784 2 1.75 2h12.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 14H1.75A1.75 1.75 0 010 12.25v-8.5zm1.75-.25a.25.25 0 00-.25.25v8.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25H1.75zM4 11a1 1 0 011-1h6a1 1 0 110 2H5a1 1 0 01-1-1zm-1-4a1 1 0 011-1h.01a1 1 0 010 2H4a1 1 0 01-1-1zm3 0a1 1 0 011-1h.01a1 1 0 010 2H7a1 1 0 01-1-1zm3 0a1 1 0 011-1h.01a1 1 0 010 2H10a1 1 0 01-1-1zm3 0a1 1 0 011-1h.01a1 1 0 010 2H13a1 1 0 01-1-1z"/>
@@ -222,6 +228,12 @@ export default function GlobalContextMenu() {
   // Help section
   sections.push({
     items: [
+      {
+        label: "Search Prompt History",
+        shortcut: "Ctrl+R",
+        icon: SearchIcon,
+        action: () => { window.dispatchEvent(new Event("ezydev:open-prompt-search")); close(); },
+      },
       {
         label: "Keyboard Shortcuts",
         shortcut: "Ctrl+/",

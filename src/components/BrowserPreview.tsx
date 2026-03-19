@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useBrowserConsoleStore, type ConsoleEntry } from "../store/browserConsoleStore";
-import { FaCheck, FaChevronLeft, FaChevronRight, FaGlobe, FaExternalLinkAlt, FaCrosshairs, FaTerminal, FaDesktop, FaTrash, FaLock, FaLockOpen } from "react-icons/fa";
+import { FaCheck, FaChevronLeft, FaChevronRight, FaGlobe, FaExternalLinkAlt, FaCrosshairs, FaTerminal, FaDesktop, FaTrash, FaLock, FaLockOpen, FaBug } from "react-icons/fa";
 import { FaArrowsRotate, FaXmark } from "react-icons/fa6";
 import { BiRefresh, BiTimer } from "react-icons/bi";
 
@@ -221,6 +221,7 @@ export default function BrowserPreview({
   const consoleSelectMode = useBrowserConsoleStore((s) => s.selectMode);
   const consoleSelectedIds = useBrowserConsoleStore((s) => s.selectedIds);
   const toggleConsoleSelected = useBrowserConsoleStore((s) => s.toggleSelected);
+  const autoDebug = useBrowserConsoleStore((s) => s.autoDebug);
 
   // Mirror console entries to standalone store for EzyComposer access
   useEffect(() => {
@@ -892,6 +893,18 @@ export default function BrowserPreview({
               >
                 {tabBadgeCount()}
               </span>
+            )}
+
+            {/* Auto-debug toggle — only on console tab */}
+            {devtoolsTab === "console" && (
+              <NavButton
+                title={autoDebug ? "Disable auto error debug" : "Enable auto error debug"}
+                onClick={() => useBrowserConsoleStore.getState().setAutoDebug(!autoDebug)}
+                active={autoDebug}
+                hoverColor="#ef4444"
+              >
+                <FaBug size={11} color="currentColor" />
+              </NavButton>
             )}
 
             <div className="flex-1" />

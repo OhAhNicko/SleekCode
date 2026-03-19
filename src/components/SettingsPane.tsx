@@ -767,7 +767,7 @@ export default function SettingsPane() {
         width: 160,
         flexShrink: 0,
         borderRight: "1px solid var(--ezy-border)",
-        padding: "24px 0",
+        padding: "12px 0",
         overflowY: "auto",
         display: "flex",
         flexDirection: "column",

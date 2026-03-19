@@ -178,9 +178,46 @@ export default function TerminalPane({
   // Tracks whether we're waiting for PTY data after a restart (hides composer until loaded)
   const awaitingRestartDataRef = useRef(false);
 
+  // --- Write-batching: coalesce PTY data chunks and flush once per animation frame ---
+  const pendingChunksRef = useRef<Uint8Array[]>([]);
+  const pendingBytesRef = useRef(0);
+  const batchRafRef = useRef(0);
+
+  const flushPtyBatch = useCallback(() => {
+    batchRafRef.current = 0;
+    const term = terminalRef.current;
+    const chunks = pendingChunksRef.current;
+    const totalBytes = pendingBytesRef.current;
+    if (!term || chunks.length === 0) return;
+
+    // Concatenate all pending chunks into a single write
+    if (chunks.length === 1) {
+      term.write(chunks[0]);
+    } else {
+      const merged = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      term.write(merged);
+    }
+    pendingChunksRef.current = [];
+    pendingBytesRef.current = 0;
+
+    // Batch activity recording per flush instead of per chunk
+    recordTerminalActivity(terminalId, terminalTypeRef.current, totalBytes);
+  }, [terminalId]);
+
   const handlePtyData = useCallback((data: Uint8Array) => {
-    terminalRef.current?.write(new Uint8Array(data));
-    recordTerminalActivity(terminalId, terminalTypeRef.current, data.length);
+    // Queue data for batched write on next animation frame
+    pendingChunksRef.current.push(new Uint8Array(data));
+    pendingBytesRef.current += data.length;
+    if (!batchRafRef.current) {
+      batchRafRef.current = requestAnimationFrame(flushPtyBatch);
+    }
+
+    // These side-effects must stay immediate (per-chunk):
     // Notify external data listeners (e.g. port detection for dev servers)
     getTerminalDataListener(terminalId)?.(data);
 
@@ -340,7 +377,7 @@ export default function TerminalPane({
       zoomIndicatorTimer.current = setTimeout(() => setZoomIndicator(null), 1200);
     }
 
-    const manyPanes = paneCountRef.current > 6; // used for scrollback budget
+    const manyPanes = paneCountRef.current > 6; // used for WebGL stagger delay
     const baseFontSize = cliFontSizeRef.current;
 
     const term = new Terminal({
@@ -356,7 +393,7 @@ export default function TerminalPane({
       letterSpacing: 0, // Must stay 0 — any value >0 gaps box-drawing chars in ALL renderers (DOM, WebGL, Canvas)
       allowTransparency: true,
       allowProposedApi: true,
-      scrollback: manyPanes ? 2000 : 10000,
+      scrollback: paneCount <= 3 ? 10000 : paneCount <= 6 ? 5000 : paneCount <= 9 ? 3000 : 1500,
       convertEol: true,
       minimumContrastRatio: 1,
     });
@@ -821,6 +858,18 @@ export default function TerminalPane({
     let currentFontSize = baseFontSize;
     let lastWidth = el.clientWidth;
     let lastHeight = el.clientHeight;
+    // Persistent scroll state across a resize sequence — when doFit() is called
+    // multiple times in quick succession (ResizeObserver fires multiple times during
+    // layout changes), the viewport position captured by the FIRST call is the only
+    // reliable one. Subsequent calls may read a stale/reset viewport (WebGL renderer
+    // can asynchronously reset viewportY between calls). By locking the scroll state
+    // on the first call and only clearing it after the final deferred restore, we
+    // guarantee the user's scroll position survives the entire resize sequence.
+    let resizeLocked = false;
+    let resizeWasAtBottom = false;
+    let resizeSavedViewport = 0;
+    let resizeRafId1 = 0;
+    let resizeRafId2 = 0;
     function doFit() {
       try {
         if (el.clientWidth === 0 || el.clientHeight === 0) return;
@@ -834,29 +883,44 @@ export default function TerminalPane({
         // toggle, browser preview) resize the container, and fit() resets viewport.
         // Save BEFORE fit, restore AFTER fit + after a rAF to ensure xterm has
         // processed the resize internally.
+        //
+        // CRITICAL: Only capture viewport state on the FIRST doFit() in a resize
+        // sequence. Subsequent calls may read a corrupted viewportY (WebGL renderer
+        // resets it asynchronously after fit()). The locked state persists until
+        // the double-rAF deferred restore completes.
         const buf = term.buffer.active;
-        const wasAtBottom = buf.baseY - buf.viewportY <= 3;
-        const savedViewport = buf.viewportY;
+        if (!resizeLocked) {
+          resizeWasAtBottom = buf.baseY - buf.viewportY <= 3;
+          resizeSavedViewport = buf.viewportY;
+          resizeLocked = true;
+        }
+        // Cancel any pending deferred restores from a previous doFit() call —
+        // they would use the same locked state, but the terminal dimensions have
+        // changed again so we need a fresh deferred restore after THIS fit().
+        cancelAnimationFrame(resizeRafId1);
+        cancelAnimationFrame(resizeRafId2);
         fitAddon.fit();
         // Immediate restore
-        if (wasAtBottom) {
+        if (resizeWasAtBottom) {
           term.scrollToBottom();
         } else {
-          term.scrollToLine(Math.min(savedViewport, buf.baseY));
+          term.scrollToLine(Math.min(resizeSavedViewport, buf.baseY));
         }
         // Deferred restore — xterm may process the resize asynchronously
         // (especially with WebGL renderer), resetting scroll after our
         // immediate restore. Double-rAF ensures we restore after xterm settles.
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
+        resizeRafId1 = requestAnimationFrame(() => {
+          resizeRafId2 = requestAnimationFrame(() => {
             try {
               const buf2 = term.buffer.active;
-              if (wasAtBottom) {
+              if (resizeWasAtBottom) {
                 term.scrollToBottom();
               } else {
-                term.scrollToLine(Math.min(savedViewport, buf2.baseY));
+                term.scrollToLine(Math.min(resizeSavedViewport, buf2.baseY));
               }
             } catch { /* disposed */ }
+            // Unlock: the resize sequence is complete, next doFit() captures fresh state
+            resizeLocked = false;
           });
         });
         lastWidth = el.clientWidth;
@@ -869,6 +933,9 @@ export default function TerminalPane({
       clearTimeout(fitTimer);
       // Large jump (pane added/removed) → fit immediately to prevent scroll drift.
       // Small incremental changes (window drag) → debounce.
+      // Exception: Gemini CLI clears and redraws the entire screen on SIGWINCH
+      // (resize signal), causing a jarring "reload" flash. Always debounce Gemini
+      // so it gets exactly ONE resize after the layout settles.
       const dw = Math.abs(el.clientWidth - lastWidth);
       const dh = Math.abs(el.clientHeight - lastHeight);
       if (dw > 50 || dh > 50) {
@@ -896,7 +963,11 @@ export default function TerminalPane({
       }
     }
     const scrollDisposable = term.onScroll(updateJumpBtn);
-    const renderDisposable = term.onRender(updateJumpBtn);
+    let jumpDebounce: ReturnType<typeof setTimeout> | undefined;
+    const renderDisposable = term.onRender(() => {
+      clearTimeout(jumpDebounce);
+      jumpDebounce = setTimeout(updateJumpBtn, 200);
+    });
 
     // Ctrl+Scroll wheel — zoom font size (per terminal type)
     const MIN_FONT_SIZE = 8;
@@ -920,11 +991,20 @@ export default function TerminalPane({
       disposed = true;
       clearInlineHint();
       clearTimeout(webglTimer);
+      clearTimeout(jumpDebounce);
       cancelAnimationFrame(settleRaf1);
       cancelAnimationFrame(settleRaf2);
       clearTimeout(settleTimer);
       clearTimeout(retryTimer);
       clearTimeout(fitTimer);
+      cancelAnimationFrame(resizeRafId1);
+      cancelAnimationFrame(resizeRafId2);
+      // Flush any pending write batch synchronously before disposing
+      if (batchRafRef.current) {
+        cancelAnimationFrame(batchRafRef.current);
+        batchRafRef.current = 0;
+        flushPtyBatch();
+      }
       observer.disconnect();
       fileLinkDisposable.dispose();
       dataDisposable.dispose();
@@ -1308,6 +1388,7 @@ export default function TerminalPane({
           isYolo={launchedWithYolo}
           contextInfo={contextInfo}
           workingDir={workingDir}
+          backend={backend}
           sessionResumeId={sessionResumeId}
           sessionTrusted={sessionTrusted}
           onSwitchSession={handleSwitchSession}

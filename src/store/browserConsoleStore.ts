@@ -15,12 +15,15 @@ interface BrowserConsoleStore {
   selectedIds: Set<number>;
   /** One-shot flag: EzyComposer sets true, BrowserPreview consumes and opens console tab */
   requestOpenConsole: boolean;
+  /** Auto-debug: show red error-debug button in composer when errors exist */
+  autoDebug: boolean;
   setEntries: (entries: ConsoleEntry[]) => void;
   setActive: (on: boolean) => void;
   setSelectMode: (on: boolean) => void;
   toggleSelected: (id: number) => void;
   clearSelection: () => void;
   setRequestOpenConsole: (on: boolean) => void;
+  setAutoDebug: (on: boolean) => void;
 }
 
 /** Session-only store for browser console entries (not persisted) */
@@ -30,6 +33,7 @@ export const useBrowserConsoleStore = create<BrowserConsoleStore>((set) => ({
   selectMode: false,
   selectedIds: new Set(),
   requestOpenConsole: false,
+  autoDebug: false,
   setEntries: (entries) => set({ entries }),
   setActive: (on) => set({ active: on }),
   setSelectMode: (on) => set(on ? { selectMode: true, selectedIds: new Set() } : { selectMode: false }),
@@ -42,4 +46,5 @@ export const useBrowserConsoleStore = create<BrowserConsoleStore>((set) => ({
     }),
   clearSelection: () => set({ selectedIds: new Set(), selectMode: false }),
   setRequestOpenConsole: (on) => set({ requestOpenConsole: on }),
+  setAutoDebug: (on) => set({ autoDebug: on }),
 }));

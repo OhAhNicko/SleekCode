@@ -13,6 +13,13 @@ import SolitaireGame from "./games/SolitaireGame";
 import PongGame from "./games/PongGame";
 import ChessGame from "./games/ChessGame";
 import MemoryGame from "./games/MemoryGame";
+import FlappyBirdGame from "./games/FlappyBirdGame";
+import SpaceInvadersGame from "./games/SpaceInvadersGame";
+import TetrisGame from "./games/TetrisGame";
+import AsteroidsGame from "./games/AsteroidsGame";
+import FroggerGame from "./games/FroggerGame";
+import DuckHuntGame from "./games/DuckHuntGame";
+import DonkeyKongGame from "./games/DonkeyKongGame";
 import { CROSSWORD_PUZZLES } from "../lib/crossword-puzzles";
 import { FaXmark, FaChevronLeft, FaPause, FaPlay } from "react-icons/fa6";
 
@@ -241,6 +248,132 @@ const GAME_CARDS: GameCardDef[] = [
       </svg>
     ),
   },
+  {
+    type: "flappyBird",
+    name: "Flappy Bird",
+    description: "Tap to flap. Dodge pipes. How far can you go?",
+    statType: "highscore",
+    statKey: "flappyBird",
+    icon: (
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <ellipse cx="12" cy="14" rx="6" ry="5" fill="var(--ezy-accent)" />
+        <ellipse cx="10" cy="13" rx="3.5" ry="2" fill="var(--ezy-surface-raised)" stroke="var(--ezy-border)" strokeWidth="0.5" />
+        <circle cx="15" cy="12.5" r="1.5" fill="var(--ezy-bg)" />
+        <circle cx="15.5" cy="12.5" r="0.7" fill="var(--ezy-text)" />
+        <polygon points="18,14 22,14.5 18,16" fill="var(--ezy-surface-raised)" />
+        <rect x="23" y="2" width="4" height="8" rx="1" fill="var(--ezy-surface-raised)" stroke="var(--ezy-border)" strokeWidth="0.5" />
+        <rect x="23" y="20" width="4" height="8" rx="1" fill="var(--ezy-surface-raised)" stroke="var(--ezy-border)" strokeWidth="0.5" />
+      </svg>
+    ),
+  },
+  {
+    type: "spaceInvaders",
+    name: "Space Invaders",
+    description: "Defend Earth. Shoot aliens before they land.",
+    statType: "highscore",
+    statKey: "spaceInvaders",
+    icon: (
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="8" y="6" width="4" height="4" fill="var(--ezy-accent)" />
+        <rect x="16" y="6" width="4" height="4" fill="var(--ezy-accent)" />
+        <rect x="6" y="10" width="16" height="4" fill="var(--ezy-accent)" />
+        <rect x="4" y="14" width="20" height="4" fill="var(--ezy-accent)" />
+        <rect x="4" y="18" width="4" height="4" fill="var(--ezy-accent)" />
+        <rect x="10" y="18" width="8" height="4" fill="var(--ezy-accent)" />
+        <rect x="20" y="18" width="4" height="4" fill="var(--ezy-accent)" />
+      </svg>
+    ),
+  },
+  {
+    type: "tetris",
+    name: "Tetris",
+    description: "Stack blocks. Clear lines. Chase the Tetris.",
+    statType: "highscore",
+    statKey: "tetris",
+    icon: (
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="4" y="18" width="6" height="6" rx="1" fill="#06b6d4" />
+        <rect x="10" y="18" width="6" height="6" rx="1" fill="#06b6d4" />
+        <rect x="10" y="12" width="6" height="6" rx="1" fill="#a855f7" />
+        <rect x="16" y="12" width="6" height="6" rx="1" fill="#a855f7" />
+        <rect x="16" y="18" width="6" height="6" rx="1" fill="#a855f7" />
+        <rect x="10" y="6" width="6" height="6" rx="1" fill="#f97316" />
+        <rect x="16" y="6" width="6" height="6" rx="1" fill="#f97316" />
+        <rect x="22" y="6" width="4" height="6" rx="1" fill="#f97316" />
+      </svg>
+    ),
+  },
+  {
+    type: "asteroids",
+    name: "Asteroids",
+    description: "Blast rocks in deep space. Vector arcade classic.",
+    statType: "highscore",
+    statKey: "asteroids",
+    icon: (
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <polygon points="14,2 18,8 24,10 20,16 22,24 14,20 6,24 8,16 4,10 10,8" stroke="var(--ezy-text-muted)" strokeWidth="1.5" fill="none" />
+        <polygon points="14,22 13,26 15,26" fill="var(--ezy-accent)" />
+        <line x1="14" y1="18" x2="14" y2="22" stroke="var(--ezy-accent)" strokeWidth="1" />
+      </svg>
+    ),
+  },
+  {
+    type: "frogger",
+    name: "Frogger",
+    description: "Cross roads and rivers. Reach the lily pads.",
+    statType: "highscore",
+    statKey: "frogger",
+    icon: (
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <ellipse cx="14" cy="16" rx="8" ry="6" fill="#22c55e" />
+        <circle cx="10" cy="11" r="3" fill="#22c55e" />
+        <circle cx="18" cy="11" r="3" fill="#22c55e" />
+        <circle cx="10" cy="10.5" r="1.5" fill="var(--ezy-bg)" />
+        <circle cx="18" cy="10.5" r="1.5" fill="var(--ezy-bg)" />
+        <circle cx="10.5" cy="10.5" r="0.7" fill="var(--ezy-text)" />
+        <circle cx="18.5" cy="10.5" r="0.7" fill="var(--ezy-text)" />
+      </svg>
+    ),
+  },
+  {
+    type: "duckHunt",
+    name: "Duck Hunt",
+    description: "Aim. Shoot. Don't let the ducks escape.",
+    statType: "highscore",
+    statKey: "duckHunt",
+    icon: (
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <ellipse cx="12" cy="16" rx="6" ry="5" fill="#22c55e" />
+        <ellipse cx="14" cy="12" rx="4" ry="3.5" fill="#22c55e" />
+        <circle cx="16" cy="11" r="1.2" fill="var(--ezy-bg)" />
+        <circle cx="16.3" cy="11" r="0.5" fill="var(--ezy-text)" />
+        <polygon points="18,12.5 22,12 18,13.5" fill="var(--ezy-surface-raised)" />
+        <line x1="8" y1="20" x2="6" y2="24" stroke="var(--ezy-accent)" strokeWidth="1.5" />
+        <line x1="12" y1="20" x2="12" y2="24" stroke="var(--ezy-accent)" strokeWidth="1.5" />
+        <line x1="22" y1="4" x2="22" y2="10" stroke="var(--ezy-text-muted)" strokeWidth="0.8" />
+        <line x1="19" y1="7" x2="25" y2="7" stroke="var(--ezy-text-muted)" strokeWidth="0.8" />
+      </svg>
+    ),
+  },
+  {
+    type: "donkeyKong",
+    name: "Donkey Kong",
+    description: "Climb girders. Jump barrels. Rescue Pauline.",
+    statType: "highscore",
+    statKey: "donkeyKong",
+    icon: (
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <rect x="2" y="22" width="24" height="3" rx="1" fill="#dc2626" />
+        <rect x="4" y="15" width="20" height="3" rx="1" fill="#dc2626" />
+        <rect x="2" y="8" width="18" height="3" rx="1" fill="#dc2626" />
+        <rect x="6" y="11" width="2" height="4" fill="var(--ezy-text-muted)" />
+        <rect x="20" y="18" width="2" height="4" fill="var(--ezy-text-muted)" />
+        <circle cx="8" cy="5" r="4" fill="#92400e" />
+        <rect x="18" y="19" width="4" height="3" fill="#dc2626" />
+        <rect x="19" y="17" width="2" height="2" fill="var(--ezy-surface-raised)" />
+      </svg>
+    ),
+  },
 ];
 
 const GAME_LABELS: Record<GameType, string> = {
@@ -256,6 +389,13 @@ const GAME_LABELS: Record<GameType, string> = {
   pong: "Pong",
   chess: "Chess",
   memory: "Memory",
+  flappyBird: "Flappy Bird",
+  spaceInvaders: "Space Invaders",
+  tetris: "Tetris",
+  asteroids: "Asteroids",
+  frogger: "Frogger",
+  duckHunt: "Duck Hunt",
+  donkeyKong: "Donkey Kong",
 };
 
 function formatTime(seconds: number): string {
@@ -361,6 +501,20 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         return <ChessGame onUpdateStats={updateChessStats} paused={paused} />;
       case "memory":
         return <MemoryGame onAddTimedHighscore={addTimedHighscore} paused={paused} />;
+      case "flappyBird":
+        return <FlappyBirdGame onAddHighscore={(s) => addHighscore("flappyBird", s)} paused={paused} />;
+      case "spaceInvaders":
+        return <SpaceInvadersGame onAddHighscore={(s) => addHighscore("spaceInvaders", s)} paused={paused} />;
+      case "tetris":
+        return <TetrisGame onAddHighscore={(s) => addHighscore("tetris", s)} paused={paused} />;
+      case "asteroids":
+        return <AsteroidsGame onAddHighscore={(s) => addHighscore("asteroids", s)} paused={paused} />;
+      case "frogger":
+        return <FroggerGame onAddHighscore={(s) => addHighscore("frogger", s)} paused={paused} />;
+      case "duckHunt":
+        return <DuckHuntGame onAddHighscore={(s) => addHighscore("duckHunt", s)} paused={paused} />;
+      case "donkeyKong":
+        return <DonkeyKongGame onAddHighscore={(s) => addHighscore("donkeyKong", s)} paused={paused} />;
       default:
         return null;
     }
@@ -605,15 +759,16 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
             ))}
 
             {/* Highscores section */}
-            {(highscores.snake.length > 0 || highscores.twentyFortyEight.length > 0 || highscores.sudoku.length > 0 || highscores.blockBreaker.length > 0) && (
+            {(highscores.snake.length > 0 || highscores.twentyFortyEight.length > 0 || highscores.sudoku.length > 0 || highscores.blockBreaker.length > 0 || highscores.flappyBird.length > 0 || highscores.spaceInvaders.length > 0 || highscores.tetris.length > 0 || highscores.asteroids.length > 0 || highscores.frogger.length > 0 || highscores.duckHunt.length > 0 || highscores.donkeyKong.length > 0) && (
               <div style={{ marginTop: 8 }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
                   Top Scores
                 </div>
-                {(["snake", "twentyFortyEight", "sudoku", "blockBreaker"] as const).map((key) => {
+                {(["snake", "twentyFortyEight", "sudoku", "blockBreaker", "flappyBird", "spaceInvaders", "tetris", "asteroids", "frogger", "duckHunt", "donkeyKong"] as const).map((key) => {
                   const list = highscores[key];
                   if (list.length === 0) return null;
-                  const label = key === "snake" ? "Snake" : key === "twentyFortyEight" ? "2048" : key === "sudoku" ? "Sudoku" : "Block Breaker";
+                  const labelMap: Record<string, string> = { snake: "Snake", twentyFortyEight: "2048", sudoku: "Sudoku", blockBreaker: "Block Breaker", flappyBird: "Flappy Bird", spaceInvaders: "Space Invaders", tetris: "Tetris", asteroids: "Asteroids", frogger: "Frogger", duckHunt: "Duck Hunt", donkeyKong: "Donkey Kong" };
+                  const label = labelMap[key] ?? key;
                   return (
                     <div key={key} style={{ marginBottom: 8 }}>
                       <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text-secondary)", marginBottom: 4 }}>{label}</div>

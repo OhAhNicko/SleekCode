@@ -1570,60 +1570,6 @@ export default function TabBar() {
                 zIndex: 9999,
               }}
             >
-              {/* Open Settings sidebar + subtle "set sidebar as default" icon */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                  borderBottom: "1px solid var(--ezy-border)",
-                }}
-                onClick={() => {
-                  setShowSettingsMenu(false);
-                  useAppStore.getState().setSettingsPanelOpen(true);
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="2" width="12" height="12" rx="2" />
-                  <line x1="2" y1="6" x2="14" y2="6" />
-                  <line x1="6" y1="6" x2="6" y2="14" />
-                </svg>
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", flex: 1 }}>Open Settings</span>
-                <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>Ctrl+,</span>
-                {/* Small icon to set sidebar as default — mirrors the chevron in SettingsPane */}
-                <div
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    useAppStore.getState().setSettingsGearMode("sidebar");
-                    setShowSettingsMenu(false);
-                    useAppStore.getState().setSettingsPanelOpen(true);
-                  }}
-                  title="Set sidebar as default"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    width: 22,
-                    height: 22,
-                    borderRadius: 4,
-                    cursor: "pointer",
-                    color: "var(--ezy-text-muted)",
-                    transition: "background-color 120ms ease",
-                    marginLeft: 2,
-                    flexShrink: 0,
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M2 4h12M2 8h12M2 12h12" />
-                  </svg>
-                </div>
-              </div>
               {/* Terminal Backend section */}
               <div
                 style={{
@@ -1644,7 +1590,28 @@ export default function TabBar() {
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
               >
                 <span>Terminal</span>
-                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.terminal ? "rotate(-90deg)" : "rotate(0deg)" }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {/* Switch to sidebar mode */}
+                  <span
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      useAppStore.getState().setSettingsGearMode("sidebar");
+                      setShowSettingsMenu(false);
+                      useAppStore.getState().setSettingsPanelOpen(true);
+                    }}
+                    title="Switch to sidebar settings"
+                    style={{ display: "flex", alignItems: "center", cursor: "pointer", opacity: 0.5 }}
+                    onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.5"; }}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="2" y="2" width="12" height="12" rx="2" />
+                      <line x1="2" y1="6" x2="14" y2="6" />
+                      <line x1="6" y1="6" x2="6" y2="14" />
+                    </svg>
+                  </span>
+                  <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.terminal ? "rotate(-90deg)" : "rotate(0deg)" }} />
+                </div>
               </div>
               {!collapsedSections.terminal && isWindows() && <div style={{ padding: "8px 10px" }}>
                 <div

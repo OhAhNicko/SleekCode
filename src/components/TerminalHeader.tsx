@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from "react";
-import type { TerminalType, ProjectSession } from "../types";
+import type { TerminalType, TerminalBackend, ProjectSession, SessionIndexEntry } from "../types";
 import type { ContextInfo } from "../lib/context-parser";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { supportsSessionResume } from "../lib/session-resume";
+import { readSessionsIndex, resolveSessionName } from "../lib/sessions-index";
 import { useAppStore } from "../store";
 import { FaChevronDown, FaCheck, FaPen } from "react-icons/fa";
 import { FaXmark, FaGripVertical, FaPlus } from "react-icons/fa6";
@@ -50,6 +51,7 @@ interface TerminalHeaderProps {
   isYolo?: boolean;
   contextInfo?: ContextInfo | null;
   workingDir?: string;
+  backend?: TerminalBackend;
   sessionResumeId?: string;
   /** True when sessionResumeId came from restore/explicit switch; false when detected from disk (may be stale). */
   sessionTrusted?: boolean;
@@ -205,12 +207,38 @@ function CliPicker({
   );
 }
 
+/** Format a relative time string, e.g. "2h ago", "3d ago" */
+function formatRelativeTime(isoDate: string): string {
+  const diff = Date.now() - new Date(isoDate).getTime();
+  if (diff < 0) return "";
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return `${Math.floor(days / 30)}mo ago`;
+}
+
+/** Merged session item for the picker — combines store + index data */
+interface MergedSession {
+  id: string;
+  name: string;
+  isFromStore: boolean;  // true = opened in current EzyDev session
+  isCurrent: boolean;
+  isRenamed: boolean;
+  modified?: string;     // ISO datetime for historical entries
+}
+
 /** Session picker dropdown — lists saved sessions for current project + CLI type */
 function SessionPicker({
   sessions,
   currentSessionId,
   contextSessionName,
   anchorRef,
+  workingDir,
+  backend,
+  terminalType,
   onSelect,
   onRename,
   onNew,
@@ -221,6 +249,9 @@ function SessionPicker({
   /** Live session name from contextInfo — used as fallback for current session display */
   contextSessionName?: string;
   anchorRef?: React.RefObject<HTMLDivElement | null>;
+  workingDir?: string;
+  backend?: TerminalBackend;
+  terminalType?: TerminalType;
   onSelect: (sessionId: string) => void;
   onRename: (sessionId: string, newName: string) => void;
   onNew: () => void;
@@ -229,13 +260,65 @@ function SessionPicker({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const [indexEntries, setIndexEntries] = useState<SessionIndexEntry[]>([]);
+
+  // Fetch sessions-index on mount (only for Claude sessions)
+  useEffect(() => {
+    if (!workingDir || (terminalType && terminalType !== "claude")) return;
+    const effectiveBackend = backend ?? (useAppStore.getState().terminalBackend as TerminalBackend | undefined) ?? "wsl";
+    readSessionsIndex(workingDir, effectiveBackend).then(setIndexEntries);
+  }, [workingDir, backend, terminalType]);
+
+  // Merge store sessions with index entries
+  const mergedSessions = useMemo((): MergedSession[] => {
+    const storeIds = new Set(sessions.map((s) => s.id));
+    const merged: MergedSession[] = [];
+
+    // Store sessions first (current EzyDev session)
+    for (const s of sessions) {
+      const indexEntry = indexEntries.find((e) => e.sessionId === s.id);
+      const autoName = indexEntry ? resolveSessionName(indexEntry) : undefined;
+      merged.push({
+        id: s.id,
+        name: s.isRenamed ? s.name : (s.name || autoName || (s.id === currentSessionId ? (contextSessionName || s.id.slice(0, 8)) : s.id.slice(0, 8))),
+        isFromStore: true,
+        isCurrent: s.id === currentSessionId,
+        isRenamed: s.isRenamed,
+        modified: indexEntry?.modified,
+      });
+    }
+
+    // Historical entries from index (not in store)
+    for (const entry of indexEntries) {
+      if (storeIds.has(entry.sessionId)) continue;
+      merged.push({
+        id: entry.sessionId,
+        name: resolveSessionName(entry),
+        isFromStore: false,
+        isCurrent: entry.sessionId === currentSessionId,
+        isRenamed: false,
+        modified: entry.modified,
+      });
+    }
+
+    // Sort: current first, then by modified desc (historical entries have timestamps)
+    merged.sort((a, b) => {
+      if (a.isCurrent) return -1;
+      if (b.isCurrent) return 1;
+      if (a.isFromStore !== b.isFromStore) return a.isFromStore ? -1 : 1;
+      if (a.modified && b.modified) return b.modified.localeCompare(a.modified);
+      return 0;
+    });
+
+    return merged;
+  }, [sessions, indexEntries, currentSessionId, contextSessionName]);
 
   // Position dropdown below the anchor element using fixed positioning
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   useEffect(() => {
     if (anchorRef?.current) {
       const rect = anchorRef.current.getBoundingClientRect();
-      setPos({ top: rect.bottom + 2, left: Math.max(8, rect.right - 220) });
+      setPos({ top: rect.bottom + 2, left: Math.max(8, rect.right - 260) });
     }
   }, [anchorRef]);
 
@@ -281,18 +364,18 @@ function SessionPicker({
           position: "fixed",
           top: pos.top,
           left: pos.left,
-          width: 220,
+          width: 260,
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
           borderRadius: 8,
           overflow: "hidden",
           boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
           zIndex: 200,
-          maxHeight: 300,
+          maxHeight: 340,
         }}
       >
-        <div style={{ overflowY: "auto", maxHeight: 256 }}>
-          {sessions.length === 0 && (
+        <div style={{ overflowY: "auto", maxHeight: 296 }}>
+          {mergedSessions.length === 0 && (
             <div
               style={{
                 padding: "8px 10px",
@@ -304,10 +387,8 @@ function SessionPicker({
               No saved sessions
             </div>
           )}
-          {sessions.map((session) => {
-            const isCurrent = session.id === currentSessionId;
+          {mergedSessions.map((session) => {
             const isEditing = editingId === session.id;
-            const displayName = session.name || (isCurrent && contextSessionName) || session.id.slice(0, 8);
             return (
               <div
                 key={session.id}
@@ -317,13 +398,13 @@ function SessionPicker({
                   alignItems: "center",
                   gap: 4,
                   padding: "0 4px 0 0",
-                  backgroundColor: isCurrent ? "var(--ezy-accent-glow)" : "transparent",
+                  backgroundColor: session.isCurrent ? "var(--ezy-accent-glow)" : "transparent",
                 }}
                 onMouseEnter={(e) => {
-                  if (!isCurrent) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
+                  if (!session.isCurrent) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
                 }}
                 onMouseLeave={(e) => {
-                  if (!isCurrent) e.currentTarget.style.backgroundColor = "transparent";
+                  if (!session.isCurrent) e.currentTarget.style.backgroundColor = "transparent";
                 }}
               >
                 {isEditing ? (
@@ -364,26 +445,26 @@ function SessionPicker({
                         border: "none",
                         cursor: "pointer",
                         fontSize: 12,
-                        fontWeight: isCurrent ? 600 : 400,
-                        color: isCurrent ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
+                        fontWeight: session.isCurrent ? 600 : 400,
+                        color: session.isCurrent ? "var(--ezy-text)" : session.isFromStore ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
                         fontFamily: "inherit",
                         overflow: "hidden",
                       }}
                       onClick={() => {
-                        if (!isCurrent) onSelect(session.id);
+                        if (!session.isCurrent) onSelect(session.id);
                         onClose();
                       }}
                     >
-                      {/* Green dot = session has a saved ID (will resume) */}
+                      {/* Green dot for store sessions, dimmer dot for historical */}
                       <span
-                        title="Session saved"
+                        title={session.isFromStore ? "Session saved" : "Historical session"}
                         style={{
                           width: 5,
                           height: 5,
                           borderRadius: "50%",
-                          backgroundColor: "var(--ezy-accent)",
+                          backgroundColor: session.isFromStore ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
                           flexShrink: 0,
-                          opacity: 0.7,
+                          opacity: session.isFromStore ? 0.7 : 0.4,
                         }}
                       />
                       <span
@@ -393,36 +474,52 @@ function SessionPicker({
                           whiteSpace: "nowrap",
                           flex: 1,
                         }}
-                        title={displayName}
+                        title={session.name}
                       >
-                        {displayName}
+                        {session.name}
                       </span>
-                      {isCurrent && (
+                      {/* Relative time for historical sessions */}
+                      {!session.isFromStore && session.modified && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            color: "var(--ezy-text-muted)",
+                            opacity: 0.6,
+                            flexShrink: 0,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {formatRelativeTime(session.modified)}
+                        </span>
+                      )}
+                      {session.isCurrent && (
                         <FaCheck size={10} color="var(--ezy-accent)" style={{ flexShrink: 0 }} />
                       )}
                     </button>
-                    <div
-                      role="button"
-                      className="opacity-0 group-hover/session:opacity-100 transition-opacity"
-                      style={{
-                        cursor: "pointer",
-                        padding: 4,
-                        borderRadius: 4,
-                        flexShrink: 0,
-                        display: "flex",
-                        alignItems: "center",
-                      }}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setEditingId(session.id);
-                        setEditValue(displayName);
-                      }}
-                      title="Rename session"
-                    >
-                      <FaPen size={9} color="var(--ezy-text-muted)" />
-                    </div>
+                    {session.isFromStore && (
+                      <div
+                        role="button"
+                        className="opacity-0 group-hover/session:opacity-100 transition-opacity"
+                        style={{
+                          cursor: "pointer",
+                          padding: 4,
+                          borderRadius: 4,
+                          flexShrink: 0,
+                          display: "flex",
+                          alignItems: "center",
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingId(session.id);
+                          setEditValue(session.name);
+                        }}
+                        title="Rename session"
+                      >
+                        <FaPen size={9} color="var(--ezy-text-muted)" />
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -500,6 +597,7 @@ export default function TerminalHeader({
   isYolo = false,
   contextInfo,
   workingDir,
+  backend,
   sessionResumeId,
   sessionTrusted = false,
   onSwitchSession,
@@ -1097,6 +1195,9 @@ export default function TerminalHeader({
           currentSessionId={sessionResumeId}
           contextSessionName={contextInfo?.sessionName ?? contextInfo?.summary ?? undefined}
           anchorRef={sessionNameRef}
+          workingDir={workingDir}
+          backend={backend}
+          terminalType={terminalType}
           onSelect={(id) => onSwitchSession?.(id)}
           onRename={(id, name) => {
             if (workingDir) renameSession(workingDir, id, name);

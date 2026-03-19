@@ -289,6 +289,13 @@ export default function App() {
     return () => window.removeEventListener("ezydev:open-palette", handler);
   }, []);
 
+  // Listen for prompt search open events from GlobalContextMenu
+  useEffect(() => {
+    const handler = () => setShowPromptSearch(true);
+    window.addEventListener("ezydev:open-prompt-search", handler);
+    return () => window.removeEventListener("ezydev:open-prompt-search", handler);
+  }, []);
+
 
   // Global keyboard shortcuts (capture phase — fires before xterm/composer handlers)
   useEffect(() => {

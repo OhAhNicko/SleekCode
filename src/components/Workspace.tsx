@@ -69,6 +69,19 @@ export default function Workspace({ tab }: WorkspaceProps) {
     [tab.layout]
   );
 
+  // Auto-activate the first terminal on mount so at least one pane starts
+  // as "active" and its EzyComposer initializes properly via Case 1.
+  useEffect(() => {
+    if (activeTerminalId === null && allTerminalIds.length > 0) {
+      const firstId = allTerminalIds[0];
+      if (terminals[firstId]) {
+        setLocalActiveTerminal(firstId);
+        setActiveTerminal(firstId);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allTerminalIds]);
+
   // Persistent slot divs per terminal — survive layout restructures
   const slotMapRef = useRef<Map<string, HTMLDivElement>>(new Map());
 
