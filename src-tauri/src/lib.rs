@@ -505,6 +505,32 @@ async fn write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, &content).map_err(|e| format!("Failed to write file: {}", e))
 }
 
+#[tauri::command]
+async fn create_project(
+    project_dir: String,
+    claude_md_source: Option<String>,
+    agents_md_source: Option<String>,
+) -> Result<(), String> {
+    std::fs::create_dir_all(&project_dir)
+        .map_err(|e| format!("Failed to create directory: {}", e))?;
+
+    if let Some(source) = claude_md_source {
+        if !source.is_empty() {
+            let dest = std::path::Path::new(&project_dir).join("CLAUDE.md");
+            std::fs::copy(&source, &dest)
+                .map_err(|e| format!("Failed to copy CLAUDE.md: {}", e))?;
+        }
+    }
+    if let Some(source) = agents_md_source {
+        if !source.is_empty() {
+            let dest = std::path::Path::new(&project_dir).join("AGENTS.md");
+            std::fs::copy(&source, &dest)
+                .map_err(|e| format!("Failed to copy AGENTS.md: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct GitFileStatus {
     path: String,
@@ -3723,7 +3749,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

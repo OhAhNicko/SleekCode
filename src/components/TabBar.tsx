@@ -13,6 +13,7 @@ import type { RemoteServer, TerminalType } from "../types";
 import type { WorkspaceTemplate } from "../lib/workspace-templates";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import TemplatePicker, { type ExtraPaneType } from "./TemplatePicker";
+import CreateProjectModal from "./CreateProjectModal";
 import ClipboardImageStrip from "./ClipboardImageStrip";
 import GitStatusBar from "./GitStatusBar";
 import { FaFolder, FaChevronDown, FaCheck } from "react-icons/fa";
@@ -105,6 +106,8 @@ export default function TabBar() {
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showServersTab] = useState(false);
   const [pendingDir, setPendingDir] = useState<{ name: string; dir: string; serverId?: string } | null>(null);
+  const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
+  const projectsDir = useAppStore((s) => s.projectsDir);
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -1174,8 +1177,36 @@ export default function TabBar() {
                 </div>
                 );
               })}
-              {/* Divider + Browse */}
+              {/* Divider + Create / Browse */}
               <div style={{ height: 1, backgroundColor: "var(--ezy-border)", margin: "2px 0" }} />
+              <button
+                disabled={!projectsDir}
+                title={!projectsDir ? "Set a projects directory in Settings first" : "Create a new project folder"}
+                className="w-full text-left"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 12px",
+                  backgroundColor: "transparent",
+                  border: "none",
+                  cursor: !projectsDir ? "not-allowed" : "pointer",
+                  fontSize: 13,
+                  color: !projectsDir ? "var(--ezy-text-muted)" : "var(--ezy-text-secondary)",
+                  fontFamily: "inherit",
+                  opacity: !projectsDir ? 0.45 : 1,
+                }}
+                onMouseEnter={(e) => { if (projectsDir) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                onClick={() => {
+                  if (!projectsDir) return;
+                  setShowRecentMenu(false);
+                  setShowCreateProjectModal(true);
+                }}
+              >
+                <FaFolder size={14} color={!projectsDir ? "var(--ezy-text-muted)" : "var(--ezy-text-muted)"} />
+                Create New Project
+              </button>
               <button
                 className="w-full text-left"
                 style={{
@@ -2885,6 +2916,17 @@ export default function TabBar() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Create Project modal */}
+      {showCreateProjectModal && (
+        <CreateProjectModal
+          onCreated={(name, dir) => {
+            setShowCreateProjectModal(false);
+            setPendingDir({ name, dir });
+          }}
+          onClose={() => setShowCreateProjectModal(false)}
+        />
       )}
 
       {/* Template Picker modal */}

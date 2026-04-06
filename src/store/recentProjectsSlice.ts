@@ -108,6 +108,12 @@ export interface RecentProjectsSlice {
   setSettingsPanelOpen: (value: boolean) => void;
   settingsGearMode: "sidebar" | "dropdown";
   setSettingsGearMode: (value: "sidebar" | "dropdown") => void;
+  projectsDir: string;
+  defaultClaudeMdPath: string;
+  defaultAgentsMdPath: string;
+  setProjectsDir: (value: string) => void;
+  setDefaultClaudeMdPath: (value: string) => void;
+  setDefaultAgentsMdPath: (value: string) => void;
   terminalBackend: TerminalBackend;
   commitMsgMode: CommitMsgMode;
   shadowAiCli: ShadowAiCli;
@@ -187,6 +193,12 @@ export const createRecentProjectsSlice: StateCreator<
   setSettingsPanelOpen: (value) => set({ settingsPanelOpen: value }),
   settingsGearMode: "sidebar",
   setSettingsGearMode: (value) => set({ settingsGearMode: value }),
+  projectsDir: "",
+  defaultClaudeMdPath: "",
+  defaultAgentsMdPath: "",
+  setProjectsDir: (value) => set({ projectsDir: value }),
+  setDefaultClaudeMdPath: (value) => set({ defaultClaudeMdPath: value }),
+  setDefaultAgentsMdPath: (value) => set({ defaultAgentsMdPath: value }),
   terminalBackend: getDefaultBackend(),
   commitMsgMode: "simple",
   shadowAiCli: "claude",

@@ -89,6 +89,9 @@ export const useAppStore = create<AppStore>()(
         projectSessions: state.projectSessions,
         aiTimeBursts: state.aiTimeBursts,
         onboardingCompleted: state.onboardingCompleted,
+        projectsDir: state.projectsDir,
+        defaultClaudeMdPath: state.defaultClaudeMdPath,
+        defaultAgentsMdPath: state.defaultAgentsMdPath,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;

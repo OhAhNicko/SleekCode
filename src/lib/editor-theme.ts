@@ -2,12 +2,20 @@ import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import type { EzyDevTheme } from "./themes";
 
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 /**
  * Build a CodeMirror 6 theme from an EzyDevTheme.
  */
 export function buildEditorTheme(theme: EzyDevTheme): Extension {
   const s = theme.surface;
   const t = theme.terminal;
+  const editorHighlight = hexToRgba(s.accent, 0.15);
 
   return EditorView.theme(
     {
@@ -34,14 +42,14 @@ export function buildEditorTheme(theme: EzyDevTheme): Extension {
         borderBottom: `1px solid ${s.border}`,
       },
       ".cm-searchMatch": {
-        backgroundColor: s.accentGlow,
+        backgroundColor: editorHighlight,
         outline: `1px solid ${s.accent}`,
       },
       ".cm-activeLine": {
         backgroundColor: `${s.surface}80`,
       },
       ".cm-selectionMatch": {
-        backgroundColor: s.accentGlow,
+        backgroundColor: editorHighlight,
       },
       ".cm-gutters": {
         backgroundColor: s.surface,
@@ -68,7 +76,7 @@ export function buildEditorTheme(theme: EzyDevTheme): Extension {
         borderBottomColor: s.surfaceRaised,
       },
       ".cm-tooltip-autocomplete > ul > li[aria-selected]": {
-        backgroundColor: s.accentGlow,
+        backgroundColor: editorHighlight,
         color: s.text,
       },
     },

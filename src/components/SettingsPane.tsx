@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useEffect } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../store";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
 import { THEMES, getTheme } from "../lib/themes";
@@ -133,6 +134,76 @@ function SettingsRow({ label, description, children }: {
         {description && <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>{description}</div>}
       </div>
       <div style={{ flexShrink: 0 }}>{children}</div>
+    </div>
+  );
+}
+
+function PathPicker({ value, onChange, directory, filters }: {
+  value: string;
+  onChange: (v: string) => void;
+  directory?: boolean;
+  filters?: { name: string; extensions: string[] }[];
+}) {
+  const handleBrowse = async () => {
+    try {
+      const selected = await open({
+        directory: !!directory,
+        multiple: false,
+        title: directory ? "Select Directory" : "Select File",
+        filters: directory ? undefined : filters,
+      });
+      if (selected && typeof selected === "string") {
+        onChange(selected);
+      }
+    } catch { /* cancelled */ }
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      <div style={{
+        fontSize: 11,
+        color: value ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
+        maxWidth: 180,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        fontStyle: value ? "normal" : "italic",
+      }}>
+        {value ? value.split(/[\\/]/).pop() : "Not set"}
+      </div>
+      <button
+        onClick={handleBrowse}
+        style={{
+          padding: "4px 10px",
+          fontSize: 11,
+          fontWeight: 500,
+          color: "var(--ezy-text-secondary)",
+          backgroundColor: "var(--ezy-surface)",
+          border: "1px solid var(--ezy-border)",
+          borderRadius: 5,
+          cursor: "pointer",
+          fontFamily: "inherit",
+        }}
+      >
+        Browse
+      </button>
+      {value && (
+        <button
+          onClick={() => onChange("")}
+          style={{
+            padding: "2px 6px",
+            fontSize: 12,
+            color: "var(--ezy-text-muted)",
+            backgroundColor: "transparent",
+            border: "none",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            lineHeight: 1,
+          }}
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 }
@@ -528,6 +599,7 @@ function UpdatesSection() {
 const NAV_SECTIONS = [
   ...(isWindows() ? [{ id: "terminal", label: "Terminal" }] : []),
   { id: "behavior", label: "Behavior" },
+  { id: "projects", label: "Projects" },
   { id: "composer", label: "EzyComposer" },
   { id: "preview", label: "Preview Panes" },
   { id: "codereview", label: "Code Review" },
@@ -579,6 +651,12 @@ export default function SettingsPane() {
   const setBrowserSpawnLeft = useAppStore((s) => s.setBrowserSpawnLeft);
   const codeReviewCollapseAll = useAppStore((s) => s.codeReviewCollapseAll);
   const setCodeReviewCollapseAll = useAppStore((s) => s.setCodeReviewCollapseAll);
+  const projectsDir = useAppStore((s) => s.projectsDir);
+  const setProjectsDir = useAppStore((s) => s.setProjectsDir);
+  const defaultClaudeMdPath = useAppStore((s) => s.defaultClaudeMdPath);
+  const setDefaultClaudeMdPath = useAppStore((s) => s.setDefaultClaudeMdPath);
+  const defaultAgentsMdPath = useAppStore((s) => s.defaultAgentsMdPath);
+  const setDefaultAgentsMdPath = useAppStore((s) => s.setDefaultAgentsMdPath);
   const commitMsgMode = useAppStore((s) => s.commitMsgMode ?? "simple");
   const setCommitMsgMode = useAppStore((s) => s.setCommitMsgMode);
   const shadowAiCli = useAppStore((s) => s.shadowAiCli ?? "claude");
@@ -648,6 +726,21 @@ export default function SettingsPane() {
             </SettingsRow>
             <SettingsRow label="Auto-start server command" description="Restore dev server commands when reopening projects.">
               <ToggleSwitch checked={autoStartServerCommand} onChange={setAutoStartServerCommand} />
+            </SettingsRow>
+          </SettingsSection>
+        );
+
+      case "projects":
+        return (
+          <SettingsSection id="projects" title="Projects" description="Configure default project directory and template files for new projects.">
+            <SettingsRow label="Projects directory" description="Default folder where new projects are created.">
+              <PathPicker value={projectsDir} onChange={setProjectsDir} directory />
+            </SettingsRow>
+            <SettingsRow label="Default CLAUDE.md" description="Template file copied to new projects as CLAUDE.md (Claude Code).">
+              <PathPicker value={defaultClaudeMdPath} onChange={setDefaultClaudeMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
+            </SettingsRow>
+            <SettingsRow label="Default AGENTS.md" description="Template file copied to new projects as AGENTS.md (Codex / Gemini).">
+              <PathPicker value={defaultAgentsMdPath} onChange={setDefaultAgentsMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
             </SettingsRow>
           </SettingsSection>
         );
