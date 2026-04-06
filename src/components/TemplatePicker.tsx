@@ -7,9 +7,10 @@ import type { TerminalType } from "../types";
 export type ExtraPaneType = "codereview" | "fileviewer" | "browser" | "kanban";
 
 interface TemplatePickerProps {
-  onSelect: (template: WorkspaceTemplate, slotTypes: TerminalType[], serverCommand?: string, extraPanes?: ExtraPaneType[]) => void;
+  onSelect: (template: WorkspaceTemplate, slotTypes: TerminalType[], serverCommand?: string, extraPanes?: ExtraPaneType[], noDevServer?: boolean) => void;
   onClose: () => void;
   initialServerCommand?: string;
+  initialNoDevServer?: boolean;
 }
 
 /** Distribute `count` panes across `cols` columns (taller columns first). */
@@ -179,13 +180,14 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
 }
 
 
-export default function TemplatePicker({ onSelect, onClose, initialServerCommand }: TemplatePickerProps) {
+export default function TemplatePicker({ onSelect, onClose, initialServerCommand, initialNoDevServer }: TemplatePickerProps) {
   const cliYolo = useAppStore((s) => s.cliYolo);
   const addCustomServerCommand = useAppStore((s) => s.addCustomServerCommand);
   const removeCustomServerCommand = useAppStore((s) => s.removeCustomServerCommand);
   const [selectedTemplate, setSelectedTemplate] = useState<WorkspaceTemplate | null>(null);
   const [fleetCounts, setFleetCounts] = useState<FleetCounts>({});
   const [extraPanes, setExtraPanes] = useState<Set<ExtraPaneType>>(new Set());
+  const [noDevServer, setNoDevServer] = useState(initialNoDevServer ?? false);
   const [serverCommand, setServerCommand] = useState(initialServerCommand ?? "");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const cmdInputRef = useRef<HTMLInputElement>(null);
@@ -254,14 +256,15 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
 
   const handleCreate = useCallback(() => {
     if (selectedTemplate) {
-      if (serverCommand && !BUILTIN_SERVER_COMMANDS.includes(serverCommand.trim())) {
-        addCustomServerCommand(serverCommand.trim());
+      const cmd = noDevServer ? undefined : (serverCommand || undefined);
+      if (cmd && !BUILTIN_SERVER_COMMANDS.includes(cmd.trim())) {
+        addCustomServerCommand(cmd.trim());
       }
       const slots = expandFleetToSlots(fleetCounts);
       const extras = extraPanes.size > 0 ? Array.from(extraPanes) : undefined;
-      onSelect(selectedTemplate, slots, serverCommand || undefined, extras);
+      onSelect(selectedTemplate, slots, cmd, extras, noDevServer || undefined);
     }
-  }, [selectedTemplate, fleetCounts, extraPanes, onSelect, serverCommand, addCustomServerCommand]);
+  }, [selectedTemplate, fleetCounts, extraPanes, onSelect, serverCommand, noDevServer, addCustomServerCommand]);
 
   const canLaunch = selectedTemplate && totalAssigned === slotCount;
 
@@ -339,10 +342,38 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
 
         {/* Server Command combobox */}
         <div style={{ padding: "12px 16px 0", position: "relative" }}>
-          <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 4, fontWeight: 500 }}>
-            Server Command (optional)
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", fontWeight: 500 }}>
+              Server Command (optional)
+            </div>
+            <label
+              style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", userSelect: "none" }}
+              onClick={() => setNoDevServer((v) => !v)}
+            >
+              <div
+                style={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: 3,
+                  border: `1.5px solid ${noDevServer ? "var(--ezy-accent)" : "var(--ezy-border-light)"}`,
+                  backgroundColor: noDevServer ? "var(--ezy-accent)" : "transparent",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                  transition: "all 120ms ease",
+                }}
+              >
+                {noDevServer && (
+                  <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="2,5.5 4,7.5 8,3" />
+                  </svg>
+                )}
+              </div>
+              <span style={{ fontSize: 10, fontWeight: 500, color: "var(--ezy-text-muted)" }}>No dev server</span>
+            </label>
           </div>
-          <div style={{ position: "relative" }}>
+          <div style={{ position: "relative", opacity: noDevServer ? 0.35 : 1, pointerEvents: noDevServer ? "none" : "auto", transition: "opacity 150ms ease" }}>
             <input
               ref={cmdInputRef}
               type="text"
@@ -354,6 +385,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
               onFocus={() => setShowSuggestions(true)}
               onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
               placeholder="e.g. npm run dev"
+              disabled={noDevServer}
               style={{
                 width: "100%",
                 padding: "6px 28px 6px 10px",

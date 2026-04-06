@@ -138,7 +138,7 @@ export function generateCrossword(): Promise<CrosswordPuzzle> {
     const cliCmd = shadowCli === "codex"
       ? `echo '${b64}' | base64 -d | ${cliPath} exec --skip-git-repo-check --color never - 2>/dev/null`
       : `echo '${b64}' | base64 -d | ${cliPath} -p`;
-    const bashCmd = `unset CLAUDECODE; ${termExport}; echo '${marker}'; ${cliCmd}`;
+    const bashCmd = `cd /tmp; unset CLAUDECODE; ${termExport}; echo '${marker}'; ${cliCmd}`;
 
     invoke<number>("pty_spawn", {
       command: "wsl.exe",

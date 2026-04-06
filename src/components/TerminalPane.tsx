@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
+import { SearchAddon } from "@xterm/addon-search";
 import { getTheme, getEffectiveTerminalTheme } from "../lib/themes";
 import { usePty } from "../hooks/usePty";
 import { useAppStore } from "../store";
@@ -24,6 +25,7 @@ import CommandBlockOverlay from "./CommandBlockOverlay";
 import ClipboardImagePreview from "./ClipboardImagePreview";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import PromptComposer from "./PromptComposer";
+import TerminalSearchBar from "./TerminalSearchBar";
 import hackRegularUrl from "../fonts/hack-regular.woff2?url";
 import hackBoldUrl from "../fonts/hack-bold.woff2?url";
 
@@ -151,6 +153,8 @@ export default function TerminalPane({
   const [termReady, setTermReady] = useState(false);
   const [zoomIndicator, setZoomIndicator] = useState<number | null>(null);
   const zoomIndicatorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const scrollToPromptRef = useRef<() => void>(() => {});
   const scrollToNextPromptRef = useRef<() => void>(() => {});
@@ -401,6 +405,10 @@ export default function TerminalPane({
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
+
+    const searchAddon = new SearchAddon();
+    term.loadAddon(searchAddon);
+    searchAddonRef.current = searchAddon;
 
     // File path link provider — Ctrl+Click to open in FileViewerPane
     const fileLinkDisposable = term.registerLinkProvider(
@@ -837,6 +845,12 @@ export default function TerminalPane({
         }
       }
 
+      // Ctrl+F — open search bar
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key === "f" || e.key === "F")) {
+        setSearchOpen(true);
+        return false;
+      }
+
       return true; // Let xterm handle all other keys
     });
 
@@ -1020,6 +1034,7 @@ export default function TerminalPane({
       renderDisposable.dispose();
       blockParserRef.current?.dispose();
       blockParserRef.current = null;
+      searchAddonRef.current = null;
       clearTerminalActivity(terminalId);
       term.dispose();
       terminalRef.current = null;
@@ -1325,9 +1340,10 @@ export default function TerminalPane({
     setExited(false);
     setContextInfo(null);
     setCommandBlocks([]);
-    // Hide composer until PTY produces output again
+    // Hide composer and search bar until PTY produces output again
     awaitingRestartDataRef.current = true;
     setComposerOpen(false);
+    setSearchOpen(false);
     // Only re-enable session lookup if we don't already have a session ID.
     // If we DO have one, keep it — restart should use the SAME session, not find a new one.
     if (!sessionResumeIdPropRef.current) {
@@ -1364,11 +1380,18 @@ export default function TerminalPane({
     setCommandBlocks([]);
     awaitingRestartDataRef.current = true;
     setComposerOpen(false);
+    setSearchOpen(false);
     // Update layout tree (prop will update on re-render)
     onSwitchSessionRef.current?.(newSessionId);
     // Trigger PTY re-spawn
     setRestartKey((k) => k + 1);
   }, [terminalType]);
+
+  const handleSearchClose = useCallback(() => {
+    searchAddonRef.current?.clearDecorations();
+    setSearchOpen(false);
+    if (isActive) terminalRef.current?.focus();
+  }, [isActive]);
 
   const handleClose = useCallback(() => {
     kill();
@@ -1412,6 +1435,13 @@ export default function TerminalPane({
             blocks={commandBlocks}
             onToggleCollapse={handleToggleCollapse}
             onExplainError={onExplainError}
+          />
+        )}
+        {searchOpen && searchAddonRef.current && (
+          <TerminalSearchBar
+            searchAddon={searchAddonRef.current}
+            onClose={handleSearchClose}
+            isActive={isActive}
           />
         )}
         {pastedImage && (

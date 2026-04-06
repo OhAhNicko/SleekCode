@@ -45,6 +45,7 @@ const sections: ShortcutSection[] = [
   {
     title: "Terminal",
     items: [
+      { keys: ["Ctrl", "F"], label: "Search in terminal" },
       { keys: ["Ctrl", "I"], label: "Open prompt composer" },
       { keys: ["Ctrl", "L"], label: "Clear terminal" },
       { keys: ["Ctrl", "+"], label: "Zoom in (font size)" },

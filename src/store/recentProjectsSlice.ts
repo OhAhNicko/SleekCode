@@ -18,6 +18,7 @@ export interface RecentProject {
   openCount: number;
   lastTemplate?: RecentProjectTemplate;
   serverCommand?: string;
+  noDevServer?: boolean;
   quickOpen?: boolean;
   lastLayout?: PaneLayout;
 }
@@ -121,7 +122,7 @@ export interface RecentProjectsSlice {
   statuslineToggles: Partial<Record<TerminalType, Record<string, boolean>>>;
   setStatuslineToggle: (cliType: TerminalType, key: string, value: boolean) => void;
   setProjectColor: (workingDir: string, colorId: ProjectColorId) => void;
-  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string }) => void;
+  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string; noDevServer?: boolean }) => void;
   removeRecentProject: (path: string) => void;
   clearRecentProjects: () => void;
   setAlwaysShowTemplatePicker: (value: boolean) => void;
@@ -221,7 +222,7 @@ export const createRecentProjectsSlice: StateCreator<
     }));
   },
 
-  addRecentProject: ({ path, name, template, serverCommand }) => {
+  addRecentProject: ({ path, name, template, serverCommand, noDevServer }) => {
     const normalized = normalizePath(path);
     set((state) => {
       const existing = state.recentProjects.find(
@@ -233,7 +234,7 @@ export const createRecentProjectsSlice: StateCreator<
         // Update existing: bump timestamp, count, template, serverCommand
         updated = state.recentProjects.map((p) =>
           normalizePath(p.path) === normalized
-            ? { ...p, lastOpenedAt: now, openCount: p.openCount + 1, lastTemplate: template ?? p.lastTemplate, name, serverCommand: serverCommand ?? p.serverCommand }
+            ? { ...p, lastOpenedAt: now, openCount: p.openCount + 1, lastTemplate: template ?? p.lastTemplate, name, serverCommand: noDevServer ? undefined : (serverCommand ?? p.serverCommand), noDevServer: noDevServer ?? p.noDevServer }
             : p
         );
       } else {
@@ -245,7 +246,8 @@ export const createRecentProjectsSlice: StateCreator<
           lastOpenedAt: now,
           openCount: 1,
           lastTemplate: template,
-          serverCommand,
+          serverCommand: noDevServer ? undefined : serverCommand,
+          noDevServer,
         };
         updated = [newEntry, ...state.recentProjects];
       }

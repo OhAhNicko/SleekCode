@@ -261,7 +261,7 @@ export default function TabBar() {
   );
 
   const handleTemplateSelected = useCallback(
-    (template: WorkspaceTemplate, slotTypes: TerminalType[], serverCommand?: string, extraPanes?: ExtraPaneType[]) => {
+    (template: WorkspaceTemplate, slotTypes: TerminalType[], serverCommand?: string, extraPanes?: ExtraPaneType[], noDevServer?: boolean) => {
       if (!pendingDir) return;
       const { layout, terminalIds } = buildLayoutFromTemplate(
         template.id,
@@ -331,6 +331,7 @@ export default function TabBar() {
           name: pendingDir.name,
           template: { templateId: template.id, cols: template.cols, rows: template.rows, paneCount: template.paneCount, slotTypes },
           serverCommand,
+          noDevServer,
         });
       }
       // Auto-start server command if provided and enabled
@@ -356,7 +357,7 @@ export default function TabBar() {
         addTerminals(batch);
         const tabId = addTabWithLayout(project.name, project.path, layout);
         addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate });
-        if (project.serverCommand && autoStartServerCommand) {
+        if (project.serverCommand && autoStartServerCommand && !project.noDevServer) {
           spawnDevServer(tabId, project.name, project.path, project.serverCommand);
         }
       } else if (project.lastTemplate) {
@@ -372,7 +373,7 @@ export default function TabBar() {
         addTerminals(batch);
         const tabId = addTabWithLayout(project.name, project.path, typedLayout);
         addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate });
-        if (project.serverCommand && autoStartServerCommand) {
+        if (project.serverCommand && autoStartServerCommand && !project.noDevServer) {
           spawnDevServer(tabId, project.name, project.path, project.serverCommand);
         }
       }
@@ -2938,6 +2939,11 @@ export default function TabBar() {
             recentProjects.find(
               (p) => p.path.replace(/\\/g, "/") === pendingDir.dir.replace(/\\/g, "/")
             )?.serverCommand
+          }
+          initialNoDevServer={
+            recentProjects.find(
+              (p) => p.path.replace(/\\/g, "/") === pendingDir.dir.replace(/\\/g, "/")
+            )?.noDevServer
           }
         />
       )}
