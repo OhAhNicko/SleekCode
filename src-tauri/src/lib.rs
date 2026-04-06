@@ -323,6 +323,12 @@ fn minimize_from_maximized(window: tauri::Window) {
     win32_border::minimize_to_normal(hwnd.0);
 }
 
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn minimize_from_maximized() {
+    // No-op on non-Windows — custom minimize only needed for Windows frameless windows
+}
+
 #[tauri::command]
 async fn ssh_ls(
     host: String,
