@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { useAppStore } from "../store";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
@@ -335,9 +336,11 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
 
 function UpdatesSection() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
-  const [checkStatus, setCheckStatus] = useState<"idle" | "checking" | "available" | "up-to-date" | "error">("idle");
+  const [checkStatus, setCheckStatus] = useState<"idle" | "checking" | "available" | "downloading" | "installing" | "up-to-date" | "error">("idle");
   const [latestVersion, setLatestVersion] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
+  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
 
   // Fetch app version on mount
   useEffect(() => {
@@ -352,8 +355,10 @@ function UpdatesSection() {
       if (update) {
         setCheckStatus("available");
         setLatestVersion(update.version);
+        setPendingUpdate(update);
       } else {
         setCheckStatus("up-to-date");
+        setPendingUpdate(null);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -370,6 +375,40 @@ function UpdatesSection() {
     }
   }, []);
 
+  const handleUpdate = useCallback(async () => {
+    if (!pendingUpdate) return;
+    setCheckStatus("downloading");
+    setProgress({ downloaded: 0, total: null });
+    try {
+      await pendingUpdate.downloadAndInstall((event) => {
+        switch (event.event) {
+          case "Started":
+            setProgress({ downloaded: 0, total: event.data.contentLength ?? null });
+            break;
+          case "Progress":
+            setProgress((p) => ({
+              downloaded: (p?.downloaded ?? 0) + (event.data.chunkLength ?? 0),
+              total: p?.total ?? null,
+            }));
+            break;
+          case "Finished":
+            setCheckStatus("installing");
+            break;
+        }
+      });
+      await relaunch();
+    } catch (err) {
+      setCheckStatus("error");
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    }
+  }, [pendingUpdate]);
+
+  const pct = progress && progress.total
+    ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
+    : null;
+
+  const isUpdating = checkStatus === "downloading" || checkStatus === "installing";
+
   return (
     <SettingsSection id="updates" title="Updates" description="Check for new versions of EzyDev.">
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -379,33 +418,61 @@ function UpdatesSection() {
             <span style={{ color: "var(--ezy-text)", fontWeight: 500 }}>{appVersion}</span>
           </div>
         )}
-        <button
-          onClick={handleCheck}
-          disabled={checkStatus === "checking"}
-          style={{
-            height: 30,
-            padding: "0 14px",
-            borderRadius: 6,
-            border: "1px solid var(--ezy-border)",
-            background: "var(--ezy-surface-raised)",
-            color: "var(--ezy-text)",
-            fontSize: 13,
-            fontWeight: 500,
-            cursor: checkStatus === "checking" ? "not-allowed" : "pointer",
-            opacity: checkStatus === "checking" ? 0.6 : 1,
-            transition: "border-color 120ms ease",
-            alignSelf: "flex-start",
-          }}
-          onMouseEnter={(e) => {
-            if (checkStatus !== "checking")
-              e.currentTarget.style.borderColor = "var(--ezy-accent)";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = "var(--ezy-border)";
-          }}
-        >
-          {checkStatus === "checking" ? "Checking..." : "Check for Updates"}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <button
+            onClick={handleCheck}
+            disabled={checkStatus === "checking" || isUpdating}
+            style={{
+              height: 30,
+              padding: "0 14px",
+              borderRadius: 6,
+              border: "1px solid var(--ezy-border)",
+              background: "var(--ezy-surface-raised)",
+              color: "var(--ezy-text)",
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: checkStatus === "checking" || isUpdating ? "not-allowed" : "pointer",
+              opacity: checkStatus === "checking" || isUpdating ? 0.6 : 1,
+              transition: "border-color 120ms ease",
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => {
+              if (checkStatus !== "checking" && !isUpdating)
+                e.currentTarget.style.borderColor = "var(--ezy-accent)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.borderColor = "var(--ezy-border)";
+            }}
+          >
+            {checkStatus === "checking" ? "Checking..." : "Check for Updates"}
+          </button>
+          {checkStatus === "available" && (
+            <button
+              onClick={handleUpdate}
+              style={{
+                height: 30,
+                padding: "0 14px",
+                borderRadius: 6,
+                border: "none",
+                background: "var(--ezy-accent-dim)",
+                color: "#fff",
+                fontSize: 13,
+                fontWeight: 500,
+                cursor: "pointer",
+                flexShrink: 0,
+                transition: "background-color 120ms ease",
+              }}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.backgroundColor = "var(--ezy-accent-hover)")
+              }
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.backgroundColor = "var(--ezy-accent-dim)")
+              }
+            >
+              Update Now
+            </button>
+          )}
+        </div>
         {checkStatus === "up-to-date" && (
           <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
             Up to date
@@ -413,7 +480,37 @@ function UpdatesSection() {
         )}
         {checkStatus === "available" && latestVersion && (
           <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
-            v{latestVersion} available — update via the banner above
+            v{latestVersion} is available
+          </span>
+        )}
+        {checkStatus === "downloading" && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              flex: 1,
+              height: 4,
+              borderRadius: 2,
+              backgroundColor: "var(--ezy-border)",
+              overflow: "hidden",
+              minWidth: 60,
+            }}>
+              <div style={{
+                height: "100%",
+                width: pct != null ? `${pct}%` : "30%",
+                backgroundColor: "var(--ezy-accent)",
+                borderRadius: 2,
+                transition: pct != null ? "width 200ms ease" : "none",
+              }} />
+            </div>
+            {pct != null && (
+              <span style={{ fontSize: 12, color: "var(--ezy-text-muted)", fontVariantNumeric: "tabular-nums" }}>
+                {pct}%
+              </span>
+            )}
+          </div>
+        )}
+        {checkStatus === "installing" && (
+          <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
+            Installing update, restarting...
           </span>
         )}
         {checkStatus === "error" && (
