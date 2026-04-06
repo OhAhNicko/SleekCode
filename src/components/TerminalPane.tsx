@@ -909,14 +909,21 @@ export default function TerminalPane({
         // Deferred restore — xterm may process the resize asynchronously
         // (especially with WebGL renderer), resetting scroll after our
         // immediate restore. Double-rAF ensures we restore after xterm settles.
+        // Save the viewport position right after fit — if it changes before
+        // the deferred restore, the user scrolled manually and we should not
+        // override their position.
+        const postFitViewport = term.buffer.active.viewportY;
         resizeRafId1 = requestAnimationFrame(() => {
           resizeRafId2 = requestAnimationFrame(() => {
             try {
               const buf2 = term.buffer.active;
-              if (resizeWasAtBottom) {
-                term.scrollToBottom();
-              } else {
-                term.scrollToLine(Math.min(resizeSavedViewport, buf2.baseY));
+              // Only restore if viewport hasn't been manually scrolled since fit
+              if (buf2.viewportY === postFitViewport) {
+                if (resizeWasAtBottom) {
+                  term.scrollToBottom();
+                } else {
+                  term.scrollToLine(Math.min(resizeSavedViewport, buf2.baseY));
+                }
               }
             } catch { /* disposed */ }
             // Unlock: the resize sequence is complete, next doFit() captures fresh state

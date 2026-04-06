@@ -583,13 +583,8 @@ export default function PromptComposer({
 
         // Transitioning from hidden → visible (AI finished, prompt reappeared)
         if (hiddenRef.current) {
-
-          // Only scroll to bottom when NOT in a resize transition — during resize,
-          // TerminalPane's doFit() manages scroll preservation and scrollToBottom()
-          // here would override the saved viewport position, causing scroll-to-top.
-          if (!isResizing) {
-            terminal.scrollToBottom();
-          }
+          // Don't call scrollToBottom() here — it fights manual scrolling.
+          // The user or TerminalPane's doFit() manages scroll position.
           setTimeout(() => textareaRef.current?.focus(), 30);
           showTimeRef.current = Date.now();
         }
