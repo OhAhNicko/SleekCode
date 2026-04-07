@@ -18,6 +18,7 @@ import { supportsSessionResume } from "../lib/session-resume";
 import { createFilePathLinkProvider } from "../lib/file-link-provider";
 import { readSessionContext, type ContextInfo } from "../lib/context-parser";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { toWslPath } from "../lib/terminal-config";
 import { recordTerminalActivity, recordTerminalWrite, recordTerminalResize, clearTerminalActivity } from "../lib/terminal-activity";
 import TerminalHeader from "./TerminalHeader";
@@ -158,6 +159,8 @@ export default function TerminalPane({
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const scrollToPromptRef = useRef<() => void>(() => {});
   const scrollToNextPromptRef = useRef<() => void>(() => {});
+  // Saved scroll position for tab-switch restoration (display:none resets xterm viewport scrollTop)
+  const savedViewportYRef = useRef<number | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
   const paneCountRef = useRef(paneCount);
   paneCountRef.current = paneCount;
@@ -404,7 +407,11 @@ export default function TerminalPane({
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    term.loadAddon(new WebLinksAddon());
+    term.loadAddon(new WebLinksAddon((_event, uri) => {
+      // Open URLs in the system default browser via Tauri's opener plugin.
+      // The default handler uses window.open() which is blocked in Tauri's WebView.
+      openUrl(uri).catch(() => {});
+    }));
 
     const searchAddon = new SearchAddon();
     term.loadAddon(searchAddon);
@@ -1185,19 +1192,48 @@ export default function TerminalPane({
   // Force repaint when container becomes visible (tab switch).
   // xterm.js doesn't render while display:none — IntersectionObserver
   // detects visibility changes and triggers a refresh.
-  // Does NOT call fit() — the ResizeObserver already handles that.
+  // Also restores scroll position: display:none resets the xterm viewport
+  // div's scrollTop to 0, causing the terminal to appear scrolled to the top.
+  // We save viewportY when hiding and restore it after becoming visible.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && terminalRef.current) {
+        const entry = entries[0];
+        if (!entry || !terminalRef.current) return;
+        if (entry.isIntersecting) {
           // Set resize lockout BEFORE any reflow output arrives — prevents
           // idle AI panes from briefly showing as "active" on tab switch.
           // This covers the case where terminal dimensions didn't change
           // (same window size) so term.onResize never fires.
           recordTerminalResize(terminalId);
           terminalRef.current.refresh(0, terminalRef.current.rows - 1);
+          // Restore scroll position that was saved when the tab was hidden.
+          // display:none resets the viewport div's scrollTop to 0; we need
+          // to put it back after the terminal becomes visible and settles.
+          const savedY = savedViewportYRef.current;
+          if (savedY !== null) {
+            savedViewportYRef.current = null;
+            const term = terminalRef.current;
+            const buf = term.buffer.active;
+            // Immediate restore
+            term.scrollToLine(Math.min(savedY, buf.baseY));
+            // Deferred restore — WebGL renderer may async-reset viewport
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                try {
+                  const buf2 = term.buffer.active;
+                  term.scrollToLine(Math.min(savedY, buf2.baseY));
+                } catch { /* disposed */ }
+              });
+            });
+          }
+        } else {
+          // Going invisible (tab switch away) — save current scroll position
+          // BEFORE display:none resets it to 0.
+          const buf = terminalRef.current.buffer.active;
+          savedViewportYRef.current = buf.viewportY;
         }
       },
       { threshold: 0.01 }

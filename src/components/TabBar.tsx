@@ -1010,7 +1010,7 @@ export default function TabBar() {
             onClick={() => {
               setShowNewTabMenu(false);
               setShowSettingsMenu(false);
-              if (recentProjects.length > 0) {
+              if (recentProjects.length > 0 || projectsDir) {
                 setShowRecentMenu((v) => !v);
               } else {
                 setShowRecentMenu(false);
