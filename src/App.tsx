@@ -633,8 +633,12 @@ export default function App() {
                 key={tab.id}
                 className="h-full w-full"
                 style={{
-                  display: isActive ? "block" : "none",
+                  // NEVER use display:none — it destroys xterm viewport scrollTop.
+                  // visibility:hidden preserves scroll state; position:absolute
+                  // removes from flow; pointer-events:none prevents interaction.
+                  visibility: isActive ? "visible" : "hidden",
                   position: isActive ? "relative" : "absolute",
+                  pointerEvents: isActive ? "auto" : "none",
                 }}
               >
                 <Workspace tab={tab} />

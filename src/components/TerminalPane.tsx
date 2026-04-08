@@ -1041,26 +1041,25 @@ export default function TerminalPane({
       const currentY = buf.viewportY;
 
       // --- Universal scroll guard ---
-      // Many operations (display:none, DOM detach, fitAddon.fit(), WebGL async
-      // resets) can reset the xterm viewport scrollTop to 0 without user intent.
-      // Instead of patching each trigger individually, we detect the pattern:
-      //   viewportY suddenly drops to ≤1 from a significant position (>15)
-      //   while the buffer has meaningful scrollback (baseY>15).
-      // Gradual user scrolling updates savedViewportYRef along the way, so by
-      // the time they reach the top the saved value is already small → no trigger.
-      // Intentional scroll-to-top (Ctrl+Home, prompt nav) sets scrollGuardActiveRef.
+      // Many operations (DOM detach, fitAddon.fit(), WebGL async resets) can
+      // reset the xterm viewport toward the top without user intent.
+      // Detection: viewportY suddenly drops far from saved position toward the
+      // buffer start. The "jump ratio" (how far toward 0 vs. where we were)
+      // catches both full resets (→0) and partial resets (→5, →10).
+      // Gradual user scrolling updates savedViewportYRef each step, keeping
+      // the ratio small. Intentional jumps set scrollGuardActiveRef.
       if (scrollGuardActiveRef.current) {
         // Guard restoration in progress — do NOT update saved position.
-        // fit() / WebGL may fire intermediate resets to 0 during restoration;
+        // fit() / WebGL may fire intermediate resets during restoration;
         // tracking those would corrupt the good saved value.
         return;
       }
       const savedY = savedViewportYRef.current;
-      if (
-        currentY <= 1 &&
-        savedY !== null && savedY > 15 &&
-        buf.baseY > 15
-      ) {
+      // Trigger when viewport jumped more than 80% toward the top from a
+      // significant position (savedY > 20 prevents false positives on short buffers).
+      const jumpedToTop = savedY !== null && savedY > 20 && buf.baseY > 20 &&
+        currentY < savedY * 0.2;
+      if (jumpedToTop) {
         // Automated reset detected — restore last known good position
         scrollGuardActiveRef.current = true;
         const restoreY = Math.min(savedY, buf.baseY);
@@ -1076,7 +1075,7 @@ export default function TerminalPane({
           requestAnimationFrame(() => {
             try {
               const buf2 = term.buffer.active;
-              if (buf2.viewportY <= 1 && buf2.baseY > 15) {
+              if (savedY > 20 && buf2.viewportY < savedY * 0.2 && buf2.baseY > 20) {
                 if (wasBottom) {
                   term.scrollToBottom();
                 } else {
@@ -1132,11 +1131,10 @@ export default function TerminalPane({
       const buf = term.buffer.active;
       const currentY = buf.viewportY;
       const savedY = savedViewportYRef.current;
-      if (
-        currentY <= 1 &&
-        savedY !== null && savedY > 15 &&
-        buf.baseY > 15
-      ) {
+      // Same ratio-based detection as the xterm onScroll guard
+      const jumpedToTop = savedY !== null && savedY > 20 && buf.baseY > 20 &&
+        currentY < savedY * 0.2;
+      if (jumpedToTop) {
         scrollGuardActiveRef.current = true;
         const restoreY = Math.min(savedY, buf.baseY);
         const wasBottom = wasAtBottomRef.current;
@@ -1151,8 +1149,8 @@ export default function TerminalPane({
         domGuardTimer = window.setTimeout(() => {
           try {
             const buf2 = term.buffer.active;
-            // One more check — if still at top, restore again
-            if (buf2.viewportY <= 1 && buf2.baseY > 15) {
+            // One more check — if still near top, restore again
+            if (savedY > 20 && buf2.viewportY < savedY * 0.2 && buf2.baseY > 20) {
               if (wasBottom) term.scrollToBottom();
               else term.scrollToLine(Math.min(restoreY, buf2.baseY));
             }
@@ -1161,8 +1159,8 @@ export default function TerminalPane({
           } catch { /* disposed */ }
           scrollGuardActiveRef.current = false;
         }, 150);
-      } else if (currentY > 1) {
-        // Normal scroll — track position (only from DOM guard if xterm onScroll missed it)
+      } else {
+        // Normal scroll — track position (catches events xterm onScroll missed)
         savedViewportYRef.current = currentY;
         wasAtBottomRef.current = buf.baseY - currentY <= 3;
       }
@@ -1339,67 +1337,21 @@ export default function TerminalPane({
     if (isActive) {
       focusRestorerRef.current?.();
       terminalRef.current?.focus();
+      // Repaint xterm after tab switch — visibility:hidden prevents painting,
+      // so we refresh the terminal canvas when this pane becomes active.
+      // Unlike display:none, visibility:hidden preserves scrollTop, so we
+      // only need to refresh rendering — no scroll restoration needed.
+      const term = terminalRef.current;
+      if (term) {
+        recordTerminalResize(terminalId);
+        term.refresh(0, term.rows - 1);
+      }
       // Open composer now that the pane is active (deferred from background open)
       if (composerSupported && composerAlwaysVisible && !composerDismissedRef.current && !composerOpen) {
         setComposerOpen(true);
       }
     }
-  }, [isActive, composerAlwaysVisible, composerOpen, composerSupported]);
-
-  // Force repaint when container becomes visible (tab switch).
-  // xterm.js doesn't render while display:none — IntersectionObserver
-  // detects visibility changes and triggers a refresh.
-  // Scroll restoration: display:none resets the xterm viewport div's scrollTop
-  // to 0. The IntersectionObserver fires ASYNC (after display:none already
-  // applied), so we can NOT save viewportY here — it's already 0 by the time
-  // the callback runs. Instead, onScroll continuously updates savedViewportYRef
-  // so it always holds the last real position BEFORE the browser resets it.
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const entry = entries[0];
-        if (!entry || !terminalRef.current) return;
-        if (entry.isIntersecting) {
-          // Set resize lockout BEFORE any reflow output arrives — prevents
-          // idle AI panes from briefly showing as "active" on tab switch.
-          // This covers the case where terminal dimensions didn't change
-          // (same window size) so term.onResize never fires.
-          recordTerminalResize(terminalId);
-          terminalRef.current.refresh(0, terminalRef.current.rows - 1);
-          // Restore scroll position from onScroll-tracked ref.
-          const savedY = savedViewportYRef.current;
-          if (savedY !== null) {
-            const term = terminalRef.current;
-            const wasBottom = wasAtBottomRef.current;
-            const restore = () => {
-              try {
-                if (wasBottom) {
-                  term.scrollToBottom();
-                } else {
-                  const buf = term.buffer.active;
-                  term.scrollToLine(Math.min(savedY, buf.baseY));
-                }
-              } catch { /* disposed */ }
-            };
-            // Immediate restore
-            restore();
-            // Deferred restore — WebGL renderer may async-reset viewport
-            requestAnimationFrame(() => {
-              requestAnimationFrame(restore);
-            });
-          }
-        }
-        // Note: we do NOT save in the !isIntersecting branch — by the time
-        // this async callback fires, display:none has already reset viewportY
-        // to 0. onScroll continuously tracks the real position instead.
-      },
-      { threshold: 0.01 }
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [terminalId]);
+  }, [isActive, composerAlwaysVisible, composerOpen, composerSupported, terminalId]);
 
   // Repaint after window minimize → restore (or alt-tab back).
   // WebGL renderer loses its context while the document is hidden;
