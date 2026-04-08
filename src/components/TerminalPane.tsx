@@ -166,10 +166,13 @@ export default function TerminalPane({
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const scrollToPromptRef = useRef<() => void>(() => {});
   const scrollToNextPromptRef = useRef<() => void>(() => {});
-  // Saved scroll position for tab-switch restoration (display:none resets xterm viewport scrollTop).
-  // Continuously updated by onScroll so the value is always current BEFORE display:none resets it.
+  // Saved scroll position — continuously updated by onScroll so the value is always
+  // current BEFORE display:none / DOM detach / fit() can reset the xterm viewport to 0.
   const savedViewportYRef = useRef<number | null>(null);
   const wasAtBottomRef = useRef(true);
+  // When true, the scroll guard in onScroll is bypassed (used by intentional scrolls
+  // like Ctrl+Home or prompt navigation that legitimately go to low viewport positions).
+  const scrollGuardActiveRef = useRef(false);
   const cleanupRef = useRef<(() => void) | null>(null);
   const paneCountRef = useRef(paneCount);
   paneCountRef.current = paneCount;
@@ -591,7 +594,21 @@ export default function TerminalPane({
     // Repeated presses navigate backwards through earlier prompts.
     let lastUpArrowTime = 0;
 
+    // Clear the scroll guard and sync tracked position to where the terminal
+    // actually is. Must be called in a rAF so xterm has settled.
+    function clearScrollGuard() {
+      requestAnimationFrame(() => {
+        try {
+          const buf = term.buffer.active;
+          savedViewportYRef.current = buf.viewportY;
+          wasAtBottomRef.current = buf.baseY - buf.viewportY <= 3;
+        } catch { /* disposed */ }
+        scrollGuardActiveRef.current = false;
+      });
+    }
+
     function scrollToPrompt() {
+      scrollGuardActiveRef.current = true;
       const buf = term.buffer.active;
       const viewportTop = buf.viewportY;
 
@@ -605,11 +622,13 @@ export default function TerminalPane({
           for (let i = completed.length - 1; i >= 0; i--) {
             if (completed[i].promptLine < viewportTop) {
               term.scrollToLine(completed[i].promptLine);
+              clearScrollGuard();
               return;
             }
           }
           // All prompts are at or below viewport — scroll to the last one
           term.scrollToLine(completed[completed.length - 1].promptLine);
+          clearScrollGuard();
           return;
         }
       }
@@ -622,12 +641,15 @@ export default function TerminalPane({
         const text = line.translateToString().trimEnd();
         if (/[$#❯]\s/.test(text)) {
           term.scrollToLine(i);
+          clearScrollGuard();
           return;
         }
       }
+      scrollGuardActiveRef.current = false;
     }
 
     function scrollToNextPrompt() {
+      scrollGuardActiveRef.current = true;
       const buf = term.buffer.active;
       const viewportTop = buf.viewportY;
 
@@ -642,6 +664,7 @@ export default function TerminalPane({
           for (let i = 0; i < completed.length; i++) {
             if (completed[i].promptLine >= threshold) {
               term.scrollToLine(completed[i].promptLine);
+              clearScrollGuard();
               return;
             }
           }
@@ -656,11 +679,13 @@ export default function TerminalPane({
         const text = line.translateToString().trimEnd();
         if (/[$#❯]\s/.test(text)) {
           term.scrollToLine(i);
+          clearScrollGuard();
           return;
         }
       }
       // No next prompt found — scroll to bottom
       term.scrollToBottom();
+      clearScrollGuard();
     }
 
     scrollToPromptRef.current = scrollToPrompt;
@@ -731,7 +756,9 @@ export default function TerminalPane({
         return false;
       }
       if (e.key === "Home" && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+        scrollGuardActiveRef.current = true;
         term.scrollToTop();
+        clearScrollGuard();
         return false;
       }
       if (e.key === "ArrowUp" && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
@@ -1010,12 +1037,65 @@ export default function TerminalPane({
     }
     const scrollDisposable = term.onScroll(() => {
       updateJumpBtn();
-      // Continuously track scroll position so savedViewportYRef is always
-      // current BEFORE display:none can reset the xterm viewport to 0.
-      // IntersectionObserver fires async (too late), but this fires sync on every scroll.
       const buf = term.buffer.active;
-      savedViewportYRef.current = buf.viewportY;
-      wasAtBottomRef.current = buf.baseY - buf.viewportY <= 3;
+      const currentY = buf.viewportY;
+
+      // --- Universal scroll guard ---
+      // Many operations (display:none, DOM detach, fitAddon.fit(), WebGL async
+      // resets) can reset the xterm viewport scrollTop to 0 without user intent.
+      // Instead of patching each trigger individually, we detect the pattern:
+      //   viewportY suddenly drops to ≤1 from a significant position (>15)
+      //   while the buffer has meaningful scrollback (baseY>15).
+      // Gradual user scrolling updates savedViewportYRef along the way, so by
+      // the time they reach the top the saved value is already small → no trigger.
+      // Intentional scroll-to-top (Ctrl+Home, prompt nav) sets scrollGuardActiveRef.
+      if (scrollGuardActiveRef.current) {
+        // Guard restoration in progress — do NOT update saved position.
+        // fit() / WebGL may fire intermediate resets to 0 during restoration;
+        // tracking those would corrupt the good saved value.
+        return;
+      }
+      const savedY = savedViewportYRef.current;
+      if (
+        currentY <= 1 &&
+        savedY !== null && savedY > 15 &&
+        buf.baseY > 15
+      ) {
+        // Automated reset detected — restore last known good position
+        scrollGuardActiveRef.current = true;
+        const restoreY = Math.min(savedY, buf.baseY);
+        const wasBottom = wasAtBottomRef.current;
+        if (wasBottom) {
+          term.scrollToBottom();
+        } else {
+          term.scrollToLine(restoreY);
+        }
+        // Double-rAF: WebGL / doFit() may async-reset again after our restore.
+        // Check and re-restore, then sync refs to the final settled position.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            try {
+              const buf2 = term.buffer.active;
+              if (buf2.viewportY <= 1 && buf2.baseY > 15) {
+                if (wasBottom) {
+                  term.scrollToBottom();
+                } else {
+                  term.scrollToLine(Math.min(restoreY, buf2.baseY));
+                }
+              }
+              // Sync refs to the final settled position before clearing the guard
+              savedViewportYRef.current = buf2.viewportY;
+              wasAtBottomRef.current = buf2.baseY - buf2.viewportY <= 3;
+            } catch { /* disposed */ }
+            scrollGuardActiveRef.current = false;
+          });
+        });
+        return; // Don't update savedViewportYRef — keep the good value
+      }
+
+      // Normal scroll — track position
+      savedViewportYRef.current = currentY;
+      wasAtBottomRef.current = buf.baseY - currentY <= 3;
     });
     let jumpDebounce: ReturnType<typeof setTimeout> | undefined;
     const renderDisposable = term.onRender(() => {
