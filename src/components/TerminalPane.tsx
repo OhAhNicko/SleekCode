@@ -1337,21 +1337,63 @@ export default function TerminalPane({
     if (isActive) {
       focusRestorerRef.current?.();
       terminalRef.current?.focus();
-      // Repaint xterm after tab switch — visibility:hidden prevents painting,
-      // so we refresh the terminal canvas when this pane becomes active.
-      // Unlike display:none, visibility:hidden preserves scrollTop, so we
-      // only need to refresh rendering — no scroll restoration needed.
-      const term = terminalRef.current;
-      if (term) {
-        recordTerminalResize(terminalId);
-        term.refresh(0, term.rows - 1);
-      }
       // Open composer now that the pane is active (deferred from background open)
       if (composerSupported && composerAlwaysVisible && !composerDismissedRef.current && !composerOpen) {
         setComposerOpen(true);
       }
     }
-  }, [isActive, composerAlwaysVisible, composerOpen, composerSupported, terminalId]);
+  }, [isActive, composerAlwaysVisible, composerOpen, composerSupported]);
+
+  // Force repaint when container becomes visible (tab switch).
+  // display:none prevents xterm rendering and resets viewport scrollTop.
+  // IntersectionObserver detects when the container becomes visible again.
+  // Scroll restoration uses savedViewportYRef (continuously tracked by onScroll).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry || !terminalRef.current) return;
+        if (entry.isIntersecting) {
+          recordTerminalResize(terminalId);
+          terminalRef.current.refresh(0, terminalRef.current.rows - 1);
+          // Restore scroll position from onScroll-tracked ref.
+          const savedY = savedViewportYRef.current;
+          if (savedY !== null) {
+            const term = terminalRef.current;
+            const wasBottom = wasAtBottomRef.current;
+            scrollGuardActiveRef.current = true;
+            const restore = () => {
+              try {
+                if (wasBottom) {
+                  term.scrollToBottom();
+                } else {
+                  const buf = term.buffer.active;
+                  term.scrollToLine(Math.min(savedY, buf.baseY));
+                }
+              } catch { /* disposed */ }
+            };
+            restore();
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                restore();
+                try {
+                  const buf = term.buffer.active;
+                  savedViewportYRef.current = buf.viewportY;
+                  wasAtBottomRef.current = buf.baseY - buf.viewportY <= 3;
+                } catch { /* disposed */ }
+                scrollGuardActiveRef.current = false;
+              });
+            });
+          }
+        }
+      },
+      { threshold: 0.01 }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [terminalId]);
 
   // Repaint after window minimize → restore (or alt-tab back).
   // WebGL renderer loses its context while the document is hidden;
