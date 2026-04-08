@@ -1120,7 +1120,58 @@ export default function TerminalPane({
     }
     el.addEventListener("wheel", handleWheel, { passive: false });
 
+    // --- DOM-level scroll guard (second layer) ---
+    // xterm's public onScroll API may not fire for all viewport changes (e.g.,
+    // during fit() buffer reflow in production builds). As a safety net, we also
+    // watch the raw DOM scroll event on the .xterm-viewport element, which fires
+    // for EVERY scrollTop change without exception.
+    const viewportEl = el.querySelector(".xterm-viewport") as HTMLElement | null;
+    let domGuardTimer = 0;
+    function onViewportScroll() {
+      if (scrollGuardActiveRef.current) return;
+      const buf = term.buffer.active;
+      const currentY = buf.viewportY;
+      const savedY = savedViewportYRef.current;
+      if (
+        currentY <= 1 &&
+        savedY !== null && savedY > 15 &&
+        buf.baseY > 15
+      ) {
+        scrollGuardActiveRef.current = true;
+        const restoreY = Math.min(savedY, buf.baseY);
+        const wasBottom = wasAtBottomRef.current;
+        if (wasBottom) {
+          term.scrollToBottom();
+        } else {
+          term.scrollToLine(restoreY);
+        }
+        // Clear guard after settling — use setTimeout (more reliable than
+        // rAF in production builds where rAF timing can differ).
+        clearTimeout(domGuardTimer);
+        domGuardTimer = window.setTimeout(() => {
+          try {
+            const buf2 = term.buffer.active;
+            // One more check — if still at top, restore again
+            if (buf2.viewportY <= 1 && buf2.baseY > 15) {
+              if (wasBottom) term.scrollToBottom();
+              else term.scrollToLine(Math.min(restoreY, buf2.baseY));
+            }
+            savedViewportYRef.current = buf2.viewportY;
+            wasAtBottomRef.current = buf2.baseY - buf2.viewportY <= 3;
+          } catch { /* disposed */ }
+          scrollGuardActiveRef.current = false;
+        }, 150);
+      } else if (currentY > 1) {
+        // Normal scroll — track position (only from DOM guard if xterm onScroll missed it)
+        savedViewportYRef.current = currentY;
+        wasAtBottomRef.current = buf.baseY - currentY <= 3;
+      }
+    }
+    viewportEl?.addEventListener("scroll", onViewportScroll, { passive: true });
+
     cleanupRef.current = () => {
+      viewportEl?.removeEventListener("scroll", onViewportScroll);
+      clearTimeout(domGuardTimer);
       el.removeEventListener("wheel", handleWheel);
       disposed = true;
       clearInlineHint();
