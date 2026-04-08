@@ -267,18 +267,31 @@ export default function PromptComposer({
     if (!terminal) return false;
     const hints = interactiveHints[terminalType] ?? interactiveHints.claude;
     const buf = terminal.buffer.active;
-    // Only check a few lines near the prompt — interactive dialogs show hints
-    // right next to the prompt, not in distant status bars. Scanning the whole
-    // viewport caused false positives (e.g. Gemini's status bar contains
-    // "esc" which matched "esc to cancel", hiding the composer permanently).
-    const checkEnd = Math.min(promptLineIdx + 4, buf.viewportY + terminal.rows - 1);
-    for (let i = promptLineIdx; i <= checkEnd; i++) {
+    const vpEnd = buf.viewportY + terminal.rows - 1;
+
+    // Tier 1: Within 4 lines of prompt, any single hint is definitive.
+    // Interactive dialogs with few options show hints right next to the prompt.
+    const nearEnd = Math.min(promptLineIdx + 4, vpEnd);
+    for (let i = promptLineIdx; i <= nearEnd; i++) {
       const line = buf.getLine(i);
       if (!line) continue;
       const text = line.translateToString().toLowerCase();
-      if (hints.some((h) => text.includes(h))) {
-        return true;
+      if (hints.some((h) => text.includes(h))) return true;
+    }
+
+    // Tier 2: Beyond 4 lines to viewport bottom, require 2+ distinct hints.
+    // Large dialogs (many options) push hints far from the prompt/selection
+    // marker. Requiring 2+ matches avoids false positives from status bars
+    // (e.g. Gemini's bar can match a single hint like "esc to cancel").
+    const matched = new Set<string>();
+    for (let i = nearEnd + 1; i <= vpEnd; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      const text = line.translateToString().toLowerCase();
+      for (const h of hints) {
+        if (text.includes(h)) matched.add(h);
       }
+      if (matched.size >= 2) return true;
     }
     return false;
   }
@@ -482,7 +495,10 @@ export default function PromptComposer({
       const buf = terminal.buffer.active;
       const vpStart = buf.viewportY;
       const vpEnd = vpStart + terminal.rows - 1;
-      const isAtBottom = vpStart + terminal.rows >= buf.length;
+      // 3-line tolerance: during rapid output (e.g. dialogue appearing), baseY can
+      // momentarily exceed viewportY before auto-scroll catches up. Without tolerance,
+      // the code skips the interactive mode detection path (Case 1).
+      const isAtBottom = buf.length - (vpStart + terminal.rows) <= 3;
 
       // Known prompt line — check if it's within the visible viewport
       const promptIdx = promptLineIdxRef.current;
@@ -512,8 +528,8 @@ export default function PromptComposer({
       // ── Background panes ──
       if (!isActiveRef.current) {
         if (isPromptVisible) {
-          // Prompt at known index — unhide
-          if (hiddenRef.current) {
+          // Prompt at known index — unhide (unless interactive dialog is active)
+          if (hiddenRef.current && !isInteractiveMode(promptIdx)) {
 
             hiddenRef.current = false;
             setHidden(false);
@@ -527,7 +543,7 @@ export default function PromptComposer({
             promptLineIdxRef.current = check.promptLineIdx;
             setTopOffset(check.offset);
             setCellHeight(check.cellHeight);
-            if (hiddenRef.current) {
+            if (hiddenRef.current && !isInteractiveMode(check.promptLineIdx)) {
 
               hiddenRef.current = false;
               setHidden(false);
@@ -694,7 +710,7 @@ export default function PromptComposer({
         setTopOffset(result.offset);
         setCellHeight(result.cellHeight);
         promptLineIdxRef.current = result.promptLineIdx;
-        if (result.promptPass === 1 && hiddenRef.current) {
+        if (result.promptPass === 1 && hiddenRef.current && !isInteractiveMode(result.promptLineIdx)) {
 
           setHidden(false);
           hiddenRef.current = false;
@@ -759,9 +775,19 @@ export default function PromptComposer({
         setTopOffset(result.offset);
         setCellHeight(result.cellHeight);
         promptLineIdxRef.current = result.promptLineIdx;
-        if (hiddenRef.current && result.promptPass === 1) {
-          hiddenRef.current = false;
-          setHidden(false);
+        if (result.promptPass === 1) {
+          if (isInteractiveMode(result.promptLineIdx)) {
+            // Safety net: hide if onRender missed the interactive transition
+            if (!hiddenRef.current) {
+              hiddenRef.current = true;
+              setHidden(true);
+              textareaRef.current?.blur();
+              terminal.focus();
+            }
+          } else if (hiddenRef.current) {
+            hiddenRef.current = false;
+            setHidden(false);
+          }
         }
       }
     }, 10000);

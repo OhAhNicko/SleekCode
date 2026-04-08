@@ -34,6 +34,13 @@ import hackBoldUrl from "../fonts/hack-bold.woff2?url";
 // Prevents multiple panes from claiming the same session file during disk lookup.
 const claimedSessionIds = new Set<string>();
 
+/** Atomically claim a session ID. Returns true if this caller won the claim. */
+function claimSessionId(id: string): boolean {
+  if (claimedSessionIds.has(id)) return false;
+  claimedSessionIds.add(id);
+  return true;
+}
+
 // Load Hack font via JS FontFace API — bypasses CSS @font-face which
 // can fail silently in Tauri's WebView due to URL resolution issues.
 let hackFontReady: Promise<void> | null = null;
@@ -159,8 +166,10 @@ export default function TerminalPane({
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const scrollToPromptRef = useRef<() => void>(() => {});
   const scrollToNextPromptRef = useRef<() => void>(() => {});
-  // Saved scroll position for tab-switch restoration (display:none resets xterm viewport scrollTop)
+  // Saved scroll position for tab-switch restoration (display:none resets xterm viewport scrollTop).
+  // Continuously updated by onScroll so the value is always current BEFORE display:none resets it.
   const savedViewportYRef = useRef<number | null>(null);
+  const wasAtBottomRef = useRef(true);
   const cleanupRef = useRef<(() => void) | null>(null);
   const paneCountRef = useRef(paneCount);
   paneCountRef.current = paneCount;
@@ -307,8 +316,17 @@ export default function TerminalPane({
               skippedIds.add(id);
               return false;
             }
-            claimedSessionIds.add(id);
+            // Atomic claim: if another pane already claimed this ID between
+            // our invoke() and now, back off and retry with a different ID.
+            if (!claimSessionId(id)) {
+              console.log(`[SessionResume] ${id.slice(0, 8)} already claimed by another pane`);
+              skippedIds.add(id);
+              return false;
+            }
             setSessionTrusted(true);
+            // Eagerly update ref so handleRestart sees the new ID
+            // even before React re-renders with the updated prop.
+            sessionResumeIdPropRef.current = id;
             onSessionResumeIdRef.current?.(id);
             return true;
           }
@@ -990,7 +1008,15 @@ export default function TerminalPane({
         btn.style.top = `${y}px`;
       }
     }
-    const scrollDisposable = term.onScroll(updateJumpBtn);
+    const scrollDisposable = term.onScroll(() => {
+      updateJumpBtn();
+      // Continuously track scroll position so savedViewportYRef is always
+      // current BEFORE display:none can reset the xterm viewport to 0.
+      // IntersectionObserver fires async (too late), but this fires sync on every scroll.
+      const buf = term.buffer.active;
+      savedViewportYRef.current = buf.viewportY;
+      wasAtBottomRef.current = buf.baseY - buf.viewportY <= 3;
+    });
     let jumpDebounce: ReturnType<typeof setTimeout> | undefined;
     const renderDisposable = term.onRender(() => {
       clearTimeout(jumpDebounce);
@@ -1192,9 +1218,11 @@ export default function TerminalPane({
   // Force repaint when container becomes visible (tab switch).
   // xterm.js doesn't render while display:none — IntersectionObserver
   // detects visibility changes and triggers a refresh.
-  // Also restores scroll position: display:none resets the xterm viewport
-  // div's scrollTop to 0, causing the terminal to appear scrolled to the top.
-  // We save viewportY when hiding and restore it after becoming visible.
+  // Scroll restoration: display:none resets the xterm viewport div's scrollTop
+  // to 0. The IntersectionObserver fires ASYNC (after display:none already
+  // applied), so we can NOT save viewportY here — it's already 0 by the time
+  // the callback runs. Instead, onScroll continuously updates savedViewportYRef
+  // so it always holds the last real position BEFORE the browser resets it.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -1209,32 +1237,32 @@ export default function TerminalPane({
           // (same window size) so term.onResize never fires.
           recordTerminalResize(terminalId);
           terminalRef.current.refresh(0, terminalRef.current.rows - 1);
-          // Restore scroll position that was saved when the tab was hidden.
-          // display:none resets the viewport div's scrollTop to 0; we need
-          // to put it back after the terminal becomes visible and settles.
+          // Restore scroll position from onScroll-tracked ref.
           const savedY = savedViewportYRef.current;
           if (savedY !== null) {
-            savedViewportYRef.current = null;
             const term = terminalRef.current;
-            const buf = term.buffer.active;
+            const wasBottom = wasAtBottomRef.current;
+            const restore = () => {
+              try {
+                if (wasBottom) {
+                  term.scrollToBottom();
+                } else {
+                  const buf = term.buffer.active;
+                  term.scrollToLine(Math.min(savedY, buf.baseY));
+                }
+              } catch { /* disposed */ }
+            };
             // Immediate restore
-            term.scrollToLine(Math.min(savedY, buf.baseY));
+            restore();
             // Deferred restore — WebGL renderer may async-reset viewport
             requestAnimationFrame(() => {
-              requestAnimationFrame(() => {
-                try {
-                  const buf2 = term.buffer.active;
-                  term.scrollToLine(Math.min(savedY, buf2.baseY));
-                } catch { /* disposed */ }
-              });
+              requestAnimationFrame(restore);
             });
           }
-        } else {
-          // Going invisible (tab switch away) — save current scroll position
-          // BEFORE display:none resets it to 0.
-          const buf = terminalRef.current.buffer.active;
-          savedViewportYRef.current = buf.viewportY;
         }
+        // Note: we do NOT save in the !isIntersecting branch — by the time
+        // this async callback fires, display:none has already reset viewportY
+        // to 0. onScroll continuously tracks the real position instead.
       },
       { threshold: 0.01 }
     );
@@ -1419,6 +1447,9 @@ export default function TerminalPane({
     setSearchOpen(false);
     // Update layout tree (prop will update on re-render)
     onSwitchSessionRef.current?.(newSessionId);
+    // Eagerly update ref so the PTY spawn reads the correct session ID
+    // before React delivers the prop update.
+    sessionResumeIdPropRef.current = newSessionId;
     // Trigger PTY re-spawn
     setRestartKey((k) => k + 1);
   }, [terminalType]);

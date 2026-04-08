@@ -1,6 +1,6 @@
 import type { StateCreator } from "zustand";
 import type { Tab, PaneLayout, DevServer } from "../types";
-import { generatePaneId, generateTerminalId } from "../lib/layout-utils";
+import { generatePaneId, generateTerminalId, setSessionResumeIdInLayout } from "../lib/layout-utils";
 import { snapshotTab } from "./undoCloseStore";
 import { getPtyWrite } from "./terminalSlice";
 
@@ -50,6 +50,8 @@ export interface TabSlice {
   removeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabLayout: (tabId: string, layout: PaneLayout) => void;
+  /** Atomically update a pane's sessionResumeId inside set() to avoid read-modify-write races. */
+  updatePaneSessionResumeId: (tabId: string, terminalId: string, sessionResumeId: string | undefined) => void;
   togglePinTab: (tabId: string) => void;
   renameTab: (tabId: string, name: string) => void;
   reorderTabs: (draggedId: string, insertBeforeId: string | null) => void;
@@ -175,6 +177,16 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
   updateTabLayout: (tabId, layout) => {
     set((state) => ({
       tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, layout } : t)),
+    }));
+  },
+
+  updatePaneSessionResumeId: (tabId, terminalId, sessionResumeId) => {
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId
+          ? { ...t, layout: setSessionResumeIdInLayout(t.layout, terminalId, sessionResumeId) }
+          : t
+      ),
     }));
   },
 

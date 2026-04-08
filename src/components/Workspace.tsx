@@ -8,7 +8,6 @@ import {
   findAllTerminalLeaves,
   findPaneIdForTerminal,
   removePane,
-  setSessionResumeIdInLayout,
   setTerminalTypeInLayout,
   splitPane,
   swapPanes,
@@ -28,6 +27,7 @@ interface WorkspaceProps {
 
 export default function Workspace({ tab }: WorkspaceProps) {
   const updateTabLayout = useAppStore((s) => s.updateTabLayout);
+  const updatePaneSessionResumeId = useAppStore((s) => s.updatePaneSessionResumeId);
   const addTerminal = useAppStore((s) => s.addTerminal);
   const addTerminals = useAppStore((s) => s.addTerminals);
   const setActiveTerminal = useAppStore((s) => s.setActiveTerminal);
@@ -443,10 +443,9 @@ export default function Workspace({ tab }: WorkspaceProps) {
             onClose={() => handleTerminalClose(termId)}
             onChangeType={(type) => {
               useAppStore.getState().changeTerminalType(termId, type);
-              // Clear session resume ID when switching terminal types
-              let newLayout = setTerminalTypeInLayout(tab.layout, termId, type);
-              newLayout = setSessionResumeIdInLayout(newLayout, termId, undefined);
-              updateTabLayout(tab.id, newLayout);
+              updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, termId, type));
+              // Clear session resume ID atomically (reads latest layout inside set())
+              updatePaneSessionResumeId(tab.id, termId, undefined);
             }}
             onFocus={() => handleTerminalFocus(termId)}
             onSwapPane={handleSwapPane}
@@ -455,17 +454,10 @@ export default function Workspace({ tab }: WorkspaceProps) {
             sessionResumeId={leaf?.sessionResumeId}
             backend={tab.backend}
             onSessionResumeId={(id) => {
-              // Read current layout from store to avoid stale closure
-              const currentTab = useAppStore.getState().tabs.find(t => t.id === tab.id);
-              if (currentTab) {
-                updateTabLayout(tab.id, setSessionResumeIdInLayout(currentTab.layout, termId, id));
-              }
+              updatePaneSessionResumeId(tab.id, termId, id);
             }}
             onSwitchSession={(newSessionId) => {
-              const currentTab = useAppStore.getState().tabs.find(t => t.id === tab.id);
-              if (currentTab) {
-                updateTabLayout(tab.id, setSessionResumeIdInLayout(currentTab.layout, termId, newSessionId));
-              }
+              updatePaneSessionResumeId(tab.id, termId, newSessionId);
             }}
           />,
           slotEl,
