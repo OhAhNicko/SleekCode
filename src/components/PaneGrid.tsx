@@ -239,6 +239,15 @@ export default function PaneGrid({
                 // Remove stale slot (from a previous terminal assigned to this pane)
                 while (el.firstChild) el.removeChild(el.firstChild);
                 el.appendChild(slot);
+                // Restore scrollTop — DOM detachment silently resets it to 0,
+                // and no scroll events fire on detached elements. TerminalPane
+                // continuously saves the real scrollTop as a data attribute.
+                const viewport = slot.querySelector(".xterm-viewport") as HTMLElement | null;
+                const saved = viewport?.dataset.savedScrollTop;
+                if (viewport && saved) {
+                  const scrollTop = parseFloat(saved);
+                  if (scrollTop > 0) viewport.scrollTop = scrollTop;
+                }
               }
             }
           }}

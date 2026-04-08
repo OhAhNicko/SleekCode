@@ -1095,6 +1095,9 @@ export default function TerminalPane({
       // Normal scroll — track position
       savedViewportYRef.current = currentY;
       wasAtBottomRef.current = buf.baseY - currentY <= 3;
+      // Persist to DOM for PaneGrid slot restoration (detachment resets scrollTop silently)
+      const vp = el.querySelector(".xterm-viewport") as HTMLElement | null;
+      if (vp) vp.dataset.savedScrollTop = String(vp.scrollTop);
     });
     let jumpDebounce: ReturnType<typeof setTimeout> | undefined;
     const renderDisposable = term.onRender(() => {
@@ -1163,6 +1166,9 @@ export default function TerminalPane({
         // Normal scroll — track position (catches events xterm onScroll missed)
         savedViewportYRef.current = currentY;
         wasAtBottomRef.current = buf.baseY - currentY <= 3;
+        // Persist scrollTop to a data attribute so PaneGrid can restore it
+        // after DOM detachment (which silently resets scrollTop without events).
+        if (viewportEl) viewportEl.dataset.savedScrollTop = String(viewportEl.scrollTop);
       }
     }
     viewportEl?.addEventListener("scroll", onViewportScroll, { passive: true });
