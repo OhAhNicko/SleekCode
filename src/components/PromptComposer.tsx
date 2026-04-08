@@ -265,12 +265,29 @@ export default function PromptComposer({
 
   function isInteractiveMode(promptLineIdx: number): boolean {
     if (!terminal) return false;
-    const hints = interactiveHints[terminalType] ?? interactiveHints.claude;
     const buf = terminal.buffer.active;
     const vpEnd = buf.viewportY + terminal.rows - 1;
 
+    // Tier 0: Selection marker detection — ❯/›/» at the prompt position means
+    // this is a CLI selection list, not a real prompt. All supported CLIs
+    // (Claude, Codex, Gemini) use > for their actual prompt. Scrollable lists
+    // like /resume fill the entire viewport and push hint text off-screen,
+    // so hint-based detection alone can't catch them.
+    if (seenPass1Ref.current) {
+      const line = buf.getLine(promptLineIdx);
+      if (line) {
+        const raw = line.translateToString(false);
+        const firstCharCol = raw.search(/\S/);
+        if (firstCharCol >= 0) {
+          const ch = raw[firstCharCol];
+          if (ch === "❯" || ch === "›" || ch === "»") return true;
+        }
+      }
+    }
+
     // Tier 1: Within 4 lines of prompt, any single hint is definitive.
     // Interactive dialogs with few options show hints right next to the prompt.
+    const hints = interactiveHints[terminalType] ?? interactiveHints.claude;
     const nearEnd = Math.min(promptLineIdx + 4, vpEnd);
     for (let i = promptLineIdx; i <= nearEnd; i++) {
       const line = buf.getLine(i);
