@@ -956,8 +956,28 @@ export default function TerminalPane({
         // the double-rAF deferred restore completes.
         const buf = term.buffer.active;
         if (!resizeLocked) {
-          resizeWasAtBottom = buf.baseY - buf.viewportY <= 3;
-          resizeSavedViewport = buf.viewportY;
+          let vY = buf.viewportY;
+          let wasBot = buf.baseY - vY <= 3;
+          // After DOM detachment (slot moved between Panel divs), viewportY
+          // reads as 0 because the browser reset scrollTop while the element
+          // was disconnected. Try two fallbacks:
+          // 1) savedViewportYRef (updated by onScroll before detachment)
+          // 2) data attributes on the viewport element (survive detachment)
+          if (vY <= 1 && buf.baseY > 20) {
+            if (savedViewportYRef.current !== null && savedViewportYRef.current > 1) {
+              vY = Math.min(savedViewportYRef.current, buf.baseY);
+              wasBot = wasAtBottomRef.current;
+            } else {
+              const vp = el.querySelector(".xterm-viewport") as HTMLElement | null;
+              const domY = parseFloat(vp?.dataset.savedViewportY ?? "0");
+              if (domY > 1) {
+                vY = Math.min(domY, buf.baseY);
+                wasBot = vp?.dataset.savedWasAtBottom === "1";
+              }
+            }
+          }
+          resizeWasAtBottom = wasBot;
+          resizeSavedViewport = vY;
           resizeLocked = true;
         }
         // Cancel any pending deferred restores from a previous doFit() call —
@@ -1095,9 +1115,15 @@ export default function TerminalPane({
       // Normal scroll — track position
       savedViewportYRef.current = currentY;
       wasAtBottomRef.current = buf.baseY - currentY <= 3;
-      // Persist to DOM for PaneGrid slot restoration (detachment resets scrollTop silently)
+      // Persist to DOM — these data attributes survive DOM detachment (which
+      // silently resets scrollTop). Used by PaneGrid for slot restoration and
+      // by doFit() as a fallback when savedViewportYRef might be stale.
       const vp = el.querySelector(".xterm-viewport") as HTMLElement | null;
-      if (vp) vp.dataset.savedScrollTop = String(vp.scrollTop);
+      if (vp) {
+        vp.dataset.savedScrollTop = String(vp.scrollTop);
+        vp.dataset.savedViewportY = String(currentY);
+        vp.dataset.savedWasAtBottom = buf.baseY - currentY <= 3 ? "1" : "0";
+      }
     });
     let jumpDebounce: ReturnType<typeof setTimeout> | undefined;
     const renderDisposable = term.onRender(() => {
@@ -1166,9 +1192,12 @@ export default function TerminalPane({
         // Normal scroll — track position (catches events xterm onScroll missed)
         savedViewportYRef.current = currentY;
         wasAtBottomRef.current = buf.baseY - currentY <= 3;
-        // Persist scrollTop to a data attribute so PaneGrid can restore it
-        // after DOM detachment (which silently resets scrollTop without events).
-        if (viewportEl) viewportEl.dataset.savedScrollTop = String(viewportEl.scrollTop);
+        // Persist to DOM for PaneGrid slot restoration + doFit() fallback
+        if (viewportEl) {
+          viewportEl.dataset.savedScrollTop = String(viewportEl.scrollTop);
+          viewportEl.dataset.savedViewportY = String(currentY);
+          viewportEl.dataset.savedWasAtBottom = buf.baseY - currentY <= 3 ? "1" : "0";
+        }
       }
     }
     viewportEl?.addEventListener("scroll", onViewportScroll, { passive: true });
