@@ -1003,13 +1003,15 @@ export default function TerminalPane({
           resizeRafId2 = requestAnimationFrame(() => {
             try {
               const buf2 = term.buffer.active;
-              // Only restore if viewport hasn't been manually scrolled since fit
-              if (buf2.viewportY === postFitViewport) {
-                if (resizeWasAtBottom) {
-                  term.scrollToBottom();
-                } else {
-                  term.scrollToLine(Math.min(resizeSavedViewport, buf2.baseY));
-                }
+              if (resizeWasAtBottom) {
+                // ALWAYS re-scroll to bottom — active output between the
+                // immediate restore and this rAF may have pushed baseY past
+                // viewportY, breaking xterm's auto-follow. Re-engaging bottom
+                // ensures the terminal keeps following new output.
+                term.scrollToBottom();
+              } else if (buf2.viewportY === postFitViewport) {
+                // Only restore if viewport hasn't been manually scrolled since fit
+                term.scrollToLine(Math.min(resizeSavedViewport, buf2.baseY));
               }
             } catch { /* disposed */ }
             // Unlock: the resize sequence is complete, next doFit() captures fresh state
