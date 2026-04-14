@@ -505,7 +505,7 @@ const blackSteelTheme: EzyDevTheme = {
     borderLight: "#3f3f46",
     text: "#e4e4e7",
     textSecondary: "#a1a1aa",
-    textMuted: "#52525b",
+    textMuted: "#71717a",
     accent: "#dc2626",
     accentHover: "#ef4444",
     accentDim: "#991b1b",

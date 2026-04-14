@@ -166,6 +166,8 @@ export default function TerminalPane({
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const scrollToPromptRef = useRef<() => void>(() => {});
   const scrollToNextPromptRef = useRef<() => void>(() => {});
+  // Track prompts submitted via PromptComposer with their buffer line + timestamp
+  const promptTimestampsRef = useRef<{ text: string; line: number; timestamp: number }[]>([]);
   // Saved scroll position — continuously updated by onScroll so the value is always
   // current BEFORE display:none / DOM detach / fit() can reset the xterm viewport to 0.
   const savedViewportYRef = useRef<number | null>(null);
@@ -1522,6 +1524,16 @@ export default function TerminalPane({
   const handleComposerSubmit = useCallback((text: string) => {
     const isCli = terminalType === "codex" || terminalType === "gemini" || terminalType === "claude";
 
+    // Record prompt with buffer line + timestamp for prompt history dropdown
+    if (isCli && terminalRef.current) {
+      const buf = terminalRef.current.buffer.active;
+      promptTimestampsRef.current.push({
+        text,
+        line: buf.baseY + buf.cursorY,
+        timestamp: Date.now(),
+      });
+    }
+
     if (isCli) {
       // Always use bracketed paste for CLI terminals so the TUI ingests the
       // entire input atomically.  Without it, long text (e.g. file paths for
@@ -1566,6 +1578,7 @@ export default function TerminalPane({
     setExited(false);
     setContextInfo(null);
     setCommandBlocks([]);
+    promptTimestampsRef.current = [];
     // Hide composer and search bar until PTY produces output again
     awaitingRestartDataRef.current = true;
     setComposerOpen(false);
@@ -1604,6 +1617,7 @@ export default function TerminalPane({
     setExited(false);
     setContextInfo(null);
     setCommandBlocks([]);
+    promptTimestampsRef.current = [];
     awaitingRestartDataRef.current = true;
     setComposerOpen(false);
     setSearchOpen(false);
@@ -1615,6 +1629,60 @@ export default function TerminalPane({
     // Trigger PTY re-spawn
     setRestartKey((k) => k + 1);
   }, [terminalType]);
+
+  // Prompt history dropdown: scan buffer for prompt-like lines and merge with
+  // PromptComposer timestamps for clean text + relative time display.
+  const getPromptEntries = useCallback(() => {
+    const term = terminalRef.current;
+    if (!term) return [];
+    const buf = term.buffer.active;
+    const maxLine = buf.baseY + term.rows;
+    const entries: { line: number; text: string; timestamp?: number; fromComposer: boolean }[] = [];
+    const promptRegex = /^[>❯›»]\s/;
+
+    for (let i = 0; i < maxLine; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      const raw = line.translateToString(false);
+      const trimmed = raw.trim();
+      if (!promptRegex.test(trimmed)) continue;
+      // Skip if prompt char not at column 0-1
+      const col = raw.search(/[>❯›»]/);
+      if (col > 1) continue;
+      // Skip numbered selection items (> 3. Option)
+      const after = trimmed.replace(/^[>❯›»]\s?/, "").trim();
+      if (/^\d+[.)]/.test(after)) continue;
+      if (after.length < 2) continue;
+
+      // Try to match with a PromptComposer entry (±3 line tolerance)
+      const match = promptTimestampsRef.current.find(
+        (p) => Math.abs(p.line - i) <= 3
+      );
+      entries.push({
+        line: i,
+        text: match?.text ?? after,
+        timestamp: match?.timestamp,
+        fromComposer: !!match,
+      });
+    }
+    return entries;
+  }, []);
+
+  // Scroll terminal to a specific buffer line (used by prompt history dropdown)
+  const handleScrollToPromptLine = useCallback((line: number) => {
+    const term = terminalRef.current;
+    if (!term) return;
+    scrollGuardActiveRef.current = true;
+    term.scrollToLine(line);
+    requestAnimationFrame(() => {
+      try {
+        const buf = term.buffer.active;
+        savedViewportYRef.current = buf.viewportY;
+        wasAtBottomRef.current = buf.baseY - buf.viewportY <= 3;
+      } catch { /* disposed */ }
+      scrollGuardActiveRef.current = false;
+    });
+  }, []);
 
   const handleSearchClose = useCallback(() => {
     searchAddonRef.current?.clearDecorations();
@@ -1651,6 +1719,8 @@ export default function TerminalPane({
           sessionResumeId={sessionResumeId}
           sessionTrusted={sessionTrusted}
           onSwitchSession={handleSwitchSession}
+          getPromptEntries={getPromptEntries}
+          onScrollToPromptLine={handleScrollToPromptLine}
         />
       )}
       <div className="flex-1 min-h-0 relative" style={{ backgroundColor: "var(--ezy-bg)" }}>

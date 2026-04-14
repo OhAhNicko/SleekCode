@@ -39,6 +39,13 @@ export const CLI_BRAND_COLORS: Record<TerminalType, string> = {
 };
 
 
+export interface PromptEntry {
+  line: number;
+  text: string;
+  timestamp?: number;
+  fromComposer: boolean;
+}
+
 interface TerminalHeaderProps {
   terminalId: string;
   terminalType: TerminalType;
@@ -56,6 +63,8 @@ interface TerminalHeaderProps {
   /** True when sessionResumeId came from restore/explicit switch; false when detected from disk (may be stale). */
   sessionTrusted?: boolean;
   onSwitchSession?: (sessionId: string | undefined) => void;
+  getPromptEntries?: () => PromptEntry[];
+  onScrollToPromptLine?: (line: number) => void;
 }
 
 function TerminalIcon({ type }: { type: TerminalType }) {
@@ -220,6 +229,162 @@ function formatRelativeTime(isoDate: string): string {
   return `${Math.floor(days / 30)}mo ago`;
 }
 
+/** Format a timestamp (ms) as relative time */
+function formatTimestamp(ts: number): string {
+  const diff = Math.floor((Date.now() - ts) / 1000);
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function PromptHistoryDropdown({
+  entries,
+  anchorRef,
+  onSelect,
+  onClose,
+}: {
+  entries: PromptEntry[];
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
+  onSelect: (line: number) => void;
+  onClose: () => void;
+}) {
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  useEffect(() => {
+    if (anchorRef?.current) {
+      const rect = anchorRef.current.getBoundingClientRect();
+      // Align right edge of dropdown with right edge of button
+      setPos({ top: rect.bottom + 2, left: Math.max(8, rect.right - 320) });
+    }
+  }, [anchorRef]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  if (!pos) return null;
+
+  return (
+    <>
+      <div
+        style={{ position: "fixed", inset: 0, zIndex: 199 }}
+        onMouseDown={onClose}
+      />
+      <div
+        className="dropdown-enter"
+        style={{
+          position: "fixed",
+          top: pos.top,
+          left: pos.left,
+          width: 320,
+          backgroundColor: "var(--ezy-surface-raised)",
+          border: "1px solid var(--ezy-border)",
+          borderRadius: 8,
+          overflow: "hidden",
+          boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
+          zIndex: 200,
+          maxHeight: 340,
+        }}
+      >
+        <div
+          style={{
+            padding: "6px 10px",
+            borderBottom: "1px solid var(--ezy-border)",
+            fontSize: 11,
+            fontWeight: 600,
+            color: "var(--ezy-text-muted)",
+          }}
+        >
+          Prompt History
+        </div>
+        <div style={{ overflowY: "auto", maxHeight: 296 }}>
+          {entries.length === 0 ? (
+            <div
+              style={{
+                padding: "24px 10px",
+                textAlign: "center",
+                fontSize: 12,
+                color: "var(--ezy-text-muted)",
+                opacity: 0.6,
+              }}
+            >
+              No prompts yet
+            </div>
+          ) : (
+            entries.map((entry, i) => (
+              <div
+                key={`${entry.line}-${i}`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "5px 10px",
+                  cursor: "pointer",
+                  backgroundColor: "transparent",
+                  borderBottom: "1px solid var(--ezy-border-subtle, rgba(255,255,255,0.04))",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "transparent";
+                }}
+                onClick={() => {
+                  onSelect(entry.line);
+                  onClose();
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 10,
+                    color: "var(--ezy-text-muted)",
+                    opacity: 0.5,
+                    minWidth: 20,
+                    textAlign: "right",
+                    flexShrink: 0,
+                  }}
+                >
+                  #{i + 1}
+                </span>
+                <span
+                  style={{
+                    flex: 1,
+                    fontSize: 12,
+                    color: "var(--ezy-text)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {entry.text}
+                </span>
+                {entry.timestamp && (
+                  <span
+                    style={{
+                      fontSize: 10,
+                      color: "var(--ezy-text-muted)",
+                      opacity: 0.5,
+                      flexShrink: 0,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {formatTimestamp(entry.timestamp)}
+                  </span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
 /** Merged session item for the picker — combines store + index data */
 interface MergedSession {
   id: string;
@@ -301,12 +466,13 @@ function SessionPicker({
       });
     }
 
-    // Sort: current first, then by modified desc (historical entries have timestamps)
+    // Sort: current first, then by modified desc (newest on top)
     merged.sort((a, b) => {
       if (a.isCurrent) return -1;
       if (b.isCurrent) return 1;
-      if (a.isFromStore !== b.isFromStore) return a.isFromStore ? -1 : 1;
       if (a.modified && b.modified) return b.modified.localeCompare(a.modified);
+      if (a.modified) return -1;
+      if (b.modified) return 1;
       return 0;
     });
 
@@ -601,6 +767,8 @@ export default function TerminalHeader({
   sessionResumeId,
   sessionTrusted = false,
   onSwitchSession,
+  getPromptEntries,
+  onScrollToPromptLine,
 }: TerminalHeaderProps) {
   const contextPercent = contextInfo?.percent ?? null;
   const config = TERMINAL_CONFIGS[terminalType];
@@ -609,6 +777,9 @@ export default function TerminalHeader({
   const sl = (key: string) => slToggles?.[key] ?? true;
   const [showTypePicker, setShowTypePicker] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [showPromptHistory, setShowPromptHistory] = useState(false);
+  const [promptEntries, setPromptEntries] = useState<PromptEntry[]>([]);
+  const promptHistoryBtnRef = useRef<HTMLButtonElement>(null);
   const [inlineRenaming, setInlineRenaming] = useState(false);
   const [inlineRenameValue, setInlineRenameValue] = useState("");
   const inlineInputRef = useRef<HTMLInputElement>(null);
@@ -1160,8 +1331,40 @@ export default function TerminalHeader({
         </div>
       )}
 
+      {/* Prompt history button — always visible for AI CLIs */}
+      {(terminalType === "claude" || terminalType === "codex" || terminalType === "gemini") && getPromptEntries && (
+        <button
+          ref={promptHistoryBtnRef}
+          onClick={() => {
+            if (showPromptHistory) {
+              setShowPromptHistory(false);
+            } else {
+              setPromptEntries(getPromptEntries());
+              setShowPromptHistory(true);
+            }
+          }}
+          title="Prompt history"
+          className={`p-1 rounded transition-colors hover:bg-[var(--ezy-border)] ${contextPercent == null ? "ml-auto" : ""}`}
+          style={{ flexShrink: 0 }}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="var(--ezy-text-muted)"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <circle cx="8" cy="8" r="6.5" />
+            <polyline points="8,4 8,8 11,10" />
+          </svg>
+        </button>
+      )}
+
       {/* Right: restart + close (visible on header hover) */}
-      <div className={`flex items-center gap-0.5 ${contextPercent == null ? "ml-auto" : ""} opacity-0 group-hover:opacity-100 transition-opacity`} style={{ flexShrink: 0 }}>
+      <div className={`flex items-center gap-0.5 ${contextPercent == null && !(terminalType === "claude" || terminalType === "codex" || terminalType === "gemini") ? "ml-auto" : ""} opacity-0 group-hover:opacity-100 transition-opacity`} style={{ flexShrink: 0 }}>
         {onRestart && (
           <button
             onClick={onRestart}
@@ -1204,6 +1407,16 @@ export default function TerminalHeader({
           }}
           onNew={() => onSwitchSession?.(undefined)}
           onClose={() => setShowSessionPicker(false)}
+        />
+      )}
+
+      {/* Prompt history dropdown — rendered outside overflow-hidden context info area */}
+      {showPromptHistory && onScrollToPromptLine && (
+        <PromptHistoryDropdown
+          entries={promptEntries}
+          anchorRef={promptHistoryBtnRef}
+          onSelect={onScrollToPromptLine}
+          onClose={() => setShowPromptHistory(false)}
         />
       )}
     </div>
