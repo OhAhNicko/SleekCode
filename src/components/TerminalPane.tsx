@@ -256,8 +256,8 @@ export default function TerminalPane({
     if (!sessionLookupDone.current && supportsSessionResume(terminalTypeRef.current) && !sessionResumeIdPropRef.current) {
       sessionLookupDone.current = true;
 
-      // Track IDs skipped because they're already in the session registry.
-      // These get added to excludeIds on retries so the backend returns different results.
+      // Track IDs that failed atomic claim (another pane claimed between invoke and claim).
+      // Added to excludeIds on retries so the backend returns different results.
       const skippedIds = new Set<string>();
 
       const lookupSession = async (): Promise<boolean> => {
@@ -312,17 +312,12 @@ export default function TerminalPane({
 
           console.log(`[SessionResume] ${type} lookup result: id=${id}`);
           if (id) {
-            // Skip IDs that already exist in the session registry — they belong
-            // to old sessions. Only claim truly new sessions created by this pane.
-            const key = workingDirRef.current.replace(/\\/g, "/");
-            const knownSessions = useAppStore.getState().projectSessions[key] ?? [];
-            if (knownSessions.some((s) => s.id === id)) {
-              console.log(`[SessionResume] skipping known session ${id.slice(0, 8)}`);
-              skippedIds.add(id);
-              return false;
-            }
             // Atomic claim: if another pane already claimed this ID between
             // our invoke() and now, back off and retry with a different ID.
+            // (claimedSessionIds + maxAgeSecs are sufficient to prevent
+            // cross-pane theft and stale session claims — no need to also
+            // check projectSessions, which persists across app restarts and
+            // blocks reclaiming sessions that Claude CLI reuses.)
             if (!claimSessionId(id)) {
               console.log(`[SessionResume] ${id.slice(0, 8)} already claimed by another pane`);
               skippedIds.add(id);

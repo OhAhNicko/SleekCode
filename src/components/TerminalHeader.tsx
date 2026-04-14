@@ -968,7 +968,6 @@ export default function TerminalHeader({
           style={{
             fontSize: 10,
             color: "var(--ezy-text-muted)",
-            opacity: 0.4,
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -995,7 +994,6 @@ export default function TerminalHeader({
                 color: "var(--ezy-text-muted)",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
-                opacity: 0.7,
               }}
             >
               {terminalType === "gemini"
@@ -1011,7 +1009,6 @@ export default function TerminalHeader({
                 color: "var(--ezy-text-muted)",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
-                opacity: 0.5,
               }}
             >
               v{contextInfo.cliVersion}
@@ -1025,7 +1022,6 @@ export default function TerminalHeader({
                 color: "var(--ezy-text-muted)",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
-                opacity: 0.5,
               }}
             >
               {contextInfo.speed}
@@ -1051,7 +1047,6 @@ export default function TerminalHeader({
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 color: "var(--ezy-text-muted)",
-                opacity: 0.7,
               }}
             >
               ${contextInfo.costUsd.toFixed(2)}{contextInfo.durationMs != null && contextInfo.durationMs > 0
@@ -1069,7 +1064,6 @@ export default function TerminalHeader({
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 color: "var(--ezy-text-muted)",
-                opacity: 0.6,
               }}
             >
               C:{contextInfo.compactCount}
@@ -1133,7 +1127,6 @@ export default function TerminalHeader({
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       minWidth: 0,
-                      opacity: 0.6,
                     }}
                   >
                     {sessionDisplayName || "New"}
@@ -1152,7 +1145,7 @@ export default function TerminalHeader({
                       }}
                     />
                   )}
-                  <FaChevronDown size={6} color="var(--ezy-text-muted)" style={{ opacity: 0.4, flexShrink: 0 }} />
+                  <FaChevronDown size={6} color="var(--ezy-text-muted)" style={{ flexShrink: 0 }} />
                 </div>
               )}
             </div>
@@ -1170,7 +1163,6 @@ export default function TerminalHeader({
                 textOverflow: "ellipsis",
                 minWidth: 0,
                 flexShrink: 1,
-                opacity: 0.6,
               }}
             >
               {contextInfo.sessionName}
@@ -1189,7 +1181,6 @@ export default function TerminalHeader({
                 textOverflow: "ellipsis",
                 minWidth: 0,
                 flexShrink: 1,
-                opacity: 0.6,
               }}
             >
               {contextInfo.summary}
@@ -1205,7 +1196,6 @@ export default function TerminalHeader({
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 color: "var(--ezy-text-muted)",
-                opacity: 0.6,
               }}
             >
               T:{contextInfo.thinkingTokens.toLocaleString()}
@@ -1229,7 +1219,6 @@ export default function TerminalHeader({
                   lineHeight: 1.2,
                   whiteSpace: "nowrap",
                   color: "var(--ezy-text-muted)",
-                  opacity: 0.5,
                 }}
               >
                 RST:{label}
@@ -1253,7 +1242,6 @@ export default function TerminalHeader({
                   lineHeight: 1.2,
                   whiteSpace: "nowrap",
                   color: left <= 20 ? "var(--ezy-red)" : "var(--ezy-text-muted)",
-                  opacity: left <= 20 ? 1 : 0.6,
                 }}
               >
                 {label}:{left}%
@@ -1271,7 +1259,6 @@ export default function TerminalHeader({
                   lineHeight: 1.2,
                   whiteSpace: "nowrap",
                   color: left <= 20 ? "var(--ezy-red)" : "var(--ezy-text-muted)",
-                  opacity: left <= 20 ? 1 : 0.6,
                 }}
               >
                 W:{left}%
