@@ -449,7 +449,7 @@ function SessionPicker({
         isFromStore: true,
         isCurrent: s.id === currentSessionId,
         isRenamed: s.isRenamed,
-        modified: indexEntry?.modified,
+        modified: indexEntry?.modified ?? new Date(s.createdAt).toISOString(),
       });
     }
 

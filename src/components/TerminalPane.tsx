@@ -587,9 +587,8 @@ export default function TerminalPane({
       blockParserRef.current = parser;
     }
 
-    // Scroll-to-prompt — double-tap Up Arrow or PgUp jumps to the last prompt.
+    // Scroll-to-prompt — PgUp jumps to the last prompt.
     // Repeated presses navigate backwards through earlier prompts.
-    let lastUpArrowTime = 0;
 
     // Clear the scroll guard and sync tracked position to where the terminal
     // actually is. Must be called in a rAF so xterm has settled.
@@ -783,7 +782,7 @@ export default function TerminalPane({
         return false;
       }
 
-      // Scroll-to-prompt: PgUp/PgDn jump between prompts, double-tap Up Arrow
+      // Scroll-to-prompt: PgUp/PgDn jump between prompts
       if (!e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
         if (e.key === "PageUp") {
           scrollToPrompt();
@@ -792,15 +791,6 @@ export default function TerminalPane({
         if (e.key === "PageDown") {
           scrollToNextPrompt();
           return false;
-        }
-        if (e.key === "ArrowUp") {
-          const now = Date.now();
-          if (now - lastUpArrowTime < 350) {
-            lastUpArrowTime = 0;
-            scrollToPrompt();
-            return false;
-          }
-          lastUpArrowTime = now;
         }
       }
 

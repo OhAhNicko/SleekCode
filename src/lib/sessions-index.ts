@@ -29,15 +29,29 @@ export async function readSessionsIndex(
 }
 
 /**
+ * Turn a prompt string into a short kebab-case slug, e.g. "color-change-feed-page".
+ * Keeps at most 5 words, lowercased, stripped of non-alphanumeric chars.
+ */
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 4)
+    .join("-");
+}
+
+/**
  * Resolve display name from a sessions-index entry.
- * Priority: customTitle → summary → firstPrompt (truncated) → UUID slice.
+ * Priority: customTitle → summary → firstPrompt (as kebab slug) → UUID slice.
  */
 export function resolveSessionName(entry: SessionIndexEntry): string {
   if (entry.customTitle) return entry.customTitle;
   if (entry.summary) return entry.summary;
   if (entry.firstPrompt) {
-    const truncated = entry.firstPrompt.slice(0, 60);
-    return truncated.length < entry.firstPrompt.length ? truncated + "..." : truncated;
+    const slug = slugify(entry.firstPrompt);
+    return slug || entry.sessionId.slice(0, 8);
   }
   return entry.sessionId.slice(0, 8);
 }
