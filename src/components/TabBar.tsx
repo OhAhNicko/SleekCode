@@ -2,12 +2,9 @@ import { useCallback, useState, useRef, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
-import { THEMES, getTheme } from "../lib/themes";
 import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, generateTerminalId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes, hasGamePane } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
-import { isWindows } from "../lib/platform";
 import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
-import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import type { RemoteServer, TerminalType } from "../types";
 import type { WorkspaceTemplate } from "../lib/workspace-templates";
@@ -38,56 +35,16 @@ export default function TabBar() {
   const removeTab = useAppStore((s) => s.removeTab);
   const togglePinTab = useAppStore((s) => s.togglePinTab);
   const reorderTabs = useAppStore((s) => s.reorderTabs);
-  const themeId = useAppStore((s) => s.themeId);
-  const setTheme = useAppStore((s) => s.setTheme);
-  const vibrantColors = useAppStore((s) => s.vibrantColors);
-  const setVibrantColors = useAppStore((s) => s.setVibrantColors);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const recentProjects = useAppStore((s) => s.recentProjects);
   const addRecentProject = useAppStore((s) => s.addRecentProject);
   const removeRecentProject = useAppStore((s) => s.removeRecentProject);
-  const alwaysShowTemplatePicker = useAppStore((s) => s.alwaysShowTemplatePicker);
-  const setAlwaysShowTemplatePicker = useAppStore((s) => s.setAlwaysShowTemplatePicker);
-  const restoreLastSession = useAppStore((s) => s.restoreLastSession);
-  const setRestoreLastSession = useAppStore((s) => s.setRestoreLastSession);
-  const autoInsertClipboardImage = useAppStore((s) => s.autoInsertClipboardImage);
-  const setAutoInsertClipboardImage = useAppStore((s) => s.setAutoInsertClipboardImage);
-  const cliFontSizes = useAppStore((s) => s.cliFontSizes);
-  const setCliFontSize = useAppStore((s) => s.setCliFontSize);
   const cliYolo = useAppStore((s) => s.cliYolo);
-  const setCliYolo = useAppStore((s) => s.setCliYolo);
-  const promptComposerEnabled = useAppStore((s) => s.promptComposerEnabled);
-  const setPromptComposerEnabled = useAppStore((s) => s.setPromptComposerEnabled);
-  const promptComposerAlwaysVisible = useAppStore((s) => s.promptComposerAlwaysVisible);
-  const setPromptComposerAlwaysVisible = useAppStore((s) => s.setPromptComposerAlwaysVisible);
-  const composerExpansion = useAppStore((s) => s.composerExpansion);
-  const setComposerExpansion = useAppStore((s) => s.setComposerExpansion);
-  const setAutoStartServerCommand = useAppStore((s) => s.setAutoStartServerCommand);
   const toggleProjectQuickOpen = useAppStore((s) => s.toggleProjectQuickOpen);
-  const browserFullColumn = useAppStore((s) => s.browserFullColumn);
-  const setBrowserFullColumn = useAppStore((s) => s.setBrowserFullColumn);
-  const browserSpawnLeft = useAppStore((s) => s.browserSpawnLeft);
-  const setBrowserSpawnLeft = useAppStore((s) => s.setBrowserSpawnLeft);
-  const copyOnSelect = useAppStore((s) => s.copyOnSelect);
-  const setCopyOnSelect = useAppStore((s) => s.setCopyOnSelect);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
   const setConfirmQuit = useAppStore((s) => s.setConfirmQuit);
-  const slashCommandGhostText = useAppStore((s) => s.slashCommandGhostText);
-  const setSlashCommandGhostText = useAppStore((s) => s.setSlashCommandGhostText);
-  const codeReviewCollapseAll = useAppStore((s) => s.codeReviewCollapseAll);
-  const setCodeReviewCollapseAll = useAppStore((s) => s.setCodeReviewCollapseAll);
-  const commitMsgMode = useAppStore((s) => s.commitMsgMode ?? "simple");
-  const setCommitMsgMode = useAppStore((s) => s.setCommitMsgMode);
-  const shadowAiCli = useAppStore((s) => s.shadowAiCli ?? "claude");
-  const setShadowAiCli = useAppStore((s) => s.setShadowAiCli);
-  const openPanesInBackground = useAppStore((s) => s.openPanesInBackground);
-  const setOpenPanesInBackground = useAppStore((s) => s.setOpenPanesInBackground);
-  const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
-  const setAutoMinimizeGameOnAiDone = useAppStore((s) => s.setAutoMinimizeGameOnAiDone);
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
-  const terminalBackend = useAppStore((s) => s.terminalBackend ?? "wsl");
-  const setTerminalBackend = useAppStore((s) => s.setTerminalBackend);
   const devServers = useAppStore((s) => s.devServers);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
@@ -103,7 +60,6 @@ export default function TabBar() {
   const [showNewTabMenu, setShowNewTabMenu] = useState(false);
   const [showRecentMenu, setShowRecentMenu] = useState(false);
   const [browsingServer, setBrowsingServer] = useState<RemoteServer | null>(null);
-  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
   const [showServersTab] = useState(false);
   const [pendingDir, setPendingDir] = useState<{ name: string; dir: string; serverId?: string } | null>(null);
   const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
@@ -111,14 +67,9 @@ export default function TabBar() {
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const [expandedCli, setExpandedCli] = useState<Record<string, boolean>>({});
-  const [themeExpanded, setThemeExpanded] = useState(false);
-  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({ terminal: true, behavior: true, preview: true, codereview: true, ai: true, cli: true });
-  const toggleSection = useCallback((key: string) => setCollapsedSections((prev) => ({ ...prev, [key]: !prev[key] })), []);
   const [colorPickerTab, setColorPickerTab] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const recentMenuRef = useRef<HTMLDivElement>(null);
-  const settingsMenuRef = useRef<HTMLDivElement>(null);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef<{ tabId: string; offsetX: number; startX: number; startY: number; tabWidth: number; tabTop: number } | null>(null);
   const didDragRef = useRef(false);
@@ -145,11 +96,10 @@ export default function TabBar() {
     setPathTooltip(null);
   }, []);
 
-  const anyMenuOpen = showNewTabMenu || showRecentMenu || showSettingsMenu;
+  const anyMenuOpen = showNewTabMenu || showRecentMenu;
   const closeAllMenus = useCallback(() => {
     setShowNewTabMenu(false);
     setShowRecentMenu(false);
-    setShowSettingsMenu(false);
     setColorPickerTab(null);
   }, []);
 
@@ -299,7 +249,7 @@ export default function TabBar() {
               continue;
           }
           // Wrap current layout + extra pane in a horizontal split (or add to grid)
-          const { browserFullColumn: fullCol, browserSpawnLeft: spawnLeft } = useAppStore.getState();
+          const { browserFullColumn: fullCol, browserSpawnLeft: spawnLeft, wideGridLayout } = useAppStore.getState();
           if (fullCol) {
             finalLayout = {
               type: "split" as const,
@@ -311,7 +261,7 @@ export default function TabBar() {
               sizes: (spawnLeft ? [30, 70] : [70, 30]) as [number, number],
             };
           } else {
-            finalLayout = addPaneAsGrid(finalLayout, extraNode);
+            finalLayout = addPaneAsGrid(finalLayout, extraNode, wideGridLayout);
           }
         }
       }
@@ -427,8 +377,6 @@ export default function TabBar() {
     return () => window.removeEventListener("ezydev:quit-requested", handler);
   }, []);
 
-  const theme = getTheme(themeId);
-
   // Helper: truncate long paths for display
   function truncatePath(fullPath: string): string {
     const segments = fullPath.replace(/\\/g, "/").split("/").filter(Boolean);
@@ -516,7 +464,7 @@ export default function TabBar() {
             cursor: "pointer",
             backgroundColor: sidebarOpen ? "var(--ezy-surface)" : "transparent",
           }}
-          onClick={() => { closeAllMenus(); toggleSidebar(); }}
+          onClick={() => { closeAllMenus(); if (!sidebarOpen) useAppStore.getState().setSettingsPanelOpen(false); toggleSidebar(); }}
           onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
           onMouseLeave={(e) => {
             if (!sidebarOpen) e.currentTarget.style.backgroundColor = "transparent";
@@ -543,7 +491,7 @@ export default function TabBar() {
                 position: "relative",
                 borderRight: isDevActive ? "1px solid var(--ezy-border)" : "1px solid var(--ezy-border-subtle)",
               }}
-              onClick={() => { closeAllMenus(); toggleDevServerPanel(); }}
+              onClick={() => { closeAllMenus(); if (!devServerPanelOpen) useAppStore.getState().setSettingsPanelOpen(false); toggleDevServerPanel(); }}
               onMouseEnter={(e) => { if (!isDevActive) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
               onMouseLeave={(e) => { if (!isDevActive) e.currentTarget.style.backgroundColor = "transparent"; }}
             >
@@ -575,13 +523,33 @@ export default function TabBar() {
           );
         })()}
 
+        {/* Settings toggle */}
+        <div
+          title="Settings"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 36,
+            flexShrink: 0,
+            cursor: "pointer",
+            backgroundColor: settingsPanelOpen ? "var(--ezy-surface)" : "transparent",
+            borderRight: settingsPanelOpen ? "1px solid var(--ezy-border)" : "1px solid var(--ezy-border-subtle)",
+          }}
+          onClick={() => { closeAllMenus(); if (!settingsPanelOpen) { useAppStore.setState({ sidebarOpen: false, devServerPanelOpen: false }); } useAppStore.getState().toggleSettingsPanel(); }}
+          onMouseEnter={(e) => { if (!settingsPanelOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
+          onMouseLeave={(e) => { if (!settingsPanelOpen) e.currentTarget.style.backgroundColor = "transparent"; }}
+        >
+          <FaGear size={14} color={settingsPanelOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} />
+        </div>
+
         {/* Tabs */}
         <div ref={tabsContainerRef} style={{ display: "flex", alignItems: "stretch", minWidth: 0, overflow: "hidden" }}>
           {(() => {
             // Build a local color map so tabs assigned in the same render pass see each other
             const localColors = { ...projectColors };
             const pendingAssigns: Array<[string, ProjectColorId]> = [];
-            const visibleTabs = tabs.filter((t) => !t.isDevServerTab && !t.isKanbanTab && (!t.isServersTab || showServersTab) && (!t.isSettingsTab || settingsPanelOpen));
+            const visibleTabs = tabs.filter((t) => !t.isDevServerTab && !t.isKanbanTab && (!t.isServersTab || showServersTab) && !t.isSettingsTab);
 
             // Collect unique project dirs for visible non-system tabs
             const visibleDirs = new Set<string>();
@@ -1009,7 +977,6 @@ export default function TabBar() {
             }}
             onClick={() => {
               setShowNewTabMenu(false);
-              setShowSettingsMenu(false);
               if (recentProjects.length > 0 || projectsDir) {
                 setShowRecentMenu((v) => !v);
               } else {
@@ -1249,7 +1216,6 @@ export default function TabBar() {
             }}
             onClick={() => {
               setShowRecentMenu(false);
-              setShowSettingsMenu(false);
               setShowNewTabMenu((v) => !v);
             }}
             onMouseEnter={(e) => {
@@ -1484,7 +1450,7 @@ export default function TabBar() {
                 store.updateTabLayout(tab.id, layout);
               } else {
                 const newPane = { type: "browser" as const, id: generatePaneId(), url };
-                const newLayout = addPaneAsGrid(tab.layout, newPane);
+                const newLayout = addPaneAsGrid(tab.layout, newPane, store.wideGridLayout);
                 store.updateTabLayout(tab.id, newLayout);
               }
             }}
@@ -1547,1091 +1513,6 @@ export default function TabBar() {
           </div>
         )}
 
-        {/* Settings */}
-        <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-          <div
-            onClick={() => {
-              setShowNewTabMenu(false);
-              setShowRecentMenu(false);
-              const mode = useAppStore.getState().settingsGearMode;
-              if (mode === "sidebar") {
-                setShowSettingsMenu(false);
-                useAppStore.getState().toggleSettingsPanel();
-              } else {
-                setShowSettingsMenu((v) => !v);
-              }
-            }}
-            title="Settings"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 34,
-              height: 26,
-              cursor: "pointer",
-              borderRadius: 4,
-              backgroundColor: (showSettingsMenu || settingsPanelOpen) ? "var(--ezy-surface)" : "transparent",
-              transition: "background-color 120ms ease",
-            }}
-            onMouseEnter={(e) => {
-              if (!showSettingsMenu && !settingsPanelOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-            }}
-            onMouseLeave={(e) => {
-              if (!showSettingsMenu && !settingsPanelOpen) e.currentTarget.style.backgroundColor = "transparent";
-            }}
-          >
-            <FaGear size={14} color={(showSettingsMenu || settingsPanelOpen) ? "var(--ezy-text)" : "var(--ezy-text-muted)"} />
-          </div>
-
-          {showSettingsMenu && (
-            <div
-              ref={settingsMenuRef}
-              className="dropdown-enter"
-              style={{
-                position: "absolute",
-                top: "100%",
-                right: 0,
-                marginTop: 6,
-                width: 220,
-                maxHeight: "calc(100vh - 60px)",
-                overflowY: "auto",
-                backgroundColor: "var(--ezy-surface-raised)",
-                border: "1px solid var(--ezy-border)",
-                borderRadius: 8,
-                boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
-                zIndex: 9999,
-              }}
-            >
-              {/* Terminal Backend section */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "6px 10px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                  borderBottom: !collapsedSections.terminal ? "1px solid var(--ezy-border)" : "none",
-                  cursor: "pointer",
-                }}
-                onClick={() => toggleSection("terminal")}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span>Terminal</span>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  {/* Switch to sidebar mode */}
-                  <span
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      useAppStore.getState().setSettingsGearMode("sidebar");
-                      setShowSettingsMenu(false);
-                      useAppStore.getState().setSettingsPanelOpen(true);
-                    }}
-                    title="Switch to sidebar settings"
-                    style={{ display: "flex", alignItems: "center", cursor: "pointer", opacity: 0.5 }}
-                    onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.5"; }}
-                  >
-                    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="2" y="2" width="12" height="12" rx="2" />
-                      <line x1="2" y1="6" x2="14" y2="6" />
-                      <line x1="6" y1="6" x2="6" y2="14" />
-                    </svg>
-                  </span>
-                  <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.terminal ? "rotate(-90deg)" : "rotate(0deg)" }} />
-                </div>
-              </div>
-              {!collapsedSections.terminal && isWindows() && <div style={{ padding: "8px 10px" }}>
-                <div
-                  style={{
-                    display: "flex",
-                    borderRadius: 6,
-                    border: "1px solid var(--ezy-border)",
-                    overflow: "hidden",
-                  }}
-                >
-                  {(["wsl", "windows"] as const).map((opt) => {
-                    const isActive = terminalBackend === opt;
-                    return (
-                      <button
-                        key={opt}
-                        style={{
-                          flex: 1,
-                          padding: "2px 0",
-                          fontSize: 11,
-                          fontWeight: isActive ? 600 : 400,
-                          color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
-                          backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
-                          border: "none",
-                          cursor: "pointer",
-                          fontFamily: "inherit",
-                          transition: "background-color 150ms ease",
-                        }}
-                        onMouseEnter={(e) => {
-                          if (!isActive) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!isActive) e.currentTarget.style.backgroundColor = "transparent";
-                        }}
-                        onClick={() => setTerminalBackend(opt)}
-                      >
-                        {opt === "wsl" ? "WSL" : "Windows"}
-                      </button>
-
-                    );
-                  })}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, lineHeight: 1.3 }}>
-                  New terminals use the selected backend
-                </div>
-              </div>}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
-
-              {/* Behavior section */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "6px 10px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                  borderBottom: !collapsedSections.behavior ? "1px solid var(--ezy-border)" : "none",
-                  cursor: "pointer",
-                }}
-                onClick={() => toggleSection("behavior")}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span>Behavior</span>
-                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.behavior ? "rotate(-90deg)" : "rotate(0deg)" }} />
-              </div>
-              {!collapsedSections.behavior && <><div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => setAlwaysShowTemplatePicker(!alwaysShowTemplatePicker)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Always show layout picker
-                </span>
-                {/* Toggle switch */}
-                <div
-                  style={{
-                    width: 32,
-                    height: 18,
-                    borderRadius: 9,
-                    backgroundColor: alwaysShowTemplatePicker ? "var(--ezy-accent)" : "transparent",
-                    border: alwaysShowTemplatePicker ? "none" : "1px solid var(--ezy-border-light)",
-                    position: "relative",
-                    transition: "background-color 150ms ease",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: "50%",
-                      backgroundColor: alwaysShowTemplatePicker ? "#fff" : "var(--ezy-text-muted)",
-                      position: "absolute",
-                      top: 2,
-                      left: alwaysShowTemplatePicker ? 16 : 2,
-                      transition: "left 150ms ease",
-                    }}
-                  />
-                </div>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => setRestoreLastSession(!restoreLastSession)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Restore last session
-                </span>
-                {/* Toggle switch */}
-                <div
-                  style={{
-                    width: 32,
-                    height: 18,
-                    borderRadius: 9,
-                    backgroundColor: restoreLastSession ? "var(--ezy-accent)" : "transparent",
-                    border: restoreLastSession ? "none" : "1px solid var(--ezy-border-light)",
-                    position: "relative",
-                    transition: "background-color 150ms ease",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: "50%",
-                      backgroundColor: restoreLastSession ? "#fff" : "var(--ezy-text-muted)",
-                      position: "absolute",
-                      top: 2,
-                      left: restoreLastSession ? 16 : 2,
-                      transition: "left 150ms ease",
-                    }}
-                  />
-                </div>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => setAutoInsertClipboardImage(!autoInsertClipboardImage)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Auto-paste screenshots
-                </span>
-                {/* Toggle switch */}
-                <div
-                  style={{
-                    width: 32,
-                    height: 18,
-                    borderRadius: 9,
-                    backgroundColor: autoInsertClipboardImage ? "var(--ezy-accent)" : "transparent",
-                    border: autoInsertClipboardImage ? "none" : "1px solid var(--ezy-border-light)",
-                    position: "relative",
-                    transition: "background-color 150ms ease",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: "50%",
-                      backgroundColor: autoInsertClipboardImage ? "#fff" : "var(--ezy-text-muted)",
-                      position: "absolute",
-                      top: 2,
-                      left: autoInsertClipboardImage ? 16 : 2,
-                      transition: "left 150ms ease",
-                    }}
-                  />
-                </div>
-              </div>
-              <div
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
-                onClick={() => setCopyOnSelect(!copyOnSelect)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Copy on select
-                </span>
-                <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: copyOnSelect ? "var(--ezy-accent)" : "transparent", border: copyOnSelect ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: copyOnSelect ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: copyOnSelect ? 16 : 2, transition: "left 150ms ease" }} />
-                </div>
-              </div>
-              <div
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
-                onClick={() => setConfirmQuit(!confirmQuit)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Confirm before quitting
-                </span>
-                <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: confirmQuit ? "var(--ezy-accent)" : "transparent", border: confirmQuit ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: confirmQuit ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: confirmQuit ? 16 : 2, transition: "left 150ms ease" }} />
-                </div>
-              </div>
-              <div
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
-                onClick={() => setSlashCommandGhostText(!slashCommandGhostText)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Slash command ghost text
-                </span>
-                <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: slashCommandGhostText ? "var(--ezy-accent)" : "transparent", border: slashCommandGhostText ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: slashCommandGhostText ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: slashCommandGhostText ? 16 : 2, transition: "left 150ms ease" }} />
-                </div>
-              </div>
-              <div
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
-                onClick={() => setOpenPanesInBackground(!openPanesInBackground)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Open panes in background
-                </span>
-                <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: openPanesInBackground ? "var(--ezy-accent)" : "transparent", border: openPanesInBackground ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: openPanesInBackground ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: openPanesInBackground ? 16 : 2, transition: "left 150ms ease" }} />
-                </div>
-              </div>
-              <div
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
-                onClick={() => setAutoMinimizeGameOnAiDone(!autoMinimizeGameOnAiDone)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Auto-hide games when AI done
-                </span>
-                <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: autoMinimizeGameOnAiDone ? "var(--ezy-accent)" : "transparent", border: autoMinimizeGameOnAiDone ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: autoMinimizeGameOnAiDone ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: autoMinimizeGameOnAiDone ? 16 : 2, transition: "left 150ms ease" }} />
-                </div>
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => setPromptComposerEnabled(!promptComposerEnabled)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  EzyComposer (Ctrl+I)
-                </span>
-                {/* Toggle switch */}
-                <div
-                  style={{
-                    width: 32,
-                    height: 18,
-                    borderRadius: 9,
-                    backgroundColor: promptComposerEnabled ? "var(--ezy-accent)" : "transparent",
-                    border: promptComposerEnabled ? "none" : "1px solid var(--ezy-border-light)",
-                    position: "relative",
-                    transition: "background-color 150ms ease",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: "50%",
-                      backgroundColor: promptComposerEnabled ? "#fff" : "var(--ezy-text-muted)",
-                      position: "absolute",
-                      top: 2,
-                      left: promptComposerEnabled ? 16 : 2,
-                      transition: "left 150ms ease",
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Always-visible composer (sub-option, only when composer is enabled) */}
-              {promptComposerEnabled && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "8px 10px 8px 22px",
-                  cursor: "pointer",
-                }}
-                onClick={() => setPromptComposerAlwaysVisible(!promptComposerAlwaysVisible)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Always visible
-                </span>
-                <div
-                  style={{
-                    width: 32,
-                    height: 18,
-                    borderRadius: 9,
-                    backgroundColor: promptComposerAlwaysVisible ? "var(--ezy-accent)" : "transparent",
-                    border: promptComposerAlwaysVisible ? "none" : "1px solid var(--ezy-border-light)",
-                    position: "relative",
-                    transition: "background-color 150ms ease",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: "50%",
-                      backgroundColor: promptComposerAlwaysVisible ? "#fff" : "var(--ezy-text-muted)",
-                      position: "absolute",
-                      top: 2,
-                      left: promptComposerAlwaysVisible ? 16 : 2,
-                      transition: "left 150ms ease",
-                    }}
-                  />
-                </div>
-              </div>
-              )}
-
-              {/* Composer expansion mode — 3-way toggle (only when composer is enabled) */}
-              {promptComposerEnabled && (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "8px 10px 8px 22px",
-                }}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Expansion
-                </span>
-                <div style={{ display: "flex", gap: 2, backgroundColor: "rgba(255,255,255,0.06)", borderRadius: 4, padding: 2 }}>
-                  {([["up", "Up"], ["down", "Down"], ["scroll", "Scroll"]] as const).map(([mode, label]) => (
-                    <div
-                      key={mode}
-                      onClick={() => setComposerExpansion(mode)}
-                      onMouseEnter={(e) => { if (composerExpansion !== mode) e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)"; }}
-                      onMouseLeave={(e) => { if (composerExpansion !== mode) e.currentTarget.style.backgroundColor = "transparent"; }}
-                      style={{
-                        fontSize: 10,
-                        padding: "2px 8px",
-                        borderRadius: 3,
-                        cursor: "pointer",
-                        color: composerExpansion === mode ? "#fff" : "var(--ezy-text-muted)",
-                        backgroundColor: composerExpansion === mode ? "var(--ezy-accent)" : "transparent",
-                        transition: "all 150ms ease",
-                        userSelect: "none",
-                      }}
-                    >
-                      {label}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              )}
-
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => setAutoStartServerCommand(!autoStartServerCommand)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Auto-start server cmd
-                </span>
-                <div
-                  style={{
-                    width: 32,
-                    height: 18,
-                    borderRadius: 9,
-                    backgroundColor: autoStartServerCommand ? "var(--ezy-accent)" : "transparent",
-                    border: autoStartServerCommand ? "none" : "1px solid var(--ezy-border-light)",
-                    position: "relative",
-                    transition: "background-color 150ms ease",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: "50%",
-                      backgroundColor: autoStartServerCommand ? "#fff" : "var(--ezy-text-muted)",
-                      position: "absolute",
-                      top: 2,
-                      left: autoStartServerCommand ? 16 : 2,
-                      transition: "left 150ms ease",
-                    }}
-                  />
-                </div>
-              </div>
-
-              </>}
-              {/* Preview Panes section */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "6px 10px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                  borderBottom: !collapsedSections.preview ? "1px solid var(--ezy-border)" : "none",
-                  cursor: "pointer",
-                }}
-                onClick={() => toggleSection("preview")}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span>Preview Panes</span>
-                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.preview ? "rotate(-90deg)" : "rotate(0deg)" }} />
-              </div>
-              {!collapsedSections.preview && <><div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => setBrowserFullColumn(!browserFullColumn)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Full column
-                </span>
-                <div
-                  style={{
-                    width: 32,
-                    height: 18,
-                    borderRadius: 9,
-                    backgroundColor: browserFullColumn ? "var(--ezy-accent)" : "transparent",
-                    border: browserFullColumn ? "none" : "1px solid var(--ezy-border-light)",
-                    position: "relative",
-                    transition: "background-color 150ms ease",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: "50%",
-                      backgroundColor: browserFullColumn ? "#fff" : "var(--ezy-text-muted)",
-                      position: "absolute",
-                      top: 2,
-                      left: browserFullColumn ? 16 : 2,
-                      transition: "left 150ms ease",
-                    }}
-                  />
-                </div>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => setBrowserSpawnLeft(!browserSpawnLeft)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Spawn on left
-                </span>
-                <div
-                  style={{
-                    width: 32,
-                    height: 18,
-                    borderRadius: 9,
-                    backgroundColor: browserSpawnLeft ? "var(--ezy-accent)" : "transparent",
-                    border: browserSpawnLeft ? "none" : "1px solid var(--ezy-border-light)",
-                    position: "relative",
-                    transition: "background-color 150ms ease",
-                    flexShrink: 0,
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 14,
-                      height: 14,
-                      borderRadius: "50%",
-                      backgroundColor: browserSpawnLeft ? "#fff" : "var(--ezy-text-muted)",
-                      position: "absolute",
-                      top: 2,
-                      left: browserSpawnLeft ? 16 : 2,
-                      transition: "left 150ms ease",
-                    }}
-                  />
-                </div>
-              </div>
-
-              </>}
-              {/* Code Review section */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "6px 10px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                  borderBottom: !collapsedSections.codereview ? "1px solid var(--ezy-border)" : "none",
-                  cursor: "pointer",
-                }}
-                onClick={() => toggleSection("codereview")}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span>Code Review</span>
-                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.codereview ? "rotate(-90deg)" : "rotate(0deg)" }} />
-              </div>
-              {!collapsedSections.codereview && <><div
-                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 10px", cursor: "pointer" }}
-                onClick={() => setCodeReviewCollapseAll(!codeReviewCollapseAll)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  Collapse all files
-                </span>
-                <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: codeReviewCollapseAll ? "var(--ezy-accent)" : "transparent", border: codeReviewCollapseAll ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
-                  <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: codeReviewCollapseAll ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: codeReviewCollapseAll ? 16 : 2, transition: "left 150ms ease" }} />
-                </div>
-              </div>
-
-              {/* Commit message mode */}
-              <div style={{ padding: "8px 10px" }}>
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", display: "block", marginBottom: 6 }}>
-                  Commit message
-                </span>
-                <div style={{ display: "flex", borderRadius: 6, border: "1px solid var(--ezy-border)", overflow: "hidden" }}>
-                  {(["empty", "simple", "advanced"] as const).map((opt) => {
-                    const isActive = commitMsgMode === opt;
-                    return (
-                      <button
-                        key={opt}
-                        style={{
-                          flex: 1,
-                          padding: "5px 0",
-                          fontSize: 11,
-                          fontWeight: isActive ? 600 : 400,
-                          color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
-                          backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
-                          border: "none",
-                          cursor: "pointer",
-                          fontFamily: "inherit",
-                          transition: "background-color 150ms ease",
-                        }}
-                        onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
-                        onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.backgroundColor = "transparent"; }}
-                        onClick={() => setCommitMsgMode(opt)}
-                      >
-                        {opt === "empty" ? "Empty" : opt === "simple" ? "Simple" : "AI"}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, lineHeight: 1.3 }}>
-                  {commitMsgMode === "empty" && "Start with a blank commit message"}
-                  {commitMsgMode === "simple" && "Auto-fill from changed filenames"}
-                  {commitMsgMode === "advanced" && "Generate message via background AI session"}
-                </div>
-              </div>
-
-              </>}
-              {/* AI Sessions section */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "6px 10px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                  borderBottom: !collapsedSections.ai ? "1px solid var(--ezy-border)" : "none",
-                  cursor: "pointer",
-                }}
-                onClick={() => toggleSection("ai")}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span>AI Sessions</span>
-                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.ai ? "rotate(-90deg)" : "rotate(0deg)" }} />
-              </div>
-              {!collapsedSections.ai && <div style={{ padding: "8px 10px" }}>
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", display: "block", marginBottom: 6 }}>
-                  Shadow AI provider
-                </span>
-                <div style={{ display: "flex", borderRadius: 6, border: "1px solid var(--ezy-border)", overflow: "hidden" }}>
-                  {(["claude", "codex", "gemini"] as const).map((opt) => {
-                    const isActive = shadowAiCli === opt;
-                    const isDisabled = opt === "gemini";
-                    return (
-                      <button
-                        key={opt}
-                        disabled={isDisabled}
-                        style={{
-                          flex: 1,
-                          padding: "5px 0",
-                          fontSize: 11,
-                          fontWeight: isActive ? 600 : 400,
-                          color: isDisabled ? "var(--ezy-text-muted)" : isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
-                          backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
-                          border: "none",
-                          cursor: isDisabled ? "default" : "pointer",
-                          fontFamily: "inherit",
-                          transition: "background-color 150ms ease",
-                          opacity: isDisabled ? 0.35 : 1,
-                        }}
-                        onMouseEnter={(e) => { if (!isActive && !isDisabled) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
-                        onMouseLeave={(e) => { if (!isActive && !isDisabled) e.currentTarget.style.backgroundColor = "transparent"; }}
-                        onClick={() => { if (!isDisabled) setShadowAiCli(opt as "claude" | "codex"); }}
-                      >
-                        {opt === "claude" ? "Claude" : opt === "codex" ? "Codex" : "Gemini"}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, lineHeight: 1.3 }}>
-                  Subscription used for Promptifier and AI commit messages
-                </div>
-              </div>
-
-              }
-              {/* CLI Options section */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "6px 10px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                  borderBottom: !collapsedSections.cli ? "1px solid var(--ezy-border)" : "none",
-                  cursor: "pointer",
-                }}
-                onClick={() => toggleSection("cli")}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span>CLI Options</span>
-                <FaChevronDown size={10} color="var(--ezy-text-muted)" style={{ transition: "transform 150ms ease", transform: collapsedSections.cli ? "rotate(-90deg)" : "rotate(0deg)" }} />
-              </div>
-              {!collapsedSections.cli && (["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
-                const isExpanded = !!expandedCli[cliType];
-                const currentSize = cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE;
-                const label = TERMINAL_CONFIGS[cliType].label;
-                return (
-                  <div key={cliType}>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "7px 10px",
-                        cursor: "pointer",
-                      }}
-                      onClick={() => setExpandedCli((prev) => ({ ...prev, [cliType]: !prev[cliType] }))}
-                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                    >
-                      <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>{label}</span>
-                      <FaChevronDown
-                        size={10}
-                        color="var(--ezy-text-muted)"
-                        style={{ transition: "transform 150ms ease", transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)" }}
-                      />
-                    </div>
-                    {isExpanded && (
-                      <div style={{ padding: "4px 10px 8px 10px", display: "flex", flexDirection: "column", gap: 6 }}>
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                          <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>Font size</span>
-                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                            <div
-                              onClick={() => setCliFontSize(cliType, Math.max(10, currentSize - 1))}
-                              style={{
-                                width: 20,
-                                height: 20,
-                                borderRadius: 4,
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                cursor: currentSize <= 10 ? "default" : "pointer",
-                                opacity: currentSize <= 10 ? 0.3 : 1,
-                                backgroundColor: "transparent",
-                                border: "1px solid var(--ezy-border-light)",
-                                color: "var(--ezy-text-secondary)",
-                                fontSize: 13,
-                                lineHeight: 1,
-                                transition: "background-color 120ms ease",
-                              }}
-                              onMouseEnter={(e) => { if (currentSize > 10) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                            >
-                              -
-                            </div>
-                            <span style={{ fontSize: 12, color: "var(--ezy-text)", minWidth: 20, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
-                              {currentSize}
-                            </span>
-                            <div
-                              onClick={() => setCliFontSize(cliType, Math.min(24, currentSize + 1))}
-                              style={{
-                                width: 20,
-                                height: 20,
-                                borderRadius: 4,
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                cursor: currentSize >= 24 ? "default" : "pointer",
-                                opacity: currentSize >= 24 ? 0.3 : 1,
-                                backgroundColor: "transparent",
-                                border: "1px solid var(--ezy-border-light)",
-                                color: "var(--ezy-text-secondary)",
-                                fontSize: 13,
-                                lineHeight: 1,
-                                transition: "background-color 120ms ease",
-                              }}
-                              onMouseEnter={(e) => { if (currentSize < 24) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                            >
-                              +
-                            </div>
-                          </div>
-                        </div>
-                        {(["claude", "codex", "gemini"] as TerminalType[]).includes(cliType) && (() => {
-                          const isYolo = !!cliYolo[cliType];
-                          return (
-                          <div
-                            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
-                            onClick={() => setCliYolo(cliType, !isYolo)}
-                          >
-                            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                              {isYolo ? (
-                                <span
-                                  style={{
-                                    fontSize: 9,
-                                    fontWeight: 700,
-                                    padding: "1px 4px",
-                                    borderRadius: 3,
-                                    backgroundColor: "var(--ezy-red, #e55)",
-                                    color: "#fff",
-                                    lineHeight: 1,
-                                    letterSpacing: "0.06em",
-                                  }}
-                                >
-                                  YOLO
-                                </span>
-                              ) : (
-                                <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>YOLO</span>
-                              )}
-                              <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>mode</span>
-                            </div>
-                            <div
-                              style={{
-                                width: 28,
-                                height: 16,
-                                borderRadius: 8,
-                                backgroundColor: isYolo ? "var(--ezy-red, #e55)" : "transparent",
-                                border: isYolo ? "none" : "1px solid var(--ezy-border-light)",
-                                position: "relative",
-                                transition: "background-color 150ms ease",
-                                flexShrink: 0,
-                              }}
-                            >
-                              <div
-                                style={{
-                                  width: 12,
-                                  height: 12,
-                                  borderRadius: "50%",
-                                  backgroundColor: isYolo ? "#fff" : "var(--ezy-text-muted)",
-                                  position: "absolute",
-                                  top: 2,
-                                  left: isYolo ? 14 : 2,
-                                  transition: "left 150ms ease",
-                                }}
-                              />
-                            </div>
-                          </div>
-                          );
-                        })()}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-
-              {/* Theme section */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  padding: "6px 10px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                  borderBottom: themeExpanded ? "1px solid var(--ezy-border)" : "none",
-                  cursor: "pointer",
-                }}
-                onClick={() => setThemeExpanded((v) => !v)}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <span>Theme</span>
-                <FaChevronDown
-                  size={10}
-                  color="var(--ezy-text-muted)"
-                  style={{ transition: "transform 150ms ease", transform: themeExpanded ? "rotate(0deg)" : "rotate(-90deg)" }}
-                />
-              </div>
-              {themeExpanded && THEMES.map((t) => {
-                const isSelected = t.id === themeId;
-                return (
-                  <button
-                    key={t.id}
-                    className="w-full text-left"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "7px 10px",
-                      backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "transparent",
-                      border: "none",
-                      cursor: "pointer",
-                      fontSize: 13,
-                      fontWeight: isSelected ? 600 : 400,
-                      color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
-                      fontFamily: "inherit",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isSelected) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
-                    }}
-                    onClick={() => {
-                      setTheme(t.id);
-                    }}
-                  >
-                    <div style={{ display: "flex", gap: 2, flexShrink: 0 }}>
-                      <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.bg }} />
-                      <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.accent }} />
-                      <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.cyan }} />
-                    </div>
-                    <span>{t.name}</span>
-                    {isSelected && (
-                      <FaCheck size={12} color={theme.surface.accent} style={{ marginLeft: "auto" }} />
-                    )}
-                  </button>
-                );
-              })}
-              {themeExpanded && (
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "7px 10px",
-                    fontSize: 13,
-                    color: "var(--ezy-text-secondary)",
-                    cursor: "pointer",
-                  }}
-                  onClick={() => setVibrantColors(!vibrantColors)}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                >
-                  <span>Vibrant colors</span>
-                  <div style={{ width: 32, height: 18, borderRadius: 9, backgroundColor: vibrantColors ? "var(--ezy-accent)" : "transparent", border: vibrantColors ? "none" : "1px solid var(--ezy-border-light)", position: "relative", transition: "background-color 150ms ease", flexShrink: 0 }}>
-                    <div style={{ width: 14, height: 14, borderRadius: "50%", backgroundColor: vibrantColors ? "#fff" : "var(--ezy-text-muted)", position: "absolute", top: 2, left: vibrantColors ? 16 : 2, transition: "left 150ms ease" }} />
-                  </div>
-                </div>
-              )}
-
-              {/* Snippets */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => {
-                  setShowSettingsMenu(false);
-                  window.dispatchEvent(new Event("ezydev:open-snippets"));
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round">
-                  <path d="M5.5 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1h-2.5" />
-                  <path d="M5 5l2 2-2 2" />
-                  <line x1="8" y1="10" x2="12" y2="10" />
-                </svg>
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>Snippets</span>
-              </div>
-
-              {/* Keyboard Shortcuts */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)" }} />
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 10px",
-                  cursor: "pointer",
-                }}
-                onClick={() => {
-                  setShowSettingsMenu(false);
-                  window.dispatchEvent(new Event("ezydev:open-shortcuts"));
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="1" y="4" width="14" height="9" rx="1.5" />
-                  <line x1="4" y1="7" x2="5.5" y2="7" />
-                  <line x1="7" y1="7" x2="8.5" y2="7" />
-                  <line x1="10.5" y1="7" x2="12" y2="7" />
-                  <line x1="4.5" y1="10" x2="11.5" y2="10" />
-                </svg>
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", flex: 1 }}>Keyboard Shortcuts</span>
-                <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>Ctrl+/</span>
-              </div>
-            </div>
-          )}
-        </div>
 
         {/* Separator before window controls */}
         <div style={{ width: 1, height: 16, backgroundColor: "var(--ezy-border-subtle)", alignSelf: "center", margin: "0 4px" }} />

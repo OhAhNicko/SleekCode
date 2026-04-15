@@ -802,7 +802,7 @@ export default function TerminalHeader({
   // For trusted sessions (restored from persist or explicit switch), show everything.
   const sessionDisplayName = sessionTrusted
     ? (currentSession?.name || contextInfo?.sessionName || contextInfo?.summary || (sessionResumeId ? sessionResumeId.slice(0, 8) : null))
-    : ((currentSession?.isRenamed ? currentSession.name : null) || (sessionResumeId ? sessionResumeId.slice(0, 8) : null));
+    : ((currentSession?.isRenamed ? currentSession.name : null) || contextInfo?.sessionName || contextInfo?.summary || (sessionResumeId ? sessionResumeId.slice(0, 8) : null));
 
   useEffect(() => {
     if (inlineRenaming && inlineInputRef.current) {

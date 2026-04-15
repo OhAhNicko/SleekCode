@@ -307,7 +307,7 @@ function findRootSpecialColumnPane(layout: PaneLayout): {
  * When a browser/codereview/fileviewer pane wraps the layout as a full column,
  * it is similarly stripped and re-attached so new terminals stay in the terminal grid.
  */
-export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout): PaneLayout {
+export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout, wideGrid = false): PaneLayout {
   // If kanban exists, strip it, add pane to the grid only, then re-attach
   const kanban = findKanbanNode(layout);
   if (kanban) {
@@ -317,7 +317,7 @@ export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout): PaneLayo
     // Enforce lower pane limit when kanban occupies a full row/column
     if (countLeafPanes(stripped) >= MAX_PANES_WITH_KANBAN) return layout;
 
-    const newGrid = addPaneAsGrid(stripped, newLeaf);
+    const newGrid = addPaneAsGrid(stripped, newLeaf, wideGrid);
     // If grid didn't change (hit inner max), return original layout
     if (newGrid === stripped) return layout;
 
@@ -352,7 +352,7 @@ export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout): PaneLayo
     // When the terminal grid has only 1 column with 1 row (single pane), force a
     // vertical split so the new pane stacks below instead of creating an awkward
     // middle column sandwiched between the terminal and the browser.
-    if (strippedCols.length === 1 && extractColumnLeaves(strippedCols[0]).length === 1) {
+    if (!wideGrid && strippedCols.length === 1 && extractColumnLeaves(strippedCols[0]).length === 1) {
       if (countLeafPanes(stripped) >= MAX_PANES) return layout;
       newGrid = {
         type: "split",
@@ -362,7 +362,7 @@ export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout): PaneLayo
         sizes: [50, 50],
       };
     } else {
-      newGrid = addPaneAsGrid(stripped, newLeaf);
+      newGrid = addPaneAsGrid(stripped, newLeaf, wideGrid);
       if (newGrid === stripped) return layout;
     }
 
@@ -395,18 +395,24 @@ export function addPaneAsGrid(layout: PaneLayout, newLeaf: PaneLayout): PaneLayo
   const rowCounts = columnLeaves.map((col) => col.length);
   const maxRows = Math.max(...rowCounts);
 
-  // Find the first column that has fewer rows than the tallest
-  const shortIdx = rowCounts.findIndex((count) => count < maxRows);
-
-  if (shortIdx !== -1) {
-    // Fill the short column
-    columnLeaves[shortIdx].push(newLeaf);
-  } else if (columns.length > maxRows) {
-    // More columns than rows — start a new row in first column
-    columnLeaves[0].push(newLeaf);
-  } else {
-    // Add a new column
+  // Wide grid mode: force side-by-side columns until we have 4, then balance
+  const WIDE_GRID_MIN_COLS = 4;
+  if (wideGrid && columns.length < WIDE_GRID_MIN_COLS) {
     columnLeaves.push([newLeaf]);
+  } else {
+    // Find the first column that has fewer rows than the tallest
+    const shortIdx = rowCounts.findIndex((count) => count < maxRows);
+
+    if (shortIdx !== -1) {
+      // Fill the short column
+      columnLeaves[shortIdx].push(newLeaf);
+    } else if (columns.length > maxRows) {
+      // More columns than rows — start a new row in first column
+      columnLeaves[0].push(newLeaf);
+    } else {
+      // Add a new column
+      columnLeaves.push([newLeaf]);
+    }
   }
 
   // Rebuild: each column is a vertical tree, then combine horizontally

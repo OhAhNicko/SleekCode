@@ -352,6 +352,9 @@ export default function App() {
           case ",":
             // Ctrl+, → Toggle Settings panel
             consume();
+            if (!useAppStore.getState().settingsPanelOpen) {
+              useAppStore.setState({ sidebarOpen: false, devServerPanelOpen: false });
+            }
             useAppStore.getState().toggleSettingsPanel();
             return;
           case "r":

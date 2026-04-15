@@ -17,6 +17,7 @@ import { shouldInjectShellIntegration } from "../lib/shell-integration";
 import { supportsSessionResume } from "../lib/session-resume";
 import { createFilePathLinkProvider } from "../lib/file-link-provider";
 import { readSessionContext, type ContextInfo } from "../lib/context-parser";
+import { readSessionsIndex, resolveSessionName } from "../lib/sessions-index";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toWslPath } from "../lib/terminal-config";
@@ -1291,6 +1292,8 @@ export default function TerminalPane({
     const supported = terminalType === "claude" || terminalType === "codex" || terminalType === "gemini";
     if (!supported) return;
 
+    let pollCount = 0;
+
     const poll = async () => {
       const backend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
       const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend);
@@ -1305,6 +1308,41 @@ export default function TerminalPane({
         // Auto-update session name in registry from CLI output.
         // Claude: CUSTOM_TITLE only appears from /rename → authoritative (always overrides).
         // Codex/Gemini: auto-generated titles → soft update (won't override EzyDev renames).
+        // Late session detection: if we still don't have a sessionResumeId,
+        // try disk lookup again without the 2-minute recency filter.
+        if (!sessionResumeId && supportsSessionResume(terminalType)) {
+          try {
+            const type = terminalType;
+            const excludeIds = [...claimedSessionIds];
+            let id: string | null = null;
+            if (backend === "native") {
+              const cwd = workingDir;
+              if (type === "claude") id = await invoke<string | null>("get_claude_session_id_native", { projectPath: cwd, excludeIds });
+              else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
+              else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_native", { projectPath: cwd, excludeIds });
+            } else if (backend === "windows") {
+              const cwd = workingDir;
+              if (type === "claude") id = await invoke<string | null>("get_claude_session_id_windows", { projectPath: cwd, excludeIds });
+              else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds });
+              else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: cwd, excludeIds });
+            } else {
+              const wslCwd = toWslPath(workingDir);
+              if (wslCwd) {
+                if (type === "claude") id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
+                else if (type === "codex") id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
+                else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+              }
+            }
+            if (id && claimSessionId(id)) {
+              console.log(`[SessionResume] late detection found: ${id.slice(0, 8)}`);
+              setSessionTrusted(true);
+              sessionResumeIdPropRef.current = id;
+              onSessionResumeIdRef.current?.(id);
+            }
+          } catch (e) {
+            console.error("[SessionResume] late detection failed:", e);
+          }
+        }
         if (sessionResumeId) {
           const store = useAppStore.getState();
           const key = workingDir.replace(/\\/g, "/");
@@ -1330,6 +1368,59 @@ export default function TerminalPane({
               // Codex/Gemini auto-titles — only update if user hasn't renamed in EzyDev
               store.updateProjectSessionAutoName(workingDir, sessionResumeId, autoName);
             }
+          } else if (existing && !existing.name && !existing.isRenamed) {
+            // No name from CLI — try sessions-index for a firstPrompt slug
+            const effectiveBackend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
+            readSessionsIndex(workingDir, effectiveBackend).then((entries) => {
+              const entry = entries.find((e) => e.sessionId === sessionResumeId);
+              if (entry) {
+                const slugName = resolveSessionName(entry);
+                if (slugName && slugName !== sessionResumeId.slice(0, 8)) {
+                  store.updateProjectSessionAutoName(workingDir, sessionResumeId, slugName);
+                }
+              }
+            });
+          }
+        }
+
+        // Session drift detection: every 6th poll (~30s), check if the CLI
+        // switched sessions (e.g. via /resume). If the latest session for
+        // this project is different from our tracked one, switch to it.
+        pollCount++;
+        if (sessionResumeId && supportsSessionResume(terminalType) && pollCount % 6 === 0) {
+          try {
+            const type = terminalType;
+            // Don't exclude the current session — we want to see if a NEWER one exists
+            const excludeIds = [...claimedSessionIds].filter((id) => id !== sessionResumeId);
+            let newId: string | null = null;
+            if (backend === "native") {
+              const cwd = workingDir;
+              if (type === "claude") newId = await invoke<string | null>("get_claude_session_id_native", { projectPath: cwd, excludeIds });
+              else if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
+              else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_native", { projectPath: cwd, excludeIds });
+            } else if (backend === "windows") {
+              const cwd = workingDir;
+              if (type === "claude") newId = await invoke<string | null>("get_claude_session_id_windows", { projectPath: cwd, excludeIds });
+              else if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds });
+              else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: cwd, excludeIds });
+            } else {
+              const wslCwd = toWslPath(workingDir);
+              if (wslCwd) {
+                if (type === "claude") newId = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
+                else if (type === "codex") newId = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
+                else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+              }
+            }
+            if (newId && newId !== sessionResumeId && claimSessionId(newId)) {
+              console.log(`[SessionResume] drift detected: ${sessionResumeId.slice(0, 8)} → ${newId.slice(0, 8)}`);
+              // Release old claim so other panes can use it
+              claimedSessionIds.delete(sessionResumeId);
+              setSessionTrusted(true);
+              sessionResumeIdPropRef.current = newId;
+              onSessionResumeIdRef.current?.(newId);
+            }
+          } catch (e) {
+            console.error("[SessionResume] drift check failed:", e);
           }
         }
       }
@@ -1787,7 +1878,7 @@ export default function TerminalPane({
           style={{
             display: "none",
             position: "absolute",
-            right: 4,
+            right: 12,
             width: 22,
             height: 22,
             borderRadius: 4,

@@ -2198,6 +2198,31 @@ async fn read_session_context_windows(
                     }
                 }
             }
+            // Fallback: read session name from ~/.claude/sessions/*.json (Claude CLI v2.1+)
+            if custom_title.is_empty() {
+                let sessions_dir = std::path::Path::new(&home).join(".claude").join("sessions");
+                if sessions_dir.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.extension().map_or(false, |ext| ext == "json") {
+                                if let Ok(data) = std::fs::read_to_string(&path) {
+                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                                        if v.get("sessionId").and_then(|v| v.as_str()) == Some(&session_id) {
+                                            if let Some(n) = v.get("name").and_then(|v| v.as_str()) {
+                                                if !n.is_empty() {
+                                                    custom_title = n.to_string();
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Per-session cost: use statusline if session matches, else cached
             let (sess_cost, sess_duration): (Option<f64>, Option<u64>) =
@@ -2719,6 +2744,14 @@ fi
 
 # Extract custom title (from /rename command)
 custom_title=$(tac "$f" 2>/dev/null | grep '"custom-title"' | head -1 | jq -r '.customTitle // empty' 2>/dev/null)
+# Fallback: read session name from ~/.claude/sessions/*.json (Claude CLI v2.1+)
+if [ -z "$custom_title" ]; then
+  for sf in "$HOME/.claude/sessions"/*.json; do
+    [ -f "$sf" ] || continue
+    sn=$(jq -r "select(.sessionId == \"$session_id\") | .name // empty" "$sf" 2>/dev/null)
+    if [ -n "$sn" ]; then custom_title="$sn"; break; fi
+  done
+fi
 
 line=$(tac "$f" 2>/dev/null | grep '"message"' | grep '"usage"' | head -1)
 if [ -z "$line" ]; then
@@ -3341,6 +3374,31 @@ async fn read_session_context_native(
                         if let Some(t) = v.get("customTitle").and_then(|v| v.as_str()) {
                             custom_title = t.to_string();
                             break;
+                        }
+                    }
+                }
+            }
+            // Fallback: read session name from ~/.claude/sessions/*.json (Claude CLI v2.1+)
+            if custom_title.is_empty() {
+                let sessions_dir = std::path::Path::new(&home).join(".claude").join("sessions");
+                if sessions_dir.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let path = entry.path();
+                            if path.extension().map_or(false, |ext| ext == "json") {
+                                if let Ok(data) = std::fs::read_to_string(&path) {
+                                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                                        if v.get("sessionId").and_then(|v| v.as_str()) == Some(&session_id) {
+                                            if let Some(n) = v.get("name").and_then(|v| v.as_str()) {
+                                                if !n.is_empty() {
+                                                    custom_title = n.to_string();
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

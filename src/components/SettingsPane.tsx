@@ -597,17 +597,11 @@ function UpdatesSection() {
 // ─── Nav sections ──────────────────────────────────────────────────────────
 
 const NAV_SECTIONS = [
-  ...(isWindows() ? [{ id: "terminal", label: "Terminal" }] : []),
-  { id: "behavior", label: "Behavior" },
+  { id: "general", label: "General" },
+  { id: "terminal", label: "Terminal" },
   { id: "projects", label: "Projects" },
-  { id: "composer", label: "EzyComposer" },
-  { id: "preview", label: "Preview Panes" },
-  { id: "codereview", label: "Code Review" },
-  { id: "ai", label: "AI Sessions" },
-  { id: "cli", label: "CLI Options" },
-  { id: "theme", label: "Theme" },
-  { id: "statistics", label: "Statistics" },
-  { id: "links", label: "Snippets & Shortcuts" },
+  { id: "editor", label: "Editor" },
+  { id: "ai", label: "AI" },
   { id: "updates", label: "Updates" },
 ];
 
@@ -635,6 +629,8 @@ export default function SettingsPane() {
   const setSlashCommandGhostText = useAppStore((s) => s.setSlashCommandGhostText);
   const openPanesInBackground = useAppStore((s) => s.openPanesInBackground);
   const setOpenPanesInBackground = useAppStore((s) => s.setOpenPanesInBackground);
+  const wideGridLayout = useAppStore((s) => s.wideGridLayout);
+  const setWideGridLayout = useAppStore((s) => s.setWideGridLayout);
   const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
   const setAutoMinimizeGameOnAiDone = useAppStore((s) => s.setAutoMinimizeGameOnAiDone);
   const autoStartServerCommand = useAppStore((s) => s.autoStartServerCommand);
@@ -678,157 +674,110 @@ export default function SettingsPane() {
   // Render only the active section content
   const renderSection = () => {
     switch (activeSection) {
+      case "general":
+        return (
+          <>
+            <SettingsSection id="behavior" title="Behavior" description="General application behavior and defaults.">
+              <SettingsRow label="Always show layout picker" description="Show the workspace template picker when creating new tabs.">
+                <ToggleSwitch checked={alwaysShowTemplatePicker} onChange={setAlwaysShowTemplatePicker} />
+              </SettingsRow>
+              <SettingsRow label="Restore last session" description="Reopen tabs from the previous session on startup.">
+                <ToggleSwitch checked={restoreLastSession} onChange={setRestoreLastSession} />
+              </SettingsRow>
+              <SettingsRow label="Auto-paste screenshots" description="Automatically insert clipboard images into AI context.">
+                <ToggleSwitch checked={autoInsertClipboardImage} onChange={setAutoInsertClipboardImage} />
+              </SettingsRow>
+              <SettingsRow label="Copy on select" description="Automatically copy selected terminal text to clipboard.">
+                <ToggleSwitch checked={copyOnSelect} onChange={setCopyOnSelect} />
+              </SettingsRow>
+              <SettingsRow label="Show path in tabs" description="Display the project path after the tab name. Double-click name to rename.">
+                <ToggleSwitch checked={showTabPath} onChange={setShowTabPath} />
+              </SettingsRow>
+              <SettingsRow label="Confirm before quitting" description="Show a confirmation dialog when closing the app.">
+                <ToggleSwitch checked={confirmQuit} onChange={setConfirmQuit} />
+              </SettingsRow>
+              <SettingsRow label="Slash command ghost text" description="Show inline autocomplete suggestions for slash commands.">
+                <ToggleSwitch checked={slashCommandGhostText} onChange={setSlashCommandGhostText} />
+              </SettingsRow>
+              <SettingsRow label="Open panes in background" description="New panes open without stealing focus from the current pane.">
+                <ToggleSwitch checked={openPanesInBackground} onChange={setOpenPanesInBackground} />
+              </SettingsRow>
+              <SettingsRow label="Wide grid layout" description="First 4 panes open side-by-side before stacking vertically.">
+                <ToggleSwitch checked={wideGridLayout} onChange={setWideGridLayout} />
+              </SettingsRow>
+              <SettingsRow label="Auto-hide games when AI done" description="Minimize game pane when AI task completes.">
+                <ToggleSwitch checked={autoMinimizeGameOnAiDone} onChange={setAutoMinimizeGameOnAiDone} />
+              </SettingsRow>
+              <SettingsRow label="Auto-start server command" description="Restore dev server commands when reopening projects.">
+                <ToggleSwitch checked={autoStartServerCommand} onChange={setAutoStartServerCommand} />
+              </SettingsRow>
+            </SettingsSection>
+            <SettingsSection id="theme" title="Theme" description="Choose a color theme for the application.">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8, marginBottom: 16 }}>
+                {THEMES.map((t) => {
+                  const isSelected = t.id === themeId;
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => setTheme(t.id)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "10px 12px",
+                        borderRadius: 8,
+                        border: isSelected ? `2px solid var(--ezy-accent)` : "1px solid var(--ezy-border)",
+                        backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        textAlign: "left",
+                        transition: "all 120ms ease",
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isSelected) e.currentTarget.style.borderColor = "var(--ezy-accent)";
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isSelected) e.currentTarget.style.borderColor = "var(--ezy-border)";
+                      }}
+                    >
+                      <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                        <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: t.surface.bg }} />
+                        <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: t.surface.accent }} />
+                        <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: t.surface.cyan }} />
+                      </div>
+                      <span style={{ fontSize: 13, fontWeight: isSelected ? 600 : 400, color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)" }}>
+                        {t.name}
+                      </span>
+                      {isSelected && <FaCheck size={12} color={theme.surface.accent} style={{ marginLeft: "auto" }} />}
+                    </button>
+                  );
+                })}
+              </div>
+              <SettingsRow label="Vibrant colors" description="Use brighter, more saturated accent colors throughout the UI.">
+                <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
+              </SettingsRow>
+            </SettingsSection>
+          </>
+        );
+
       case "terminal":
         return (
-          <SettingsSection id="terminal" title="Terminal" description="Choose the backend for new terminal instances.">
-            <SettingsRow label="Terminal backend">
-              <SegmentedControl
-                options={[
-                  { value: "wsl" as const, label: "WSL" },
-                  { value: "windows" as const, label: "Windows" },
-                ]}
-                value={terminalBackend as "wsl" | "windows"}
-                onChange={(v) => setTerminalBackend(v)}
-              />
-            </SettingsRow>
-          </SettingsSection>
-        );
-
-      case "behavior":
-        return (
-          <SettingsSection id="behavior" title="Behavior" description="General application behavior and defaults.">
-            <SettingsRow label="Always show layout picker" description="Show the workspace template picker when creating new tabs.">
-              <ToggleSwitch checked={alwaysShowTemplatePicker} onChange={setAlwaysShowTemplatePicker} />
-            </SettingsRow>
-            <SettingsRow label="Restore last session" description="Reopen tabs from the previous session on startup.">
-              <ToggleSwitch checked={restoreLastSession} onChange={setRestoreLastSession} />
-            </SettingsRow>
-            <SettingsRow label="Auto-paste screenshots" description="Automatically insert clipboard images into AI context.">
-              <ToggleSwitch checked={autoInsertClipboardImage} onChange={setAutoInsertClipboardImage} />
-            </SettingsRow>
-            <SettingsRow label="Copy on select" description="Automatically copy selected terminal text to clipboard.">
-              <ToggleSwitch checked={copyOnSelect} onChange={setCopyOnSelect} />
-            </SettingsRow>
-            <SettingsRow label="Show path in tabs" description="Display the project path after the tab name. Double-click name to rename.">
-              <ToggleSwitch checked={showTabPath} onChange={setShowTabPath} />
-            </SettingsRow>
-            <SettingsRow label="Confirm before quitting" description="Show a confirmation dialog when closing the app.">
-              <ToggleSwitch checked={confirmQuit} onChange={setConfirmQuit} />
-            </SettingsRow>
-            <SettingsRow label="Slash command ghost text" description="Show inline autocomplete suggestions for slash commands.">
-              <ToggleSwitch checked={slashCommandGhostText} onChange={setSlashCommandGhostText} />
-            </SettingsRow>
-            <SettingsRow label="Open panes in background" description="New panes open without stealing focus from the current pane.">
-              <ToggleSwitch checked={openPanesInBackground} onChange={setOpenPanesInBackground} />
-            </SettingsRow>
-            <SettingsRow label="Auto-hide games when AI done" description="Minimize game pane when AI task completes.">
-              <ToggleSwitch checked={autoMinimizeGameOnAiDone} onChange={setAutoMinimizeGameOnAiDone} />
-            </SettingsRow>
-            <SettingsRow label="Auto-start server command" description="Restore dev server commands when reopening projects.">
-              <ToggleSwitch checked={autoStartServerCommand} onChange={setAutoStartServerCommand} />
-            </SettingsRow>
-          </SettingsSection>
-        );
-
-      case "projects":
-        return (
-          <SettingsSection id="projects" title="Projects" description="Configure default project directory and template files for new projects.">
-            <SettingsRow label="Projects directory" description="Default folder where new projects are created.">
-              <PathPicker value={projectsDir} onChange={setProjectsDir} directory />
-            </SettingsRow>
-            <SettingsRow label="Default CLAUDE.md" description="Template file copied to new projects as CLAUDE.md (Claude Code).">
-              <PathPicker value={defaultClaudeMdPath} onChange={setDefaultClaudeMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
-            </SettingsRow>
-            <SettingsRow label="Default AGENTS.md" description="Template file copied to new projects as AGENTS.md (Codex / Gemini).">
-              <PathPicker value={defaultAgentsMdPath} onChange={setDefaultAgentsMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
-            </SettingsRow>
-          </SettingsSection>
-        );
-
-      case "composer":
-        return (
-          <SettingsSection id="composer" title="EzyComposer" description="Configure the prompt composer overlay (Ctrl+I).">
-            <SettingsRow label="Enable EzyComposer">
-              <ToggleSwitch checked={promptComposerEnabled} onChange={setPromptComposerEnabled} />
-            </SettingsRow>
-            {promptComposerEnabled && (
-              <>
-                <SettingsRow label="Always visible" description="Keep the composer visible at all times instead of toggle.">
-                  <ToggleSwitch checked={promptComposerAlwaysVisible} onChange={setPromptComposerAlwaysVisible} />
-                </SettingsRow>
-                <SettingsRow label="Expansion direction" description="How the composer expands when typing long prompts.">
+          <>
+            {isWindows() && (
+              <SettingsSection id="terminal-backend" title="Backend" description="Choose the backend for new terminal instances.">
+                <SettingsRow label="Terminal backend">
                   <SegmentedControl
                     options={[
-                      { value: "up" as ComposerExpansion, label: "Up" },
-                      { value: "down" as ComposerExpansion, label: "Down" },
-                      { value: "scroll" as ComposerExpansion, label: "Scroll" },
+                      { value: "wsl" as const, label: "WSL" },
+                      { value: "windows" as const, label: "Windows" },
                     ]}
-                    value={composerExpansion}
-                    onChange={setComposerExpansion}
+                    value={terminalBackend as "wsl" | "windows"}
+                    onChange={(v) => setTerminalBackend(v)}
                   />
                 </SettingsRow>
-              </>
+              </SettingsSection>
             )}
-          </SettingsSection>
-        );
-
-      case "preview":
-        return (
-          <SettingsSection id="preview" title="Preview Panes" description="Configure browser preview pane behavior.">
-            <SettingsRow label="Full column" description="Browser pane takes a full column width in split layouts.">
-              <ToggleSwitch checked={browserFullColumn} onChange={setBrowserFullColumn} />
-            </SettingsRow>
-            <SettingsRow label="Spawn on left" description="Open browser preview on the left side instead of right.">
-              <ToggleSwitch checked={browserSpawnLeft} onChange={setBrowserSpawnLeft} />
-            </SettingsRow>
-          </SettingsSection>
-        );
-
-      case "codereview":
-        return (
-          <SettingsSection id="codereview" title="Code Review" description="Configure the built-in code review experience.">
-            <SettingsRow label="Collapse all files" description="Start with all file diffs collapsed in code review.">
-              <ToggleSwitch checked={codeReviewCollapseAll} onChange={setCodeReviewCollapseAll} />
-            </SettingsRow>
-            <SettingsRow label="Commit message mode">
-              <SegmentedControl
-                options={[
-                  { value: "empty" as const, label: "Empty" },
-                  { value: "simple" as const, label: "Simple" },
-                  { value: "advanced" as const, label: "AI" },
-                ]}
-                value={commitMsgMode}
-                onChange={setCommitMsgMode}
-              />
-            </SettingsRow>
-            <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", padding: "4px 0 0", lineHeight: 1.3 }}>
-              {commitMsgMode === "empty" && "Start with a blank commit message"}
-              {commitMsgMode === "simple" && "Auto-fill from changed filenames"}
-              {commitMsgMode === "advanced" && "Generate message via background AI session"}
-            </div>
-          </SettingsSection>
-        );
-
-      case "ai":
-        return (
-          <SettingsSection id="ai" title="AI Sessions" description="Configure shadow AI provider for background tasks.">
-            <SettingsRow label="Shadow AI provider" description="Subscription used for Promptifier and AI commit messages.">
-              <SegmentedControl
-                options={[
-                  { value: "claude" as const, label: "Claude" },
-                  { value: "codex" as const, label: "Codex" },
-                  { value: "gemini" as const, label: "Gemini", disabled: true },
-                ]}
-                value={shadowAiCli}
-                onChange={(v) => setShadowAiCli(v as "claude" | "codex")}
-              />
-            </SettingsRow>
-          </SettingsSection>
-        );
-
-      case "cli":
-        return (
-          <SettingsSection id="cli" title="CLI Options" description="Per-CLI font size and YOLO mode settings.">
+            <SettingsSection id="cli" title="CLI Options" description="Per-CLI font size and YOLO mode settings.">
             {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
               const currentSize = cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE;
               const isYolo = !!cliYolo[cliType];
@@ -933,106 +882,144 @@ export default function SettingsPane() {
               );
             })}
           </SettingsSection>
+          </>
         );
 
-      case "theme":
+      case "projects":
         return (
-          <SettingsSection id="theme" title="Theme" description="Choose a color theme for the application.">
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8, marginBottom: 16 }}>
-              {THEMES.map((t) => {
-                const isSelected = t.id === themeId;
-                return (
-                  <button
-                    key={t.id}
-                    onClick={() => setTheme(t.id)}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      padding: "10px 12px",
-                      borderRadius: 8,
-                      border: isSelected ? `2px solid var(--ezy-accent)` : "1px solid var(--ezy-border)",
-                      backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
-                      cursor: "pointer",
-                      fontFamily: "inherit",
-                      textAlign: "left",
-                      transition: "all 120ms ease",
-                    }}
-                    onMouseEnter={(e) => {
-                      if (!isSelected) e.currentTarget.style.borderColor = "var(--ezy-accent)";
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isSelected) e.currentTarget.style.borderColor = "var(--ezy-border)";
-                    }}
-                  >
-                    <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
-                      <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: t.surface.bg }} />
-                      <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: t.surface.accent }} />
-                      <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: t.surface.cyan }} />
-                    </div>
-                    <span style={{ fontSize: 13, fontWeight: isSelected ? 600 : 400, color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)" }}>
-                      {t.name}
-                    </span>
-                    {isSelected && <FaCheck size={12} color={theme.surface.accent} style={{ marginLeft: "auto" }} />}
-                  </button>
-                );
-              })}
-            </div>
-            <SettingsRow label="Vibrant colors" description="Use brighter, more saturated accent colors throughout the UI.">
-              <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
+          <SettingsSection id="projects" title="Projects" description="Configure default project directory and template files for new projects.">
+            <SettingsRow label="Projects directory" description="Default folder where new projects are created.">
+              <PathPicker value={projectsDir} onChange={setProjectsDir} directory />
+            </SettingsRow>
+            <SettingsRow label="Default CLAUDE.md" description="Template file copied to new projects as CLAUDE.md (Claude Code).">
+              <PathPicker value={defaultClaudeMdPath} onChange={setDefaultClaudeMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
+            </SettingsRow>
+            <SettingsRow label="Default AGENTS.md" description="Template file copied to new projects as AGENTS.md (Codex / Gemini).">
+              <PathPicker value={defaultAgentsMdPath} onChange={setDefaultAgentsMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
             </SettingsRow>
           </SettingsSection>
         );
 
-      case "statistics":
-        return <AiTimeStatsSection bursts={aiTimeBursts} onClear={clearAiTimeStats} />;
-
-      case "links":
+      case "editor":
         return (
-          <SettingsSection id="links" title="Snippets & Shortcuts">
-            <div
-              onClick={() => window.dispatchEvent(new Event("ezydev:open-snippets"))}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "12px 0",
-                cursor: "pointer",
-                borderBottom: "1px solid var(--ezy-border-subtle)",
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round">
-                <path d="M5.5 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1h-2.5" />
-                <path d="M5 5l2 2-2 2" />
-                <line x1="8" y1="10" x2="12" y2="10" />
-              </svg>
-              <span style={{ fontSize: 13, color: "var(--ezy-text-secondary)", flex: 1 }}>Manage Snippets</span>
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M6 4l4 4-4 4" />
-              </svg>
-            </div>
-            <div
-              onClick={() => window.dispatchEvent(new Event("ezydev:open-shortcuts"))}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "12px 0",
-                cursor: "pointer",
-                borderBottom: "1px solid var(--ezy-border-subtle)",
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="1" y="4" width="14" height="9" rx="1.5" />
-                <line x1="4" y1="7" x2="5.5" y2="7" />
-                <line x1="7" y1="7" x2="8.5" y2="7" />
-                <line x1="10.5" y1="7" x2="12" y2="7" />
-                <line x1="4.5" y1="10" x2="11.5" y2="10" />
-              </svg>
-              <span style={{ fontSize: 13, color: "var(--ezy-text-secondary)", flex: 1 }}>Keyboard Shortcuts</span>
-              <span style={{ fontSize: 11, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>Ctrl+/</span>
-            </div>
-          </SettingsSection>
+          <>
+            <SettingsSection id="composer" title="EzyComposer" description="Configure the prompt composer overlay (Ctrl+I).">
+              <SettingsRow label="Enable EzyComposer">
+                <ToggleSwitch checked={promptComposerEnabled} onChange={setPromptComposerEnabled} />
+              </SettingsRow>
+              {promptComposerEnabled && (
+                <>
+                  <SettingsRow label="Always visible" description="Keep the composer visible at all times instead of toggle.">
+                    <ToggleSwitch checked={promptComposerAlwaysVisible} onChange={setPromptComposerAlwaysVisible} />
+                  </SettingsRow>
+                  <SettingsRow label="Expansion direction" description="How the composer expands when typing long prompts.">
+                    <SegmentedControl
+                      options={[
+                        { value: "up" as ComposerExpansion, label: "Up" },
+                        { value: "down" as ComposerExpansion, label: "Down" },
+                        { value: "scroll" as ComposerExpansion, label: "Scroll" },
+                      ]}
+                      value={composerExpansion}
+                      onChange={setComposerExpansion}
+                    />
+                  </SettingsRow>
+                </>
+              )}
+            </SettingsSection>
+            <SettingsSection id="preview" title="Preview Panes" description="Configure browser preview pane behavior.">
+              <SettingsRow label="Full column" description="Browser pane takes a full column width in split layouts.">
+                <ToggleSwitch checked={browserFullColumn} onChange={setBrowserFullColumn} />
+              </SettingsRow>
+              <SettingsRow label="Spawn on left" description="Open browser preview on the left side instead of right.">
+                <ToggleSwitch checked={browserSpawnLeft} onChange={setBrowserSpawnLeft} />
+              </SettingsRow>
+            </SettingsSection>
+            <SettingsSection id="codereview" title="Code Review" description="Configure the built-in code review experience.">
+              <SettingsRow label="Collapse all files" description="Start with all file diffs collapsed in code review.">
+                <ToggleSwitch checked={codeReviewCollapseAll} onChange={setCodeReviewCollapseAll} />
+              </SettingsRow>
+              <SettingsRow label="Commit message mode">
+                <SegmentedControl
+                  options={[
+                    { value: "empty" as const, label: "Empty" },
+                    { value: "simple" as const, label: "Simple" },
+                    { value: "advanced" as const, label: "AI" },
+                  ]}
+                  value={commitMsgMode}
+                  onChange={setCommitMsgMode}
+                />
+              </SettingsRow>
+              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", padding: "4px 0 0", lineHeight: 1.3 }}>
+                {commitMsgMode === "empty" && "Start with a blank commit message"}
+                {commitMsgMode === "simple" && "Auto-fill from changed filenames"}
+                {commitMsgMode === "advanced" && "Generate message via background AI session"}
+              </div>
+            </SettingsSection>
+            <SettingsSection id="links" title="Snippets & Shortcuts">
+              <div
+                onClick={() => window.dispatchEvent(new Event("ezydev:open-snippets"))}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "12px 0",
+                  cursor: "pointer",
+                  borderBottom: "1px solid var(--ezy-border-subtle)",
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round">
+                  <path d="M5.5 2H3a1 1 0 00-1 1v10a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1h-2.5" />
+                  <path d="M5 5l2 2-2 2" />
+                  <line x1="8" y1="10" x2="12" y2="10" />
+                </svg>
+                <span style={{ fontSize: 13, color: "var(--ezy-text-secondary)", flex: 1 }}>Manage Snippets</span>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M6 4l4 4-4 4" />
+                </svg>
+              </div>
+              <div
+                onClick={() => window.dispatchEvent(new Event("ezydev:open-shortcuts"))}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "12px 0",
+                  cursor: "pointer",
+                  borderBottom: "1px solid var(--ezy-border-subtle)",
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="1" y="4" width="14" height="9" rx="1.5" />
+                  <line x1="4" y1="7" x2="5.5" y2="7" />
+                  <line x1="7" y1="7" x2="8.5" y2="7" />
+                  <line x1="10.5" y1="7" x2="12" y2="7" />
+                  <line x1="4.5" y1="10" x2="11.5" y2="10" />
+                </svg>
+                <span style={{ fontSize: 13, color: "var(--ezy-text-secondary)", flex: 1 }}>Keyboard Shortcuts</span>
+                <span style={{ fontSize: 11, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>Ctrl+/</span>
+              </div>
+            </SettingsSection>
+          </>
+        );
+
+      case "ai":
+        return (
+          <>
+            <SettingsSection id="ai" title="AI Sessions" description="Configure shadow AI provider for background tasks.">
+              <SettingsRow label="Shadow AI provider" description="Subscription used for Promptifier and AI commit messages.">
+                <SegmentedControl
+                  options={[
+                    { value: "claude" as const, label: "Claude" },
+                    { value: "codex" as const, label: "Codex" },
+                    { value: "gemini" as const, label: "Gemini", disabled: true },
+                  ]}
+                  value={shadowAiCli}
+                  onChange={(v) => setShadowAiCli(v as "claude" | "codex")}
+                />
+              </SettingsRow>
+            </SettingsSection>
+            <AiTimeStatsSection bursts={aiTimeBursts} onClear={clearAiTimeStats} />
+          </>
         );
 
       case "updates":
@@ -1077,30 +1064,6 @@ export default function SettingsPane() {
             letterSpacing: "0.06em",
             color: "var(--ezy-text-muted)",
           }}>Settings</span>
-          <div
-            onClick={() => {
-              useAppStore.getState().setSettingsGearMode("dropdown");
-              useAppStore.getState().setSettingsPanelOpen(false);
-            }}
-            title="Switch to dropdown menu"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 22,
-              height: 22,
-              borderRadius: 4,
-              cursor: "pointer",
-              color: "var(--ezy-text-muted)",
-              transition: "background-color 120ms ease",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-          >
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M4 6l4 4 4-4" />
-            </svg>
-          </div>
         </div>
         {NAV_SECTIONS.map((s) => {
           const isActive = activeSection === s.id;

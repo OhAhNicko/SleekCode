@@ -100,6 +100,7 @@ export interface RecentProjectsSlice {
   showTabPath: boolean;
   setShowTabPath: (value: boolean) => void;
   openPanesInBackground: boolean;
+  wideGridLayout: boolean;
   autoMinimizeGameOnAiDone: boolean;
   showMiniGamesButton: boolean;
   onboardingCompleted: boolean;
@@ -107,8 +108,6 @@ export interface RecentProjectsSlice {
   settingsPanelOpen: boolean;
   toggleSettingsPanel: () => void;
   setSettingsPanelOpen: (value: boolean) => void;
-  settingsGearMode: "sidebar" | "dropdown";
-  setSettingsGearMode: (value: "sidebar" | "dropdown") => void;
   projectsDir: string;
   defaultClaudeMdPath: string;
   defaultAgentsMdPath: string;
@@ -146,6 +145,7 @@ export interface RecentProjectsSlice {
   setSlashCommandGhostText: (value: boolean) => void;
   setCodeReviewCollapseAll: (value: boolean) => void;
   setOpenPanesInBackground: (value: boolean) => void;
+  setWideGridLayout: (value: boolean) => void;
   setAutoMinimizeGameOnAiDone: (value: boolean) => void;
   toggleMiniGamesButton: () => void;
   setTerminalBackend: (value: TerminalBackend) => void;
@@ -185,6 +185,7 @@ export const createRecentProjectsSlice: StateCreator<
   showTabPath: false,
   setShowTabPath: (value) => set({ showTabPath: value }),
   openPanesInBackground: false,
+  wideGridLayout: false,
   autoMinimizeGameOnAiDone: false,
   showMiniGamesButton: false,
   onboardingCompleted: false,
@@ -192,8 +193,6 @@ export const createRecentProjectsSlice: StateCreator<
   settingsPanelOpen: false,
   toggleSettingsPanel: () => set((s) => ({ settingsPanelOpen: !s.settingsPanelOpen })),
   setSettingsPanelOpen: (value) => set({ settingsPanelOpen: value }),
-  settingsGearMode: "sidebar",
-  setSettingsGearMode: (value) => set({ settingsGearMode: value }),
   projectsDir: "",
   defaultClaudeMdPath: "",
   defaultAgentsMdPath: "",
@@ -366,6 +365,10 @@ export const createRecentProjectsSlice: StateCreator<
 
   setOpenPanesInBackground: (value) => {
     set({ openPanesInBackground: value });
+  },
+
+  setWideGridLayout: (value) => {
+    set({ wideGridLayout: value });
   },
 
   setAutoMinimizeGameOnAiDone: (value) => {

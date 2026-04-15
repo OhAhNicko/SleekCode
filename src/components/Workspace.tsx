@@ -256,7 +256,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
           return;
         }
       }
-      handleLayoutChange(addPaneAsGrid(tab.layout, newLeaf));
+      const wideGrid = useAppStore.getState().wideGridLayout;
+      handleLayoutChange(addPaneAsGrid(tab.layout, newLeaf, wideGrid));
       if (focusNewPane) handleTerminalFocus(newTerminalId);
       else refocusPrevious();
     };

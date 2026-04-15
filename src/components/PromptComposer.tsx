@@ -610,7 +610,7 @@ export default function PromptComposer({
           setHidden(true);
           hiddenRef.current = true;
           textareaRef.current?.blur();
-          terminal.focus();
+          if (document.hasFocus()) terminal.focus();
           return;
         }
 
@@ -618,7 +618,9 @@ export default function PromptComposer({
         if (hiddenRef.current) {
           // Don't call scrollToBottom() here — it fights manual scrolling.
           // The user or TerminalPane's doFit() manages scroll position.
-          setTimeout(() => textareaRef.current?.focus(), 30);
+          setTimeout(() => {
+            if (isActiveRef.current && document.hasFocus()) textareaRef.current?.focus();
+          }, 30);
           showTimeRef.current = Date.now();
         }
         setHidden(false);
@@ -632,7 +634,9 @@ export default function PromptComposer({
         if (result.offset !== lastOffsetRef.current) {
           lastOffsetRef.current = result.offset;
           if (alwaysVisible) {
-            setTimeout(() => textareaRef.current?.focus(), 30);
+            setTimeout(() => {
+              if (isActiveRef.current && document.hasFocus()) textareaRef.current?.focus();
+            }, 30);
           }
         }
         return;
@@ -789,8 +793,9 @@ export default function PromptComposer({
     const interval = setInterval(() => {
       const result = scanPromptPosition();
       if (result) {
-        setTopOffset(result.offset);
-        setCellHeight(result.cellHeight);
+        // Only update state when values actually changed to avoid unnecessary re-renders
+        setTopOffset((prev) => (prev === result.offset ? prev : result.offset));
+        setCellHeight((prev) => (prev === result.cellHeight ? prev : result.cellHeight));
         promptLineIdxRef.current = result.promptLineIdx;
         if (result.promptPass === 1) {
           if (isInteractiveMode(result.promptLineIdx)) {
@@ -799,7 +804,7 @@ export default function PromptComposer({
               hiddenRef.current = true;
               setHidden(true);
               textareaRef.current?.blur();
-              terminal.focus();
+              if (isActiveRef.current) terminal.focus();
             }
           } else if (hiddenRef.current) {
             hiddenRef.current = false;
