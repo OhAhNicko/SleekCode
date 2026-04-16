@@ -122,7 +122,8 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
         { id: tabId, name, workingDir, layout, serverId, backend } as Tab,
       ],
       activeTabId: tabId,
-    }));
+      ...(workingDir ? { lastActiveProjectPath: workingDir } : {}),
+    }) as Partial<TabSlice> & { lastActiveProjectPath?: string });
     window.scrollTo(0, 0);
   },
 
@@ -135,7 +136,8 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
         { id: tabId, name, workingDir, layout, serverId, backend } as Tab,
       ],
       activeTabId: tabId,
-    }));
+      ...(workingDir ? { lastActiveProjectPath: workingDir } : {}),
+    }) as Partial<TabSlice> & { lastActiveProjectPath?: string });
     window.scrollTo(0, 0);
     return tabId;
   },
@@ -161,16 +163,31 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
 
       const remaining = state.tabs.filter((t) => t.id !== tabId);
       const nonSystemRemaining = remaining.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab);
-      const newActiveId =
+      const newActiveTab =
         state.activeTabId === tabId
-          ? nonSystemRemaining[nonSystemRemaining.length - 1]?.id ?? ""
-          : state.activeTabId;
-      return { tabs: remaining, activeTabId: newActiveId } as Partial<TabSlice>;
+          ? nonSystemRemaining[nonSystemRemaining.length - 1]
+          : remaining.find((t) => t.id === state.activeTabId);
+      const newActiveId = newActiveTab?.id ?? "";
+      const patch: Partial<TabSlice> & { lastActiveProjectPath?: string } = {
+        tabs: remaining,
+        activeTabId: newActiveId,
+      };
+      if (newActiveTab && newActiveTab.workingDir && !newActiveTab.isDevServerTab && !newActiveTab.isServersTab && !newActiveTab.isKanbanTab && !newActiveTab.isSettingsTab) {
+        patch.lastActiveProjectPath = newActiveTab.workingDir;
+      }
+      return patch;
     });
   },
 
   setActiveTab: (tabId) => {
-    set({ activeTabId: tabId });
+    set((state) => {
+      const tab = state.tabs.find((t) => t.id === tabId);
+      const isProjectTab = !!(tab && !tab.isDevServerTab && !tab.isServersTab && !tab.isKanbanTab && !tab.isSettingsTab && tab.workingDir);
+      return {
+        activeTabId: tabId,
+        ...(isProjectTab ? { lastActiveProjectPath: tab!.workingDir } : {}),
+      } as Partial<TabSlice> & { lastActiveProjectPath?: string };
+    });
     window.scrollTo(0, 0);
   },
 

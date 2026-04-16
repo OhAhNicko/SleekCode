@@ -12,6 +12,7 @@ import { currentIsoWeek } from "../lib/iso-week";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { FaCheck } from "react-icons/fa";
 import { STATUSLINE_FEATURES } from "./TerminalHeader";
+import ReleaseSection from "./ReleaseSection";
 import type { TerminalType, ComposerExpansion } from "../types";
 
 // ─── Internal sub-components ───────────────────────────────────────────────
@@ -105,7 +106,7 @@ function SettingsSection({ id, title, description, children }: {
         letterSpacing: "-0.01em",
       }}>{title}</h2>
       {description && (
-        <p style={{ fontSize: 12, color: "var(--ezy-text-muted)", margin: "0 0 16px", lineHeight: 1.4 }}>{description}</p>
+        <p style={{ fontSize: 12, color: "var(--ezy-text-muted)", margin: "0 0 5px", lineHeight: 1.4 }}>{description}</p>
       )}
       {!description && <div style={{ height: 12 }} />}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -1023,7 +1024,12 @@ export default function SettingsPane() {
         );
 
       case "updates":
-        return <UpdatesSection />;
+        return (
+          <>
+            <UpdatesSection />
+            <ReleaseSection />
+          </>
+        );
 
       default:
         return null;

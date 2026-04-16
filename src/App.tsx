@@ -61,12 +61,15 @@ export default function App() {
   const isSystemTab = activeTabId === "dev-server-tab" || activeTabId === "kanban-tab" || activeTabId === "servers-tab";
   const hasActiveProjectTab = !isSystemTab && !!activeTabId && projectTabs.some((t) => t.id === activeTabId);
 
-  // On startup: if activeTabId is a system tab (except settings), redirect to first project tab.
+  // On startup: if activeTabId is a system tab (except settings), redirect to last-active project tab.
   // If no project tabs exist, force activeTabId to "" so the startup screen shows.
   const isRedirectableSystemTab = activeTabId === "dev-server-tab" || activeTabId === "kanban-tab" || activeTabId === "servers-tab";
   useEffect(() => {
     if (isRedirectableSystemTab || !activeTabId) {
-      const fallback = projectTabs[0];
+      const lastPath = (useAppStore.getState().lastActiveProjectPath ?? "").replace(/\\/g, "/");
+      const fallback =
+        (lastPath && projectTabs.find((t) => (t.workingDir ?? "").replace(/\\/g, "/") === lastPath)) ||
+        projectTabs[0];
       if (fallback) {
         useAppStore.getState().setActiveTab(fallback.id);
       } else if (activeTabId) {
@@ -227,17 +230,36 @@ export default function App() {
     }
   }, []);
 
-  // Intercept OS-level window close (Alt+F4, taskbar X) and show confirm dialog if enabled
+  // Intercept OS-level window close (Alt+F4, taskbar X). Always flush session state
+  // synchronously so Zustand's persist middleware writes the final snapshot to
+  // localStorage before the webview is torn down. Then show confirm dialog if enabled.
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     getCurrentWindow().onCloseRequested((event) => {
-      const { confirmQuit } = useAppStore.getState();
-      if (confirmQuit) {
+      const s = useAppStore.getState();
+      // Sync each open project tab's layout into recentProjects.lastLayout so
+      // quick-open restores the exact layout the user last had — even when
+      // restoreLastSession is off.
+      s.flushTabLayoutsToRecent(s.tabs);
+
+      if (s.confirmQuit) {
         event.preventDefault();
         window.dispatchEvent(new Event("ezydev:quit-requested"));
       }
     }).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
+  }, []);
+
+  // Belt-and-braces flush in case the webview unloads without onCloseRequested
+  // firing (browser preview, unusual Tauri paths). localStorage writes inside
+  // beforeunload are synchronous via Zustand's persist middleware.
+  useEffect(() => {
+    const handler = () => {
+      const s = useAppStore.getState();
+      s.flushTabLayoutsToRecent(s.tabs);
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
   }, []);
 
   // Watch Windows clipboard for new images (adds to TabBar strip automatically)

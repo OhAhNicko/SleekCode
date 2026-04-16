@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import type { TerminalType, TerminalBackend, ProjectSession, SessionIndexEntry } from "../types";
 import type { ContextInfo } from "../lib/context-parser";
-import { TERMINAL_CONFIGS } from "../lib/terminal-config";
+import { TERMINAL_CONFIGS, toWslPath } from "../lib/terminal-config";
 import { supportsSessionResume } from "../lib/session-resume";
-import { readSessionsIndex, resolveSessionName } from "../lib/sessions-index";
+import { readSessionsIndex, resolveSessionName, readSessionFirstPrompt, slugify } from "../lib/sessions-index";
 import { useAppStore } from "../store";
 import { FaChevronDown, FaCheck, FaPen } from "react-icons/fa";
 import { FaXmark, FaGripVertical, FaPlus } from "react-icons/fa6";
@@ -426,13 +426,49 @@ function SessionPicker({
   const [editValue, setEditValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const [indexEntries, setIndexEntries] = useState<SessionIndexEntry[]>([]);
+  // Fallback slugs from direct JSONL reads, for sessions with no index entry.
+  const [fallbackSlugs, setFallbackSlugs] = useState<Record<string, string>>({});
+  const fallbackFetchedRef = useRef<Set<string>>(new Set());
 
   // Fetch sessions-index on mount (only for Claude sessions)
   useEffect(() => {
     if (!workingDir || (terminalType && terminalType !== "claude")) return;
     const effectiveBackend = backend ?? (useAppStore.getState().terminalBackend as TerminalBackend | undefined) ?? "wsl";
-    readSessionsIndex(workingDir, effectiveBackend).then(setIndexEntries);
+    // WSL backend needs a Unix path — convert UNC/Windows paths to /home/... form.
+    const pathForBackend = effectiveBackend === "wsl" ? toWslPath(workingDir) : workingDir;
+    readSessionsIndex(pathForBackend, effectiveBackend).then(setIndexEntries);
   }, [workingDir, backend, terminalType]);
+
+  // Fetch first-prompt slugs for sessions that lack an index entry AND a store name.
+  // This covers the common v2.1.109 case where sessions-index.json doesn't exist.
+  useEffect(() => {
+    if (!workingDir || (terminalType && terminalType !== "claude")) return;
+    const effectiveBackend = backend ?? (useAppStore.getState().terminalBackend as TerminalBackend | undefined) ?? "wsl";
+    const pathForBackend = effectiveBackend === "wsl" ? toWslPath(workingDir) : workingDir;
+    const indexIds = new Set(indexEntries.map((e) => e.sessionId));
+    const needSlug = sessions.filter((s) =>
+      !s.isRenamed && !s.name && !indexIds.has(s.id) && !fallbackFetchedRef.current.has(s.id)
+    );
+    if (needSlug.length === 0) return;
+    needSlug.forEach((s) => fallbackFetchedRef.current.add(s.id));
+    Promise.all(
+      needSlug.map(async (s) => {
+        const prompt = await readSessionFirstPrompt(pathForBackend, effectiveBackend, s.id);
+        return [s.id, prompt] as const;
+      })
+    ).then((results) => {
+      const next: Record<string, string> = {};
+      for (const [id, prompt] of results) {
+        if (prompt) {
+          const slug = slugify(prompt);
+          if (slug) next[id] = slug;
+        }
+      }
+      if (Object.keys(next).length > 0) {
+        setFallbackSlugs((prev) => ({ ...prev, ...next }));
+      }
+    });
+  }, [sessions, indexEntries, workingDir, backend, terminalType]);
 
   // Merge store sessions with index entries
   const mergedSessions = useMemo((): MergedSession[] => {
@@ -443,9 +479,10 @@ function SessionPicker({
     for (const s of sessions) {
       const indexEntry = indexEntries.find((e) => e.sessionId === s.id);
       const autoName = indexEntry ? resolveSessionName(indexEntry) : undefined;
+      const fallbackSlug = fallbackSlugs[s.id];
       merged.push({
         id: s.id,
-        name: s.isRenamed ? s.name : (s.name || autoName || (s.id === currentSessionId ? (contextSessionName || s.id.slice(0, 8)) : s.id.slice(0, 8))),
+        name: s.isRenamed ? s.name : (s.name || autoName || fallbackSlug || (s.id === currentSessionId ? (contextSessionName || s.id.slice(0, 8)) : s.id.slice(0, 8))),
         isFromStore: true,
         isCurrent: s.id === currentSessionId,
         isRenamed: s.isRenamed,
@@ -477,7 +514,7 @@ function SessionPicker({
     });
 
     return merged;
-  }, [sessions, indexEntries, currentSessionId, contextSessionName]);
+  }, [sessions, indexEntries, currentSessionId, contextSessionName, fallbackSlugs]);
 
   // Position dropdown below the anchor element using fixed positioning
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);

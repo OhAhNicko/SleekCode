@@ -54,6 +54,7 @@ export const useAppStore = create<AppStore>()(
         // devServerPanelOpen intentionally not persisted — always starts closed
         expandedDirs: state.expandedDirs,
         recentProjects: state.recentProjects,
+        lastActiveProjectPath: state.lastActiveProjectPath,
         alwaysShowTemplatePicker: state.alwaysShowTemplatePicker,
         restoreLastSession: state.restoreLastSession,
         autoInsertClipboardImage: state.autoInsertClipboardImage,
@@ -112,16 +113,27 @@ export const useAppStore = create<AppStore>()(
           }
         }
 
-        // Fix activeTabId if it pointed to a dropped tab or the dev-server-tab (now a sidebar panel)
+        // Fix activeTabId if it pointed to a dropped tab or the dev-server-tab (now a sidebar panel).
+        // Preference order for the fallback:
+        //   1. persisted activeTabId if it still resolves to a known tab
+        //   2. tab whose workingDir matches lastActiveProjectPath (last-focused project)
+        //   3. first non-system (project) tab
+        //   4. first tab of any kind
         const tabIds = new Set(filteredTabs.map((t) => t.id));
+        const projectTabs = filteredTabs.filter((t) => !isSystemTab(t));
+        const lastPath = (state.lastActiveProjectPath ?? "").replace(/\\/g, "/");
+        const lastActiveProjectTab = lastPath
+          ? projectTabs.find((t) => (t.workingDir ?? "").replace(/\\/g, "/") === lastPath)
+          : undefined;
+
         let activeTabId =
           state.activeTabId && tabIds.has(state.activeTabId)
             ? state.activeTabId
-            : filteredTabs[0]?.id ?? current.activeTabId;
-        // Dev server tab is no longer a full page — redirect to first non-system tab
+            : (lastActiveProjectTab?.id ?? projectTabs[0]?.id ?? filteredTabs[0]?.id ?? current.activeTabId);
+
+        // Dev server tab is no longer a full page — always redirect to a project tab when possible.
         if (activeTabId === "dev-server-tab") {
-          const nonSystem = filteredTabs.find((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab);
-          activeTabId = nonSystem?.id ?? filteredTabs[0]?.id ?? current.activeTabId;
+          activeTabId = lastActiveProjectTab?.id ?? projectTabs[0]?.id ?? filteredTabs[0]?.id ?? current.activeTabId;
         }
 
         // Migrate legacy claudeYolo → cliYolo

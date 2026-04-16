@@ -17,7 +17,7 @@ import { shouldInjectShellIntegration } from "../lib/shell-integration";
 import { supportsSessionResume } from "../lib/session-resume";
 import { createFilePathLinkProvider } from "../lib/file-link-provider";
 import { readSessionContext, type ContextInfo } from "../lib/context-parser";
-import { readSessionsIndex, resolveSessionName } from "../lib/sessions-index";
+import { readSessionFirstPrompt, slugify } from "../lib/sessions-index";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toWslPath } from "../lib/terminal-config";
@@ -107,7 +107,9 @@ export default function TerminalPane({
   // vs detected from disk (may claim old/wrong session). Untrusted sessions don't show names.
   const [sessionTrusted, setSessionTrusted] = useState(!!sessionResumeId);
 
-  // Register persisted session in per-project registry (deferred to avoid setState during render)
+  // Register persisted session in per-project registry AND kick off auto-naming
+  // from the session's first user prompt. Retries every 5s until a name is set
+  // or the session is renamed.
   const registeredRef = useRef<string | null>(null);
   useEffect(() => {
     if (sessionResumeId && registeredRef.current !== sessionResumeId) {
@@ -120,6 +122,50 @@ export default function TerminalPane({
         isRenamed: false,
       });
     }
+    if (!sessionResumeId || !supportsSessionResume(terminalType)) return;
+    const sid = sessionResumeId;
+    const wd = workingDir;
+    let cancelled = false;
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+
+    const tryFetch = async (): Promise<boolean> => {
+      const store = useAppStore.getState();
+      const key = wd.replace(/\\/g, "/");
+      const existing = (store.projectSessions[key] ?? []).find((s) => s.id === sid);
+      if (existing?.isRenamed) return true;
+      if (existing?.name) return true;
+      const effectiveBackend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
+      // WSL backend needs a Unix path — convert UNC/Windows paths to /home/... form.
+      const pathForBackend = effectiveBackend === "wsl" ? toWslPath(wd) : wd;
+      try {
+        const prompt = await readSessionFirstPrompt(pathForBackend, effectiveBackend, sid);
+        if (prompt) {
+          const slug = slugify(prompt);
+          if (slug) {
+            store.updateProjectSessionAutoName(wd, sid, slug);
+            return true;
+          }
+        }
+      } catch { /* silent */ }
+      return false;
+    };
+
+    const start = setTimeout(async () => {
+      if (cancelled) return;
+      if (await tryFetch()) return;
+      intervalId = setInterval(async () => {
+        if (cancelled) return;
+        if (await tryFetch()) {
+          if (intervalId) { clearInterval(intervalId); intervalId = undefined; }
+        }
+      }, 5000);
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(start);
+      if (intervalId) clearInterval(intervalId);
+    };
   }, [sessionResumeId, workingDir, terminalType]);
   const serverName = useAppStore((s) => {
     if (!serverId) return undefined;
@@ -197,6 +243,9 @@ export default function TerminalPane({
   const sessionResumeIdPropRef = useRef(sessionResumeId);
   sessionResumeIdPropRef.current = sessionResumeId;
   const sessionLookupDone = useRef(false);
+  // Records when the PTY first produced output — used to bound session detection
+  // so brand-new panes can't be assigned to pre-existing sessions in the project.
+  const ptySpawnTimeRef = useRef<number>(0);
   // Tracks whether we're waiting for PTY data after a restart (hides composer until loaded)
   const awaitingRestartDataRef = useRef(false);
 
@@ -256,6 +305,10 @@ export default function TerminalPane({
     // Skip if this pane already has a session ID (restored from persist).
     if (!sessionLookupDone.current && supportsSessionResume(terminalTypeRef.current) && !sessionResumeIdPropRef.current) {
       sessionLookupDone.current = true;
+      // Capture when the PTY started producing data. Any Claude session file
+      // with startedAt < this value belongs to a DIFFERENT pane/instance.
+      // Subtract 2s for clock skew + early sidecar write.
+      ptySpawnTimeRef.current = Date.now() - 2000;
 
       // Track IDs that failed atomic claim (another pane claimed between invoke and claim).
       // Added to excludeIds on retries so the backend returns different results.
@@ -267,6 +320,47 @@ export default function TerminalPane({
           const type = terminalTypeRef.current;
           const excludeIds = [...claimedSessionIds, ...skippedIds];
           let id: string | null = null;
+
+          // For Claude, prefer precise detection via ~/.claude/sessions/*.json
+          // (pid sidecars with cwd + startedAt). Only returns sessions started
+          // AFTER this pane spawned. Falls back to mtime-based detection below.
+          if (type === "claude") {
+            try {
+              const minStartedAt = ptySpawnTimeRef.current;
+              if (backend === "native") {
+                const cwd = workingDirRef.current;
+                if (cwd) {
+                  id = await invoke<string | null>("get_claude_session_id_by_spawn_native", { projectPath: cwd, minStartedAtMs: minStartedAt, excludeIds });
+                }
+              } else if (backend === "windows") {
+                const cwd = workingDirRef.current;
+                if (cwd) {
+                  id = await invoke<string | null>("get_claude_session_id_by_spawn_windows", { projectPath: cwd, minStartedAtMs: minStartedAt, excludeIds });
+                }
+              } else {
+                const wslCwd = toWslPath(workingDirRef.current);
+                if (wslCwd) {
+                  id = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath: wslCwd, minStartedAtMs: minStartedAt, excludeIds });
+                }
+              }
+              if (id) {
+                console.log(`[SessionResume] precise (spawn-based) match: ${id.slice(0, 8)}`);
+              }
+            } catch (e) {
+              console.warn("[SessionResume] spawn-based lookup failed, falling back:", e);
+            }
+            if (id) {
+              if (!claimSessionId(id)) {
+                skippedIds.add(id);
+                id = null;
+              } else {
+                setSessionTrusted(true);
+                sessionResumeIdPropRef.current = id;
+                onSessionResumeIdRef.current?.(id);
+                return true;
+              }
+            }
+          }
 
           // For Claude, only claim sessions modified within the last 2 minutes.
           // This prevents new panes from picking up old sessions (whose cost
@@ -1309,28 +1403,44 @@ export default function TerminalPane({
         // Claude: CUSTOM_TITLE only appears from /rename → authoritative (always overrides).
         // Codex/Gemini: auto-generated titles → soft update (won't override EzyDev renames).
         // Late session detection: if we still don't have a sessionResumeId,
-        // try disk lookup again without the 2-minute recency filter.
+        // try precise (spawn-based) lookup first, then mtime-based as fallback.
         if (!sessionResumeId && supportsSessionResume(terminalType)) {
           try {
             const type = terminalType;
             const excludeIds = [...claimedSessionIds];
             let id: string | null = null;
-            if (backend === "native") {
-              const cwd = workingDir;
-              if (type === "claude") id = await invoke<string | null>("get_claude_session_id_native", { projectPath: cwd, excludeIds });
-              else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
-              else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_native", { projectPath: cwd, excludeIds });
-            } else if (backend === "windows") {
-              const cwd = workingDir;
-              if (type === "claude") id = await invoke<string | null>("get_claude_session_id_windows", { projectPath: cwd, excludeIds });
-              else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds });
-              else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: cwd, excludeIds });
-            } else {
-              const wslCwd = toWslPath(workingDir);
-              if (wslCwd) {
-                if (type === "claude") id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
-                else if (type === "codex") id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
-                else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+            // Precise spawn-based lookup for Claude (only session files started
+            // after this pane's PTY spawned, in this exact cwd).
+            if (type === "claude" && ptySpawnTimeRef.current > 0) {
+              const minStartedAt = ptySpawnTimeRef.current;
+              if (backend === "native") {
+                if (workingDir) id = await invoke<string | null>("get_claude_session_id_by_spawn_native", { projectPath: workingDir, minStartedAtMs: minStartedAt, excludeIds });
+              } else if (backend === "windows") {
+                if (workingDir) id = await invoke<string | null>("get_claude_session_id_by_spawn_windows", { projectPath: workingDir, minStartedAtMs: minStartedAt, excludeIds });
+              } else {
+                const wslCwd = toWslPath(workingDir);
+                if (wslCwd) id = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath: wslCwd, minStartedAtMs: minStartedAt, excludeIds });
+              }
+            }
+            // Fallback: mtime-based for Codex/Gemini, or Claude if precise lookup returned nothing.
+            if (!id) {
+              if (backend === "native") {
+                const cwd = workingDir;
+                if (type === "claude") id = await invoke<string | null>("get_claude_session_id_native", { projectPath: cwd, excludeIds });
+                else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
+                else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_native", { projectPath: cwd, excludeIds });
+              } else if (backend === "windows") {
+                const cwd = workingDir;
+                if (type === "claude") id = await invoke<string | null>("get_claude_session_id_windows", { projectPath: cwd, excludeIds });
+                else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds });
+                else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: cwd, excludeIds });
+              } else {
+                const wslCwd = toWslPath(workingDir);
+                if (wslCwd) {
+                  if (type === "claude") id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
+                  else if (type === "codex") id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
+                  else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+                }
               }
             }
             if (id && claimSessionId(id)) {
@@ -1368,52 +1478,50 @@ export default function TerminalPane({
               // Codex/Gemini auto-titles — only update if user hasn't renamed in EzyDev
               store.updateProjectSessionAutoName(workingDir, sessionResumeId, autoName);
             }
-          } else if (existing && !existing.name && !existing.isRenamed) {
-            // No name from CLI — try sessions-index for a firstPrompt slug
-            const effectiveBackend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
-            readSessionsIndex(workingDir, effectiveBackend).then((entries) => {
-              const entry = entries.find((e) => e.sessionId === sessionResumeId);
-              if (entry) {
-                const slugName = resolveSessionName(entry);
-                if (slugName && slugName !== sessionResumeId.slice(0, 8)) {
-                  store.updateProjectSessionAutoName(workingDir, sessionResumeId, slugName);
-                }
-              }
-            });
           }
         }
 
         // Session drift detection: every 6th poll (~30s), check if the CLI
-        // switched sessions (e.g. via /resume). If the latest session for
-        // this project is different from our tracked one, switch to it.
+        // switched sessions via /resume. For Claude, only consider session
+        // files started AFTER this pane's PTY spawn — prevents stealing
+        // another pane's session.
         pollCount++;
         if (sessionResumeId && supportsSessionResume(terminalType) && pollCount % 6 === 0) {
           try {
             const type = terminalType;
-            // Don't exclude the current session — we want to see if a NEWER one exists
             const excludeIds = [...claimedSessionIds].filter((id) => id !== sessionResumeId);
             let newId: string | null = null;
-            if (backend === "native") {
-              const cwd = workingDir;
-              if (type === "claude") newId = await invoke<string | null>("get_claude_session_id_native", { projectPath: cwd, excludeIds });
-              else if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
-              else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_native", { projectPath: cwd, excludeIds });
-            } else if (backend === "windows") {
-              const cwd = workingDir;
-              if (type === "claude") newId = await invoke<string | null>("get_claude_session_id_windows", { projectPath: cwd, excludeIds });
-              else if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds });
-              else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: cwd, excludeIds });
+            if (type === "claude" && ptySpawnTimeRef.current > 0) {
+              // Precise spawn-based drift check
+              const minStartedAt = ptySpawnTimeRef.current;
+              if (backend === "native") {
+                if (workingDir) newId = await invoke<string | null>("get_claude_session_id_by_spawn_native", { projectPath: workingDir, minStartedAtMs: minStartedAt, excludeIds });
+              } else if (backend === "windows") {
+                if (workingDir) newId = await invoke<string | null>("get_claude_session_id_by_spawn_windows", { projectPath: workingDir, minStartedAtMs: minStartedAt, excludeIds });
+              } else {
+                const wslCwd = toWslPath(workingDir);
+                if (wslCwd) newId = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath: wslCwd, minStartedAtMs: minStartedAt, excludeIds });
+              }
             } else {
-              const wslCwd = toWslPath(workingDir);
-              if (wslCwd) {
-                if (type === "claude") newId = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
-                else if (type === "codex") newId = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
-                else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+              // Codex/Gemini keep the mtime-based approach for drift
+              if (backend === "native") {
+                const cwd = workingDir;
+                if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
+                else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_native", { projectPath: cwd, excludeIds });
+              } else if (backend === "windows") {
+                const cwd = workingDir;
+                if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds });
+                else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: cwd, excludeIds });
+              } else {
+                const wslCwd = toWslPath(workingDir);
+                if (wslCwd) {
+                  if (type === "codex") newId = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
+                  else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+                }
               }
             }
             if (newId && newId !== sessionResumeId && claimSessionId(newId)) {
               console.log(`[SessionResume] drift detected: ${sessionResumeId.slice(0, 8)} → ${newId.slice(0, 8)}`);
-              // Release old claim so other panes can use it
               claimedSessionIds.delete(sessionResumeId);
               setSessionTrusted(true);
               sessionResumeIdPropRef.current = newId;
@@ -1443,7 +1551,16 @@ export default function TerminalPane({
 
   // Composer settings — declared early because isActive effect references them.
   const composerAlwaysVisible = useAppStore((s) => s.promptComposerEnabled && s.promptComposerAlwaysVisible);
+  const composerGlobalEnabled = useAppStore((s) => s.promptComposerEnabled);
   const composerDismissedRef = useRef(false);
+
+  // Close any open composer immediately when the global "Enable EzyComposer"
+  // setting is turned off (otherwise stale composers linger until per-pane Ctrl+I).
+  useEffect(() => {
+    if (!composerGlobalEnabled && composerOpen) {
+      setComposerOpen(false);
+    }
+  }, [composerGlobalEnabled, composerOpen]);
 
   // Focus the active pane — also removes the DOM focus blocker if it was
   // installed by the "open in background" feature, and opens the deferred

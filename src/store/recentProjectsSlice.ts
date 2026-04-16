@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, ComposerExpansion, PaneLayout } from "../types";
+import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, ComposerExpansion, PaneLayout, Tab } from "../types";
 import { getDefaultBackend } from "../lib/platform";
 
 export interface RecentProjectTemplate {
@@ -78,6 +78,8 @@ export const DEFAULT_CLI_FONT_SIZE = 15;
 
 export interface RecentProjectsSlice {
   recentProjects: RecentProject[];
+  /** Path of last-focused project tab — survives when restoreLastSession is off so we know where to refocus. */
+  lastActiveProjectPath: string;
   alwaysShowTemplatePicker: boolean;
   restoreLastSession: boolean;
   autoInsertClipboardImage: boolean;
@@ -153,6 +155,9 @@ export interface RecentProjectsSlice {
   setShadowAiCli: (value: ShadowAiCli) => void;
   updateProjectTemplate: (path: string, template: RecentProjectTemplate) => void;
   updateProjectLayout: (path: string, layout: PaneLayout) => void;
+  /** Save every open project tab's layout to its recentProjects.lastLayout entry. Called on app close. */
+  flushTabLayoutsToRecent: (tabs: Tab[]) => void;
+  setLastActiveProjectPath: (path: string) => void;
   toggleProjectQuickOpen: (path: string) => void;
 }
 
@@ -163,8 +168,9 @@ export const createRecentProjectsSlice: StateCreator<
   RecentProjectsSlice
 > = (set) => ({
   recentProjects: [],
+  lastActiveProjectPath: "",
   alwaysShowTemplatePicker: false,
-  restoreLastSession: false,
+  restoreLastSession: true,
   autoInsertClipboardImage: false,
   cliFontSizes: {},
   cliYolo: {},
@@ -185,7 +191,7 @@ export const createRecentProjectsSlice: StateCreator<
   showTabPath: false,
   setShowTabPath: (value) => set({ showTabPath: value }),
   openPanesInBackground: false,
-  wideGridLayout: false,
+  wideGridLayout: true,
   autoMinimizeGameOnAiDone: false,
   showMiniGamesButton: false,
   onboardingCompleted: false,
@@ -434,6 +440,29 @@ export const createRecentProjectsSlice: StateCreator<
           : p
       ),
     }));
+  },
+
+  /** Persist every open project tab's layout tree onto its recentProjects.lastLayout.
+   *  Single atomic set() to guarantee synchronous localStorage write via Zustand persist. */
+  flushTabLayoutsToRecent: (tabs) => {
+    const latestByPath = new Map<string, PaneLayout>();
+    for (const tab of tabs) {
+      if (tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) continue;
+      if (!tab.workingDir) continue;
+      // Later tabs for the same project win — matches "last-used" intent
+      latestByPath.set(normalizePath(tab.workingDir), tab.layout);
+    }
+    if (latestByPath.size === 0) return;
+    set((state) => ({
+      recentProjects: state.recentProjects.map((p) => {
+        const layout = latestByPath.get(normalizePath(p.path));
+        return layout ? { ...p, lastLayout: layout } : p;
+      }),
+    }));
+  },
+
+  setLastActiveProjectPath: (path) => {
+    set({ lastActiveProjectPath: path });
   },
 
   toggleProjectQuickOpen: (path) => {

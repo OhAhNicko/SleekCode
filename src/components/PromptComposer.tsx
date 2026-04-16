@@ -150,6 +150,16 @@ export default function PromptComposer({
   const [hidden, setHidden] = useState(false);
   const hiddenRef = useRef(false);
   const resizingUntilRef = useRef(0); // timestamp until which auto-hide is suppressed (resize transition)
+  // Silent by default. Enable with `window.__ezyComposerDebug = true` in DevTools
+  // to trace hide/show transitions and scanner behavior.
+  const debugLog = (msg: string, extra?: Record<string, unknown>) => {
+    if (typeof window === "undefined" || !(window as any).__ezyComposerDebug) return;
+    // eslint-disable-next-line no-console
+    console.debug(`[EzyComposer ${terminalId}] ${msg}`, extra ?? {});
+  };
+  const debugTransition = (next: boolean, path: string, extra?: Record<string, unknown>) => {
+    debugLog(`${next ? "HIDE" : "SHOW"} via ${path}`, extra);
+  };
   const notAtBottomSinceRef = useRef(0); // hysteresis: timestamp when isAtBottom first failed
   const showTimeRef = useRef(0); // timestamp when composer last became visible
   const didStealText = didStealRef;
@@ -268,19 +278,23 @@ export default function PromptComposer({
     const buf = terminal.buffer.active;
     const vpEnd = buf.viewportY + terminal.rows - 1;
 
-    // Tier 0: Selection marker detection — ❯/›/» at the prompt position means
-    // this is a CLI selection list, not a real prompt. All supported CLIs
-    // (Claude, Codex, Gemini) use > for their actual prompt. Scrollable lists
-    // like /resume fill the entire viewport and push hint text off-screen,
-    // so hint-based detection alone can't catch them.
+    // Tier 0: Selection marker detection — an INDENTED ❯/›/» at the prompt
+    // position means this is a CLI selection list (visually aligned under a
+    // question). A column-0 ❯ is NOT a selection marker — newer Claude Code
+    // uses ❯ as its idle input prompt glyph, so flagging it would permanently
+    // hide the composer. Numbered selection lists like /resume are already
+    // filtered out in Pass 1 by the `/^\d+[.)]/` digit guard.
     if (seenPass1Ref.current) {
       const line = buf.getLine(promptLineIdx);
       if (line) {
         const raw = line.translateToString(false);
         const firstCharCol = raw.search(/\S/);
-        if (firstCharCol >= 0) {
+        if (firstCharCol > 0) {
           const ch = raw[firstCharCol];
-          if (ch === "❯" || ch === "›" || ch === "»") return true;
+          if (ch === "❯" || ch === "›" || ch === "»") {
+            debugLog("interactive:tier0 indented-selection-marker", { line: promptLineIdx, firstChar: ch });
+            return true;
+          }
         }
       }
     }
@@ -293,7 +307,11 @@ export default function PromptComposer({
       const line = buf.getLine(i);
       if (!line) continue;
       const text = line.translateToString().toLowerCase();
-      if (hints.some((h) => text.includes(h))) return true;
+      const hit = hints.find((h) => text.includes(h));
+      if (hit) {
+        debugLog("interactive:tier1 hint near prompt", { line: i, hint: hit });
+        return true;
+      }
     }
 
     // Tier 2: Beyond 4 lines to viewport bottom, require 2+ distinct hints.
@@ -308,7 +326,10 @@ export default function PromptComposer({
       for (const h of hints) {
         if (text.includes(h)) matched.add(h);
       }
-      if (matched.size >= 2) return true;
+      if (matched.size >= 2) {
+        debugLog("interactive:tier2 ≥2 hints below", { matches: Array.from(matched) });
+        return true;
+      }
     }
     return false;
   }
@@ -341,18 +362,22 @@ export default function PromptComposer({
     const vpEnd = vpStart + terminal.rows - 1;
 
     // Pass 1: prompt-like characters (>, ❯, ›, »)
+    // Also matches prompts inside a box border ("│ > text │" — Claude/Codex/Gemini idle UI).
     for (let i = vpEnd; i >= vpStart; i--) {
       const line = buf.getLine(i);
       if (!line) continue;
       const text = line.translateToString().trim();
-      const m = text.match(/^([>❯›»])\s?(.*)/);
+      const m = text.match(/^(?:│\s+)?([>❯›»])\s?(.*)/);
       if (m) {
-        // Skip indented prompt chars (selection markers in interactive UI)
+        // Skip indented prompt chars (selection markers in interactive UI),
+        // but allow prompts sitting just inside a box border ("│ > ").
         const rawText = line.translateToString(false);
         const promptCol = rawText.search(/[>❯›»]/);
-        if (promptCol > 1) continue;
+        const prefix = rawText.slice(0, promptCol);
+        const isBorderBoxPrompt = /^│\s*$/.test(prefix);
+        if (promptCol > 1 && !isBorderBoxPrompt) continue;
         // Skip numbered selection items (e.g., "> 3. Option text")
-        const after = (m[2] ?? "").trim();
+        const after = (m[2] ?? "").replace(/│\s*$/, "").trim();
         if (/^\d+[.)]/.test(after)) continue;
         // Skip if > is far from the bottom of viewport content — it's an old prompt,
         // not the current input prompt (which is always near the bottom)
@@ -364,7 +389,8 @@ export default function PromptComposer({
         if (lastContentLine - i > 6) continue;
 
         const row = i - vpStart;
-        // Build existing from non-dim cells only (excludes CLI ghost suggestions)
+        // Build existing from non-dim cells only (excludes CLI ghost suggestions).
+        // Stop at closing box border "│" so we don't capture it as typed text.
         let existing = "";
         let contentCol = 0;
         for (let c = 0; c < terminal.cols; c++) {
@@ -383,6 +409,7 @@ export default function PromptComposer({
           if (!cell) break;
           const ch = cell.getChars();
           if (!ch) continue;
+          if (ch === "│") break;
           if (isCellDim(cell)) break;
           existing += ch;
         }
@@ -571,7 +598,7 @@ export default function PromptComposer({
         } else {
           // Not at bottom, prompt not visible — user scrolled away
           if (!hiddenRef.current && promptLineIdxRef.current >= 0) {
-
+            debugTransition(true, "background:scrolled-away");
             hiddenRef.current = true;
             setHidden(true);
           }
@@ -606,7 +633,9 @@ export default function PromptComposer({
           isInteractiveMode(result.promptLineIdx) ||
           (result.promptPass !== 1 && seenPass1Ref.current)
         )) {
-
+          debugTransition(true, "active:case1:interactive-or-pass2/3", {
+            promptPass: result.promptPass, seenPass1: seenPass1Ref.current, interactive: isInteractiveMode(result.promptLineIdx),
+          });
           setHidden(true);
           hiddenRef.current = true;
           textareaRef.current?.blur();
@@ -649,7 +678,7 @@ export default function PromptComposer({
         notAtBottomSinceRef.current = 0;
         const storedLine = buf.getLine(promptIdx);
         const storedText = storedLine?.translateToString().trim() ?? "";
-        const stillLooksLikePrompt = /^[>❯›»]/.test(storedText);
+        const stillLooksLikePrompt = /^(?:│\s+)?[>❯›»]/.test(storedText);
 
         if (stillLooksLikePrompt) {
           const result = offsetForLine(promptIdx);
@@ -674,7 +703,7 @@ export default function PromptComposer({
             hiddenRef.current = false;
           }
         } else if (!hiddenRef.current) {
-
+          debugTransition(true, "active:case2:stale-prompt-and-no-fresh");
           hiddenRef.current = true;
           setHidden(true);
           textareaRef.current?.blur();
@@ -684,7 +713,7 @@ export default function PromptComposer({
 
       // Case 3: Prompt scrolled out of view — hide.
       if (!hiddenRef.current) {
-
+        debugTransition(true, "active:case3:scrolled-out", { isAtBottom, isPromptVisible });
         hiddenRef.current = true;
         setHidden(true);
         textareaRef.current?.blur();
@@ -801,12 +830,14 @@ export default function PromptComposer({
           if (isInteractiveMode(result.promptLineIdx)) {
             // Safety net: hide if onRender missed the interactive transition
             if (!hiddenRef.current) {
+              debugTransition(true, "periodic:interactive");
               hiddenRef.current = true;
               setHidden(true);
               textareaRef.current?.blur();
               if (isActiveRef.current) terminal.focus();
             }
           } else if (hiddenRef.current) {
+            debugTransition(false, "periodic:recover");
             hiddenRef.current = false;
             setHidden(false);
           }

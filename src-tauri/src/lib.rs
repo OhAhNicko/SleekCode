@@ -1303,6 +1303,451 @@ fi
     }
 }
 
+// ========================================================================
+// GitHub CLI integration (gh)
+// ========================================================================
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GhStatus {
+    installed: bool,
+    authed: bool,
+    user: Option<String>,
+    /// "wsl" | "windows" | "macos" | "linux" — determines install guidance.
+    platform: String,
+}
+
+/// Run `gh <args>` in `directory`, WSL-routing UNC paths (mirrors `run_git`).
+fn run_gh(directory: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    if let Some((distro, linux_path)) = parse_wsl_path(directory) {
+        let quoted_args: Vec<String> = args
+            .iter()
+            .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
+            .collect();
+        let script = format!("cd '{}' && gh {}", linux_path, quoted_args.join(" "));
+
+        let child = wsl_command()
+            .args(["-d", &distro, "--", "bash", "-c", &script])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to run gh via wsl: {}", e))?;
+
+        child
+            .wait_with_output()
+            .map_err(|e| format!("Failed to wait for wsl gh: {}", e))
+    } else {
+        Command::new("gh")
+            .args(args)
+            .current_dir(directory)
+            .output()
+            .map_err(|e| format!("Failed to run gh: {}", e))
+    }
+}
+
+fn detect_repo_platform(directory: &str) -> String {
+    if parse_wsl_path(directory).is_some() {
+        "wsl".to_string()
+    } else if cfg!(target_os = "windows") {
+        "windows".to_string()
+    } else if cfg!(target_os = "macos") {
+        "macos".to_string()
+    } else {
+        "linux".to_string()
+    }
+}
+
+#[tauri::command]
+async fn gh_status(directory: String) -> Result<GhStatus, String> {
+    let platform = detect_repo_platform(&directory);
+
+    // `gh --version` doesn't need a repo — but we still route through the
+    // directory so a WSL project probes gh-in-WSL, not gh-on-Windows.
+    let installed = match run_gh(&directory, &["--version"]) {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    };
+
+    if !installed {
+        return Ok(GhStatus {
+            installed: false,
+            authed: false,
+            user: None,
+            platform,
+        });
+    }
+
+    let auth_out = run_gh(&directory, &["auth", "status"])?;
+    let authed = auth_out.status.success();
+
+    // Combined stdout+stderr: gh writes auth status to stderr by design.
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&auth_out.stdout),
+        String::from_utf8_lossy(&auth_out.stderr)
+    );
+
+    // Username lives on a line like "  ✓ Logged in to github.com account OhAhNicko (keyring)"
+    let user = combined.lines().find_map(|line| {
+        if let Some(tail) = line.split_once("account ").map(|(_, t)| t) {
+            tail.split_whitespace().next().map(|s| s.to_string())
+        } else if let Some(tail) = line.split_once(" as ").map(|(_, t)| t) {
+            tail.split_whitespace()
+                .next()
+                .map(|s| s.trim_end_matches([',', '(', ')']).to_string())
+        } else {
+            None
+        }
+    });
+
+    Ok(GhStatus {
+        installed,
+        authed,
+        user,
+        platform,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GhCreateRepoResult {
+    url: String,
+    output: String,
+}
+
+#[tauri::command]
+async fn gh_create_repo(
+    directory: String,
+    name: String,
+    visibility: String,
+    description: Option<String>,
+    push: bool,
+) -> Result<GhCreateRepoResult, String> {
+    let vis_flag = match visibility.as_str() {
+        "public" => "--public",
+        "private" => "--private",
+        "internal" => "--internal",
+        _ => return Err(format!("Invalid visibility: {}", visibility)),
+    };
+
+    // gh repo create supports `<owner>/<name>` or just `<name>` (uses default owner).
+    // `--source=.` + `--remote=origin` adds origin in the current directory;
+    // `--push` pushes HEAD afterwards.
+    let mut args: Vec<String> = vec![
+        "repo".into(),
+        "create".into(),
+        name.clone(),
+        vis_flag.into(),
+        "--source=.".into(),
+        "--remote=origin".into(),
+    ];
+    if push {
+        args.push("--push".into());
+    }
+    let desc_owned = description.unwrap_or_default();
+    if !desc_owned.trim().is_empty() {
+        args.push("--description".into());
+        args.push(desc_owned);
+    }
+
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = run_gh(&directory, &arg_refs)?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    if !output.status.success() {
+        return Err(combined.trim().to_string());
+    }
+
+    // gh prints the repo URL in the output.
+    let url = combined
+        .split_whitespace()
+        .find(|w| w.starts_with("https://github.com/"))
+        .map(|s| s.trim_end_matches(['.', ',']).to_string())
+        .unwrap_or_default();
+
+    Ok(GhCreateRepoResult {
+        url,
+        output: combined.trim().to_string(),
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteInfo {
+    url: String,
+    owner: String,
+    repo: String,
+}
+
+#[tauri::command]
+async fn git_remote_info(directory: String) -> Result<RemoteInfo, String> {
+    let out = run_git(&directory, &["remote", "get-url", "origin"])?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let without_git = url.trim_end_matches(".git");
+
+    let (owner, repo) = if let Some((_, tail)) = without_git.split_once("github.com") {
+        let tail = tail.trim_start_matches(['/', ':']);
+        match tail.split_once('/') {
+            Some((o, r)) => (o.to_string(), r.to_string()),
+            None => (String::new(), String::new()),
+        }
+    } else {
+        (String::new(), String::new())
+    };
+
+    Ok(RemoteInfo {
+        url: if owner.is_empty() || repo.is_empty() {
+            url.clone()
+        } else {
+            format!("https://github.com/{}/{}", owner, repo)
+        },
+        owner,
+        repo,
+    })
+}
+
+// ========================================================================
+// Release bump (mirrors the /release skill: bump 3 files → commit → tag → push)
+// ========================================================================
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReleaseStep {
+    step: String,
+    ok: bool,
+    message: String,
+}
+
+fn read_text(path: &std::path::Path) -> Result<String, String> {
+    std::fs::read_to_string(path).map_err(|e| format!("read {}: {}", path.display(), e))
+}
+
+fn write_text(path: &std::path::Path, contents: &str) -> Result<(), String> {
+    std::fs::write(path, contents).map_err(|e| format!("write {}: {}", path.display(), e))
+}
+
+/// Replace the first `"version": "<old>"` value with `new_version`, preserving
+/// surrounding formatting. Works for both package.json and tauri.conf.json.
+fn bump_json_version(contents: &str, new_version: &str) -> Result<String, String> {
+    let key = "\"version\"";
+    let key_at = contents
+        .find(key)
+        .ok_or("\"version\" field not found")?;
+    let colon_rel = contents[key_at..]
+        .find(':')
+        .ok_or("malformed: no `:` after \"version\"")?;
+    let after_colon = key_at + colon_rel + 1;
+    let q1_rel = contents[after_colon..]
+        .find('"')
+        .ok_or("malformed: no opening quote on version value")?;
+    let val_start = after_colon + q1_rel + 1;
+    let q2_rel = contents[val_start..]
+        .find('"')
+        .ok_or("malformed: no closing quote on version value")?;
+    let val_end = val_start + q2_rel;
+
+    let mut out = String::with_capacity(contents.len());
+    out.push_str(&contents[..val_start]);
+    out.push_str(new_version);
+    out.push_str(&contents[val_end..]);
+    Ok(out)
+}
+
+/// Replace the first `version = "..."` under `[package]` in a Cargo.toml.
+fn bump_cargo_version(contents: &str, new_version: &str) -> Result<String, String> {
+    let pkg_at = contents
+        .find("[package]")
+        .ok_or("[package] section not found")?;
+    let after_header = match contents[pkg_at..].find('\n') {
+        Some(n) => pkg_at + n + 1,
+        None => return Err("[package] section is empty".to_string()),
+    };
+
+    let mut cursor = after_header;
+    let rest = &contents[after_header..];
+    for line in rest.lines() {
+        let line_len = line.len() + 1;
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            return Err("no `version = \"...\"` line under [package]".to_string());
+        }
+        if trimmed.starts_with("version") {
+            // Find the quoted value on this line.
+            let q1_rel = line
+                .find('"')
+                .ok_or("Cargo.toml version missing opening quote")?;
+            let val_start_in_line = q1_rel + 1;
+            let q2_rel = line[val_start_in_line..]
+                .find('"')
+                .ok_or("Cargo.toml version missing closing quote")?;
+
+            let val_start = cursor + val_start_in_line;
+            let val_end = val_start + q2_rel;
+
+            let mut out = String::with_capacity(contents.len());
+            out.push_str(&contents[..val_start]);
+            out.push_str(new_version);
+            out.push_str(&contents[val_end..]);
+            return Ok(out);
+        }
+        cursor += line_len;
+    }
+    Err("no `version = \"...\"` line under [package]".to_string())
+}
+
+#[tauri::command]
+async fn release_bump(
+    directory: String,
+    new_version: String,
+) -> Result<Vec<ReleaseStep>, String> {
+    let mut steps: Vec<ReleaseStep> = Vec::new();
+    let dir = std::path::Path::new(&directory);
+
+    // --- 1. package.json
+    let pkg_json = dir.join("package.json");
+    match read_text(&pkg_json)
+        .and_then(|c| bump_json_version(&c, &new_version))
+        .and_then(|c| write_text(&pkg_json, &c))
+    {
+        Ok(_) => steps.push(ReleaseStep {
+            step: "package.json".into(),
+            ok: true,
+            message: format!("version = {}", new_version),
+        }),
+        Err(e) => {
+            steps.push(ReleaseStep {
+                step: "package.json".into(),
+                ok: false,
+                message: e,
+            });
+            return Ok(steps);
+        }
+    }
+
+    // --- 2. src-tauri/Cargo.toml
+    let cargo = dir.join("src-tauri").join("Cargo.toml");
+    match read_text(&cargo)
+        .and_then(|c| bump_cargo_version(&c, &new_version))
+        .and_then(|c| write_text(&cargo, &c))
+    {
+        Ok(_) => steps.push(ReleaseStep {
+            step: "src-tauri/Cargo.toml".into(),
+            ok: true,
+            message: format!("version = {}", new_version),
+        }),
+        Err(e) => {
+            steps.push(ReleaseStep {
+                step: "src-tauri/Cargo.toml".into(),
+                ok: false,
+                message: e,
+            });
+            return Ok(steps);
+        }
+    }
+
+    // --- 3. src-tauri/tauri.conf.json
+    let conf = dir.join("src-tauri").join("tauri.conf.json");
+    match read_text(&conf)
+        .and_then(|c| bump_json_version(&c, &new_version))
+        .and_then(|c| write_text(&conf, &c))
+    {
+        Ok(_) => steps.push(ReleaseStep {
+            step: "src-tauri/tauri.conf.json".into(),
+            ok: true,
+            message: format!("version = {}", new_version),
+        }),
+        Err(e) => {
+            steps.push(ReleaseStep {
+                step: "src-tauri/tauri.conf.json".into(),
+                ok: false,
+                message: e,
+            });
+            return Ok(steps);
+        }
+    }
+
+    // --- 4. git add -A
+    let add_out = run_git(&directory, &["add", "-A"])?;
+    if !add_out.status.success() {
+        steps.push(ReleaseStep {
+            step: "git add -A".into(),
+            ok: false,
+            message: String::from_utf8_lossy(&add_out.stderr).trim().to_string(),
+        });
+        return Ok(steps);
+    }
+    steps.push(ReleaseStep {
+        step: "git add -A".into(),
+        ok: true,
+        message: "staged".into(),
+    });
+
+    // --- 5. git commit
+    let commit_msg = format!("chore: bump version to {}", new_version);
+    let commit_out = run_git(&directory, &["commit", "-m", &commit_msg])?;
+    if !commit_out.status.success() {
+        steps.push(ReleaseStep {
+            step: "git commit".into(),
+            ok: false,
+            message: String::from_utf8_lossy(&commit_out.stderr).trim().to_string(),
+        });
+        return Ok(steps);
+    }
+    steps.push(ReleaseStep {
+        step: "git commit".into(),
+        ok: true,
+        message: commit_msg,
+    });
+
+    // --- 6. git tag vX.Y.Z
+    let tag = format!("v{}", new_version);
+    let tag_out = run_git(&directory, &["tag", &tag])?;
+    if !tag_out.status.success() {
+        steps.push(ReleaseStep {
+            step: "git tag".into(),
+            ok: false,
+            message: String::from_utf8_lossy(&tag_out.stderr).trim().to_string(),
+        });
+        return Ok(steps);
+    }
+    steps.push(ReleaseStep {
+        step: "git tag".into(),
+        ok: true,
+        message: tag,
+    });
+
+    // --- 7. git push --follow-tags
+    let push_out = run_git(&directory, &["push", "--follow-tags"])?;
+    let push_msg = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&push_out.stdout).trim(),
+        String::from_utf8_lossy(&push_out.stderr).trim()
+    )
+    .trim()
+    .to_string();
+    if !push_out.status.success() {
+        steps.push(ReleaseStep {
+            step: "git push --follow-tags".into(),
+            ok: false,
+            message: push_msg,
+        });
+        return Ok(steps);
+    }
+    steps.push(ReleaseStep {
+        step: "git push --follow-tags".into(),
+        ok: true,
+        message: push_msg,
+    });
+
+    Ok(steps)
+}
+
 #[derive(Serialize)]
 struct ClipboardImageResult {
     path: String,
@@ -1679,6 +2124,123 @@ async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>, m
     }
 
     Ok(None)
+}
+
+/// Precise Claude session detection: scans ~/.claude/sessions/*.json
+/// (pid-keyed sidecar files) for one that matches the given cwd and
+/// started at/after `min_started_at_ms`. This is unambiguous — Claude CLI
+/// writes one of these files per launch with pid/sessionId/cwd/startedAt.
+#[tauri::command]
+async fn get_claude_session_id_by_spawn(
+    project_path: String,
+    min_started_at_ms: u64,
+    exclude_ids: Vec<String>,
+) -> Result<Option<String>, String> {
+    let script = format!(
+        r#"python3 -c "
+import json, os, sys, glob
+cwd = sys.argv[1]
+min_ms = int(sys.argv[2])
+exclude = set(sys.argv[3].split(',')) if len(sys.argv) > 3 and sys.argv[3] else set()
+best_id = None
+best_started = -1
+for path in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            v = json.load(f)
+    except Exception:
+        continue
+    if v.get('cwd') != cwd: continue
+    started = v.get('startedAt', 0)
+    if not isinstance(started, (int, float)): continue
+    if started < min_ms: continue
+    sid = v.get('sessionId', '')
+    if not sid or sid in exclude: continue
+    if started > best_started:
+        best_started = started
+        best_id = sid
+if best_id: print(best_id)
+" '{cwd}' '{min_ms}' '{excl}'"#,
+        cwd = project_path.replace('\'', "'\\''"),
+        min_ms = min_started_at_ms,
+        excl = exclude_ids.join(",")
+    );
+
+    let output = wsl_command()
+        .args(["--", "bash", "-lic", &script])
+        .output()
+        .map_err(|e| format!("Failed to query Claude session by spawn: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() { return Ok(None); }
+    Ok(Some(stdout))
+}
+
+/// Native (macOS/Linux) variant of get_claude_session_id_by_spawn.
+#[tauri::command]
+async fn get_claude_session_id_by_spawn_native(
+    project_path: String,
+    min_started_at_ms: u64,
+    exclude_ids: Vec<String>,
+) -> Result<Option<String>, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let sessions_dir = std::path::Path::new(&home).join(".claude").join("sessions");
+    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids)
+}
+
+/// Windows variant of get_claude_session_id_by_spawn.
+#[tauri::command]
+async fn get_claude_session_id_by_spawn_windows(
+    project_path: String,
+    min_started_at_ms: u64,
+    exclude_ids: Vec<String>,
+) -> Result<Option<String>, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let sessions_dir = std::path::Path::new(&home).join(".claude").join("sessions");
+    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids)
+}
+
+/// Helper: scan a directory of pid-keyed session sidecars and return the
+/// sessionId of the file with matching cwd, startedAt >= min_started_at_ms,
+/// not in exclude_ids, with the greatest startedAt.
+fn scan_claude_sessions_dir(
+    sessions_dir: &std::path::Path,
+    project_path: &str,
+    min_started_at_ms: u64,
+    exclude_ids: &[String],
+) -> Result<Option<String>, String> {
+    if !sessions_dir.is_dir() {
+        return Ok(None);
+    }
+    let entries = match std::fs::read_dir(sessions_dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(None),
+    };
+    let mut best: Option<(u64, String)> = None;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.extension().map_or(false, |ext| ext == "json") { continue; }
+        let data = match std::fs::read_to_string(&path) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let v: serde_json::Value = match serde_json::from_str(&data) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let cwd = v.get("cwd").and_then(|c| c.as_str()).unwrap_or("");
+        if cwd != project_path { continue; }
+        let started = v.get("startedAt").and_then(|s| s.as_u64()).unwrap_or(0);
+        if started < min_started_at_ms { continue; }
+        let sid = v.get("sessionId").and_then(|s| s.as_str()).unwrap_or("");
+        if sid.is_empty() { continue; }
+        if exclude_ids.iter().any(|ex| ex == sid) { continue; }
+        match &best {
+            Some((b, _)) if *b >= started => {}
+            _ => { best = Some((started, sid.to_string())); }
+        }
+    }
+    Ok(best.map(|(_, id)| id))
 }
 
 /// Find the most recent Codex session ID for a given project.
@@ -2748,7 +3310,7 @@ custom_title=$(tac "$f" 2>/dev/null | grep '"custom-title"' | head -1 | jq -r '.
 if [ -z "$custom_title" ]; then
   for sf in "$HOME/.claude/sessions"/*.json; do
     [ -f "$sf" ] || continue
-    sn=$(jq -r "select(.sessionId == \"$session_id\") | .name // empty" "$sf" 2>/dev/null)
+    sn=$(jq -r "select(.sessionId == \"$SID\") | .name // empty" "$sf" 2>/dev/null)
     if [ -n "$sn" ]; then custom_title="$sn"; break; fi
   done
 fi
@@ -3798,6 +4360,109 @@ print(json.dumps(out))
     Ok(stdout)
 }
 
+/// Read the first user prompt from a session JSONL file (streaming).
+/// Skips sidechain entries. Returns truncated text (max 200 chars) or None.
+fn read_first_user_prompt_from_jsonl(path: &std::path::Path) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines().filter_map(|l| l.ok()) {
+        if !line.contains("\"type\":\"user\"") { continue; }
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) { continue; }
+        if v.get("type").and_then(|t| t.as_str()) != Some("user") { continue; }
+        let content = v.get("message").and_then(|m| m.get("content"))?;
+        let text = if let Some(s) = content.as_str() {
+            s.to_string()
+        } else if let Some(arr) = content.as_array() {
+            arr.iter()
+                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            continue;
+        };
+        if text.trim().is_empty() { continue; }
+        // Skip command invocations and system messages
+        if text.starts_with('/') || text.starts_with("<") || text.starts_with("[Request") { continue; }
+        let truncated: String = text.chars().take(200).collect();
+        return Some(truncated);
+    }
+    None
+}
+
+/// Read first user prompt from a Claude session JSONL (Windows native).
+#[tauri::command]
+async fn read_session_first_prompt_windows(project_path: String, session_id: String) -> Result<String, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let dir = match find_claude_project_dir(&home, &project_path, '/') {
+        Some(d) => d,
+        None => return Ok(String::new()),
+    };
+    let path = dir.join(format!("{}.jsonl", session_id));
+    Ok(read_first_user_prompt_from_jsonl(&path).unwrap_or_default())
+}
+
+/// Read first user prompt from a Claude session JSONL (macOS/Linux native).
+#[tauri::command]
+async fn read_session_first_prompt_native(project_path: String, session_id: String) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let dir = match find_claude_project_dir(&home, &project_path, '/') {
+        Some(d) => d,
+        None => return Ok(String::new()),
+    };
+    let path = dir.join(format!("{}.jsonl", session_id));
+    Ok(read_first_user_prompt_from_jsonl(&path).unwrap_or_default())
+}
+
+/// Read first user prompt from a Claude session JSONL (WSL).
+/// Implemented natively in Rust — accesses WSL's filesystem via \\wsl.localhost UNC.
+/// No bash, no python, no wsl.exe round-trip.
+#[tauri::command]
+async fn read_session_first_prompt(project_path: String, session_id: String, distro: Option<String>) -> Result<String, String> {
+    let encoded = project_path.replace('/', "-");
+    let distro_name = distro.as_deref().unwrap_or("").trim();
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    let mut try_distro = |d: &str, candidates: &mut Vec<std::path::PathBuf>| {
+        if d.is_empty() { return; }
+        for prefix in ["\\\\wsl.localhost", "\\\\wsl$"] {
+            let base = std::path::PathBuf::from(format!("{}\\{}\\home", prefix, d));
+            if base.is_dir() {
+                if let Ok(users) = std::fs::read_dir(&base) {
+                    for u in users.filter_map(|e| e.ok()) {
+                        let p = u.path()
+                            .join(".claude").join("projects").join(&encoded)
+                            .join(format!("{}.jsonl", session_id));
+                        if p.exists() { candidates.push(p); }
+                    }
+                }
+            }
+        }
+    };
+    try_distro(distro_name, &mut candidates);
+    if candidates.is_empty() {
+        for d in ["Ubuntu-24.04", "Ubuntu-22.04", "Ubuntu", "Debian"] {
+            try_distro(d, &mut candidates);
+            if !candidates.is_empty() { break; }
+        }
+    }
+    if candidates.is_empty() {
+        if let Ok(home) = std::env::var("HOME") {
+            let p = std::path::PathBuf::from(&home)
+                .join(".claude").join("projects").join(&encoded).join(format!("{}.jsonl", session_id));
+            if p.exists() { candidates.push(p); }
+        }
+    }
+    let path = match candidates.into_iter().next() {
+        Some(p) => p,
+        None => return Ok(String::new()),
+    };
+    Ok(read_first_user_prompt_from_jsonl(&path).unwrap_or_default())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3807,7 +4472,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, git_remote_info, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

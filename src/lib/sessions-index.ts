@@ -29,10 +29,34 @@ export async function readSessionsIndex(
 }
 
 /**
- * Turn a prompt string into a short kebab-case slug, e.g. "color-change-feed-page".
- * Keeps at most 5 words, lowercased, stripped of non-alphanumeric chars.
+ * Read the first user prompt from a session's JSONL file.
+ * Used as a fallback when sessions-index.json is missing.
+ * Returns empty string if the file doesn't exist or on any error.
  */
-function slugify(text: string): string {
+export async function readSessionFirstPrompt(
+  projectPath: string,
+  backend: TerminalBackend,
+  sessionId: string,
+): Promise<string> {
+  try {
+    if (backend === "native") {
+      return await invoke<string>("read_session_first_prompt_native", { projectPath, sessionId });
+    } else if (backend === "windows") {
+      return await invoke<string>("read_session_first_prompt_windows", { projectPath, sessionId });
+    } else {
+      const distro = getCachedDistro();
+      return await invoke<string>("read_session_first_prompt", { projectPath, sessionId, distro: distro || null });
+    }
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Turn a prompt string into a short kebab-case slug, e.g. "color-change-feed-page".
+ * Keeps at most 4 words, lowercased, stripped of non-alphanumeric chars.
+ */
+export function slugify(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9\s-]/g, "")

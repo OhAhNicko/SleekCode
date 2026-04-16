@@ -6,6 +6,7 @@ import { parseUnifiedDiff, buildHunkPatch } from "../lib/diff-parser";
 import CodeReviewFileList from "./CodeReviewFileList";
 import CodeReviewDiffView from "./CodeReviewDiffView";
 import CommitPopover from "./CommitPopover";
+import ConnectToGitHubModal from "./ConnectToGitHubModal";
 import type {
   ComparisonMode,
   GitFileStatus,
@@ -43,6 +44,8 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
   const [pushing, setPushing] = useState(false);
   const [pushResult, setPushResult] = useState<{ ok: boolean; msg: string; branch?: string; count?: number } | null>(null);
   const [pushError, setPushError] = useState<string | null>(null);
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [connectedToast, setConnectedToast] = useState<string | null>(null);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const commitBtnRef = useRef<HTMLDivElement>(null);
@@ -191,6 +194,19 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
     window.dispatchEvent(new Event("ezydev:git-refresh"));
   }, []);
 
+  const defaultRepoName = (() => {
+    if (!workingDir) return "";
+    const parts = workingDir.replace(/\\/g, "/").split("/").filter(Boolean);
+    return parts[parts.length - 1] || "";
+  })();
+
+  const handleConnected = useCallback((url: string) => {
+    setShowConnectModal(false);
+    setConnectedToast(url || "Connected to GitHub");
+    window.dispatchEvent(new Event("ezydev:git-refresh"));
+    setTimeout(() => setConnectedToast(null), 4500);
+  }, []);
+
   const handleCommitAndPush = useCallback(async () => {
     setShowCommitPopover(false);
     window.dispatchEvent(new Event("ezydev:git-refresh"));
@@ -256,7 +272,7 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
         : `vs ${customBranch}`;
 
   const content = (
-    <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
+    <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)", position: "relative" }}>
       {/* Header */}
       <div
         className="flex items-center gap-2 px-2 shrink-0"
@@ -407,6 +423,25 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
               />
             )}
           </div>
+
+          {/* Connect to GitHub — shown only when current branch has no upstream */}
+          {isGitRepo && aheadBehind && !aheadBehind.hasRemote && (
+            <button
+              onClick={() => setShowConnectModal(true)}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
+              style={{
+                backgroundColor: "#1f2937",
+                color: "#fff",
+                border: "1px solid #1f2937",
+              }}
+              title="Create a GitHub repository and push this project"
+            >
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+              Connect
+            </button>
+          )}
 
           {/* Push button */}
           <div style={{ position: "relative" }}>
@@ -606,6 +641,56 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
           }
         `}</style>
       </div>
+
+      {/* Connect-success toast */}
+      {connectedToast && (
+        <div
+          style={{
+            position: "absolute",
+            top: 36,
+            right: 10,
+            zIndex: 150,
+            padding: "8px 12px",
+            backgroundColor: "var(--ezy-surface-raised)",
+            border: "1px solid var(--ezy-border)",
+            borderRadius: 6,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+            maxWidth: 340,
+          }}
+        >
+          <div className="flex items-center gap-1.5">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+              <path d="M3 8.5L6.5 12L13 4" stroke="#34d399" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span className="text-[11px] font-medium" style={{ color: "#34d399" }}>
+              Connected to GitHub
+            </span>
+          </div>
+          {connectedToast.startsWith("http") && (
+            <div
+              className="text-[10px] mt-1"
+              style={{
+                color: "var(--ezy-text-secondary)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {connectedToast}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Connect modal */}
+      {showConnectModal && (
+        <ConnectToGitHubModal
+          workingDir={workingDir}
+          defaultName={defaultRepoName}
+          onClose={() => setShowConnectModal(false)}
+          onConnected={handleConnected}
+        />
+      )}
 
       {/* Body */}
       <div className="flex-1 min-h-0 flex">
