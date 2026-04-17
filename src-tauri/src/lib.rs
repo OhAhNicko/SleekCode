@@ -1513,7 +1513,9 @@ async fn git_remote_info(directory: String) -> Result<RemoteInfo, String> {
 }
 
 // ========================================================================
-// Release bump (mirrors the /release skill: bump 3 files → commit → tag → push)
+// Release bump (mirrors the /release skill: bump project manifests → commit → tag → push)
+// Works on any project. Detects which manifest files exist; the caller picks which
+// ones to bump.
 // ========================================================================
 
 #[derive(Serialize)]
@@ -1522,6 +1524,17 @@ struct ReleaseStep {
     step: String,
     ok: bool,
     message: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestInfo {
+    /// One of: "package.json", "Cargo.toml", "pyproject.toml", "tauri.conf.json"
+    kind: String,
+    /// Path relative to the project root.
+    rel_path: String,
+    /// Current version string read from the file.
+    version: String,
 }
 
 fn read_text(path: &std::path::Path) -> Result<String, String> {
@@ -1601,78 +1614,179 @@ fn bump_cargo_version(contents: &str, new_version: &str) -> Result<String, Strin
     Err("no `version = \"...\"` line under [package]".to_string())
 }
 
+/// Read current version from package.json / tauri.conf.json.
+fn read_json_version(contents: &str) -> Option<String> {
+    let key = "\"version\"";
+    let key_at = contents.find(key)?;
+    let colon_rel = contents[key_at..].find(':')?;
+    let after_colon = key_at + colon_rel + 1;
+    let q1_rel = contents[after_colon..].find('"')?;
+    let val_start = after_colon + q1_rel + 1;
+    let q2_rel = contents[val_start..].find('"')?;
+    Some(contents[val_start..val_start + q2_rel].to_string())
+}
+
+/// Read current version from a Cargo.toml [package] section.
+fn read_cargo_version(contents: &str) -> Option<String> {
+    let pkg_at = contents.find("[package]")?;
+    let after_header = pkg_at + contents[pkg_at..].find('\n')? + 1;
+    let rest = &contents[after_header..];
+    for line in rest.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            return None;
+        }
+        if trimmed.starts_with("version") {
+            let q1 = line.find('"')?;
+            let q2_rel = line[q1 + 1..].find('"')?;
+            return Some(line[q1 + 1..q1 + 1 + q2_rel].to_string());
+        }
+    }
+    None
+}
+
+/// Locate the `version = "..."` value in pyproject.toml under either
+/// `[project]` or `[tool.poetry]`. Returns (value_start_offset, value_end_offset)
+/// on match.
+fn locate_pyproject_version(contents: &str) -> Option<(usize, usize)> {
+    for header in ["[project]", "[tool.poetry]"] {
+        let Some(h_at) = contents.find(header) else { continue };
+        let after_header = h_at + contents[h_at..].find('\n')? + 1;
+        let mut cursor = after_header;
+        let rest = &contents[after_header..];
+        for line in rest.lines() {
+            let line_len = line.len() + 1;
+            let trimmed = line.trim_start();
+            if trimmed.starts_with('[') {
+                break;
+            }
+            if trimmed.starts_with("version") {
+                let q1 = line.find('"')?;
+                let val_start_in_line = q1 + 1;
+                let q2_rel = line[val_start_in_line..].find('"')?;
+                let val_start = cursor + val_start_in_line;
+                let val_end = val_start + q2_rel;
+                return Some((val_start, val_end));
+            }
+            cursor += line_len;
+        }
+    }
+    None
+}
+
+fn read_pyproject_version(contents: &str) -> Option<String> {
+    let (val_start, val_end) = locate_pyproject_version(contents)?;
+    Some(contents[val_start..val_end].to_string())
+}
+
+/// Replace `version = "..."` under `[project]` or `[tool.poetry]` in pyproject.toml.
+fn bump_pyproject_version(contents: &str, new_version: &str) -> Result<String, String> {
+    let (val_start, val_end) = locate_pyproject_version(contents)
+        .ok_or("no `version = \"...\"` line under [project] or [tool.poetry]")?;
+    let mut out = String::with_capacity(contents.len());
+    out.push_str(&contents[..val_start]);
+    out.push_str(new_version);
+    out.push_str(&contents[val_end..]);
+    Ok(out)
+}
+
+/// Scan the project root for known version-manifest files and return their
+/// current versions. Checks both top-level and common nested locations
+/// (e.g. `src-tauri/Cargo.toml` for Tauri projects).
+#[tauri::command]
+async fn detect_manifests(directory: String) -> Result<Vec<ManifestInfo>, String> {
+    let dir = std::path::Path::new(&directory);
+    // (kind, rel_path) — order determines display order in the UI.
+    let candidates: &[(&str, &str)] = &[
+        ("package.json", "package.json"),
+        ("Cargo.toml", "Cargo.toml"),
+        ("pyproject.toml", "pyproject.toml"),
+        ("tauri.conf.json", "tauri.conf.json"),
+        ("Cargo.toml", "src-tauri/Cargo.toml"),
+        ("tauri.conf.json", "src-tauri/tauri.conf.json"),
+    ];
+    let mut out: Vec<ManifestInfo> = Vec::new();
+    for (kind, rel) in candidates {
+        let path = dir.join(rel);
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(contents) = read_text(&path) else { continue };
+        let version = match *kind {
+            "package.json" | "tauri.conf.json" => read_json_version(&contents),
+            "Cargo.toml" => read_cargo_version(&contents),
+            "pyproject.toml" => read_pyproject_version(&contents),
+            _ => None,
+        };
+        if let Some(v) = version {
+            out.push(ManifestInfo {
+                kind: (*kind).to_string(),
+                rel_path: (*rel).to_string(),
+                version: v,
+            });
+        }
+    }
+    Ok(out)
+}
+
 #[tauri::command]
 async fn release_bump(
     directory: String,
     new_version: String,
+    manifest_paths: Vec<String>,
 ) -> Result<Vec<ReleaseStep>, String> {
     let mut steps: Vec<ReleaseStep> = Vec::new();
     let dir = std::path::Path::new(&directory);
 
-    // --- 1. package.json
-    let pkg_json = dir.join("package.json");
-    match read_text(&pkg_json)
-        .and_then(|c| bump_json_version(&c, &new_version))
-        .and_then(|c| write_text(&pkg_json, &c))
-    {
-        Ok(_) => steps.push(ReleaseStep {
-            step: "package.json".into(),
-            ok: true,
-            message: format!("version = {}", new_version),
-        }),
-        Err(e) => {
+    if manifest_paths.is_empty() {
+        return Err("no manifests selected".into());
+    }
+
+    // --- Bump each selected manifest by file type.
+    for rel in &manifest_paths {
+        // Refuse absolute or ".."-bearing paths — caller must pass paths
+        // relative to `directory`, otherwise an attacker-controlled frontend
+        // could write to arbitrary filesystem locations (PathBuf::join
+        // replaces the base when given an absolute path).
+        let rel_trim = rel.trim_start_matches('/').trim_start_matches('\\');
+        if std::path::Path::new(rel_trim).is_absolute() || rel_trim.contains("..") {
             steps.push(ReleaseStep {
-                step: "package.json".into(),
+                step: rel.clone(),
                 ok: false,
-                message: e,
+                message: "manifest path must be relative and must not contain `..`".into(),
             });
             return Ok(steps);
         }
-    }
-
-    // --- 2. src-tauri/Cargo.toml
-    let cargo = dir.join("src-tauri").join("Cargo.toml");
-    match read_text(&cargo)
-        .and_then(|c| bump_cargo_version(&c, &new_version))
-        .and_then(|c| write_text(&cargo, &c))
-    {
-        Ok(_) => steps.push(ReleaseStep {
-            step: "src-tauri/Cargo.toml".into(),
-            ok: true,
-            message: format!("version = {}", new_version),
-        }),
-        Err(e) => {
-            steps.push(ReleaseStep {
-                step: "src-tauri/Cargo.toml".into(),
-                ok: false,
-                message: e,
-            });
-            return Ok(steps);
+        let path = dir.join(rel_trim);
+        // Derive bumper from the basename so nested paths (src-tauri/Cargo.toml) still work.
+        let fname = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let bump_result: Result<String, String> = read_text(&path).and_then(|c| match fname {
+            "package.json" | "tauri.conf.json" => bump_json_version(&c, &new_version),
+            "Cargo.toml" => bump_cargo_version(&c, &new_version),
+            "pyproject.toml" => bump_pyproject_version(&c, &new_version),
+            other => Err(format!("unsupported manifest: {}", other)),
+        });
+        match bump_result.and_then(|c| write_text(&path, &c)) {
+            Ok(_) => steps.push(ReleaseStep {
+                step: rel_trim.to_string(),
+                ok: true,
+                message: format!("version = {}", new_version),
+            }),
+            Err(e) => {
+                steps.push(ReleaseStep {
+                    step: rel_trim.to_string(),
+                    ok: false,
+                    message: e,
+                });
+                return Ok(steps);
+            }
         }
     }
 
-    // --- 3. src-tauri/tauri.conf.json
-    let conf = dir.join("src-tauri").join("tauri.conf.json");
-    match read_text(&conf)
-        .and_then(|c| bump_json_version(&c, &new_version))
-        .and_then(|c| write_text(&conf, &c))
-    {
-        Ok(_) => steps.push(ReleaseStep {
-            step: "src-tauri/tauri.conf.json".into(),
-            ok: true,
-            message: format!("version = {}", new_version),
-        }),
-        Err(e) => {
-            steps.push(ReleaseStep {
-                step: "src-tauri/tauri.conf.json".into(),
-                ok: false,
-                message: e,
-            });
-            return Ok(steps);
-        }
-    }
-
-    // --- 4. git add -A
+    // --- git add -A
     let add_out = run_git(&directory, &["add", "-A"])?;
     if !add_out.status.success() {
         steps.push(ReleaseStep {
@@ -1688,7 +1802,7 @@ async fn release_bump(
         message: "staged".into(),
     });
 
-    // --- 5. git commit
+    // --- git commit
     let commit_msg = format!("chore: bump version to {}", new_version);
     let commit_out = run_git(&directory, &["commit", "-m", &commit_msg])?;
     if !commit_out.status.success() {
@@ -1705,7 +1819,7 @@ async fn release_bump(
         message: commit_msg,
     });
 
-    // --- 6. git tag vX.Y.Z
+    // --- git tag vX.Y.Z
     let tag = format!("v{}", new_version);
     let tag_out = run_git(&directory, &["tag", &tag])?;
     if !tag_out.status.success() {
@@ -1722,7 +1836,7 @@ async fn release_bump(
         message: tag,
     });
 
-    // --- 7. git push --follow-tags
+    // --- git push --follow-tags
     let push_out = run_git(&directory, &["push", "--follow-tags"])?;
     let push_msg = format!(
         "{}\n{}",
@@ -4472,7 +4586,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, git_remote_info, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

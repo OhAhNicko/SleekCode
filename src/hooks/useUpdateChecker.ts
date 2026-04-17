@@ -28,8 +28,17 @@ export function useUpdateChecker() {
     notes: null,
   });
   const updateRef = useRef<Update | null>(null);
+  const statusRef = useRef<UpdateStatus>("idle");
+
+  useEffect(() => {
+    statusRef.current = state.status;
+  }, [state.status]);
 
   const checkForUpdate = useCallback(async () => {
+    // Don't re-check while an install is in flight — would clobber updateRef
+    if (statusRef.current === "downloading" || statusRef.current === "installing") {
+      return;
+    }
     setState((s) => ({ ...s, status: "checking", error: null }));
     try {
       const update = await check();
@@ -110,10 +119,15 @@ export function useUpdateChecker() {
     updateRef.current = null;
   }, []);
 
-  // Check 3s after mount to avoid competing with PTY pool warmup
+  // Check 3s after mount to avoid competing with PTY pool warmup,
+  // then re-check every 5 minutes.
   useEffect(() => {
-    const timer = setTimeout(checkForUpdate, 3000);
-    return () => clearTimeout(timer);
+    const initial = setTimeout(checkForUpdate, 3000);
+    const interval = setInterval(checkForUpdate, 5 * 60 * 1000);
+    return () => {
+      clearTimeout(initial);
+      clearInterval(interval);
+    };
   }, [checkForUpdate]);
 
   return { ...state, checkForUpdate, downloadAndInstall, dismiss };

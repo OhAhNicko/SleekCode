@@ -7,6 +7,7 @@ import CodeReviewFileList from "./CodeReviewFileList";
 import CodeReviewDiffView from "./CodeReviewDiffView";
 import CommitPopover from "./CommitPopover";
 import ConnectToGitHubModal from "./ConnectToGitHubModal";
+import ReleaseModal from "./ReleaseModal";
 import type {
   ComparisonMode,
   GitFileStatus,
@@ -46,6 +47,8 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
   const [pushError, setPushError] = useState<string | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
   const [connectedToast, setConnectedToast] = useState<string | null>(null);
+  const [showReleaseModal, setShowReleaseModal] = useState(false);
+  const [releasedToast, setReleasedToast] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const commitBtnRef = useRef<HTMLDivElement>(null);
@@ -443,6 +446,38 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
             </button>
           )}
 
+          {/* Release — shown when repo has an upstream (otherwise no-op to push a tag) */}
+          {isGitRepo && aheadBehind?.hasRemote && (
+            <button
+              onClick={() => setShowReleaseModal(true)}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
+              style={{
+                backgroundColor: "transparent",
+                color: "var(--ezy-text-secondary)",
+                border: "1px solid var(--ezy-border-subtle)",
+              }}
+              title="Bump version, commit, tag, and push"
+            >
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M3 2h7l3 3v9H3V2z"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M10 2v3h3"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              Release
+            </button>
+          )}
+
           {/* Push button */}
           <div style={{ position: "relative" }}>
             <button
@@ -690,6 +725,52 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
           onClose={() => setShowConnectModal(false)}
           onConnected={handleConnected}
         />
+      )}
+
+      {/* Release modal */}
+      {showReleaseModal && (
+        <ReleaseModal
+          workingDir={workingDir}
+          onClose={() => setShowReleaseModal(false)}
+          onReleased={() => {
+            setReleasedToast(true);
+            window.dispatchEvent(new Event("ezydev:git-refresh"));
+            setTimeout(() => setReleasedToast(false), 4500);
+          }}
+        />
+      )}
+
+      {/* Released toast */}
+      {releasedToast && (
+        <div
+          style={{
+            position: "absolute",
+            top: 36,
+            right: 10,
+            zIndex: 150,
+            padding: "8px 12px",
+            backgroundColor: "var(--ezy-surface-raised)",
+            border: "1px solid var(--ezy-border)",
+            borderRadius: 6,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+            maxWidth: 340,
+          }}
+        >
+          <div className="flex items-center gap-1.5">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+              <path
+                d="M3 8.5L6.5 12L13 4"
+                stroke="#34d399"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="text-[11px] font-medium" style={{ color: "#34d399" }}>
+              Release tag pushed
+            </span>
+          </div>
+        </div>
       )}
 
       {/* Body */}

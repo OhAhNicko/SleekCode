@@ -12,7 +12,7 @@ import { currentIsoWeek } from "../lib/iso-week";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { FaCheck } from "react-icons/fa";
 import { STATUSLINE_FEATURES } from "./TerminalHeader";
-import ReleaseSection from "./ReleaseSection";
+import ClearDataModal from "./ClearDataModal";
 import type { TerminalType, ComposerExpansion } from "../types";
 
 // ─── Internal sub-components ───────────────────────────────────────────────
@@ -610,6 +610,7 @@ const NAV_SECTIONS = [
 
 export default function SettingsPane() {
   const [activeSection, setActiveSection] = useState(NAV_SECTIONS[0]?.id ?? "behavior");
+  const [showClearModal, setShowClearModal] = useState(false);
 
   // Store selectors
   const terminalBackend = useAppStore((s) => s.terminalBackend ?? "wsl");
@@ -757,6 +758,37 @@ export default function SettingsPane() {
               <SettingsRow label="Vibrant colors" description="Use brighter, more saturated accent colors throughout the UI.">
                 <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
               </SettingsRow>
+            </SettingsSection>
+            <SettingsSection id="danger-zone" title="Danger Zone" description="Clear EzyDev's local storage. Your files on disk are not affected.">
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
+                <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
+                  <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Clear local data</div>
+                  <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                    Wipe preferences, history, recent projects, game scores, or cached CLI paths. Choose what to clear in the next step.
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowClearModal(true)}
+                  style={{
+                    height: 30,
+                    padding: "0 14px",
+                    borderRadius: 6,
+                    border: "none",
+                    backgroundColor: "var(--ezy-red, #e55)",
+                    color: "#fff",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    fontFamily: "inherit",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                    transition: "opacity 120ms ease",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.85"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
+                >
+                  Clear data...
+                </button>
+              </div>
             </SettingsSection>
           </>
         );
@@ -1024,12 +1056,7 @@ export default function SettingsPane() {
         );
 
       case "updates":
-        return (
-          <>
-            <UpdatesSection />
-            <ReleaseSection />
-          </>
-        );
+        return <UpdatesSection />;
 
       default:
         return null;
@@ -1108,6 +1135,8 @@ export default function SettingsPane() {
       }}>
         {renderSection()}
       </div>
+
+      {showClearModal && <ClearDataModal onClose={() => setShowClearModal(false)} />}
     </div>
   );
 }
