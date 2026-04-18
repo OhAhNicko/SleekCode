@@ -611,6 +611,7 @@ const NAV_SECTIONS = [
 export default function SettingsPane() {
   const [activeSection, setActiveSection] = useState(NAV_SECTIONS[0]?.id ?? "behavior");
   const [showClearModal, setShowClearModal] = useState(false);
+  const [cliExpanded, setCliExpanded] = useState<Partial<Record<TerminalType, boolean>>>({});
 
   // Store selectors
   const terminalBackend = useAppStore((s) => s.terminalBackend ?? "wsl");
@@ -815,9 +816,39 @@ export default function SettingsPane() {
               const currentSize = cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE;
               const isYolo = !!cliYolo[cliType];
               const label = TERMINAL_CONFIGS[cliType].label;
+              const isExpanded = cliExpanded[cliType] ?? false;
               return (
-                <div key={cliType} style={{ paddingBottom: 16, borderBottom: "1px solid var(--ezy-border-subtle)", marginBottom: 8 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ezy-text)", marginBottom: 10 }}>{label}</div>
+                <div key={cliType} style={{ borderBottom: "1px solid var(--ezy-border-subtle)", marginBottom: 8 }}>
+                  <div
+                    onClick={() => setCliExpanded({ ...cliExpanded, [cliType]: !isExpanded })}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "10px 0",
+                      cursor: "pointer",
+                      userSelect: "none",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: CLI_COLORS[cliType] }} />
+                      <span style={{ fontSize: 13, fontWeight: 500, color: "var(--ezy-text)" }}>{label}</span>
+                    </div>
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 12 12"
+                      style={{
+                        color: "var(--ezy-text-muted)",
+                        transform: isExpanded ? "rotate(90deg)" : "rotate(0deg)",
+                        transition: "transform 150ms ease",
+                      }}
+                    >
+                      <path d="M4 2 L8 6 L4 10" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
+                  {isExpanded && (
+                  <div style={{ paddingBottom: 16 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                     <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>Font size</span>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -911,6 +942,8 @@ export default function SettingsPane() {
                         );
                       })}
                   </div>
+                  </div>
+                  )}
                 </div>
               );
             })}

@@ -1342,7 +1342,7 @@ export default function TerminalPane({
     const addHistoryEntry = useAppStore.getState().addHistoryEntry;
     const tabs = useAppStore.getState().tabs;
     const tab = tabs.find((t) =>
-      t.layout.type === "terminal" ? t.layout.terminalId === terminalId : false
+      t.layout?.type === "terminal" ? t.layout.terminalId === terminalId : false
     );
     const tabName = tab?.name ?? "Shell";
 

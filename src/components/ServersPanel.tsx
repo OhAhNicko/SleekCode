@@ -539,7 +539,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
 
       // Find or create a tab to host this temporary terminal
       const activeTab = store.tabs.find((t) => t.id === store.activeTabId);
-      if (activeTab && !activeTab.isDevServerTab && !activeTab.isServersTab && !activeTab.isKanbanTab) {
+      if (activeTab && activeTab.layout && !activeTab.isDevServerTab && !activeTab.isServersTab && !activeTab.isKanbanTab) {
         const { splitPane, findFirstLeafId } = await import("../lib/layout-utils");
         const leafId = findFirstLeafId(activeTab.layout);
         if (leafId) {

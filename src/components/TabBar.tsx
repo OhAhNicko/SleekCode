@@ -707,7 +707,7 @@ export default function TabBar() {
                     }}
                   >
                     {(() => {
-                      const termIds = findAllTerminalIds(tab.layout);
+                      const termIds = tab.layout ? findAllTerminalIds(tab.layout) : [];
                       const cliCount = termIds.length;
                       // activityTick is read to trigger re-render on poll
                       void activityTick;
@@ -903,7 +903,7 @@ export default function TabBar() {
           const gIsActive = ghostTab.id === activeTabId;
           const gIsUserPinned = !!ghostTab.isPinned;
           const gIsSystemTab = ghostTab.isKanbanTab || ghostTab.isDevServerTab || ghostTab.isServersTab || ghostTab.isSettingsTab;
-          const gTermIds = findAllTerminalIds(ghostTab.layout);
+          const gTermIds = ghostTab.layout ? findAllTerminalIds(ghostTab.layout) : [];
           const gCliCount = gTermIds.length;
           return (
             <div
@@ -1384,7 +1384,7 @@ export default function TabBar() {
           onClick={() => {
             const store = useAppStore.getState();
             const tab = store.tabs.find((t) => t.id === activeTabId);
-            if (!tab || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
+            if (!tab || !tab.layout || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
 
             // Toggle: if kanban already exists, remove it
             const existingId = findKanbanPaneId(tab.layout);
@@ -1426,15 +1426,15 @@ export default function TabBar() {
             onClick={() => {
               const store = useAppStore.getState();
               const tab = store.tabs.find((t) => t.id === store.activeTabId);
-              if (!tab || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
+              if (!tab || !tab.layout || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
 
               // If browser pane already exists, remove it (toggle off)
               const existing = findAllBrowserPanes(tab.layout);
               if (existing.length > 0) {
-                let newLayout = tab.layout;
+                let newLayout: import("../types").PaneLayout | null = tab.layout;
                 for (const bp of existing) {
-                  const result = removePane(newLayout, bp.id);
-                  if (result) newLayout = result;
+                  if (!newLayout) break;
+                  newLayout = removePane(newLayout, bp.id);
                 }
                 store.updateTabLayout(tab.id, newLayout);
                 return;
@@ -1472,7 +1472,7 @@ export default function TabBar() {
           >
             {(() => {
               const tab = tabs.find((t) => t.id === activeTabId);
-              const hasBrowser = tab ? findAllBrowserPanes(tab.layout).length > 0 : false;
+              const hasBrowser = tab && tab.layout ? findAllBrowserPanes(tab.layout).length > 0 : false;
               return hasBrowser
                 ? <TbBrowserMinus size={14} color="var(--ezy-text-muted)" style={{ transform: "scale(1.2)" }} />
                 : <TbBrowserPlus size={14} color="var(--ezy-text-muted)" style={{ transform: "scale(1.2)" }} />;
@@ -1507,7 +1507,7 @@ export default function TabBar() {
           >
             {(() => {
               const tab = tabs.find((t) => t.id === activeTabId);
-              const hasGame = tab ? hasGamePane(tab.layout) : false;
+              const hasGame = tab && tab.layout ? hasGamePane(tab.layout) : false;
               return <PiGameControllerDuotone size={14} color={hasGame ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} style={{ transform: "scale(1.3)" }} />;
             })()}
           </div>

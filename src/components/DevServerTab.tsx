@@ -82,6 +82,7 @@ function openBrowserInTab(tabId: string, url: string) {
   const tab = store.tabs.find((t) => t.id === tabId);
   if (!tab) return;
 
+  if (!tab.layout) return;
   const existingBrowsers = findAllBrowserPanes(tab.layout);
   const baseUrl = url.replace(/\/$/, "");
   if (existingBrowsers.some((b) => b.url.replace(/\/$/, "") === baseUrl)) {

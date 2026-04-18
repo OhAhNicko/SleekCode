@@ -20,6 +20,7 @@ import type { CommandBlock } from "../lib/command-block-parser";
 import PaneGrid from "./PaneGrid";
 import TerminalPane, { suppressFocusTerminals } from "./TerminalPane";
 import ToolSelector from "./ToolSelector";
+import EmptyTabLauncher from "./EmptyTabLauncher";
 
 interface WorkspaceProps {
   tab: Tab;
@@ -57,15 +58,15 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // Check if this is a fresh tab that needs its first terminal spawned
   // (skip if the leaf has a persisted terminalType — that means it's being restored)
   const layoutTerminalId =
-    tab.layout.type === "terminal" ? tab.layout.terminalId : null;
+    tab.layout?.type === "terminal" ? tab.layout.terminalId : null;
   const isRestoredLeaf =
-    tab.layout.type === "terminal" && !!tab.layout.terminalType;
+    tab.layout?.type === "terminal" && !!tab.layout.terminalType;
   const needsInitialTerminal =
     layoutTerminalId && !terminals[layoutTerminalId] && !isRestoredLeaf;
 
   // Collect all terminal IDs in the current layout (sorted for stable portal order)
   const allTerminalIds = useMemo(
-    () => findAllTerminalIds(tab.layout).sort(),
+    () => (tab.layout ? findAllTerminalIds(tab.layout).sort() : []),
     [tab.layout]
   );
 
@@ -109,7 +110,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
   }, [allTerminalIds]);
 
   const handleLayoutChange = useCallback(
-    (layout: PaneLayout) => {
+    (layout: PaneLayout | null) => {
       updateTabLayout(tab.id, layout);
     },
     [tab.id, updateTabLayout]
@@ -141,14 +142,16 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const handleSpawnTerminal = useCallback(
     (terminalId: string, type: TerminalType, serverId?: string) => {
       addTerminal(terminalId, type, tab.workingDir, serverId ?? tab.serverId);
-      updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, terminalId, type));
+      if (tab.layout) {
+        updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, terminalId, type));
+      }
     },
     [addTerminal, tab.workingDir, tab.serverId, tab.id, tab.layout, updateTabLayout]
   );
 
   const handleInitialSpawn = useCallback(
     (type: TerminalType, serverId?: string) => {
-      if (!layoutTerminalId) return;
+      if (!layoutTerminalId || !tab.layout) return;
       addTerminal(layoutTerminalId, type, tab.workingDir, serverId ?? tab.serverId);
       updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, layoutTerminalId, type));
       setLocalActiveTerminal(layoutTerminalId);
@@ -160,16 +163,20 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // --- Terminal pane callbacks (used by portal-rendered TerminalPanes) ---
 
   const handleTerminalClose = useCallback((termId: string) => {
+    if (!tab.layout) return;
     const paneId = findPaneIdForTerminal(tab.layout, termId);
     if (!paneId) return;
     snapshotPane(tab.id, tab.layout);
     const newLayout = removePane(tab.layout, paneId);
-    handleLayoutChange(newLayout ?? tab.layout);
+    // newLayout may be null when the last pane is closed — propagate that so
+    // the empty-state launcher renders.
+    handleLayoutChange(newLayout);
   }, [tab.id, tab.layout, handleLayoutChange]);
 
 
 
   const handleTerminalExplainError = useCallback((termId: string, block: CommandBlock) => {
+    if (!tab.layout) return;
     const prompt = `Explain this error:\n\`\`\`\n${block.command}\n${block.outputText ?? ""}\n\`\`\`\nExit code: ${block.exitCode}\n`;
 
     // Look for existing AI terminal in current tab layout
@@ -203,6 +210,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
   }, [tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal]);
 
   const handleSwapPane = useCallback((fromTerminalId: string, toTerminalId: string) => {
+    if (!tab.layout) return;
     const paneA = findPaneIdForTerminal(tab.layout, fromTerminalId);
     const paneB = findPaneIdForTerminal(tab.layout, toTerminalId);
     if (!paneA || !paneB) return;
@@ -221,7 +229,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
 
     // Then update layout tree — React re-renders but ref callbacks
     // find slots already in place (parentElement === el) and skip DOM work
-    handleLayoutChange(swapPanes(tab.layout, paneA, paneB));
+    handleLayoutChange(swapPanes(tab.layout!, paneA, paneB));
   }, [tab.layout, handleLayoutChange]);
 
   // Listen for split-terminal events from the chevron dropdown
@@ -237,7 +245,6 @@ export default function Workspace({ tab }: WorkspaceProps) {
 
       const newTerminalId = generateTerminalId();
       const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type };
-      handleSpawnTerminal(newTerminalId, type, tab.serverId);
 
       const focusNewPane = !useAppStore.getState().openPanesInBackground;
 
@@ -246,6 +253,19 @@ export default function Workspace({ tab }: WorkspaceProps) {
       if (!focusNewPane) {
         suppressFocusTerminals.add(newTerminalId);
       }
+
+      // Empty tab — promote the new leaf to root layout. We bypass
+      // handleSpawnTerminal here because it short-circuits when tab.layout
+      // is null (the layout-write would no-op).
+      if (!tab.layout) {
+        addTerminal(newTerminalId, type, tab.workingDir, tab.serverId);
+        handleLayoutChange(newLeaf);
+        if (focusNewPane) handleTerminalFocus(newTerminalId);
+        else refocusPrevious();
+        return;
+      }
+
+      handleSpawnTerminal(newTerminalId, type, tab.serverId);
 
       if (detail?.direction === "vertical" && activeTerminalId) {
         const paneId = findPaneIdForTerminal(tab.layout, activeTerminalId);
@@ -280,6 +300,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
   useEffect(() => {
     const nextHandler = () => {
       if (useAppStore.getState().activeTabId !== tab.id) return;
+      if (!tab.layout) return;
       const leaves = findAllTerminalLeaves(tab.layout);
       if (leaves.length < 2) return;
       const ids = leaves.map((l) => l.terminalId);
@@ -293,6 +314,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
     };
     const prevHandler = () => {
       if (useAppStore.getState().activeTabId !== tab.id) return;
+      if (!tab.layout) return;
       const leaves = findAllTerminalLeaves(tab.layout);
       if (leaves.length < 2) return;
       const ids = leaves.map((l) => l.terminalId);
@@ -345,6 +367,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const hasAutoSpawned = useRef(false);
   useEffect(() => {
     if (hasAutoSpawned.current) return;
+    if (!tab.layout) return;
     const currentTerminals = useAppStore.getState().terminals;
     const leaves = findAllTerminalLeaves(tab.layout);
     const toSpawn = leaves.filter((leaf) => !currentTerminals[leaf.terminalId]);
@@ -419,6 +442,13 @@ export default function Workspace({ tab }: WorkspaceProps) {
     );
   }
 
+  // Empty tab — render the launcher in place of the layout grid. Terminal
+  // panes (if any) still need to render via portals so an in-flight close
+  // animation isn't visible-then-gone, but with null layout there are none.
+  if (!tab.layout) {
+    return <EmptyTabLauncher />;
+  }
+
   return (
     <div className="h-full w-full workspace-enter">
       <PaneGrid
@@ -433,7 +463,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
         const terminal = terminals[termId];
         if (!terminal) return null;
         const slotEl = getSlotEl(termId);
-        const leaf = findAllTerminalLeaves(tab.layout).find((l) => l.terminalId === termId);
+        const leaf = findAllTerminalLeaves(tab.layout!).find((l) => l.terminalId === termId);
         return createPortal(
           <TerminalPane
             terminalId={termId}
@@ -444,7 +474,9 @@ export default function Workspace({ tab }: WorkspaceProps) {
             onClose={() => handleTerminalClose(termId)}
             onChangeType={(type) => {
               useAppStore.getState().changeTerminalType(termId, type);
-              updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, termId, type));
+              if (tab.layout) {
+                updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, termId, type));
+              }
               // Clear session resume ID atomically (reads latest layout inside set())
               updatePaneSessionResumeId(tab.id, termId, undefined);
             }}

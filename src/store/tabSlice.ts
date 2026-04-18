@@ -46,10 +46,10 @@ export interface TabSlice {
   tabs: Tab[];
   activeTabId: string;
   addTab: (name: string, workingDir: string, serverId?: string) => void;
-  addTabWithLayout: (name: string, workingDir: string, layout: PaneLayout, serverId?: string) => string;
+  addTabWithLayout: (name: string, workingDir: string, layout: PaneLayout | null, serverId?: string) => string;
   removeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
-  updateTabLayout: (tabId: string, layout: PaneLayout) => void;
+  updateTabLayout: (tabId: string, layout: PaneLayout | null) => void;
   /** Atomically update a pane's sessionResumeId inside set() to avoid read-modify-write races. */
   updatePaneSessionResumeId: (tabId: string, terminalId: string, sessionResumeId: string | undefined) => void;
   togglePinTab: (tabId: string) => void;
@@ -150,9 +150,9 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       snapshotTab(tabId);
 
       // Persist layout to recent project for quick-open restore
-      if (tab && !tab.isDevServerTab && !tab.isServersTab && !tab.isKanbanTab && !tab.isSettingsTab) {
+      if (tab && tab.layout && !tab.isDevServerTab && !tab.isServersTab && !tab.isKanbanTab && !tab.isSettingsTab) {
         import("./index").then(({ useAppStore }) => {
-          useAppStore.getState().updateProjectLayout(tab.workingDir, tab.layout);
+          useAppStore.getState().updateProjectLayout(tab.workingDir, tab.layout!);
         });
       }
 
@@ -200,7 +200,7 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
   updatePaneSessionResumeId: (tabId, terminalId, sessionResumeId) => {
     set((state) => ({
       tabs: state.tabs.map((t) =>
-        t.id === tabId
+        t.id === tabId && t.layout
           ? { ...t, layout: setSessionResumeIdInLayout(t.layout, terminalId, sessionResumeId) }
           : t
       ),

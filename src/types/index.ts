@@ -140,7 +140,7 @@ export interface Tab {
   id: string;
   name: string;
   workingDir: string;
-  layout: PaneLayout;
+  layout: PaneLayout | null;
   isDevServerTab?: boolean;
   isServersTab?: boolean;
   isKanbanTab?: boolean;

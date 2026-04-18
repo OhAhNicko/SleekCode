@@ -75,7 +75,7 @@ export const createLaunchConfigSlice: StateCreator<
   saveLaunchConfig: (name: string, tabId: string) => {
     const state = get();
     const tab = state.tabs?.find((t: { id: string }) => t.id === tabId);
-    if (!tab) return;
+    if (!tab || !tab.layout) return;
 
     const terminalIds = collectTerminalIds(tab.layout);
     const terminalTypes: Record<string, TerminalType> = {};

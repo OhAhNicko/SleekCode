@@ -449,6 +449,7 @@ export const createRecentProjectsSlice: StateCreator<
     for (const tab of tabs) {
       if (tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) continue;
       if (!tab.workingDir) continue;
+      if (!tab.layout) continue; // empty tab — don't overwrite saved layout with null
       // Later tabs for the same project win — matches "last-used" intent
       latestByPath.set(normalizePath(tab.workingDir), tab.layout);
     }
