@@ -8,7 +8,7 @@ import { SearchAddon } from "@xterm/addon-search";
 import { getTheme, getEffectiveTerminalTheme } from "../lib/themes";
 import { usePty } from "../hooks/usePty";
 import { useAppStore } from "../store";
-import { registerPtyWrite, unregisterPtyWrite, getTerminalDataListener } from "../store/terminalSlice";
+import { registerPtyWrite, unregisterPtyWrite, registerTerminalFocus, unregisterTerminalFocus, getTerminalDataListener } from "../store/terminalSlice";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import type { TerminalType } from "../types";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
@@ -1336,6 +1336,13 @@ export default function TerminalPane({
     onPtyReady?.();
     return () => unregisterPtyWrite(terminalId);
   }, [terminalId, write]); // onPtyReady intentionally omitted — fire once on PTY init
+
+  // Register xterm focus callback so external actions (e.g. clipboard paste path
+  // from ImagePreviewModal) can return focus to this pane.
+  useEffect(() => {
+    registerTerminalFocus(terminalId, () => terminalRef.current?.focus());
+    return () => unregisterTerminalFocus(terminalId);
+  }, [terminalId]);
 
   // Feed completed command blocks into history store
   useEffect(() => {

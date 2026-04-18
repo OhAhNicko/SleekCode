@@ -852,11 +852,27 @@ export default function PromptComposer({
   useEffect(() => {
     if (!pendingImage || pendingImage.terminalId !== terminalId) return;
     const img = pendingImage.image;
+    let added = false;
     setLocalImages((prev) => {
       if (prev.some((i) => i.id === img.id)) return prev;
+      added = true;
       return [...prev, img];
     });
     useClipboardImageStore.getState().setPendingComposerImage(null);
+    // When a new image is attached, append a trailing space to the textarea
+    // so the user's next keystroke doesn't collide with any existing text.
+    if (added) {
+      setValue((prev) => (prev.length === 0 || prev.endsWith(" ") ? prev : prev + " "));
+    }
+    // Return focus to the composer and place cursor at end so the user can
+    // type immediately after clicking "Insert path" in the preview modal.
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      const end = ta.value.length;
+      ta.setSelectionRange(end, end);
+    });
   }, [pendingImage, terminalId]);
 
   // Load user-defined custom commands from ~/.<cli>/commands/ and <project>/.<cli>/commands/

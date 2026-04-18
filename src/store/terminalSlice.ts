@@ -22,6 +22,22 @@ export function getAllPtyWriteTerminalIds(): string[] {
   return Object.keys(ptyWriteCallbacks);
 }
 
+// Terminal focus callbacks — runtime only, not persisted.
+// Lets non-pane code (e.g. clipboard-insert) programmatically focus the xterm after writing.
+const terminalFocusCallbacks: Record<string, () => void> = {};
+
+export function registerTerminalFocus(terminalId: string, focusFn: () => void): void {
+  terminalFocusCallbacks[terminalId] = focusFn;
+}
+
+export function unregisterTerminalFocus(terminalId: string): void {
+  delete terminalFocusCallbacks[terminalId];
+}
+
+export function getTerminalFocus(terminalId: string): (() => void) | undefined {
+  return terminalFocusCallbacks[terminalId];
+}
+
 // Terminal data listeners — called when PTY output arrives.
 // Used by DevServerTerminalHost for port detection.
 const terminalDataListeners: Record<string, (data: Uint8Array) => void> = {};

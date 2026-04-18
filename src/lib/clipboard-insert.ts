@@ -1,5 +1,5 @@
 import { useAppStore } from "../store";
-import { getPtyWrite } from "../store/terminalSlice";
+import { getPtyWrite, getTerminalFocus } from "../store/terminalSlice";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import { toWslPath } from "./terminal-config";
 
@@ -37,16 +37,24 @@ export function insertImagePath(winPath: string): string | null {
   if (!writeFn) return null;
 
   const filePath = resolveImagePath(winPath);
-  writeFn(filePath);
+  // Append a trailing space so the user can immediately start typing
+  // without the next character colliding with the path.
+  const insertion = filePath + " ";
+  writeFn(insertion);
 
-  // Record for undo
+  // Record for undo (includes the trailing space so undo removes both)
   useClipboardImageStore.getState().setLastInsertion({
-    text: filePath,
+    text: insertion,
     terminalId: activeTerminal.id,
     timestamp: Date.now(),
   });
 
-  return filePath;
+  // Return focus to the target terminal so the user can keep typing.
+  // Deferred via rAF so it runs after any modal close / unmount tick.
+  const focusFn = getTerminalFocus(activeTerminal.id);
+  if (focusFn) requestAnimationFrame(() => focusFn());
+
+  return insertion;
 }
 
 /**

@@ -62,33 +62,50 @@ export default function ImagePreviewModal({
           >
             {fileName}
           </span>
-          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0, alignItems: "center" }}>
             {onInsert && (
               <button
                 onClick={onInsert}
                 className="text-xs px-3 py-1 rounded"
                 style={{
-                  backgroundColor: "var(--ezy-accent)",
+                  backgroundColor: "#059669",
                   color: "#fff",
                   border: "none",
                   cursor: "pointer",
+                  fontWeight: 500,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
                 }}
               >
+                <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="M6 2 V8 M3 5 L6 8 L9 5 M2.5 10 H9.5" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
                 Insert path
               </button>
             )}
             {onDelete && (
               <button
                 onClick={() => { onDelete(); onClose(); }}
-                className="text-xs px-3 py-1 rounded"
+                title="Delete screenshot"
+                aria-label="Delete screenshot"
                 style={{
-                  backgroundColor: "#dc2626",
-                  color: "#fff",
-                  border: "none",
+                  width: 26,
+                  height: 26,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "var(--ezy-surface)",
+                  color: "#dc2626",
+                  border: "1px solid var(--ezy-border)",
+                  borderRadius: 4,
                   cursor: "pointer",
+                  padding: 0,
                 }}
               >
-                Delete
+                <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                  <path d="M3 4 H9 M4.5 4 V2.5 H7.5 V4 M4 4 L4.5 10 H7.5 L8 4" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
               </button>
             )}
             <button
