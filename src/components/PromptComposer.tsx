@@ -6,6 +6,7 @@ import { useAppStore } from "../store";
 import { useClipboardImageStore, type ClipboardImage } from "../store/clipboardImageStore";
 import { useBrowserConsoleStore } from "../store/browserConsoleStore";
 import { getImageLabel, resolveImagePath } from "../lib/clipboard-insert";
+import { registerImageMask } from "../lib/image-mask";
 import { toWslPath } from "../lib/terminal-config";
 import { SLASH_COMMANDS, SLASH_ARG_HINTS, loadUserSkills, type SlashCommand } from "../lib/slash-commands";
 import type { TerminalType } from "../types";
@@ -1176,12 +1177,19 @@ export default function PromptComposer({
       const backend = useAppStore.getState().terminalBackend ?? "wsl";
       const resolvePath = (winPath: string) =>
         backend === "windows" ? winPath : toWslPath(winPath);
+      const storeImages = useClipboardImageStore.getState().images;
+      const imageNumberFor = (winPath: string) => {
+        const idx = storeImages.findIndex((im) => im.winPath === winPath);
+        return idx >= 0 ? idx + 1 : storeImages.length + 1;
+      };
 
       // Replace any [Img N] labels already in text (from autocomplete) with file paths
       for (const img of localImages) {
         const label = getImageLabel(img.winPath);
         if (text.includes(label)) {
-          text = text.split(label).join(resolvePath(img.winPath));
+          const filePath = resolvePath(img.winPath);
+          text = text.split(label).join(filePath);
+          registerImageMask(terminalId, filePath, imageNumberFor(img.winPath));
         }
       }
 
@@ -1192,6 +1200,9 @@ export default function PromptComposer({
       });
       if (unreferenced.length > 0) {
         text = text + " " + unreferenced.map((img) => resolvePath(img.winPath)).join(" ");
+        for (const img of unreferenced) {
+          registerImageMask(terminalId, resolvePath(img.winPath), imageNumberFor(img.winPath));
+        }
       }
     }
     // Expand console snippet placeholder into formatted text

@@ -8,7 +8,7 @@ import { insertImagePath, resolveImagePath } from "../lib/clipboard-insert";
 import { useAppStore } from "../store";
 import ImagePreviewModal from "./ImagePreviewModal";
 
-/** Shows a snip button + the 3 most recent session clipboard images in the TabBar. */
+/** Shows a snip button + the 5 most recent session clipboard images in the TabBar. */
 export default function ClipboardImageStrip() {
   const images = useClipboardImageStore((s) => s.images);
   const removeImage = useClipboardImageStore((s) => s.removeImage);
@@ -26,7 +26,7 @@ export default function ClipboardImageStrip() {
   const [galleryCtxMenu, setGalleryCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
   const [previewFromGallery, setPreviewFromGallery] = useState(false);
 
-  const latest3 = images.slice(0, 3);
+  const latestThumbnails = images.slice(0, 5);
 
   // Escape key closes gallery
   useEffect(() => {
@@ -95,7 +95,7 @@ export default function ClipboardImageStrip() {
         </div>
 
         {/* Thumbnails */}
-        {latest3.map((img, i) => (
+        {latestThumbnails.map((img, i) => (
           <div
             key={img.id}
             style={{
@@ -107,6 +107,8 @@ export default function ClipboardImageStrip() {
               cursor: "pointer",
               border: "1px solid var(--ezy-border)",
               flexShrink: 0,
+              transformOrigin: "center",
+              transition: "transform 140ms ease, box-shadow 140ms ease",
             }}
             title={composerEnabled ? "Click to attach to prompt" : "Click to insert path into active terminal"}
             onClick={() => attachToPrompt(img.id)}
@@ -114,6 +116,16 @@ export default function ClipboardImageStrip() {
               e.preventDefault();
               e.stopPropagation();
               setCtxMenu({ x: e.clientX, y: e.clientY, imgId: img.id });
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = "scale(1.5)";
+              e.currentTarget.style.zIndex = "5";
+              e.currentTarget.style.boxShadow = "0 4px 10px rgba(0,0,0,0.4)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = "";
+              e.currentTarget.style.zIndex = "";
+              e.currentTarget.style.boxShadow = "";
             }}
           >
             <img

@@ -5,6 +5,12 @@ import { getCachedNativeCliPath } from "./macos-cli-cache";
 import { getResumeFlag, supportsSessionResume } from "./session-resume";
 import { isWindows } from "./platform";
 
+// POSIX shell single-quote an arbitrary string. Escapes embedded single quotes
+// via the standard `'\''` sequence. Safe for any character including (, ), $, etc.
+function sh(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
 /** Returns the YOLO/skip-permissions flag for a given CLI, or null if not applicable. */
 export function getYoloFlag(type: TerminalType): string | null {
   switch (type) {
@@ -203,9 +209,11 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
   const suffixParts = [...extra, ...resumeArgs];
   if (suffixParts.length > 0 || (cachedPath && cliPath)) {
     const execCmd = cliPath ?? base.args[base.args.length - 1];
-    const fullCmd = [execCmd, ...suffixParts].join(" ");
+    // Quote the exec path and every arg so paths with `(`, spaces, or quotes
+    // (e.g. `/mnt/c/Program Files (x86)/...`) don't blow up bash.
+    const fullCmd = [sh(execCmd), ...suffixParts.map(sh)].join(" ");
     const distroArgs = distro ? ["-d", distro] : [];
-    const cdPart = wslCwd ? `cd '${wslCwd}' && ` : "";
+    const cdPart = wslCwd ? `cd ${sh(wslCwd)} && ` : "";
     return {
       ...base,
       args: [...distroArgs, "--", "bash", "-lic", `export TERM=xterm-256color COLORTERM=truecolor; ${cdPart}exec ${fullCmd}`],
@@ -262,21 +270,22 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
   // Require both — pooled bash has no profile, can't find CLIs by name
   if (!cachedPath || !cliPath) return null;
 
-  const extraSuffix = extraArgs?.length ? ` ${extraArgs.join(" ")}` : "";
+  const extraSuffix = extraArgs?.length ? ` ${extraArgs.map(sh).join(" ")}` : "";
+  // getResumeFlag returns e.g. "--resume <uuid>" — split + quote each token.
   const resumeSuffix = sessionResumeId && supportsSessionResume(type)
-    ? ` ${getResumeFlag(type, sessionResumeId)}`
+    ? ` ${getResumeFlag(type, sessionResumeId).split(" ").map(sh).join(" ")}`
     : "";
 
   const parts: string[] = [];
-  parts.push(`export PATH='${cachedPath}'`);
+  parts.push(`export PATH=${sh(cachedPath)}`);
   parts.push("export TERM=xterm-256color COLORTERM=truecolor");
   if (wslCwd) {
-    parts.push(`cd '${wslCwd}'`);
+    parts.push(`cd ${sh(wslCwd)}`);
   }
 
   // Clear the screen before exec so startup noise from Codex/Gemini is never visible.
   parts.push("printf '\\033[2J\\033[H'");
-  parts.push(`exec ${cliPath}${extraSuffix}${resumeSuffix}`);
+  parts.push(`exec ${sh(cliPath)}${extraSuffix}${resumeSuffix}`);
 
   return parts.join("; ");
 }
@@ -291,7 +300,7 @@ export function isWslTerminal(type: TerminalType, backend?: TerminalBackend): bo
 /** Map terminal type to the remote command to exec over SSH */
 function getRemoteExecCommand(type: TerminalType, sessionResumeId?: string): string {
   const resumeSuffix = sessionResumeId && supportsSessionResume(type)
-    ? ` ${getResumeFlag(type, sessionResumeId)}`
+    ? ` ${getResumeFlag(type, sessionResumeId).split(" ").map(sh).join(" ")}`
     : "";
   switch (type) {
     case "claude":
@@ -336,7 +345,7 @@ export function getSshCommand(
   const envExport = "export TERM=xterm-256color COLORTERM=truecolor;";
   const remoteCmd = getRemoteExecCommand(terminalType, sessionResumeId);
   if (remoteCwd) {
-    args.push(`${envExport} cd ${remoteCwd} && ${remoteCmd}`);
+    args.push(`${envExport} cd ${sh(remoteCwd)} && ${remoteCmd}`);
   } else {
     args.push(`${envExport} ${remoteCmd}`);
   }

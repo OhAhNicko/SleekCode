@@ -63,6 +63,7 @@ export const useAppStore = create<AppStore>()(
         promptComposerEnabled: state.promptComposerEnabled,
         promptComposerAlwaysVisible: state.promptComposerAlwaysVisible,
         composerExpansion: state.composerExpansion,
+        maskImagePathsInTerminal: state.maskImagePathsInTerminal,
         panePromptHistory: state.panePromptHistory,
         globalPromptHistory: state.globalPromptHistory,
         autoStartServerCommand: state.autoStartServerCommand,

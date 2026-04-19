@@ -30,6 +30,20 @@ export const STATUSLINE_FEATURES: Record<string, { label: string; clis: Terminal
   promptHistory:  { label: "Prompt history",       clis: ["claude", "codex", "gemini"] },
 };
 
+/** Default ON/OFF state per statusline toggle key when the user hasn't set one. */
+export const STATUSLINE_DEFAULTS: Record<string, boolean> = {
+  filePath: true,
+  sessionPicker: true,
+  model: true,
+  contextBar: true,
+  promptHistory: true,
+};
+
+/** Resolve a statusline toggle value, falling back to the per-key default (off if unspecified). */
+export function getStatuslineDefault(key: string): boolean {
+  return STATUSLINE_DEFAULTS[key] ?? false;
+}
+
 /** Brand colors for each CLI — used for header underline */
 export const CLI_BRAND_COLORS: Record<TerminalType, string> = {
   claude: "#D97757",
@@ -811,8 +825,8 @@ export default function TerminalHeader({
   const contextPercent = contextInfo?.percent ?? null;
   const config = TERMINAL_CONFIGS[terminalType];
   const slToggles = useAppStore((s) => s.statuslineToggles[terminalType]);
-  /** Check if a statusline feature is shown (defaults to true) */
-  const sl = (key: string) => slToggles?.[key] ?? true;
+  /** Check if a statusline feature is shown (falls back to the per-key default). */
+  const sl = (key: string) => slToggles?.[key] ?? getStatuslineDefault(key);
   const [showTypePicker, setShowTypePicker] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showPromptHistory, setShowPromptHistory] = useState(false);

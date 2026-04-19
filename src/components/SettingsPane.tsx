@@ -11,7 +11,7 @@ import { isWindows } from "../lib/platform";
 import { currentIsoWeek } from "../lib/iso-week";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { FaCheck } from "react-icons/fa";
-import { STATUSLINE_FEATURES } from "./TerminalHeader";
+import { STATUSLINE_FEATURES, getStatuslineDefault } from "./TerminalHeader";
 import ClearDataModal from "./ClearDataModal";
 import type { TerminalType, ComposerExpansion } from "../types";
 
@@ -622,6 +622,8 @@ export default function SettingsPane() {
   const setRestoreLastSession = useAppStore((s) => s.setRestoreLastSession);
   const autoInsertClipboardImage = useAppStore((s) => s.autoInsertClipboardImage);
   const setAutoInsertClipboardImage = useAppStore((s) => s.setAutoInsertClipboardImage);
+  const maskImagePathsInTerminal = useAppStore((s) => s.maskImagePathsInTerminal);
+  const setMaskImagePathsInTerminal = useAppStore((s) => s.setMaskImagePathsInTerminal);
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
   const setCopyOnSelect = useAppStore((s) => s.setCopyOnSelect);
   const showTabPath = useAppStore((s) => s.showTabPath);
@@ -689,6 +691,9 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Auto-paste screenshots" description="Automatically insert clipboard images into AI context.">
                 <ToggleSwitch checked={autoInsertClipboardImage} onChange={setAutoInsertClipboardImage} />
+              </SettingsRow>
+              <SettingsRow label="Mask image paths in terminal (beta)" description="Show [Image #N] instead of the full file path when a screenshot is inserted. The CLI still receives the real path.">
+                <ToggleSwitch checked={maskImagePathsInTerminal} onChange={setMaskImagePathsInTerminal} />
               </SettingsRow>
               <SettingsRow label="Copy on select" description="Automatically copy selected terminal text to clipboard.">
                 <ToggleSwitch checked={copyOnSelect} onChange={setCopyOnSelect} />
@@ -929,8 +934,8 @@ export default function SettingsPane() {
                       const visibleKeys = Object.entries(STATUSLINE_FEATURES)
                         .filter(([, feat]) => feat.clis.includes(cliType))
                         .map(([k]) => k);
-                      const allOn = visibleKeys.every((k) => statuslineToggles[cliType]?.[k] ?? true);
-                      const allOff = visibleKeys.every((k) => !(statuslineToggles[cliType]?.[k] ?? true));
+                      const allOn = visibleKeys.every((k) => statuslineToggles[cliType]?.[k] ?? getStatuslineDefault(k));
+                      const allOff = visibleKeys.every((k) => !(statuslineToggles[cliType]?.[k] ?? getStatuslineDefault(k)));
                       const setAll = (value: boolean) => {
                         visibleKeys.forEach((k) => setStatuslineToggle(cliType, k, value));
                       };
@@ -969,7 +974,7 @@ export default function SettingsPane() {
                     {Object.entries(STATUSLINE_FEATURES)
                       .filter(([, feat]) => feat.clis.includes(cliType))
                       .map(([key, feat]) => {
-                        const isOn = statuslineToggles[cliType]?.[key] ?? true;
+                        const isOn = statuslineToggles[cliType]?.[key] ?? getStatuslineDefault(key);
                         return (
                           <div
                             key={key}

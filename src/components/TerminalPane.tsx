@@ -22,6 +22,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { toWslPath } from "../lib/terminal-config";
 import { recordTerminalActivity, recordTerminalWrite, recordTerminalResize, clearTerminalActivity } from "../lib/terminal-activity";
+import { applyImageMask, clearImageMasks } from "../lib/image-mask";
 import TerminalHeader from "./TerminalHeader";
 import CommandBlockOverlay from "./CommandBlockOverlay";
 import ClipboardImagePreview from "./ClipboardImagePreview";
@@ -261,9 +262,10 @@ export default function TerminalPane({
     const totalBytes = pendingBytesRef.current;
     if (!term || chunks.length === 0) return;
 
-    // Concatenate all pending chunks into a single write
+    // Concatenate all pending chunks into a single buffer
+    let payload: Uint8Array;
     if (chunks.length === 1) {
-      term.write(chunks[0]);
+      payload = chunks[0];
     } else {
       const merged = new Uint8Array(totalBytes);
       let offset = 0;
@@ -271,8 +273,22 @@ export default function TerminalPane({
         merged.set(chunk, offset);
         offset += chunk.length;
       }
-      term.write(merged);
+      payload = merged;
     }
+
+    // Optional: mask registered image paths in the ECHO stream so users see
+    // [Image #N] instead of the raw file path. The PTY input (stdin) was never
+    // modified, so the CLI still receives the real path when the user hits Enter.
+    // Happy-path only: matches are per-chunk substring; split echoes bypass masking.
+    if (useAppStore.getState().maskImagePathsInTerminal) {
+      const decoded = new TextDecoder("utf-8", { fatal: false }).decode(payload);
+      const masked = applyImageMask(terminalId, decoded);
+      if (masked !== decoded) {
+        payload = new TextEncoder().encode(masked);
+      }
+    }
+
+    term.write(payload);
     pendingChunksRef.current = [];
     pendingBytesRef.current = 0;
 
@@ -1317,6 +1333,7 @@ export default function TerminalPane({
       blockParserRef.current = null;
       searchAddonRef.current = null;
       clearTerminalActivity(terminalId);
+      clearImageMasks(terminalId);
       term.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;

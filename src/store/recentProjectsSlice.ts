@@ -88,6 +88,7 @@ export interface RecentProjectsSlice {
   promptComposerEnabled: boolean;
   promptComposerAlwaysVisible: boolean;
   composerExpansion: ComposerExpansion;
+  maskImagePathsInTerminal: boolean;
   panePromptHistory: Record<string, string[]>;
   globalPromptHistory: string[];
   autoStartServerCommand: boolean;
@@ -134,6 +135,7 @@ export interface RecentProjectsSlice {
   setPromptComposerEnabled: (value: boolean) => void;
   setPromptComposerAlwaysVisible: (value: boolean) => void;
   setComposerExpansion: (value: ComposerExpansion) => void;
+  setMaskImagePathsInTerminal: (value: boolean) => void;
   addPromptHistory: (terminalId: string, text: string) => void;
   setAutoStartServerCommand: (value: boolean) => void;
   setPreviewInProjectTab: (value: boolean) => void;
@@ -177,6 +179,7 @@ export const createRecentProjectsSlice: StateCreator<
   promptComposerEnabled: false,
   promptComposerAlwaysVisible: false,
   composerExpansion: "up" as ComposerExpansion,
+  maskImagePathsInTerminal: false,
   panePromptHistory: {},
   globalPromptHistory: [],
   autoStartServerCommand: true,
@@ -310,6 +313,10 @@ export const createRecentProjectsSlice: StateCreator<
 
   setComposerExpansion: (value) => {
     set({ composerExpansion: value });
+  },
+
+  setMaskImagePathsInTerminal: (value) => {
+    set({ maskImagePathsInTerminal: value });
   },
 
   addPromptHistory: (terminalId, text) => {

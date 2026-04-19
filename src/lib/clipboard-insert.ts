@@ -2,6 +2,7 @@ import { useAppStore } from "../store";
 import { getPtyWrite, getTerminalFocus } from "../store/terminalSlice";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import { toWslPath } from "./terminal-config";
+import { registerImageMask } from "./image-mask";
 
 /**
  * Get the display label for a clipboard image (e.g. "[Img 1]").
@@ -40,6 +41,14 @@ export function insertImagePath(winPath: string): string | null {
   // Append a trailing space so the user can immediately start typing
   // without the next character colliding with the path.
   const insertion = filePath + " ";
+
+  // Register a display mask BEFORE writing so the echo (if enabled in settings)
+  // can be rewritten to [Image #N] when the shell echoes the path back.
+  const images = useClipboardImageStore.getState().images;
+  const idx = images.findIndex((im) => im.winPath === winPath);
+  const imageNumber = idx >= 0 ? idx + 1 : images.length + 1;
+  registerImageMask(activeTerminal.id, filePath, imageNumber);
+
   writeFn(insertion);
 
   // Record for undo (includes the trailing space so undo removes both)
