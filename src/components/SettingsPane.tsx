@@ -624,6 +624,8 @@ export default function SettingsPane() {
   const setAutoInsertClipboardImage = useAppStore((s) => s.setAutoInsertClipboardImage);
   const maskImagePathsInTerminal = useAppStore((s) => s.maskImagePathsInTerminal);
   const setMaskImagePathsInTerminal = useAppStore((s) => s.setMaskImagePathsInTerminal);
+  const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
+  const setShowKanbanButton = useAppStore((s) => s.setShowKanbanButton);
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
   const setCopyOnSelect = useAppStore((s) => s.setCopyOnSelect);
   const showTabPath = useAppStore((s) => s.showTabPath);
@@ -694,6 +696,9 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Mask image paths in terminal (beta)" description="Show [Image #N] instead of the full file path when a screenshot is inserted. The CLI still receives the real path.">
                 <ToggleSwitch checked={maskImagePathsInTerminal} onChange={setMaskImagePathsInTerminal} />
+              </SettingsRow>
+              <SettingsRow label="Show Kanban button in topbar" description="Display the Tasks/Kanban icon in the topbar for adding a Kanban pane to the active tab.">
+                <ToggleSwitch checked={showKanbanButton} onChange={setShowKanbanButton} />
               </SettingsRow>
               <SettingsRow label="Copy on select" description="Automatically copy selected terminal text to clipboard.">
                 <ToggleSwitch checked={copyOnSelect} onChange={setCopyOnSelect} />

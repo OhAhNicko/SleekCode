@@ -169,6 +169,48 @@ console.info('[EzyDev] DevTools connected');
 /*  The iframe loads from the proxy (normal src=), so window.location  */
 /*  and all page behaviour remain correct.                             */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/*  Themed error page — rendered inside the iframe when the proxy      */
+/*  can't reach the target. Uses EzyDev color tokens so it blends with */
+/*  the host app instead of showing WebView2's generic block page.     */
+/* ------------------------------------------------------------------ */
+function renderProxyErrorPage(opts: {
+  title: string;
+  detail: string;
+  hint?: string;
+  target?: string;
+}): string {
+  const esc = (s: string) =>
+    s.replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+    );
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(opts.title)}</title>
+<style>
+  :root{color-scheme:dark;}
+  html,body{margin:0;padding:0;height:100%;background:#0d1117;color:#e6edf3;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:32px;}
+  .card{max-width:480px;width:100%;background:#161b22;border:1px solid #30363d;
+    border-radius:8px;padding:28px 28px 24px;box-shadow:0 8px 24px rgba(0,0,0,0.3);}
+  .icon{width:44px;height:44px;border-radius:50%;background:rgba(248,81,73,0.12);
+    display:flex;align-items:center;justify-content:center;margin-bottom:16px;}
+  h1{margin:0 0 8px;font-size:16px;font-weight:600;color:#e6edf3;letter-spacing:-0.01em;}
+  p{margin:0 0 14px;font-size:13px;line-height:1.55;color:#8b949e;}
+  .target{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:12px;background:#1c2128;border:1px solid #30363d;border-radius:4px;
+    padding:6px 10px;color:#c9d1d9;word-break:break-all;margin-bottom:14px;}
+  .hint{font-size:12px;color:#8b949e;border-top:1px solid #21262d;padding-top:12px;margin-top:4px;}
+  .hint b{color:#c9d1d9;font-weight:600;}
+</style></head><body><div class="wrap"><div class="card">
+<div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f85149" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
+<h1>${esc(opts.title)}</h1>
+<p>${esc(opts.detail)}</p>
+${opts.target ? `<code class="target">${esc(opts.target)}</code>` : ""}
+${opts.hint ? `<div class="hint">${opts.hint}</div>` : ""}
+</div></div></body></html>`;
+}
+
 function previewProxy(): Plugin {
   let proxyPort = 0;
   let targetOrigin = "";
@@ -190,8 +232,14 @@ function previewProxy(): Plugin {
         }
 
         if (!targetOrigin) {
-          cRes.writeHead(503, { "Content-Type": "text/plain" });
-          cRes.end("No preview target configured");
+          cRes.writeHead(503, { "Content-Type": "text/html; charset=utf-8" });
+          cRes.end(
+            renderProxyErrorPage({
+              title: "Preview not configured",
+              detail:
+                "The preview proxy hasn't been pointed at a target URL yet. Enter a URL in the address bar and press Enter.",
+            }),
+          );
           return;
         }
 
@@ -249,9 +297,35 @@ function previewProxy(): Plugin {
           },
         );
 
-        proxyReq.on("error", (err) => {
-          cRes.writeHead(502, { "Content-Type": "text/plain" });
-          cRes.end(`Proxy error: ${err.message}`);
+        proxyReq.on("error", (err: NodeJS.ErrnoException) => {
+          const code = err.code || "";
+          let title = "Can't reach the page";
+          let detail = err.message || "The preview proxy failed to contact the target.";
+          let hint = "";
+          if (code === "ECONNREFUSED") {
+            title = "Connection refused";
+            detail =
+              "Nothing is listening on this address. The dev server may have stopped, crashed, or hasn't started yet.";
+            hint =
+              "<b>Tip:</b> start your dev server (e.g. <code>npm run dev</code>) and then refresh.";
+          } else if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+            title = "Host not found";
+            detail = "DNS lookup failed for this address.";
+            hint = "<b>Tip:</b> double-check the URL for typos.";
+          } else if (code === "ETIMEDOUT" || code === "ECONNRESET") {
+            title = "Request timed out";
+            detail = "The target server didn't respond in time.";
+            hint = "<b>Tip:</b> make sure the server is responsive, then refresh.";
+          }
+          cRes.writeHead(502, { "Content-Type": "text/html; charset=utf-8" });
+          cRes.end(
+            renderProxyErrorPage({
+              title,
+              detail,
+              target: targetUrl.href,
+              hint,
+            }),
+          );
         });
 
         cReq.pipe(proxyReq);

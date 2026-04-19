@@ -106,6 +106,8 @@ export interface RecentProjectsSlice {
   wideGridLayout: boolean;
   autoMinimizeGameOnAiDone: boolean;
   showMiniGamesButton: boolean;
+  showKanbanButton: boolean;
+  setShowKanbanButton: (value: boolean) => void;
   onboardingCompleted: boolean;
   setOnboardingCompleted: (value: boolean) => void;
   settingsPanelOpen: boolean;
@@ -197,6 +199,8 @@ export const createRecentProjectsSlice: StateCreator<
   wideGridLayout: true,
   autoMinimizeGameOnAiDone: false,
   showMiniGamesButton: false,
+  showKanbanButton: true,
+  setShowKanbanButton: (value) => set({ showKanbanButton: value }),
   onboardingCompleted: false,
   setOnboardingCompleted: (value) => set({ onboardingCompleted: value }),
   settingsPanelOpen: false,

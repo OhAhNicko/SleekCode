@@ -45,6 +45,7 @@ export default function TabBar() {
   const confirmQuit = useAppStore((s) => s.confirmQuit);
   const setConfirmQuit = useAppStore((s) => s.setConfirmQuit);
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
+  const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
   const devServers = useAppStore((s) => s.devServers);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
@@ -1380,42 +1381,44 @@ export default function TabBar() {
         <ClipboardImageStrip />
 
         {/* Tasks */}
-        <div
-          onClick={() => {
-            const store = useAppStore.getState();
-            const tab = store.tabs.find((t) => t.id === activeTabId);
-            if (!tab || !tab.layout || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
+        {showKanbanButton && (
+          <div
+            onClick={() => {
+              const store = useAppStore.getState();
+              const tab = store.tabs.find((t) => t.id === activeTabId);
+              if (!tab || !tab.layout || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
 
-            // Toggle: if kanban already exists, remove it
-            const existingId = findKanbanPaneId(tab.layout);
-            if (existingId) {
-              const newLayout = removePane(tab.layout, existingId);
+              // Toggle: if kanban already exists, remove it
+              const existingId = findKanbanPaneId(tab.layout);
+              if (existingId) {
+                const newLayout = removePane(tab.layout, existingId);
+                if (newLayout) store.updateTabLayout(tab.id, newLayout);
+                return;
+              }
+
+              // Smart add: placement depends on row count
+              const newLayout = addKanbanPane(tab.layout);
               if (newLayout) store.updateTabLayout(tab.id, newLayout);
-              return;
-            }
-
-            // Smart add: placement depends on row count
-            const newLayout = addKanbanPane(tab.layout);
-            if (newLayout) store.updateTabLayout(tab.id, newLayout);
-          }}
-          title="Tasks"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            alignSelf: "center",
-            width: 34,
-            height: 26,
-            cursor: "pointer",
-            borderRadius: 4,
-            backgroundColor: "transparent",
-            transition: "background-color 120ms ease",
-          }}
-          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
-          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-        >
-          <PiKanbanDuotone size={14} color="var(--ezy-text-muted)" style={{ transform: "scale(1.5)" }} />
-        </div>
+            }}
+            title="Tasks"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              alignSelf: "center",
+              width: 34,
+              height: 26,
+              cursor: "pointer",
+              borderRadius: 4,
+              backgroundColor: "transparent",
+              transition: "background-color 120ms ease",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+          >
+            <PiKanbanDuotone size={14} color="var(--ezy-text-muted)" style={{ transform: "scale(1.5)" }} />
+          </div>
+        )}
 
         {/* Browser Preview — only for project tabs */}
         {(() => {
