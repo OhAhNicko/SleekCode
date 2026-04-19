@@ -925,7 +925,47 @@ export default function SettingsPane() {
                   </div>
                   {/* Statusline toggles */}
                   <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid var(--ezy-border-subtle)" }}>
-                    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 6 }}>Statusline</div>
+                    {(() => {
+                      const visibleKeys = Object.entries(STATUSLINE_FEATURES)
+                        .filter(([, feat]) => feat.clis.includes(cliType))
+                        .map(([k]) => k);
+                      const allOn = visibleKeys.every((k) => statuslineToggles[cliType]?.[k] ?? true);
+                      const allOff = visibleKeys.every((k) => !(statuslineToggles[cliType]?.[k] ?? true));
+                      const setAll = (value: boolean) => {
+                        visibleKeys.forEach((k) => setStatuslineToggle(cliType, k, value));
+                      };
+                      const btn = (label: string, onClick: () => void, disabled: boolean) => (
+                        <div
+                          onClick={disabled ? undefined : onClick}
+                          style={{
+                            padding: "2px 8px",
+                            borderRadius: 4,
+                            border: "1px solid var(--ezy-border-light)",
+                            color: "var(--ezy-text-secondary)",
+                            fontSize: 11,
+                            lineHeight: 1.3,
+                            cursor: disabled ? "default" : "pointer",
+                            opacity: disabled ? 0.3 : 1,
+                            backgroundColor: "transparent",
+                            transition: "background-color 120ms ease",
+                            userSelect: "none",
+                          }}
+                          onMouseEnter={(e) => { if (!disabled) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                        >
+                          {label}
+                        </div>
+                      );
+                      return (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                          <div style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>Statusline</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            {btn("All", () => setAll(true), allOn)}
+                            {btn("None", () => setAll(false), allOff)}
+                          </div>
+                        </div>
+                      );
+                    })()}
                     {Object.entries(STATUSLINE_FEATURES)
                       .filter(([, feat]) => feat.clis.includes(cliType))
                       .map(([key, feat]) => {

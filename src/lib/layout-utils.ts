@@ -64,6 +64,43 @@ export function removePane(
   };
 }
 
+// Regenerating the split id is required so react-resizable-panels' autoSaveId
+// cache (keyed on split id) misses and our recomputed sizes actually take effect.
+export function removePaneBalanced(
+  layout: PaneLayout,
+  targetId: string
+): PaneLayout | null {
+  if (layout.type !== "split") {
+    return layout.id === targetId ? null : layout;
+  }
+
+  const [first, second] = layout.children;
+
+  if (first.id === targetId) return second;
+  if (second.id === targetId) return first;
+
+  const newFirst = removePaneBalanced(first, targetId);
+  const newSecond = removePaneBalanced(second, targetId);
+
+  if (!newFirst && !newSecond) return null;
+  if (!newFirst) return newSecond;
+  if (!newSecond) return newFirst;
+
+  if (newFirst === first && newSecond === second) return layout;
+
+  const leftLeaves = countLeafPanes(newFirst);
+  const rightLeaves = countLeafPanes(newSecond);
+  const total = leftLeaves + rightLeaves;
+  const leftPct = (leftLeaves / total) * 100;
+
+  return {
+    ...layout,
+    id: generatePaneId(),
+    children: [newFirst, newSecond] as [PaneLayout, PaneLayout],
+    sizes: [leftPct, 100 - leftPct],
+  };
+}
+
 /** Find the ID of the first leaf pane in a layout tree */
 export function findFirstLeafId(layout: PaneLayout): string | null {
   if (layout.type === "split") {

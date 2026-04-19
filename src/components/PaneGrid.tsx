@@ -3,6 +3,7 @@ import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import type { PaneLayout, GameType } from "../types";
 import {
   removePane,
+  removePaneBalanced,
   generatePaneId,
   repositionKanbanPane,
 } from "../lib/layout-utils";
@@ -38,7 +39,7 @@ export default function PaneGrid({
   const handleClose = useCallback(
     (paneId: string) => {
       snapshotPane(tabId, layout);
-      const newLayout = removePane(layout, paneId);
+      const newLayout = removePaneBalanced(layout, paneId);
       if (newLayout) {
         onLayoutChange(newLayout);
       }

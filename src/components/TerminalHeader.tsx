@@ -27,6 +27,7 @@ export const STATUSLINE_FEATURES: Record<string, { label: string; clis: Terminal
   thinkingTokens: { label: "Thinking tokens",      clis: ["gemini"] },
   quotaReset:     { label: "Quota reset timer",    clis: ["gemini"] },
   contextBar:     { label: "Context bar",          clis: ["claude", "codex", "gemini"] },
+  promptHistory:  { label: "Prompt history",       clis: ["claude", "codex", "gemini"] },
 };
 
 /** Brand colors for each CLI — used for header underline */
@@ -1107,7 +1108,7 @@ export default function TerminalHeader({
             </span>
           )}
           {/* Session picker — always visible for resumable CLIs, shows name when available */}
-          {isResumable && (
+          {sl("sessionPicker") && isResumable && (
             <div ref={sessionNameRef} style={{ minWidth: 0, flexShrink: 1 }}>
               {inlineRenaming ? (
                 <input
@@ -1356,7 +1357,7 @@ export default function TerminalHeader({
       )}
 
       {/* Prompt history button — always visible for AI CLIs */}
-      {(terminalType === "claude" || terminalType === "codex" || terminalType === "gemini") && getPromptEntries && (
+      {sl("promptHistory") && (terminalType === "claude" || terminalType === "codex" || terminalType === "gemini") && getPromptEntries && (
         <button
           ref={promptHistoryBtnRef}
           onClick={() => {
