@@ -182,6 +182,10 @@ export default function TerminalPane({
   useEffect(() => { copyOnSelectRef.current = copyOnSelect; }, [copyOnSelect]);
   const backendRef = useRef(backend);
   backendRef.current = backend;
+  // isActive may change between effect schedule and async initTerminal completion;
+  // the ref lets initTerminal decide whether to focus without stale closure.
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -690,6 +694,14 @@ export default function TerminalPane({
 
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
+
+    // Font load is async, so the isActive effect may have fired while
+    // terminalRef was still null, swallowing focus. Re-focus now that
+    // the terminal exists — skip when the pane was opened in background
+    // (suppressed) or is no longer the active pane.
+    if (isActiveRef.current && !focusSuppressedRef.current) {
+      term.focus();
+    }
 
     // Register command block parser for shell terminals
     if (useShellIntegration) {

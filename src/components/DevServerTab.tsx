@@ -721,7 +721,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
 export default function DevServerTab() {
   const devServers = useAppStore((s) => s.devServers);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [showRemoteServers, setShowRemoteServers] = useState(false);
+  const [showRemoteServers, setShowRemoteServers] = useState(true);
 
   return (
     <div
@@ -762,7 +762,7 @@ export default function DevServerTab() {
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           {/* Remote servers toggle */}
           <div
-            title="Remote Servers"
+            title={showRemoteServers ? "Hide Remote Servers" : "Show Remote Servers"}
             style={{
               width: 20,
               height: 20,

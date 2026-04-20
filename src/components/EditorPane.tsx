@@ -17,6 +17,8 @@ interface EditorPaneProps {
   filePath: string;
   language?: string;
   onClose: () => void;
+  /** When set, read/write route through ssh_read_file / ssh_write_file against this RemoteServer.id. */
+  serverId?: string;
 }
 
 function detectLanguage(filePath: string): Extension[] {
@@ -57,7 +59,7 @@ function getLanguageLabel(filePath: string): string {
   }
 }
 
-export default function EditorPane({ filePath, onClose }: EditorPaneProps) {
+export default function EditorPane({ filePath, onClose, serverId }: EditorPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -66,6 +68,8 @@ export default function EditorPane({ filePath, onClose }: EditorPaneProps) {
   const [saving, setSaving] = useState(false);
   const themeId = useAppStore((s) => s.themeId);
   const theme = getTheme(themeId);
+  const servers = useAppStore((s) => s.servers);
+  const server = serverId ? servers.find((s) => s.id === serverId) : undefined;
 
   const fileName = filePath.split(/[\\/]/).pop() || filePath;
   const langLabel = getLanguageLabel(filePath);
@@ -75,14 +79,26 @@ export default function EditorPane({ filePath, onClose }: EditorPaneProps) {
     setSaving(true);
     try {
       const content = viewRef.current.state.doc.toString();
-      await invoke("write_file", { path: filePath, content });
+      if (serverId) {
+        if (!server) throw new Error("Server no longer exists");
+        const identityFile = server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null;
+        await invoke("ssh_write_file", {
+          host: server.host,
+          username: server.username,
+          path: filePath,
+          content,
+          identityFile,
+        });
+      } else {
+        await invoke("write_file", { path: filePath, content });
+      }
       setModified(false);
     } catch (e) {
       setError(String(e));
     } finally {
       setSaving(false);
     }
-  }, [filePath]);
+  }, [filePath, serverId, server]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -90,7 +106,19 @@ export default function EditorPane({ filePath, onClose }: EditorPaneProps) {
 
     (async () => {
       try {
-        const content = await invoke<string>("read_file", { path: filePath });
+        let content: string;
+        if (serverId) {
+          if (!server) throw new Error("Server no longer exists");
+          const identityFile = server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null;
+          content = await invoke<string>("ssh_read_file", {
+            host: server.host,
+            username: server.username,
+            path: filePath,
+            identityFile,
+          });
+        } else {
+          content = await invoke<string>("read_file", { path: filePath });
+        }
 
         if (!containerRef.current) return;
 

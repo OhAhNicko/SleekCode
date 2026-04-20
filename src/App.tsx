@@ -395,6 +395,18 @@ export default function App() {
           }
           return;
         }
+        if (key === "Tab") {
+          // Alt+Tab → cycle forward through open project tabs
+          consume();
+          const store = useAppStore.getState();
+          const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab);
+          if (cycleable.length > 0) {
+            const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
+            const nextIndex = (currentIndex + 1) % cycleable.length;
+            store.setActiveTab(cycleable[nextIndex].id);
+          }
+          return;
+        }
       }
 
       if (!ctrlKey) return;

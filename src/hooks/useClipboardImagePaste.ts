@@ -38,6 +38,33 @@ export function useClipboardImagePaste({
     const container = containerRef.current;
     if (!container) return;
 
+    // Shared paste action — used by Ctrl+V and middle-click.
+    // If the clipboard has a tracked image, inserts its file path (the active
+    // clipboard-image capture flow); otherwise pastes text via the system
+    // clipboard.
+    const pasteFromClipboard = () => {
+      const store = useClipboardImageStore.getState();
+      const latestImage = store.images[0];
+
+      if (latestImage && store.lastSeq === store.lastImageSeq) {
+        const filePath = resolveImagePath(latestImage.winPath);
+        const label = getImageLabel(latestImage.winPath);
+        write(filePath);
+        setPastedImage({ thumbnailUrl: latestImage.dataUri, filePath: label });
+
+        store.setLastInsertion({
+          text: filePath,
+          terminalId,
+          timestamp: Date.now(),
+        });
+        return;
+      }
+
+      navigator.clipboard.readText().then((text) => {
+        if (text) write(text);
+      });
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
 
@@ -79,38 +106,40 @@ export function useClipboardImagePaste({
       // Ctrl+V — paste image label if clipboard has one
       if (e.key !== "v" && e.key !== "V") return;
 
-      const store = useClipboardImageStore.getState();
-      const latestImage = store.images[0];
-
-      if (latestImage && store.lastSeq === store.lastImageSeq) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        const filePath = resolveImagePath(latestImage.winPath);
-        const label = getImageLabel(latestImage.winPath);
-        write(filePath);
-        setPastedImage({ thumbnailUrl: latestImage.dataUri, filePath: label });
-
-        // Record for undo
-        store.setLastInsertion({
-          text: filePath,
-          terminalId,
-          timestamp: Date.now(),
-        });
-        return;
-      }
-
-      // No image in clipboard — paste text from clipboard
       e.preventDefault();
       e.stopPropagation();
-      navigator.clipboard.readText().then((text) => {
-        if (text) write(text);
-      });
+      pasteFromClipboard();
+    };
+
+    // Middle-click (scroll wheel) paste — mirrors Ctrl+V behavior.
+    // Using mousedown on capture phase so preventDefault blocks Windows
+    // autoscroll mode before the browser activates it.
+    const handleMouseDown = (e: MouseEvent) => {
+      if (e.button !== 1) return;
+      if (exited || processingRef.current) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pasteFromClipboard();
+    };
+
+    // Browsers that fire `auxclick` for button 1 still trigger autoscroll
+    // unless the preceding mousedown was also suppressed. Kept as a
+    // belt-and-suspenders guard against default paste-on-auxclick behaviors.
+    const handleAuxClick = (e: MouseEvent) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      e.stopPropagation();
     };
 
     container.addEventListener("keydown", handleKeyDown, true);
-    return () => container.removeEventListener("keydown", handleKeyDown, true);
-  }, [containerRef, terminalType, terminalId, write, exited]);
+    container.addEventListener("mousedown", handleMouseDown, true);
+    container.addEventListener("auxclick", handleAuxClick, true);
+    return () => {
+      container.removeEventListener("keydown", handleKeyDown, true);
+      container.removeEventListener("mousedown", handleMouseDown, true);
+      container.removeEventListener("auxclick", handleAuxClick, true);
+    };
+  }, [containerRef, terminalRef, terminalType, terminalId, write, exited]);
 
   return { pastedImage, dismissPreview };
 }

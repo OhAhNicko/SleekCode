@@ -333,6 +333,34 @@ export default function Workspace({ tab }: WorkspaceProps) {
     };
   }, [tab.id, tab.layout, activeTerminalId, handleTerminalFocus]);
 
+  // Restore focus to the active pane when this tab becomes visible.
+  // Tabs stay mounted behind display:none, so xterm's internal focus is
+  // lost while the container is hidden and nothing re-grabs it on show.
+  // lastFocusedElementRef is document-scoped and may point at a pane in a
+  // different tab, so we route through this tab's own activeTerminalId.
+  useEffect(() => {
+    const focusActivePane = () => {
+      if (!activeTerminalId) return;
+      const paneEl = document.querySelector(`[data-terminal-id="${activeTerminalId}"]`);
+      if (!paneEl) return;
+      // xterm's textarea lives inside containerRef and precedes the composer
+      // textarea in DOM order, so the first match is the terminal input.
+      const target = paneEl.querySelector("textarea") ?? paneEl.querySelector("canvas");
+      (target as HTMLElement | null)?.focus();
+    };
+
+    if (useAppStore.getState().activeTabId === tab.id) {
+      requestAnimationFrame(focusActivePane);
+    }
+
+    const unsub = useAppStore.subscribe((state, prev) => {
+      if (state.activeTabId === prev.activeTabId) return;
+      if (state.activeTabId !== tab.id) return;
+      requestAnimationFrame(focusActivePane);
+    });
+    return unsub;
+  }, [tab.id, activeTerminalId]);
+
   // Listen for clear-terminal events (Ctrl+L)
   useEffect(() => {
     const handler = () => {

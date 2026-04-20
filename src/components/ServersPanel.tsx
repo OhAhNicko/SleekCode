@@ -468,6 +468,16 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
     }
   }, []);
 
+  // Auto-test every server on mount in compact mode so the Dev Servers panel shows status dots immediately.
+  // Kept to mount-only to avoid hammering SSH on re-renders; user can still re-test manually.
+  useEffect(() => {
+    if (!compact) return;
+    for (const server of servers) {
+      handleTestConnection(server);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleDelete = useCallback((id: string) => {
     if (deleteConfirm === id) {
       removeServer(id);

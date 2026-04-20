@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useMemo } from "react";
 import { WORKSPACE_TEMPLATES, type WorkspaceTemplate } from "../lib/workspace-templates";
 import { useAppStore } from "../store";
 import { getServerCommandSuggestions, BUILTIN_SERVER_COMMANDS } from "../lib/server-commands";
+import { isWindows } from "../lib/platform";
 import type { TerminalType } from "../types";
 
 export type ExtraPaneType = "codereview" | "fileviewer" | "browser" | "kanban";
@@ -42,6 +43,9 @@ const FLEET_AGENTS: { type: TerminalType; label: string; description: string }[]
   { type: "claude", label: "Claude", description: "claude code" },
   { type: "codex", label: "Codex", description: "codex cli" },
   { type: "gemini", label: "Gemini", description: "gemini cli" },
+  isWindows()
+    ? { type: "shell" as TerminalType, label: "PowerShell", description: "Windows PowerShell" }
+    : { type: "shell" as TerminalType, label: "Shell", description: "Default shell" },
 ];
 
 const EXTRA_PANES: { type: ExtraPaneType; label: string; description: string }[] = [
@@ -63,7 +67,11 @@ function expandFleetToSlots(counts: FleetCounts): TerminalType[] {
 }
 
 function makeAllClaude(slotCount: number): FleetCounts {
-  return { claude: slotCount, codex: 0, gemini: 0 };
+  const counts: FleetCounts = {};
+  FLEET_AGENTS.forEach((agent) => {
+    counts[agent.type] = agent.type === "claude" ? slotCount : 0;
+  });
+  return counts;
 }
 
 function makeEvenFleet(slotCount: number): FleetCounts {
@@ -602,7 +610,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                   e.currentTarget.style.borderColor = "var(--ezy-border)";
                   e.currentTarget.style.color = "var(--ezy-text-secondary)";
                 }}
-                onClick={() => setFleetCounts({ claude: 0, codex: 0, gemini: 0 })}
+                onClick={() => setFleetCounts({ claude: 0, codex: 0, gemini: 0, shell: 0 })}
               >
                 CLEAR
               </button>

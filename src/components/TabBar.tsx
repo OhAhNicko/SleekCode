@@ -40,6 +40,7 @@ export default function TabBar() {
   const recentProjects = useAppStore((s) => s.recentProjects);
   const addRecentProject = useAppStore((s) => s.addRecentProject);
   const removeRecentProject = useAppStore((s) => s.removeRecentProject);
+  const servers = useAppStore((s) => s.servers);
   const cliYolo = useAppStore((s) => s.cliYolo);
   const toggleProjectQuickOpen = useAppStore((s) => s.toggleProjectQuickOpen);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
@@ -276,17 +277,16 @@ export default function TabBar() {
       }));
       addTerminals(batch);
       const tabId = addTabWithLayout(pendingDir.name, pendingDir.dir, finalLayout, pendingDir.serverId);
-      if (!pendingDir.serverId) {
-        addRecentProject({
-          path: pendingDir.dir,
-          name: pendingDir.name,
-          template: { templateId: template.id, cols: template.cols, rows: template.rows, paneCount: template.paneCount, slotTypes },
-          serverCommand,
-          noDevServer,
-        });
-      }
-      // Auto-start server command if provided and enabled
-      if (serverCommand && autoStartServerCommand) {
+      addRecentProject({
+        path: pendingDir.dir,
+        name: pendingDir.name,
+        template: { templateId: template.id, cols: template.cols, rows: template.rows, paneCount: template.paneCount, slotTypes },
+        serverCommand,
+        noDevServer,
+        serverId: pendingDir.serverId,
+      });
+      // Auto-start server command if provided and enabled (local only — dev servers don't run over SSH today)
+      if (serverCommand && autoStartServerCommand && !pendingDir.serverId) {
         spawnDevServer(tabId, pendingDir.name, pendingDir.dir, serverCommand);
       }
       setPendingDir(null);
@@ -304,11 +304,12 @@ export default function TabBar() {
           id: t.id,
           type: t.type,
           workingDir: project.path,
+          serverId: project.serverId,
         }));
         addTerminals(batch);
-        const tabId = addTabWithLayout(project.name, project.path, layout);
-        addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate });
-        if (project.serverCommand && autoStartServerCommand && !project.noDevServer) {
+        const tabId = addTabWithLayout(project.name, project.path, layout, project.serverId);
+        addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate, serverId: project.serverId });
+        if (project.serverCommand && autoStartServerCommand && !project.noDevServer && !project.serverId) {
           spawnDevServer(tabId, project.name, project.path, project.serverCommand);
         }
       } else if (project.lastTemplate) {
@@ -320,11 +321,12 @@ export default function TabBar() {
           id,
           type: slotTypes[i] ?? ("shell" as TerminalType),
           workingDir: project.path,
+          serverId: project.serverId,
         }));
         addTerminals(batch);
-        const tabId = addTabWithLayout(project.name, project.path, typedLayout);
-        addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate });
-        if (project.serverCommand && autoStartServerCommand && !project.noDevServer) {
+        const tabId = addTabWithLayout(project.name, project.path, typedLayout, project.serverId);
+        addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate, serverId: project.serverId });
+        if (project.serverCommand && autoStartServerCommand && !project.noDevServer && !project.serverId) {
           spawnDevServer(tabId, project.name, project.path, project.serverCommand);
         }
       }
@@ -978,7 +980,7 @@ export default function TabBar() {
             }}
             onClick={() => {
               setShowNewTabMenu(false);
-              if (recentProjects.length > 0 || projectsDir) {
+              if (recentProjects.length > 0 || projectsDir || servers.length > 0) {
                 setShowRecentMenu((v) => !v);
               } else {
                 setShowRecentMenu(false);
@@ -1031,6 +1033,13 @@ export default function TabBar() {
                 const hasSavedLayout = !!project.lastLayout || !!project.lastTemplate;
                 const canQuickOpen = hasSavedLayout && !!project.quickOpen;
                 const savedPaneCount = project.lastLayout ? countLeafPanes(project.lastLayout) : project.lastTemplate?.paneCount;
+                const linkedServer = project.serverId ? servers.find((s) => s.id === project.serverId) : undefined;
+                const isOrphanRemote = !!project.serverId && !linkedServer;
+                const tooltip = isOrphanRemote
+                  ? `Server removed — re-add it in the Remote Servers panel to use this project. (${project.path})`
+                  : linkedServer
+                    ? `${linkedServer.name}: ${project.path}`
+                    : project.path;
                 return (
                 <div
                   key={project.id}
@@ -1040,28 +1049,48 @@ export default function TabBar() {
                     alignItems: "center",
                     gap: 8,
                     padding: "7px 12px",
-                    cursor: "pointer",
+                    cursor: isOrphanRemote ? "not-allowed" : "pointer",
                     fontSize: 13,
                     color: "var(--ezy-text-secondary)",
                     position: "relative",
+                    opacity: isOrphanRemote ? 0.5 : 1,
                   }}
-                  title={project.path}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                  title={tooltip}
+                  onMouseEnter={(e) => { if (!isOrphanRemote) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
                   onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
                   onClick={() => {
+                    if (isOrphanRemote) return;
                     setShowRecentMenu(false);
                     if (canQuickOpen) {
                       quickOpenProject(project, false);
                     } else {
-                      setPendingDir({ name: project.name, dir: project.path });
+                      setPendingDir({ name: project.name, dir: project.path, serverId: project.serverId });
                     }
                   }}
                 >
                   {/* Folder icon */}
                   <FaFolder size={14} color="var(--ezy-text-muted)" style={{ flexShrink: 0 }} />
                   <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontWeight: 500, color: "var(--ezy-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {project.name}
+                    <div style={{ fontWeight: 500, color: "var(--ezy-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{project.name}</span>
+                      {project.serverId && (
+                        <span
+                          style={{
+                            flexShrink: 0,
+                            fontSize: 9,
+                            fontWeight: 600,
+                            padding: "1px 6px",
+                            borderRadius: 3,
+                            backgroundColor: isOrphanRemote ? "var(--ezy-surface)" : "var(--ezy-neutral-700, #404040)",
+                            color: isOrphanRemote ? "var(--ezy-text-muted)" : "#ffffff",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                            border: isOrphanRemote ? "1px solid var(--ezy-border)" : "none",
+                          }}
+                        >
+                          {isOrphanRemote ? "no server" : (linkedServer?.name ?? linkedServer?.host ?? "remote")}
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {truncatePath(project.path)}
@@ -1124,7 +1153,7 @@ export default function TabBar() {
                         }}
                         onClick={(e) => {
                           e.stopPropagation();
-                          toggleProjectQuickOpen(project.path);
+                          toggleProjectQuickOpen(project.path, project.serverId);
                         }}
                       >
                         <FaBolt size={10} color="currentColor" />
@@ -1140,7 +1169,7 @@ export default function TabBar() {
                     style={{ flexShrink: 0, cursor: "pointer", transition: "opacity 120ms ease" }}
                     onClick={(e) => {
                       e.stopPropagation();
-                      removeRecentProject(project.path);
+                      removeRecentProject(project.path, project.serverId);
                     }}
                   />
                 </div>
@@ -1200,6 +1229,53 @@ export default function TabBar() {
                 <FaPlus size={14} color="var(--ezy-text-muted)" />
                 Browse for Folder...
               </button>
+              {servers.length > 0 && (
+                <>
+                  <div style={{ height: 1, backgroundColor: "var(--ezy-border)", margin: "2px 0" }} />
+                  <div
+                    style={{
+                      padding: "6px 12px",
+                      fontSize: 10,
+                      fontWeight: 600,
+                      letterSpacing: "0.08em",
+                      textTransform: "uppercase",
+                      color: "var(--ezy-text-muted)",
+                    }}
+                  >
+                    Remote Servers
+                  </div>
+                  {servers.map((server) => (
+                    <button
+                      key={server.id}
+                      className="w-full text-left"
+                      title={`Browse folders on ${server.username}@${server.host}`}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "8px 12px",
+                        backgroundColor: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                        fontSize: 13,
+                        color: "var(--ezy-text-secondary)",
+                        fontFamily: "inherit",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      onClick={() => {
+                        setShowRecentMenu(false);
+                        setBrowsingServer(server);
+                      }}
+                    >
+                      <FaServer size={12} color="var(--ezy-text-muted)" />
+                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        Open folder on {server.name}…
+                      </span>
+                    </button>
+                  ))}
+                </>
+              )}
             </div>
           )}
 
@@ -1815,22 +1891,19 @@ export default function TabBar() {
       )}
 
       {/* Template Picker modal */}
-      {pendingDir && (
-        <TemplatePicker
-          onSelect={handleTemplateSelected}
-          onClose={() => setPendingDir(null)}
-          initialServerCommand={
-            recentProjects.find(
-              (p) => p.path.replace(/\\/g, "/") === pendingDir.dir.replace(/\\/g, "/")
-            )?.serverCommand
-          }
-          initialNoDevServer={
-            recentProjects.find(
-              (p) => p.path.replace(/\\/g, "/") === pendingDir.dir.replace(/\\/g, "/")
-            )?.noDevServer
-          }
-        />
-      )}
+      {pendingDir && (() => {
+        const matchingRecent = recentProjects.find(
+          (p) => p.path.replace(/\\/g, "/") === pendingDir.dir.replace(/\\/g, "/") && p.serverId === pendingDir.serverId
+        );
+        return (
+          <TemplatePicker
+            onSelect={handleTemplateSelected}
+            onClose={() => setPendingDir(null)}
+            initialServerCommand={matchingRecent?.serverCommand}
+            initialNoDevServer={matchingRecent?.noDevServer}
+          />
+        );
+      })()}
 
       {/* Delayed path tooltip (2s hover on tab) */}
       {pathTooltip && (() => {

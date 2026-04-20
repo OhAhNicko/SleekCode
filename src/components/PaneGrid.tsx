@@ -227,6 +227,43 @@ export default function PaneGrid({
     return () => window.removeEventListener("ezydev:open-fileviewer", handler);
   }, [layout, onLayoutChange]);
 
+  // Remote editor: open an EditorPane with serverId so file I/O routes over SSH.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail?.filePath || !detail?.serverId) return;
+      const filePath: string = detail.filePath;
+      const serverId: string = detail.serverId;
+
+      // If an editor for this exact remote file is already open, just focus-ish (no-op for now).
+      const findEditor = (node: PaneLayout): string | null => {
+        if (node.type === "editor" && node.filePath === filePath && node.serverId === serverId) return node.id;
+        if (node.type === "split") {
+          return findEditor(node.children[0]) ?? findEditor(node.children[1]);
+        }
+        return null;
+      };
+      if (findEditor(layout)) return;
+
+      const editorPane = {
+        type: "editor" as const,
+        id: generatePaneId(),
+        filePath,
+        serverId,
+      };
+      const newLayout: PaneLayout = {
+        type: "split",
+        id: generatePaneId(),
+        direction: "horizontal",
+        children: [layout, editorPane],
+        sizes: [60, 40],
+      };
+      onLayoutChange(newLayout);
+    };
+    window.addEventListener("ezydev:open-remote-editor", handler);
+    return () => window.removeEventListener("ezydev:open-remote-editor", handler);
+  }, [layout, onLayoutChange]);
+
   const renderPane = (node: PaneLayout): React.ReactNode => {
     if (node.type === "terminal") {
       return (
@@ -272,6 +309,7 @@ export default function PaneGrid({
           key={node.id}
           filePath={node.filePath}
           language={node.language}
+          serverId={node.serverId}
           onClose={() => handleClose(node.id)}
         />
       );

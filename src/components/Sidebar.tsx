@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import { useAppStore } from "../store";
 import type { SidebarTab } from "../types";
 import FileExplorer from "./FileExplorer";
+import RemoteFileExplorer from "./RemoteFileExplorer";
 import GlobalSearch from "./GlobalSearch";
 
 interface SidebarProps {
@@ -12,12 +14,41 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
   const sidebarTab = useAppStore((s) => s.sidebarTab);
   const setSidebarTab = useAppStore((s) => s.setSidebarTab);
   const terminals = useAppStore((s) => s.terminals);
+  const tabs = useAppStore((s) => s.tabs);
+  const activeTabId = useAppStore((s) => s.activeTabId);
+  const servers = useAppStore((s) => s.servers);
 
-  const tabs: { id: SidebarTab; label: string }[] = [
-    { id: "files", label: "Files" },
-    { id: "search", label: "Search" },
-    { id: "terminals", label: "Terminals" },
-  ];
+  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const activeServer = activeTab?.serverId ? servers.find((s) => s.id === activeTab.serverId) : undefined;
+  const isRemote = !!activeServer;
+
+  const handleRemoteOpen = (filePath: string) => {
+    if (!activeTab?.serverId) return;
+    window.dispatchEvent(
+      new CustomEvent("ezydev:open-remote-editor", {
+        detail: { filePath, serverId: activeTab.serverId },
+      })
+    );
+  };
+
+  // If we switch into a remote tab while "files" is active, flip to "remote-files"
+  // (and vice-versa), so the visible pane always matches the tab's nature.
+  useEffect(() => {
+    if (isRemote && sidebarTab === "files") setSidebarTab("remote-files");
+    if (!isRemote && sidebarTab === "remote-files") setSidebarTab("files");
+  }, [isRemote, sidebarTab, setSidebarTab]);
+
+  const visibleTabs: { id: SidebarTab; label: string }[] = isRemote
+    ? [
+        { id: "remote-files", label: "Remote Files" },
+        { id: "search", label: "Search" },
+        { id: "terminals", label: "Terminals" },
+      ]
+    : [
+        { id: "files", label: "Files" },
+        { id: "search", label: "Search" },
+        { id: "terminals", label: "Terminals" },
+      ];
 
   // Render tab icon
   const renderTabIcon = (id: SidebarTab, isActive: boolean) => {
@@ -27,6 +58,13 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
         return (
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth="1.3">
             <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.879a1.5 1.5 0 0 1 1.06.44l.872.871A.5.5 0 0 0 8.665 3.5H13.5A1.5 1.5 0 0 1 15 5v7.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9Z" />
+          </svg>
+        );
+      case "remote-files":
+        return (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth="1.3">
+            <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.879a1.5 1.5 0 0 1 1.06.44l.872.871A.5.5 0 0 0 8.665 3.5H13.5A1.5 1.5 0 0 1 15 5v7.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9Z" />
+            <circle cx="12" cy="12" r="2.2" fill={color} stroke="none" />
           </svg>
         );
       case "search":
@@ -70,7 +108,7 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
           flexShrink: 0,
         }}
       >
-        {tabs.map((tab) => {
+        {visibleTabs.map((tab) => {
           const isActive = sidebarTab === tab.id;
           return (
             <button
@@ -105,11 +143,23 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
 
       {/* Content */}
       <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
-        {sidebarTab === "files" && (
+        {sidebarTab === "files" && !isRemote && (
           <FileExplorer rootDir={rootDir} onOpenFile={(path) => onOpenFile(path)} />
         )}
+        {sidebarTab === "remote-files" && activeServer && (
+          <RemoteFileExplorer
+            server={activeServer}
+            rootDir={rootDir}
+            onOpenFile={handleRemoteOpen}
+          />
+        )}
         {sidebarTab === "search" && (
-          <GlobalSearch rootDir={rootDir} onOpenFile={onOpenFile} />
+          <GlobalSearch
+            rootDir={rootDir}
+            onOpenFile={onOpenFile}
+            remoteServer={activeServer}
+            onOpenRemoteFile={activeTab?.serverId ? handleRemoteOpen : undefined}
+          />
         )}
         {sidebarTab === "terminals" && (
           <div style={{ overflowY: "auto", height: "100%" }}>

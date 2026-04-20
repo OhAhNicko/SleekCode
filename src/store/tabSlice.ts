@@ -152,7 +152,7 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       // Persist layout to recent project for quick-open restore
       if (tab && tab.layout && !tab.isDevServerTab && !tab.isServersTab && !tab.isKanbanTab && !tab.isSettingsTab) {
         import("./index").then(({ useAppStore }) => {
-          useAppStore.getState().updateProjectLayout(tab.workingDir, tab.layout!);
+          useAppStore.getState().updateProjectLayout(tab.workingDir, tab.layout!, tab.serverId);
         });
       }
 

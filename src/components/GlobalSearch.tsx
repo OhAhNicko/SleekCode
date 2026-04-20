@@ -1,36 +1,64 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { SearchResult } from "../types";
+import type { SearchResult, RemoteServer } from "../types";
 
 interface GlobalSearchProps {
   rootDir: string;
   onOpenFile: (filePath: string, lineNumber?: number) => void;
+  /** When set, search also runs remotely via ssh_grep on this server. */
+  remoteServer?: RemoteServer;
+  /** Click handler for remote results — takes the remote path. */
+  onOpenRemoteFile?: (filePath: string, lineNumber?: number) => void;
 }
 
-export default function GlobalSearch({ rootDir, onOpenFile }: GlobalSearchProps) {
+export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpenRemoteFile }: GlobalSearchProps) {
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
+  const [localResults, setLocalResults] = useState<SearchResult[]>([]);
+  const [remoteResults, setRemoteResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
-      setResults([]);
+      setLocalResults([]);
+      setRemoteResults([]);
       return;
     }
     setSearching(true);
-    try {
-      const res = await invoke<SearchResult[]>("search_in_files", {
-        directory: rootDir,
-        query: q,
-        maxResults: 100,
-      });
-      setResults(res);
-    } catch {
-      setResults([]);
+    // Remote search replaces local search when a remote server is active,
+    // because rootDir is the remote path and local search would either fail
+    // or hit an unrelated local directory.
+    if (remoteServer) {
+      setLocalResults([]);
+      try {
+        const identityFile = remoteServer.authMethod === "ssh-key" && remoteServer.sshKeyPath ? remoteServer.sshKeyPath : null;
+        const res = await invoke<SearchResult[]>("ssh_grep", {
+          host: remoteServer.host,
+          username: remoteServer.username,
+          directory: rootDir,
+          query: q,
+          identityFile,
+          maxResults: 100,
+        });
+        setRemoteResults(res);
+      } catch {
+        setRemoteResults([]);
+      }
+    } else {
+      setRemoteResults([]);
+      try {
+        const res = await invoke<SearchResult[]>("search_in_files", {
+          directory: rootDir,
+          query: q,
+          maxResults: 100,
+        });
+        setLocalResults(res);
+      } catch {
+        setLocalResults([]);
+      }
     }
     setSearching(false);
-  }, [rootDir]);
+  }, [rootDir, remoteServer]);
 
   const handleChange = useCallback((value: string) => {
     setQuery(value);
@@ -38,19 +66,107 @@ export default function GlobalSearch({ rootDir, onOpenFile }: GlobalSearchProps)
     debounceRef.current = setTimeout(() => doSearch(value), 300);
   }, [doSearch]);
 
-  // Cleanup timeout on unmount
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, []);
 
-  // Group results by file
-  const grouped = results.reduce<Record<string, SearchResult[]>>((acc, r) => {
-    if (!acc[r.file_path]) acc[r.file_path] = [];
-    acc[r.file_path].push(r);
-    return acc;
-  }, {});
+  const group = (results: SearchResult[]) =>
+    results.reduce<Record<string, SearchResult[]>>((acc, r) => {
+      if (!acc[r.file_path]) acc[r.file_path] = [];
+      acc[r.file_path].push(r);
+      return acc;
+    }, {});
+
+  const localGrouped = group(localResults);
+  const remoteGrouped = group(remoteResults);
+  const totalCount = localResults.length + remoteResults.length;
+
+  const renderSection = (
+    title: string,
+    grouped: Record<string, SearchResult[]>,
+    onClick: (filePath: string, lineNumber: number) => void,
+  ) => {
+    const entries = Object.entries(grouped);
+    if (entries.length === 0) return null;
+    return (
+      <>
+        <div
+          style={{
+            padding: "6px 8px",
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: "var(--ezy-text-muted)",
+            backgroundColor: "var(--ezy-surface)",
+            borderBottom: "1px solid var(--ezy-border-subtle)",
+            borderTop: "1px solid var(--ezy-border-subtle)",
+          }}
+        >
+          {title}
+        </div>
+        {entries.map(([filePath, matches]) => {
+          const fileName = filePath.split(/[\\/]/).pop() || filePath;
+          return (
+            <div key={filePath}>
+              <div
+                style={{
+                  padding: "4px 8px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "var(--ezy-text)",
+                  backgroundColor: "var(--ezy-surface)",
+                  borderBottom: "1px solid var(--ezy-border-subtle)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={filePath}
+              >
+                {fileName}
+              </div>
+              {matches.map((match, i) => (
+                <div
+                  key={`${filePath}-${match.line_number}-${i}`}
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 6,
+                    padding: "3px 8px 3px 16px",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    color: "var(--ezy-text-secondary)",
+                    transition: "background-color 100ms ease",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                  onClick={() => onClick(filePath, match.line_number)}
+                >
+                  <span
+                    style={{
+                      color: "var(--ezy-text-muted)",
+                      fontSize: 11,
+                      fontVariantNumeric: "tabular-nums",
+                      flexShrink: 0,
+                      minWidth: 28,
+                      textAlign: "right",
+                    }}
+                  >
+                    {match.line_number}
+                  </span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {match.line_content}
+                  </span>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </>
+    );
+  };
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -74,7 +190,7 @@ export default function GlobalSearch({ rootDir, onOpenFile }: GlobalSearchProps)
             type="text"
             value={query}
             onChange={(e) => handleChange(e.target.value)}
-            placeholder="Search in files..."
+            placeholder={remoteServer ? `Search on ${remoteServer.name}…` : "Search in files…"}
             style={{
               width: "100%",
               padding: "6px 8px 6px 28px",
@@ -86,8 +202,8 @@ export default function GlobalSearch({ rootDir, onOpenFile }: GlobalSearchProps)
               fontFamily: "inherit",
               outline: "none",
             }}
-            onFocus={(e) => e.currentTarget.style.borderColor = "var(--ezy-accent)"}
-            onBlur={(e) => e.currentTarget.style.borderColor = "var(--ezy-border)"}
+            onFocus={(e) => (e.currentTarget.style.borderColor = "var(--ezy-accent)")}
+            onBlur={(e) => (e.currentTarget.style.borderColor = "var(--ezy-border)")}
           />
         </div>
       </div>
@@ -95,65 +211,18 @@ export default function GlobalSearch({ rootDir, onOpenFile }: GlobalSearchProps)
       {/* Results */}
       <div style={{ flex: 1, overflowY: "auto" }}>
         {searching && (
-          <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>
-            Searching...
-          </div>
+          <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>Searching…</div>
         )}
-        {!searching && query && results.length === 0 && (
-          <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>
-            No results found
-          </div>
+        {!searching && query && totalCount === 0 && (
+          <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>No results found</div>
         )}
-        {Object.entries(grouped).map(([filePath, matches]) => {
-          const fileName = filePath.split(/[\\/]/).pop() || filePath;
-          return (
-            <div key={filePath}>
-              {/* File header */}
-              <div
-                style={{
-                  padding: "4px 8px",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  color: "var(--ezy-text)",
-                  backgroundColor: "var(--ezy-surface)",
-                  borderBottom: "1px solid var(--ezy-border-subtle)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-                title={filePath}
-              >
-                {fileName}
-              </div>
-              {/* Matches */}
-              {matches.map((match, i) => (
-                <div
-                  key={`${filePath}-${match.line_number}-${i}`}
-                  style={{
-                    display: "flex",
-                    alignItems: "baseline",
-                    gap: 6,
-                    padding: "3px 8px 3px 16px",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    color: "var(--ezy-text-secondary)",
-                    transition: "background-color 100ms ease",
-                  }}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                  onClick={() => onOpenFile(filePath, match.line_number)}
-                >
-                  <span style={{ color: "var(--ezy-text-muted)", fontSize: 11, fontVariantNumeric: "tabular-nums", flexShrink: 0, minWidth: 28, textAlign: "right" }}>
-                    {match.line_number}
-                  </span>
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {match.line_content}
-                  </span>
-                </div>
-              ))}
-            </div>
-          );
-        })}
+        {remoteServer
+          ? renderSection(
+              `Remote — ${remoteServer.name}`,
+              remoteGrouped,
+              (filePath, lineNumber) => (onOpenRemoteFile ?? (() => {}))(filePath, lineNumber),
+            )
+          : renderSection("Local", localGrouped, onOpenFile)}
       </div>
     </div>
   );

@@ -6,10 +6,12 @@ export interface SidebarSlice {
   sidebarTab: SidebarTab;
   devServerPanelOpen: boolean;
   expandedDirs: string[];
+  expandedRemoteDirs: string[];
   toggleSidebar: () => void;
   setSidebarTab: (tab: SidebarTab) => void;
   toggleDevServerPanel: () => void;
   toggleExpandDir: (path: string) => void;
+  toggleExpandRemoteDir: (path: string) => void;
 }
 
 export const createSidebarSlice: StateCreator<
@@ -22,6 +24,7 @@ export const createSidebarSlice: StateCreator<
   sidebarTab: "files",
   devServerPanelOpen: false,
   expandedDirs: [],
+  expandedRemoteDirs: [],
 
   toggleSidebar: () => {
     set((state) => ({
@@ -50,6 +53,17 @@ export const createSidebarSlice: StateCreator<
         expandedDirs: exists
           ? state.expandedDirs.filter((d) => d !== path)
           : [...state.expandedDirs, path],
+      };
+    });
+  },
+
+  toggleExpandRemoteDir: (path) => {
+    set((state) => {
+      const exists = state.expandedRemoteDirs.includes(path);
+      return {
+        expandedRemoteDirs: exists
+          ? state.expandedRemoteDirs.filter((d) => d !== path)
+          : [...state.expandedRemoteDirs, path],
       };
     });
   },

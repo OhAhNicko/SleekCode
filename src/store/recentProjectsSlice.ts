@@ -21,6 +21,12 @@ export interface RecentProject {
   noDevServer?: boolean;
   quickOpen?: boolean;
   lastLayout?: PaneLayout;
+  /** Links to RemoteServer.id when the project lives on an SSH server. Presence means remote. */
+  serverId?: string;
+}
+
+export function isRemoteProject(p: RecentProject): boolean {
+  return !!p.serverId;
 }
 
 const MAX_RECENT_PROJECTS = 15;
@@ -134,8 +140,8 @@ export interface RecentProjectsSlice {
   statuslineToggles: Partial<Record<TerminalType, Record<string, boolean>>>;
   setStatuslineToggle: (cliType: TerminalType, key: string, value: boolean) => void;
   setProjectColor: (workingDir: string, colorId: ProjectColorId) => void;
-  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string; noDevServer?: boolean }) => void;
-  removeRecentProject: (path: string) => void;
+  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string; noDevServer?: boolean; serverId?: string }) => void;
+  removeRecentProject: (path: string, serverId?: string) => void;
   clearRecentProjects: () => void;
   setAlwaysShowTemplatePicker: (value: boolean) => void;
   setRestoreLastSession: (value: boolean) => void;
@@ -151,7 +157,7 @@ export interface RecentProjectsSlice {
   setPreviewInProjectTab: (value: boolean) => void;
   addCustomServerCommand: (command: string) => void;
   removeCustomServerCommand: (command: string) => void;
-  updateProjectServerCommand: (path: string, command: string) => void;
+  updateProjectServerCommand: (path: string, command: string, serverId?: string) => void;
   setBrowserFullColumn: (value: boolean) => void;
   setBrowserSpawnLeft: (value: boolean) => void;
   setCopyOnSelect: (value: boolean) => void;
@@ -165,12 +171,12 @@ export interface RecentProjectsSlice {
   setTerminalBackend: (value: TerminalBackend) => void;
   setCommitMsgMode: (value: CommitMsgMode) => void;
   setShadowAiCli: (value: ShadowAiCli) => void;
-  updateProjectTemplate: (path: string, template: RecentProjectTemplate) => void;
-  updateProjectLayout: (path: string, layout: PaneLayout) => void;
+  updateProjectTemplate: (path: string, template: RecentProjectTemplate, serverId?: string) => void;
+  updateProjectLayout: (path: string, layout: PaneLayout, serverId?: string) => void;
   /** Save every open project tab's layout to its recentProjects.lastLayout entry. Called on app close. */
   flushTabLayoutsToRecent: (tabs: Tab[]) => void;
   setLastActiveProjectPath: (path: string) => void;
-  toggleProjectQuickOpen: (path: string) => void;
+  toggleProjectQuickOpen: (path: string, serverId?: string) => void;
 }
 
 export const createRecentProjectsSlice: StateCreator<
@@ -207,7 +213,7 @@ export const createRecentProjectsSlice: StateCreator<
   wideGridLayout: true,
   autoMinimizeGameOnAiDone: false,
   showMiniGamesButton: false,
-  showKanbanButton: true,
+  showKanbanButton: false,
   setShowKanbanButton: (value) => set({ showKanbanButton: value }),
   onboardingCompleted: false,
   setOnboardingCompleted: (value) => set({ onboardingCompleted: value }),
@@ -250,18 +256,18 @@ export const createRecentProjectsSlice: StateCreator<
     }));
   },
 
-  addRecentProject: ({ path, name, template, serverCommand, noDevServer }) => {
+  addRecentProject: ({ path, name, template, serverCommand, noDevServer, serverId }) => {
     const normalized = normalizePath(path);
+    const matches = (p: RecentProject) =>
+      normalizePath(p.path) === normalized && p.serverId === serverId;
     set((state) => {
-      const existing = state.recentProjects.find(
-        (p) => normalizePath(p.path) === normalized
-      );
+      const existing = state.recentProjects.find(matches);
       const now = Date.now();
       let updated: RecentProject[];
       if (existing) {
         // Update existing: bump timestamp, count, template, serverCommand
         updated = state.recentProjects.map((p) =>
-          normalizePath(p.path) === normalized
+          matches(p)
             ? { ...p, lastOpenedAt: now, openCount: p.openCount + 1, lastTemplate: template ?? p.lastTemplate, name, serverCommand: noDevServer ? undefined : (serverCommand ?? p.serverCommand), noDevServer: noDevServer ?? p.noDevServer }
             : p
         );
@@ -276,6 +282,7 @@ export const createRecentProjectsSlice: StateCreator<
           lastTemplate: template,
           serverCommand: noDevServer ? undefined : serverCommand,
           noDevServer,
+          serverId,
         };
         updated = [newEntry, ...state.recentProjects];
       }
@@ -288,11 +295,11 @@ export const createRecentProjectsSlice: StateCreator<
     });
   },
 
-  removeRecentProject: (path) => {
+  removeRecentProject: (path, serverId) => {
     const normalized = normalizePath(path);
     set((state) => ({
       recentProjects: state.recentProjects.filter(
-        (p) => normalizePath(p.path) !== normalized
+        (p) => !(normalizePath(p.path) === normalized && p.serverId === serverId)
       ),
     }));
   },
@@ -436,33 +443,33 @@ export const createRecentProjectsSlice: StateCreator<
     }));
   },
 
-  updateProjectServerCommand: (path, command) => {
+  updateProjectServerCommand: (path, command, serverId) => {
     const normalized = normalizePath(path);
     set((state) => ({
       recentProjects: state.recentProjects.map((p) =>
-        normalizePath(p.path) === normalized
+        normalizePath(p.path) === normalized && p.serverId === serverId
           ? { ...p, serverCommand: command }
           : p
       ),
     }));
   },
 
-  updateProjectTemplate: (path, template) => {
+  updateProjectTemplate: (path, template, serverId) => {
     const normalized = normalizePath(path);
     set((state) => ({
       recentProjects: state.recentProjects.map((p) =>
-        normalizePath(p.path) === normalized
+        normalizePath(p.path) === normalized && p.serverId === serverId
           ? { ...p, lastTemplate: template }
           : p
       ),
     }));
   },
 
-  updateProjectLayout: (path, layout) => {
+  updateProjectLayout: (path, layout, serverId) => {
     const normalized = normalizePath(path);
     set((state) => ({
       recentProjects: state.recentProjects.map((p) =>
-        normalizePath(p.path) === normalized
+        normalizePath(p.path) === normalized && p.serverId === serverId
           ? { ...p, lastLayout: layout }
           : p
       ),
@@ -472,18 +479,20 @@ export const createRecentProjectsSlice: StateCreator<
   /** Persist every open project tab's layout tree onto its recentProjects.lastLayout.
    *  Single atomic set() to guarantee synchronous localStorage write via Zustand persist. */
   flushTabLayoutsToRecent: (tabs) => {
-    const latestByPath = new Map<string, PaneLayout>();
+    // Key includes serverId so local and remote projects at the same path don't collide
+    const key = (path: string, serverId?: string) => `${normalizePath(path)}|${serverId ?? ""}`;
+    const latestByKey = new Map<string, PaneLayout>();
     for (const tab of tabs) {
       if (tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) continue;
       if (!tab.workingDir) continue;
       if (!tab.layout) continue; // empty tab — don't overwrite saved layout with null
       // Later tabs for the same project win — matches "last-used" intent
-      latestByPath.set(normalizePath(tab.workingDir), tab.layout);
+      latestByKey.set(key(tab.workingDir, tab.serverId), tab.layout);
     }
-    if (latestByPath.size === 0) return;
+    if (latestByKey.size === 0) return;
     set((state) => ({
       recentProjects: state.recentProjects.map((p) => {
-        const layout = latestByPath.get(normalizePath(p.path));
+        const layout = latestByKey.get(key(p.path, p.serverId));
         return layout ? { ...p, lastLayout: layout } : p;
       }),
     }));
@@ -493,11 +502,11 @@ export const createRecentProjectsSlice: StateCreator<
     set({ lastActiveProjectPath: path });
   },
 
-  toggleProjectQuickOpen: (path) => {
+  toggleProjectQuickOpen: (path, serverId) => {
     const normalized = normalizePath(path);
     set((state) => ({
       recentProjects: state.recentProjects.map((p) =>
-        normalizePath(p.path) === normalized
+        normalizePath(p.path) === normalized && p.serverId === serverId
           ? { ...p, quickOpen: !p.quickOpen }
           : p
       ),

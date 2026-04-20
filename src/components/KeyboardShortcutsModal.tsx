@@ -32,6 +32,7 @@ const sections: ShortcutSection[] = [
       { keys: ["Ctrl", "Tab"], label: "Next tab" },
       { keys: ["Ctrl", "Shift", "Tab"], label: "Previous tab" },
       { keys: ["Alt", "1-9"], label: "Switch to tab by number" },
+      { keys: ["Alt", "Tab"], label: "Cycle open projects" },
       { keys: ["Ctrl", "Shift", "T"], label: "New tab" },
       { keys: ["Ctrl", "Shift", "N"], label: "New project / tab" },
       { keys: ["Ctrl", "Shift", "W"], label: "Close tab" },
@@ -62,6 +63,7 @@ const sections: ShortcutSection[] = [
       { keys: ["Ctrl", "Backspace"], label: "Delete word (backward)" },
       { keys: ["Ctrl", "Delete"], label: "Delete word (forward)" },
       { keys: ["Ctrl", "V"], label: "Paste (or attach image)" },
+      { keys: ["Middle-click"], label: "Paste (or attach image)" },
     ],
   },
   {

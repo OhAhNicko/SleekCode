@@ -84,6 +84,8 @@ export interface PaneEditor {
   id: string;
   filePath: string;
   language?: string;
+  /** When set, file I/O routes through ssh_read_file / ssh_write_file against this RemoteServer. */
+  serverId?: string;
 }
 
 export interface PaneSplit {
@@ -179,7 +181,7 @@ export interface SearchResult {
   line_content: string;
 }
 
-export type SidebarTab = "files" | "search" | "terminals";
+export type SidebarTab = "files" | "remote-files" | "search" | "terminals";
 
 export interface AppState {
   tabs: Tab[];

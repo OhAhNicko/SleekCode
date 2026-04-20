@@ -496,6 +496,138 @@ async fn ssh_list_keys() -> Result<Vec<SshKeyInfo>, String> {
 }
 
 #[tauri::command]
+async fn ssh_read_file(
+    host: String,
+    username: String,
+    path: String,
+    identity_file: Option<String>,
+) -> Result<String, String> {
+    let user_host = format!("{}@{}", username, host);
+    let mut cmd = Command::new("ssh");
+    cmd.args(["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5"]);
+    if let Some(ref key) = identity_file {
+        cmd.args(["-i", key]);
+    }
+    cmd.arg(&user_host);
+    cmd.arg(format!("cat -- {}", shell_escape(&path)));
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run ssh: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("SSH read failed: {}", stderr.trim()));
+    }
+
+    String::from_utf8(output.stdout).map_err(|e| format!("File is not valid UTF-8: {}", e))
+}
+
+#[tauri::command]
+async fn ssh_write_file(
+    host: String,
+    username: String,
+    path: String,
+    content: String,
+    identity_file: Option<String>,
+) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let user_host = format!("{}@{}", username, host);
+    let mut cmd = Command::new("ssh");
+    cmd.args(["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"]);
+    if let Some(ref key) = identity_file {
+        cmd.args(["-i", key]);
+    }
+    cmd.arg(&user_host);
+    // cat > <path> reads raw bytes from stdin until EOF — the remote shell never
+    // interprets the content itself, only the path is shell-escaped.
+    cmd.arg(format!("cat > {}", shell_escape(&path)));
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ssh: {}", e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(content.as_bytes())
+            .map_err(|e| format!("Failed to stream content to ssh: {}", e))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait for ssh: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("SSH write failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn ssh_grep(
+    host: String,
+    username: String,
+    directory: String,
+    query: String,
+    identity_file: Option<String>,
+    max_results: Option<usize>,
+) -> Result<Vec<SearchResult>, String> {
+    let max = max_results.unwrap_or(100);
+    let user_host = format!("{}@{}", username, host);
+    let mut cmd = Command::new("ssh");
+    cmd.args(["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5"]);
+    if let Some(ref key) = identity_file {
+        cmd.args(["-i", key]);
+    }
+    cmd.arg(&user_host);
+    // -r recursive, -n line numbers, -I skip binary, -H always-print-path, -F fixed-string.
+    // 2>/dev/null to swallow "permission denied" noise. head caps output so a 1M-hit query
+    // doesn't wedge the channel.
+    cmd.arg(format!(
+        "grep -rnIHF --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=target -- {} {} 2>/dev/null | head -n {}",
+        shell_escape(&query),
+        shell_escape(&directory),
+        max
+    ));
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run ssh: {}", e))?;
+
+    // grep exits 1 when no matches — stdout empty, not an error.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let results: Vec<SearchResult> = stdout
+        .lines()
+        .filter_map(|line| {
+            // Format: /path/to/file:123:content (content may contain colons)
+            let first_colon = line.find(':')?;
+            let (file_path, rest) = line.split_at(first_colon);
+            let rest = &rest[1..]; // drop the ':'
+            let second_colon = rest.find(':')?;
+            let (line_num_str, content) = rest.split_at(second_colon);
+            let content = &content[1..]; // drop the ':'
+            let line_number: usize = line_num_str.parse().ok()?;
+            let file_name = file_path.rsplit('/').next().unwrap_or(file_path).to_string();
+            Some(SearchResult {
+                file_path: file_path.to_string(),
+                file_name,
+                line_number,
+                line_content: content.to_string(),
+            })
+        })
+        .collect();
+
+    Ok(results)
+}
+
+#[tauri::command]
 async fn read_file(path: String) -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {}", e))
 }
@@ -5001,7 +5133,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {
