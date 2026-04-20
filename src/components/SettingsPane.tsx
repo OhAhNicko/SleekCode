@@ -413,6 +413,8 @@ function UpdatesSection() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ downloaded: number; total: number | null } | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
+  const showChangelogOnUpdate = useAppStore((s) => s.showChangelogOnUpdate);
+  const setShowChangelogOnUpdate = useAppStore((s) => s.setShowChangelogOnUpdate);
 
   // Fetch app version on mount
   useEffect(() => {
@@ -468,6 +470,13 @@ function UpdatesSection() {
             break;
         }
       });
+      // Cache release notes for ChangelogModal to pick up post-relaunch.
+      if (pendingUpdate.body && pendingUpdate.body.trim().length > 0) {
+        useAppStore.getState().setPendingChangelog({
+          version: pendingUpdate.version,
+          notes: pendingUpdate.body,
+        });
+      }
       await relaunch();
     } catch (err) {
       setCheckStatus("error");
@@ -590,6 +599,14 @@ function UpdatesSection() {
             {errorMsg || "Failed to check for updates"}
           </span>
         )}
+        <div style={{ borderTop: "1px solid var(--ezy-border)", paddingTop: 14, marginTop: 4 }}>
+          <SettingsRow
+            label="Show changelog popup after updates"
+            description="Display release notes the next time the app launches after an auto-update."
+          >
+            <ToggleSwitch checked={showChangelogOnUpdate} onChange={setShowChangelogOnUpdate} />
+          </SettingsRow>
+        </div>
       </div>
     </SettingsSection>
   );
@@ -642,6 +659,8 @@ export default function SettingsPane() {
   const setAutoMinimizeGameOnAiDone = useAppStore((s) => s.setAutoMinimizeGameOnAiDone);
   const autoStartServerCommand = useAppStore((s) => s.autoStartServerCommand);
   const setAutoStartServerCommand = useAppStore((s) => s.setAutoStartServerCommand);
+  const pullWithRebase = useAppStore((s) => s.pullWithRebase);
+  const setPullWithRebase = useAppStore((s) => s.setPullWithRebase);
   const promptComposerEnabled = useAppStore((s) => s.promptComposerEnabled);
   const setPromptComposerEnabled = useAppStore((s) => s.setPromptComposerEnabled);
   const promptComposerAlwaysVisible = useAppStore((s) => s.promptComposerAlwaysVisible);
@@ -723,6 +742,9 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Auto-start server command" description="Restore dev server commands when reopening projects.">
                 <ToggleSwitch checked={autoStartServerCommand} onChange={setAutoStartServerCommand} />
+              </SettingsRow>
+              <SettingsRow label="Prefer rebase when pulling" description="Use `git pull --rebase` instead of a merge pull when syncing with remote from the Pull button.">
+                <ToggleSwitch checked={pullWithRebase} onChange={setPullWithRebase} />
               </SettingsRow>
             </SettingsSection>
             <SettingsSection id="theme" title="Theme" description="Choose a color theme for the application.">

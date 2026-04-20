@@ -110,6 +110,14 @@ export interface RecentProjectsSlice {
   setShowKanbanButton: (value: boolean) => void;
   onboardingCompleted: boolean;
   setOnboardingCompleted: (value: boolean) => void;
+  showChangelogOnUpdate: boolean;
+  setShowChangelogOnUpdate: (value: boolean) => void;
+  pullWithRebase: boolean;
+  setPullWithRebase: (value: boolean) => void;
+  lastSeenVersion: string | null;
+  setLastSeenVersion: (value: string | null) => void;
+  pendingChangelog: { version: string; notes: string } | null;
+  setPendingChangelog: (value: { version: string; notes: string } | null) => void;
   settingsPanelOpen: boolean;
   toggleSettingsPanel: () => void;
   setSettingsPanelOpen: (value: boolean) => void;
@@ -203,6 +211,14 @@ export const createRecentProjectsSlice: StateCreator<
   setShowKanbanButton: (value) => set({ showKanbanButton: value }),
   onboardingCompleted: false,
   setOnboardingCompleted: (value) => set({ onboardingCompleted: value }),
+  showChangelogOnUpdate: true,
+  setShowChangelogOnUpdate: (value) => set({ showChangelogOnUpdate: value }),
+  pullWithRebase: false,
+  setPullWithRebase: (value) => set({ pullWithRebase: value }),
+  lastSeenVersion: null,
+  setLastSeenVersion: (value) => set({ lastSeenVersion: value }),
+  pendingChangelog: null,
+  setPendingChangelog: (value) => set({ pendingChangelog: value }),
   settingsPanelOpen: false,
   toggleSettingsPanel: () => set((s) => ({ settingsPanelOpen: !s.settingsPanelOpen })),
   setSettingsPanelOpen: (value) => set({ settingsPanelOpen: value }),

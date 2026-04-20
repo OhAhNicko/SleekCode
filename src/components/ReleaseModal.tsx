@@ -75,6 +75,13 @@ export default function ReleaseModal({
   const [releasing, setReleasing] = useState(false);
   const [steps, setSteps] = useState<ReleaseStep[] | null>(null);
 
+  // Release-notes publish state (Phase D: parity with /release skill).
+  const [noteDraft, setNoteDraft] = useState("");
+  const [publishing, setPublishing] = useState(false);
+  const [publishResult, setPublishResult] = useState<{ url: string; mode: string } | null>(null);
+  const [publishError, setPublishError] = useState("");
+  const [ghAuthed, setGhAuthed] = useState<boolean | null>(null);
+
   const modalRef = useRef<HTMLDivElement>(null);
 
   // Probe git + manifests in parallel.
@@ -169,6 +176,8 @@ export default function ReleaseModal({
     setReleasing(true);
     setSteps([]);
     setFatalError("");
+    setPublishResult(null);
+    setPublishError("");
     try {
       const result = await invoke<ReleaseStep[]>("release_bump", {
         directory: workingDir,
@@ -177,6 +186,13 @@ export default function ReleaseModal({
       });
       setSteps(result);
       window.dispatchEvent(new Event("ezydev:git-refresh"));
+
+      // Seed the editable notes textarea from the release_bump output.
+      const notesStep = result.find((s) => s.step === "generate notes" && s.ok);
+      if (notesStep && notesStep.message) {
+        setNoteDraft(notesStep.message);
+      }
+
       if (result.length > 0 && result.every((s) => s.ok)) {
         onReleased();
       }
@@ -186,6 +202,38 @@ export default function ReleaseModal({
       setReleasing(false);
     }
   }, [preflightOk, nextVersion, workingDir, selected, onReleased]);
+
+  // Probe gh auth once so the publish UI can disable itself and point the
+  // user at ConnectToGitHubModal if needed.
+  useEffect(() => {
+    if (!workingDir) return;
+    invoke<{ installed: boolean; authed: boolean }>("gh_status", { directory: workingDir })
+      .then((s) => setGhAuthed(!!s.installed && !!s.authed))
+      .catch(() => setGhAuthed(false));
+  }, [workingDir]);
+
+  const handlePublishNotes = useCallback(async () => {
+    if (!nextVersion || !workingDir || !noteDraft.trim()) return;
+    setPublishing(true);
+    setPublishError("");
+    try {
+      const result = await invoke<{ url: string; mode: string; output: string }>(
+        "gh_release_create",
+        {
+          directory: workingDir,
+          tag: `v${nextVersion}`,
+          title: `v${nextVersion}`,
+          body: noteDraft,
+          draft: true,
+        },
+      );
+      setPublishResult({ url: result.url, mode: result.mode });
+    } catch (err) {
+      setPublishError(String(err));
+    } finally {
+      setPublishing(false);
+    }
+  }, [nextVersion, workingDir, noteDraft]);
 
   const openExternal = (url: string) => {
     invoke("plugin:opener|open_url", { url }).catch(() => {
@@ -542,7 +590,7 @@ export default function ReleaseModal({
                     overflow: "hidden",
                   }}
                 >
-                  {steps.map((s, i) => (
+                  {steps.filter((s) => s.step !== "generate notes").map((s, i) => (
                     <div
                       key={i}
                       style={{
@@ -619,6 +667,141 @@ export default function ReleaseModal({
                         View on GitHub
                       </a>
                     </>
+                  )}
+                </div>
+              )}
+
+              {/* Release notes publish */}
+              {allStepsOk && noteDraft && (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--ezy-border)" }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      color: "var(--ezy-text)",
+                      marginBottom: 6,
+                    }}
+                  >
+                    Release notes
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--ezy-text-muted)",
+                      marginBottom: 8,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    Auto-generated from git log since the previous tag. Edit before
+                    publishing — these notes populate the draft release and show up in
+                    the in-app changelog popup after the next auto-update.
+                  </div>
+                  <textarea
+                    value={noteDraft}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    disabled={publishing || !!publishResult}
+                    spellCheck={false}
+                    rows={8}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      backgroundColor: "var(--ezy-bg)",
+                      color: "var(--ezy-text)",
+                      border: "1px solid var(--ezy-border)",
+                      borderRadius: 6,
+                      padding: "8px 10px",
+                      fontSize: 12,
+                      lineHeight: 1.5,
+                      fontFamily: "inherit",
+                      resize: "vertical",
+                      minHeight: 120,
+                      outline: "none",
+                      whiteSpace: "pre-wrap",
+                      opacity: publishResult ? 0.7 : 1,
+                    }}
+                  />
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+                    {!publishResult && (
+                      <button
+                        onClick={handlePublishNotes}
+                        disabled={publishing || !noteDraft.trim() || ghAuthed === false}
+                        style={{
+                          height: 30,
+                          padding: "0 14px",
+                          borderRadius: 6,
+                          border: "none",
+                          background: "var(--ezy-accent)",
+                          color: "#0d1117",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          cursor:
+                            publishing || !noteDraft.trim() || ghAuthed === false
+                              ? "not-allowed"
+                              : "pointer",
+                          opacity:
+                            publishing || !noteDraft.trim() || ghAuthed === false ? 0.6 : 1,
+                          fontFamily: "inherit",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {publishing ? "Publishing..." : "Publish draft release"}
+                      </button>
+                    )}
+                    {publishResult && (
+                      <div
+                        style={{
+                          fontSize: 12,
+                          color: "var(--ezy-accent)",
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        Draft release {publishResult.mode === "edited" ? "updated" : "created"}.
+                        {publishResult.url && (
+                          <>
+                            {" "}
+                            <a
+                              href={publishResult.url}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                openExternal(publishResult.url);
+                              }}
+                              style={{
+                                color: "var(--ezy-accent)",
+                                textDecoration: "underline",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Edit on GitHub
+                            </a>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    {ghAuthed === false && !publishResult && (
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: "var(--ezy-text-muted)",
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        Install `gh` and run `gh auth login` to auto-publish.
+                      </span>
+                    )}
+                  </div>
+                  {publishError && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        fontSize: 11,
+                        color: "var(--ezy-red)",
+                        lineHeight: 1.5,
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-word",
+                      }}
+                    >
+                      {publishError}
+                    </div>
                   )}
                 </div>
               )}

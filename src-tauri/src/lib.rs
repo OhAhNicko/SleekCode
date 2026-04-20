@@ -956,6 +956,48 @@ echo "$files $add $del"
     })
 }
 
+/// Create a new branch off `from_ref` (defaults to HEAD when empty). Validates
+/// the name via `git check-ref-format` to reject whitespace / control chars /
+/// special glob characters before they ever reach the working tree.
+#[tauri::command]
+async fn git_create_branch(
+    directory: String,
+    name: String,
+    from_ref: Option<String>,
+    switch: bool,
+) -> Result<(), String> {
+    let trimmed = name.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("branch name is required".into());
+    }
+
+    // Canonical ref shape for branches.
+    let full_ref = format!("refs/heads/{}", trimmed);
+    let check = run_git(&directory, &["check-ref-format", &full_ref])?;
+    if !check.status.success() {
+        return Err(format!("Invalid branch name: {}", trimmed));
+    }
+
+    let from = from_ref.unwrap_or_default();
+    let branch_args: Vec<&str> = if from.trim().is_empty() {
+        vec!["branch", &trimmed]
+    } else {
+        vec!["branch", &trimmed, from.as_str()]
+    };
+    let out = run_git(&directory, &branch_args)?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+
+    if switch {
+        let sw = run_git(&directory, &["checkout", &trimmed])?;
+        if !sw.status.success() {
+            return Err(String::from_utf8_lossy(&sw.stderr).trim().to_string());
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn git_switch_branch(directory: String, branch: String) -> Result<(), String> {
     let output = run_git(&directory, &["switch", &branch])?;
@@ -1071,6 +1113,81 @@ struct GitAheadBehind {
     ahead: u32,
     behind: u32,
     has_remote: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitPullResult {
+    ok: bool,
+    message: String,
+    has_conflicts: bool,
+    conflicts: Vec<String>,
+}
+
+/// Pull the current branch from origin. When `rebase` is true, uses
+/// `git pull --rebase`. Conflict files are extracted from stderr when present.
+#[tauri::command]
+async fn git_pull(directory: String, rebase: bool) -> Result<GitPullResult, String> {
+    let args: &[&str] = if rebase {
+        &["pull", "--rebase"]
+    } else {
+        &["pull"]
+    };
+    let out = run_git(&directory, args)?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+
+    if out.status.success() {
+        return Ok(GitPullResult {
+            ok: true,
+            message: if combined.is_empty() {
+                "Already up to date.".into()
+            } else {
+                combined
+            },
+            has_conflicts: false,
+            conflicts: Vec::new(),
+        });
+    }
+
+    // Detect conflicts. Git prints `CONFLICT (content): Merge conflict in <path>` or
+    // `Merge conflict in <path>` lines.
+    let mut conflicts: Vec<String> = Vec::new();
+    for line in combined.lines() {
+        if let Some(idx) = line.find("Merge conflict in ") {
+            let path = line[idx + "Merge conflict in ".len()..].trim();
+            if !path.is_empty() {
+                conflicts.push(path.to_string());
+            }
+        }
+    }
+    let has_conflicts = !conflicts.is_empty();
+
+    Ok(GitPullResult {
+        ok: false,
+        message: combined,
+        has_conflicts,
+        conflicts,
+    })
+}
+
+/// Refresh origin's ref list without merging. Used to keep ahead/behind counts
+/// honest without surprising the user with a merge.
+#[tauri::command]
+async fn git_fetch(directory: String) -> Result<String, String> {
+    let out = run_git(&directory, &["fetch", "--prune"])?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+    if !out.status.success() {
+        return Err(combined);
+    }
+    Ok(if combined.is_empty() {
+        "Fetched.".into()
+    } else {
+        combined
+    })
 }
 
 #[tauri::command]
@@ -1476,10 +1593,234 @@ async fn gh_create_repo(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct GhPrStatus {
+    exists: bool,
+    number: Option<i64>,
+    url: Option<String>,
+    state: Option<String>, // "OPEN" | "CLOSED" | "MERGED"
+    title: Option<String>,
+    is_draft: Option<bool>,
+}
+
+/// Look up whether the current branch already has a PR on origin. `gh pr view`
+/// exits non-zero and prints to stderr when there is none — we swallow that
+/// case and return exists=false.
+#[tauri::command]
+async fn gh_pr_status(directory: String) -> Result<GhPrStatus, String> {
+    let out = run_gh(
+        &directory,
+        &["pr", "view", "--json", "number,url,state,title,isDraft"],
+    )?;
+    if !out.status.success() {
+        return Ok(GhPrStatus {
+            exists: false,
+            number: None,
+            url: None,
+            state: None,
+            title: None,
+            is_draft: None,
+        });
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+
+    // Minimal JSON parse — avoid pulling in serde_json machinery just for this.
+    // The output is always a single object with the five fields above.
+    fn extract_str(haystack: &str, key: &str) -> Option<String> {
+        let pat = format!("\"{}\":", key);
+        let start = haystack.find(&pat)? + pat.len();
+        let rest = haystack[start..].trim_start();
+        if rest.starts_with('"') {
+            let inner = &rest[1..];
+            inner.find('"').map(|end| inner[..end].to_string())
+        } else {
+            None
+        }
+    }
+    fn extract_num(haystack: &str, key: &str) -> Option<i64> {
+        let pat = format!("\"{}\":", key);
+        let start = haystack.find(&pat)? + pat.len();
+        let rest = haystack[start..].trim_start();
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit() && c != '-')
+            .unwrap_or(rest.len());
+        rest[..end].parse().ok()
+    }
+    fn extract_bool(haystack: &str, key: &str) -> Option<bool> {
+        let pat = format!("\"{}\":", key);
+        let start = haystack.find(&pat)? + pat.len();
+        let rest = haystack[start..].trim_start();
+        if rest.starts_with("true") {
+            Some(true)
+        } else if rest.starts_with("false") {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    Ok(GhPrStatus {
+        exists: true,
+        number: extract_num(&stdout, "number"),
+        url: extract_str(&stdout, "url"),
+        state: extract_str(&stdout, "state"),
+        title: extract_str(&stdout, "title"),
+        is_draft: extract_bool(&stdout, "isDraft"),
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GhPrCreateResult {
+    url: String,
+    output: String,
+}
+
+/// Open a pull request for the current branch. The branch MUST already be
+/// pushed to origin (caller handles that — typically via git_push).
+#[tauri::command]
+async fn gh_pr_create(
+    directory: String,
+    title: String,
+    body: String,
+    base: String,
+    draft: bool,
+) -> Result<GhPrCreateResult, String> {
+    let mut args: Vec<&str> = vec!["pr", "create", "--title", &title, "--body", &body];
+    if !base.is_empty() {
+        args.push("--base");
+        args.push(&base);
+    }
+    if draft {
+        args.push("--draft");
+    }
+    let out = run_gh(&directory, &args)?;
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let combined = format!("{}{}", stdout, stderr);
+    if !out.status.success() {
+        return Err(combined.trim().to_string());
+    }
+    // gh pr create prints the PR URL on stdout (one line).
+    let url = stdout
+        .lines()
+        .find(|l| l.contains("github.com") && l.contains("/pull/"))
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            stdout
+                .split_whitespace()
+                .find(|w| w.starts_with("https://github.com/"))
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+
+    Ok(GhPrCreateResult {
+        url,
+        output: combined.trim().to_string(),
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GhReleaseResult {
+    url: String,
+    mode: String, // "created" | "edited"
+    output: String,
+}
+
+/// Create a GitHub release with the given notes, or edit an existing one if
+/// CI beat us to creating it. The tag must already exist on origin.
+#[tauri::command]
+async fn gh_release_create(
+    directory: String,
+    tag: String,
+    title: String,
+    body: String,
+    draft: bool,
+) -> Result<GhReleaseResult, String> {
+    let mut create_args: Vec<&str> = vec![
+        "release", "create", &tag, "--title", &title, "--notes", &body,
+    ];
+    if draft {
+        create_args.push("--draft");
+    }
+
+    let create_out = run_gh(&directory, &create_args)?;
+    let create_stdout = String::from_utf8_lossy(&create_out.stdout).to_string();
+    let create_stderr = String::from_utf8_lossy(&create_out.stderr).to_string();
+    let create_combined = format!("{}{}", create_stdout, create_stderr);
+
+    if create_out.status.success() {
+        let url = create_stdout
+            .lines()
+            .find(|l| l.contains("https://github.com/"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        return Ok(GhReleaseResult {
+            url,
+            mode: "created".into(),
+            output: create_combined.trim().to_string(),
+        });
+    }
+
+    // CI (tauri-action) may have created the release already. In that case
+    // patch the existing draft with our generated notes.
+    if create_combined.to_lowercase().contains("already exists") {
+        let edit_args: Vec<&str> = vec![
+            "release", "edit", &tag, "--title", &title, "--notes", &body,
+        ];
+        let edit_out = run_gh(&directory, &edit_args)?;
+        let edit_stdout = String::from_utf8_lossy(&edit_out.stdout).to_string();
+        let edit_stderr = String::from_utf8_lossy(&edit_out.stderr).to_string();
+        let edit_combined = format!("{}{}", edit_stdout, edit_stderr);
+        if edit_out.status.success() {
+            let url = edit_stdout
+                .lines()
+                .find(|l| l.contains("https://github.com/"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            return Ok(GhReleaseResult {
+                url,
+                mode: "edited".into(),
+                output: edit_combined.trim().to_string(),
+            });
+        }
+        return Err(format!("gh release edit failed: {}", edit_combined.trim()));
+    }
+
+    Err(create_combined.trim().to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RemoteInfo {
     url: String,
     owner: String,
     repo: String,
+}
+
+/// List commit subjects between `base..HEAD`. Used to prefill PR bodies.
+/// Skips merges and the auto-generated `chore: bump version` commits.
+#[tauri::command]
+async fn git_commits_between(directory: String, base: String) -> Result<Vec<String>, String> {
+    if base.trim().is_empty() {
+        return Err("base is required".into());
+    }
+    let range = format!("{}..HEAD", base);
+    let out = run_git(
+        &directory,
+        &["log", &range, "--no-merges", "--pretty=format:%s"],
+    )?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let subjects: Vec<String> = text
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .filter(|l| !l.starts_with("chore: bump version"))
+        .collect();
+    Ok(subjects)
 }
 
 #[tauri::command]
@@ -1729,6 +2070,61 @@ async fn detect_manifests(directory: String) -> Result<Vec<ManifestInfo>, String
     Ok(out)
 }
 
+/// Build a markdown release-notes body from commits in `prev_tag..HEAD`.
+/// Skips merge commits and the automated "chore: bump version …" commits so the
+/// notes stay focused on real changes. Appends a GitHub compare link when an
+/// origin URL is available.
+fn generate_release_notes_body(directory: &str, prev_tag: &str, new_version: &str) -> String {
+    let range = if prev_tag.is_empty() {
+        String::from("HEAD")
+    } else {
+        format!("{}..HEAD", prev_tag)
+    };
+    let log_out = match run_git(directory, &["log", &range, "--no-merges", "--pretty=format:%s"]) {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).to_string(),
+        _ => String::new(),
+    };
+    let bullets: Vec<String> = log_out
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .filter(|l| !l.starts_with("chore: bump version"))
+        .map(|l| format!("- {}", l))
+        .collect();
+    let body_core = if bullets.is_empty() {
+        String::from("- Maintenance release.")
+    } else {
+        bullets.join("\n")
+    };
+    let mut out = String::from("## What's changed\n\n");
+    out.push_str(&body_core);
+
+    if !prev_tag.is_empty() {
+        if let Ok(remote_out) = run_git(directory, &["remote", "get-url", "origin"]) {
+            if remote_out.status.success() {
+                let raw = String::from_utf8_lossy(&remote_out.stdout).trim().to_string();
+                let cleaned = raw.trim_end_matches(".git").to_string();
+                let http_url = if cleaned.starts_with("git@") {
+                    // git@github.com:owner/repo → https://github.com/owner/repo
+                    cleaned
+                        .replacen(":", "/", 1)
+                        .replacen("git@", "https://", 1)
+                } else {
+                    cleaned
+                };
+                if http_url.contains("github.com") {
+                    out.push_str(&format!(
+                        "\n\n**Full changelog**: {}/compare/{}...v{}",
+                        http_url, prev_tag, new_version
+                    ));
+                }
+            }
+        }
+    }
+
+    out
+}
+
 #[tauri::command]
 async fn release_bump(
     directory: String,
@@ -1741,6 +2137,16 @@ async fn release_bump(
     if manifest_paths.is_empty() {
         return Err("no manifests selected".into());
     }
+
+    // Capture the previous tag BEFORE any commits land so the notes reflect
+    // commits since the last release — not the upcoming version-bump commit.
+    let prev_tag = match run_git(&directory, &["describe", "--tags", "--abbrev=0"]) {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        }
+        _ => String::new(),
+    };
+    let notes_body = generate_release_notes_body(&directory, &prev_tag, &new_version);
 
     // --- Bump each selected manifest by file type.
     for rel in &manifest_paths {
@@ -1857,6 +2263,15 @@ async fn release_bump(
         step: "git push --follow-tags".into(),
         ok: true,
         message: push_msg,
+    });
+
+    // Surface the generated notes to the frontend. The frontend picks this
+    // step out by name and hands the body to `gh_release_create` — splitting
+    // generation from upload lets the user edit before publishing.
+    steps.push(ReleaseStep {
+        step: "generate notes".into(),
+        ok: true,
+        message: notes_body,
     });
 
     Ok(steps)
@@ -4586,7 +5001,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             #[cfg(target_os = "windows")]
             {

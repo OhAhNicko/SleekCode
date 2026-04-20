@@ -31,7 +31,9 @@ import SettingsPane from "./components/SettingsPane";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
 import UpdateBanner from "./components/UpdateBanner";
+import ChangelogModal from "./components/ChangelogModal";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
+import { getVersion } from "@tauri-apps/api/app";
 
 export default function App() {
   const tabs = useAppStore((s) => s.tabs);
@@ -52,6 +54,7 @@ export default function App() {
   const recentProjects = useAppStore((s) => s.recentProjects);
   const onboardingCompleted = useAppStore((s) => s.onboardingCompleted);
   const setOnboardingCompleted = useAppStore((s) => s.setOnboardingCompleted);
+  const [changelogToShow, setChangelogToShow] = useState<{ version: string; notes: string } | null>(null);
 
   const projectTabs = useMemo(() => tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab), [tabs]);
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? projectTabs[0] ?? tabs[0];
@@ -92,6 +95,49 @@ export default function App() {
       useAppStore.getState().setSettingsPanelOpen(false);
     }
   }, [sidebarOpen, devServerPanelOpen]);
+
+  // On mount, detect a version bump and surface the cached changelog if the
+  // auto-updater installed a new build. First-ever launches (null lastSeenVersion
+  // with no pending cache) silently initialise without showing the modal.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let current: string;
+      try {
+        current = await getVersion();
+      } catch {
+        return;
+      }
+      if (cancelled) return;
+      const store = useAppStore.getState();
+      if (current === store.lastSeenVersion) return;
+      const pending = store.pendingChangelog;
+      const shouldShow =
+        store.showChangelogOnUpdate &&
+        !!pending &&
+        pending.version === current &&
+        !!pending.notes &&
+        pending.notes.trim().length > 0;
+      if (shouldShow) {
+        setChangelogToShow({ version: pending!.version, notes: pending!.notes });
+      } else {
+        store.setLastSeenVersion(current);
+        store.setPendingChangelog(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleCloseChangelog = useCallback(() => {
+    if (changelogToShow) {
+      const store = useAppStore.getState();
+      store.setLastSeenVersion(changelogToShow.version);
+      store.setPendingChangelog(null);
+    }
+    setChangelogToShow(null);
+  }, [changelogToShow]);
 
   // Build extra palette actions from launch configs, snippets, and history
   const paletteExtraActions = useMemo<PaletteAction[]>(() => {
@@ -693,6 +739,13 @@ export default function App() {
         <WelcomeModal
           onComplete={() => setOnboardingCompleted(true)}
           onSkip={() => setOnboardingCompleted(true)}
+        />
+      )}
+      {changelogToShow && onboardingCompleted && (
+        <ChangelogModal
+          version={changelogToShow.version}
+          notes={changelogToShow.notes}
+          onClose={handleCloseChangelog}
         />
       )}
     </div>

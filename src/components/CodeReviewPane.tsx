@@ -8,6 +8,7 @@ import CodeReviewDiffView from "./CodeReviewDiffView";
 import CommitPopover from "./CommitPopover";
 import ConnectToGitHubModal from "./ConnectToGitHubModal";
 import ReleaseModal from "./ReleaseModal";
+import CreatePullRequestModal from "./CreatePullRequestModal";
 import type {
   ComparisonMode,
   GitFileStatus,
@@ -49,6 +50,26 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
   const [connectedToast, setConnectedToast] = useState<string | null>(null);
   const [showReleaseModal, setShowReleaseModal] = useState(false);
   const [releasedToast, setReleasedToast] = useState(false);
+  const [showPrModal, setShowPrModal] = useState(false);
+  const [prStatus, setPrStatus] = useState<{
+    exists: boolean;
+    number: number | null;
+    url: string | null;
+    state: string | null;
+    isDraft: boolean | null;
+  } | null>(null);
+  const [prToast, setPrToast] = useState<string | null>(null);
+  const [remoteUrl, setRemoteUrl] = useState<string | null>(null);
+
+  const currentBranch = branches?.current ?? "";
+  // Heuristic: treat main / master / develop / trunk as "base" branches where
+  // a PR from the current branch doesn't make sense.
+  const isOnBaseBranch =
+    currentBranch === "main" ||
+    currentBranch === "master" ||
+    currentBranch === "develop" ||
+    currentBranch === "trunk";
+  const canCreatePr = !!isGitRepo && aheadBehind?.hasRemote === true && !isOnBaseBranch;
 
   const dropdownRef = useRef<HTMLDivElement>(null);
   const commitBtnRef = useRef<HTMLDivElement>(null);
@@ -254,6 +275,120 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
       setPushing(false);
     }
   }, [workingDir, aheadBehind, branches, pushing]);
+
+  // Fetch remote URL once per workingDir so we know where "Issues" links to.
+  useEffect(() => {
+    if (!isGitRepo || !workingDir || aheadBehind?.hasRemote !== true) {
+      setRemoteUrl(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<{ url: string; owner: string; repo: string }>("git_remote_info", {
+      directory: workingDir,
+    })
+      .then((r) => {
+        if (cancelled) return;
+        setRemoteUrl(r.url && r.url.includes("github.com") ? r.url : null);
+      })
+      .catch(() => {
+        if (!cancelled) setRemoteUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isGitRepo, workingDir, aheadBehind?.hasRemote]);
+
+  // Probe PR status when the branch has a remote and isn't the base branch.
+  // Refetch on branch change or working-dir change.
+  useEffect(() => {
+    if (!canCreatePr || !workingDir) {
+      setPrStatus(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<{
+      exists: boolean;
+      number: number | null;
+      url: string | null;
+      state: string | null;
+      title: string | null;
+      isDraft: boolean | null;
+    }>("gh_pr_status", { directory: workingDir })
+      .then((s) => {
+        if (cancelled) return;
+        setPrStatus({
+          exists: s.exists,
+          number: s.number,
+          url: s.url,
+          state: s.state,
+          isDraft: s.isDraft,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setPrStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canCreatePr, workingDir, currentBranch]);
+
+  const openExternalUrl = useCallback((url: string) => {
+    invoke("plugin:opener|open_url", { url }).catch(() => {
+      window.open(url, "_blank");
+    });
+  }, []);
+
+  const handleOpenPrFlow = useCallback(async () => {
+    if (!workingDir) return;
+    // If a PR already exists, just open it.
+    if (prStatus?.exists && prStatus.url) {
+      openExternalUrl(prStatus.url);
+      return;
+    }
+    // Check gh auth first — route to ConnectToGitHubModal if not signed in.
+    try {
+      const gh = await invoke<{ installed: boolean; authed: boolean }>(
+        "gh_status",
+        { directory: workingDir },
+      );
+      if (!gh.installed || !gh.authed) {
+        setShowConnectModal(true);
+        return;
+      }
+    } catch {
+      setShowConnectModal(true);
+      return;
+    }
+    setShowPrModal(true);
+  }, [workingDir, prStatus, openExternalUrl]);
+
+  const handlePrCreated = useCallback(
+    (url: string) => {
+      setShowPrModal(false);
+      setPrToast(url || "Pull request opened");
+      // Refetch status so the button flips to "View PR".
+      invoke<{
+        exists: boolean;
+        number: number | null;
+        url: string | null;
+        state: string | null;
+        title: string | null;
+        isDraft: boolean | null;
+      }>("gh_pr_status", { directory: workingDir })
+        .then((s) =>
+          setPrStatus({
+            exists: s.exists,
+            number: s.number,
+            url: s.url,
+            state: s.state,
+            isDraft: s.isDraft,
+          }),
+        )
+        .catch(() => {});
+      setTimeout(() => setPrToast(null), 4500);
+    },
+    [workingDir],
+  );
 
   // Close push error on outside click
   useEffect(() => {
@@ -600,6 +735,71 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
             )}
           </div>
 
+          {/* Issues link — opens remote /issues in default browser */}
+          {remoteUrl && (
+            <button
+              onClick={() => openExternalUrl(`${remoteUrl}/issues`)}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
+              style={{
+                backgroundColor: "transparent",
+                color: "var(--ezy-text-secondary)",
+                border: "1px solid var(--ezy-border-subtle)",
+              }}
+              title="Open issues on GitHub"
+            >
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="6"
+                  stroke="currentColor"
+                  strokeWidth="1.3"
+                />
+                <circle cx="8" cy="8" r="1.3" fill="currentColor" />
+              </svg>
+              Issues
+            </button>
+          )}
+
+          {/* Pull Request button */}
+          {canCreatePr && (
+            <button
+              onClick={handleOpenPrFlow}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
+              style={{
+                backgroundColor: "transparent",
+                color: "var(--ezy-text-secondary)",
+                border: "1px solid var(--ezy-border-subtle)",
+              }}
+              title={
+                prStatus?.exists
+                  ? `View PR #${prStatus.number} on GitHub`
+                  : "Open a pull request for this branch"
+              }
+            >
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M5 2.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM5 13.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM14 13.5a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM3.5 4v8M10 4a3 3 0 013 3v5"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              {prStatus?.exists
+                ? `PR #${prStatus.number}${
+                    prStatus.state === "MERGED"
+                      ? " (merged)"
+                      : prStatus.state === "CLOSED"
+                        ? " (closed)"
+                        : prStatus.isDraft
+                          ? " (draft)"
+                          : ""
+                  }`
+                : "Open PR"}
+            </button>
+          )}
+
           {/* 1px divider */}
           <div style={{ width: 1, height: 14, backgroundColor: "var(--ezy-border-subtle)", margin: "0 2px" }} />
 
@@ -738,6 +938,66 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
             setTimeout(() => setReleasedToast(false), 4500);
           }}
         />
+      )}
+
+      {/* Create PR modal */}
+      {showPrModal && branches && (
+        <CreatePullRequestModal
+          workingDir={workingDir}
+          currentBranch={currentBranch}
+          branches={branches.branches}
+          onClose={() => setShowPrModal(false)}
+          onCreated={handlePrCreated}
+        />
+      )}
+
+      {/* PR opened toast */}
+      {prToast && (
+        <div
+          style={{
+            position: "absolute",
+            top: 36,
+            right: 10,
+            zIndex: 150,
+            padding: "8px 12px",
+            backgroundColor: "var(--ezy-surface-raised)",
+            border: "1px solid var(--ezy-border)",
+            borderRadius: 6,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+            maxWidth: 340,
+          }}
+        >
+          <div className="flex items-center gap-1.5">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+              <path
+                d="M3 8.5L6.5 12L13 4"
+                stroke="#34d399"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="text-[11px] font-medium" style={{ color: "#34d399" }}>
+              Pull request opened
+            </span>
+          </div>
+          {prToast.startsWith("http") && (
+            <button
+              onClick={() => openExternalUrl(prToast)}
+              className="text-[10px] mt-1 underline"
+              style={{
+                color: "var(--ezy-text-secondary)",
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              View on GitHub
+            </button>
+          )}
+        </div>
       )}
 
       {/* Released toast */}

@@ -1,6 +1,7 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useAppStore } from "../store";
 
 export type UpdateStatus =
   | "idle"
@@ -104,6 +105,14 @@ export function useUpdateChecker() {
             break;
         }
       });
+      // Stash the release notes so the next launch (post-install) can surface
+      // them in the ChangelogModal. Only cache when there's real content.
+      if (update.body && update.body.trim().length > 0) {
+        useAppStore.getState().setPendingChangelog({
+          version: update.version,
+          notes: update.body,
+        });
+      }
       await relaunch();
     } catch (err) {
       setState((s) => ({
