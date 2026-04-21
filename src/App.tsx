@@ -34,6 +34,7 @@ import UpdateBanner from "./components/UpdateBanner";
 import ChangelogModal from "./components/ChangelogModal";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { getVersion } from "@tauri-apps/api/app";
+import { getActivePaneSearchOpener } from "./lib/pane-search-registry";
 
 export default function App() {
   const tabs = useAppStore((s) => s.tabs);
@@ -395,24 +396,23 @@ export default function App() {
           }
           return;
         }
-        if (key === "Tab") {
-          // Alt+Tab → cycle forward through open project tabs
-          consume();
-          const store = useAppStore.getState();
-          const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab);
-          if (cycleable.length > 0) {
-            const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
-            const nextIndex = (currentIndex + 1) % cycleable.length;
-            store.setActiveTab(cycleable[nextIndex].id);
-          }
-          return;
-        }
       }
 
       if (!ctrlKey) return;
 
       // Ctrl (no Shift) shortcuts
       if (!shiftKey) {
+        // Ctrl+F — open search in the active pane (terminal, editor, file viewer, code review, kanban).
+        // Panes register their opener via lib/pane-search-registry. If no pane
+        // claims it, we don't consume the event (native webview Find stays available).
+        if (key === "f" || key === "F") {
+          const opener = getActivePaneSearchOpener();
+          if (opener) {
+            consume();
+            opener();
+            return;
+          }
+        }
         switch (key) {
           case "k":
             // Ctrl+K → Command Palette
@@ -484,14 +484,19 @@ export default function App() {
             window.dispatchEvent(new CustomEvent("ezydev:font-zoom", { detail: { delta: -1 } }));
             return;
           case "Tab":
-            // Ctrl+Tab → next tab (skip system tabs)
+            // Ctrl+Tab → next project tab, wrapping at the end. Excludes ALL
+            // system tabs (dev-server, servers, kanban, settings) so cycling
+            // stays within real project tabs and always wraps back to the
+            // first project after the last one.
             consume();
             {
               const store = useAppStore.getState();
-              const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isSettingsTab);
-              const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
-              const nextIndex = (currentIndex + 1) % cycleable.length;
-              store.setActiveTab(cycleable[nextIndex].id);
+              const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab);
+              if (cycleable.length > 0) {
+                const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
+                const nextIndex = (currentIndex + 1) % cycleable.length;
+                store.setActiveTab(cycleable[nextIndex].id);
+              }
             }
             return;
         }
@@ -591,13 +596,16 @@ export default function App() {
             store.toggleMiniGamesButton();
             return;
           case "Tab":
-            // Ctrl+Shift+Tab → previous tab
+            // Ctrl+Shift+Tab → previous project tab, wrapping at the start.
+            // Mirrors the Ctrl+Tab filter so forward/back are symmetric.
             consume();
             {
-              const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isSettingsTab);
-              const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
-              const prevIndex = (currentIndex - 1 + cycleable.length) % cycleable.length;
-              store.setActiveTab(cycleable[prevIndex].id);
+              const cycleable = store.tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab);
+              if (cycleable.length > 0) {
+                const currentIndex = cycleable.findIndex((t) => t.id === store.activeTabId);
+                const prevIndex = (currentIndex - 1 + cycleable.length) % cycleable.length;
+                store.setActiveTab(cycleable[prevIndex].id);
+              }
             }
             return;
         }

@@ -1,83 +1,49 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import type { SearchAddon } from "@xterm/addon-search";
+import { useRef, useEffect } from "react";
 
-interface TerminalSearchBarProps {
-  searchAddon: SearchAddon;
+export interface PaneSearchBarProps {
+  query: string;
+  setQuery: (s: string) => void;
+  caseSensitive: boolean;
+  setCaseSensitive: (v: boolean) => void;
+  regex: boolean;
+  setRegex: (v: boolean) => void;
+  wholeWord: boolean;
+  setWholeWord: (v: boolean) => void;
+  matchInfo: { index: number; count: number } | null;
+  onNext: () => void;
+  onPrev: () => void;
   onClose: () => void;
   isActive: boolean;
+  disableWholeWord?: boolean;
+  placeholder?: string;
 }
 
-const SEARCH_DECORATIONS = {
-  matchBackground: "#264f78",
-  matchBorder: "transparent",
-  matchOverviewRuler: "#8b949e",
-  activeMatchBackground: "#39d353",
-  activeMatchBorder: "transparent",
-  activeMatchColorOverviewRuler: "#39d353",
-};
-
-export default function TerminalSearchBar({
-  searchAddon,
+export default function PaneSearchBar({
+  query,
+  setQuery,
+  caseSensitive,
+  setCaseSensitive,
+  regex,
+  setRegex,
+  wholeWord,
+  setWholeWord,
+  matchInfo,
+  onNext,
+  onPrev,
   onClose,
   isActive,
-}: TerminalSearchBarProps) {
+  disableWholeWord,
+  placeholder = "Find",
+}: PaneSearchBarProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [query, setQuery] = useState("");
-  const [caseSensitive, setCaseSensitive] = useState(false);
-  const [regex, setRegex] = useState(false);
-  const [wholeWord, setWholeWord] = useState(false);
-  const [matchInfo, setMatchInfo] = useState<{ index: number; count: number } | null>(null);
 
-  // Subscribe to match results from the search addon
-  useEffect(() => {
-    if (!("onDidChangeResults" in searchAddon)) return;
-    const disposable = (searchAddon as any).onDidChangeResults(
-      (e: { resultIndex: number; resultCount: number } | undefined) => {
-        if (e) {
-          setMatchInfo({ index: e.resultIndex, count: e.resultCount });
-        } else {
-          setMatchInfo(null);
-        }
-      }
-    );
-    return () => disposable.dispose();
-  }, [searchAddon]);
-
-  const searchOptions = useCallback(
-    (incremental: boolean) => ({
-      caseSensitive,
-      regex,
-      wholeWord,
-      incremental,
-      decorations: SEARCH_DECORATIONS,
-    }),
-    [caseSensitive, regex, wholeWord]
-  );
-
-  // Run incremental search on query or option change
-  useEffect(() => {
-    if (query) {
-      searchAddon.findNext(query, searchOptions(true));
-    } else {
-      searchAddon.clearDecorations();
-      setMatchInfo(null);
-    }
-  }, [query, caseSensitive, regex, wholeWord, searchAddon, searchOptions]);
-
-  // Auto-focus input on mount (guarded by isActive)
+  // Auto-focus input on mount (guarded by isActive to prevent background focus theft).
   useEffect(() => {
     if (isActive) {
       inputRef.current?.focus();
+      inputRef.current?.select();
     }
   }, [isActive]);
-
-  const findNext = useCallback(() => {
-    if (query) searchAddon.findNext(query, searchOptions(false));
-  }, [query, searchAddon, searchOptions]);
-
-  const findPrevious = useCallback(() => {
-    if (query) searchAddon.findPrevious(query, searchOptions(false));
-  }, [query, searchAddon, searchOptions]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
@@ -87,15 +53,11 @@ export default function TerminalSearchBar({
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      if (e.shiftKey) {
-        findPrevious();
-      } else {
-        findNext();
-      }
+      if (e.shiftKey) onPrev();
+      else onNext();
     }
   };
 
-  // Match count display
   const matchDisplay = query
     ? matchInfo
       ? matchInfo.count > 0
@@ -148,7 +110,7 @@ export default function TerminalSearchBar({
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={handleKeyDown}
-        placeholder="Find"
+        placeholder={placeholder}
         spellCheck={false}
         autoComplete="off"
         style={{
@@ -201,10 +163,10 @@ export default function TerminalSearchBar({
       />
 
       {/* Prev / Next buttons */}
-      <NavButton title="Previous match (Shift+Enter)" onClick={findPrevious} disabled={!query}>
+      <NavButton title="Previous match (Shift+Enter)" onClick={onPrev} disabled={!query}>
         <polyline points="4,9 8,5 12,9" />
       </NavButton>
-      <NavButton title="Next match (Enter)" onClick={findNext} disabled={!query}>
+      <NavButton title="Next match (Enter)" onClick={onNext} disabled={!query}>
         <polyline points="4,7 8,11 12,7" />
       </NavButton>
 
@@ -222,7 +184,7 @@ export default function TerminalSearchBar({
       {/* Toggle: Case sensitive */}
       <ToggleButton
         active={caseSensitive}
-        onClick={() => setCaseSensitive((v) => !v)}
+        onClick={() => setCaseSensitive(!caseSensitive)}
         title="Match case"
         label="Aa"
       />
@@ -230,19 +192,21 @@ export default function TerminalSearchBar({
       {/* Toggle: Regex */}
       <ToggleButton
         active={regex}
-        onClick={() => setRegex((v) => !v)}
+        onClick={() => setRegex(!regex)}
         title="Use regular expression"
         label=".*"
       />
 
       {/* Toggle: Whole word */}
-      <ToggleButton
-        active={wholeWord}
-        onClick={() => setWholeWord((v) => !v)}
-        title="Match whole word"
-        label="W"
-        underline
-      />
+      {!disableWholeWord && (
+        <ToggleButton
+          active={wholeWord}
+          onClick={() => setWholeWord(!wholeWord)}
+          title="Match whole word"
+          label="W"
+          underline
+        />
+      )}
 
       {/* Separator */}
       <div
@@ -264,7 +228,6 @@ export default function TerminalSearchBar({
   );
 }
 
-/** Small icon button for prev/next/close */
 function NavButton({
   title,
   onClick,
@@ -318,7 +281,6 @@ function NavButton({
   );
 }
 
-/** Toggle button for search options (Aa, .*, W) */
 function ToggleButton({
   active,
   onClick,

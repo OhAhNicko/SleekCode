@@ -9,6 +9,9 @@ import CommitPopover from "./CommitPopover";
 import ConnectToGitHubModal from "./ConnectToGitHubModal";
 import ReleaseModal from "./ReleaseModal";
 import CreatePullRequestModal from "./CreatePullRequestModal";
+import PaneSearchBar from "./PaneSearchBar";
+import { useDomTextSearch } from "../hooks/usePaneSearch";
+import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import type {
   ComparisonMode,
   GitFileStatus,
@@ -19,9 +22,10 @@ import type {
 
 interface CodeReviewPaneProps {
   onClose: () => void;
+  paneId?: string;
 }
 
-export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
+export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps) {
   const activeTabId = useAppStore((s) => s.activeTabId);
   const tabs = useAppStore((s) => s.tabs);
   const workingDir =
@@ -74,6 +78,20 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const commitBtnRef = useRef<HTMLDivElement>(null);
   const pushErrorRef = useRef<HTMLDivElement>(null);
+  const diffSearchRef = useRef<HTMLDivElement>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const domSearch = useDomTextSearch(diffSearchRef);
+
+  useEffect(() => {
+    if (!paneId) return;
+    registerPaneSearch(paneId, () => setSearchOpen(true));
+    return () => unregisterPaneSearch(paneId);
+  }, [paneId]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    domSearch.reset();
+  }, [domSearch]);
 
   const getCompareArg = useCallback((): string | undefined => {
     if (comparisonMode === "vs-main") return "main";
@@ -410,7 +428,11 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
         : `vs ${customBranch}`;
 
   const content = (
-    <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)", position: "relative" }}>
+    <div
+      className="flex flex-col h-full w-full"
+      data-pane-id={paneId}
+      style={{ backgroundColor: "var(--ezy-bg)", position: "relative" }}
+    >
       {/* Header */}
       <div
         className="flex items-center gap-2 px-2 shrink-0"
@@ -1042,16 +1064,28 @@ export default function CodeReviewPane({ onClose }: CodeReviewPaneProps) {
           collapsed={fileListCollapsed}
           onToggleCollapse={() => setFileListCollapsed((v) => !v)}
         />
-        <CodeReviewDiffView
-          fileDiffs={fileDiffs}
-          selectedFile={selectedFile}
-          onRevertHunk={handleRevertHunk}
-          onDiscardFile={handleDiscardFile}
-          onOpenInEditor={handleOpenInEditor}
-          isGitRepo={isGitRepo}
-          loading={loading}
-          error={error}
-        />
+        <div
+          ref={diffSearchRef}
+          style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
+        >
+          <CodeReviewDiffView
+            fileDiffs={fileDiffs}
+            selectedFile={selectedFile}
+            onRevertHunk={handleRevertHunk}
+            onDiscardFile={handleDiscardFile}
+            onOpenInEditor={handleOpenInEditor}
+            isGitRepo={isGitRepo}
+            loading={loading}
+            error={error}
+          />
+          {searchOpen && (
+            <PaneSearchBar
+              {...domSearch}
+              onClose={closeSearch}
+              isActive={true}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

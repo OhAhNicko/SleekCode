@@ -28,7 +28,9 @@ import CommandBlockOverlay from "./CommandBlockOverlay";
 import ClipboardImagePreview from "./ClipboardImagePreview";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import PromptComposer from "./PromptComposer";
-import TerminalSearchBar from "./TerminalSearchBar";
+import PaneSearchBar from "./PaneSearchBar";
+import { useXtermSearch } from "../hooks/usePaneSearch";
+import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import hackRegularUrl from "../fonts/hack-regular.woff2?url";
 import hackBoldUrl from "../fonts/hack-bold.woff2?url";
 
@@ -214,7 +216,9 @@ export default function TerminalPane({
   const [zoomIndicator, setZoomIndicator] = useState<number | null>(null);
   const zoomIndicatorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const searchAddonRef = useRef<SearchAddon | null>(null);
+  const [searchAddon, setSearchAddon] = useState<SearchAddon | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const xtermSearch = useXtermSearch(searchAddon);
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const scrollToPromptRef = useRef<() => void>(() => {});
   const scrollToNextPromptRef = useRef<() => void>(() => {});
@@ -546,9 +550,10 @@ export default function TerminalPane({
       openUrl(uri).catch(() => {});
     }));
 
-    const searchAddon = new SearchAddon();
-    term.loadAddon(searchAddon);
-    searchAddonRef.current = searchAddon;
+    const addon = new SearchAddon();
+    term.loadAddon(addon);
+    searchAddonRef.current = addon;
+    setSearchAddon(addon);
 
     // File path link provider — Ctrl+Click to open in FileViewerPane
     const fileLinkDisposable = term.registerLinkProvider(
@@ -1007,12 +1012,6 @@ export default function TerminalPane({
         }
       }
 
-      // Ctrl+F — open search bar
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key === "f" || e.key === "F")) {
-        setSearchOpen(true);
-        return false;
-      }
-
       return true; // Let xterm handle all other keys
     });
 
@@ -1344,6 +1343,7 @@ export default function TerminalPane({
       blockParserRef.current?.dispose();
       blockParserRef.current = null;
       searchAddonRef.current = null;
+      setSearchAddon(null);
       clearTerminalActivity(terminalId);
       clearImageMasks(terminalId);
       term.dispose();
@@ -1919,6 +1919,13 @@ export default function TerminalPane({
     if (isActive) terminalRef.current?.focus();
   }, [isActive]);
 
+  // Register this pane's "open search" callback so the central Ctrl+F handler
+  // in App.tsx can reach us regardless of xterm focus state.
+  useEffect(() => {
+    registerPaneSearch(terminalId, () => setSearchOpen(true));
+    return () => unregisterPaneSearch(terminalId);
+  }, [terminalId]);
+
   const handleClose = useCallback(() => {
     kill();
     onClose();
@@ -1966,8 +1973,8 @@ export default function TerminalPane({
           />
         )}
         {searchOpen && searchAddonRef.current && (
-          <TerminalSearchBar
-            searchAddon={searchAddonRef.current}
+          <PaneSearchBar
+            {...xtermSearch}
             onClose={handleSearchClose}
             isActive={isActive}
           />

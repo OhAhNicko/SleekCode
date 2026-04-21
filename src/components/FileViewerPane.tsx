@@ -7,16 +7,21 @@ import { python } from "@codemirror/lang-python";
 import { css } from "@codemirror/lang-css";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter } from "@codemirror/language";
 import { closeBrackets } from "@codemirror/autocomplete";
+import { search } from "@codemirror/search";
 import { invoke } from "@tauri-apps/api/core";
 import { getTheme } from "../lib/themes";
 import { buildEditorTheme } from "../lib/editor-theme";
 import { useAppStore } from "../store";
 import type { Extension } from "@codemirror/state";
+import PaneSearchBar from "./PaneSearchBar";
+import { useCodeMirrorSearch } from "../hooks/usePaneSearch";
+import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 
 interface FileViewerPaneProps {
   initialFiles: string[];
   initialActive: string;
   onClose: () => void;
+  paneId?: string;
 }
 
 function detectLanguage(filePath: string): Extension[] {
@@ -93,6 +98,7 @@ export default function FileViewerPane({
   initialFiles,
   initialActive,
   onClose,
+  paneId,
 }: FileViewerPaneProps) {
   const [files, setFiles] = useState<string[]>(initialFiles);
   const [activeFile, setActiveFile] = useState(initialActive);
@@ -102,9 +108,30 @@ export default function FileViewerPane({
   const [error, setError] = useState<string | null>(null);
   const [modified, setModified] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const cmSearch = useCodeMirrorSearch(viewRef);
   const themeId = useAppStore((s) => s.themeId);
   const theme = getTheme(themeId);
   const tabsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!paneId) return;
+    registerPaneSearch(paneId, () => setSearchOpen(true));
+    return () => unregisterPaneSearch(paneId);
+  }, [paneId]);
+
+  // Closing the file or switching tabs resets the search bar naturally on re-mount.
+  useEffect(() => {
+    setSearchOpen(false);
+    cmSearch.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFile]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    cmSearch.reset();
+    viewRef.current?.focus();
+  }, [cmSearch]);
 
   const fileName = activeFile.split(/[\\/]/).pop() || activeFile;
   const langLabel = getLanguageLabel(activeFile);
@@ -171,6 +198,7 @@ export default function FileViewerPane({
             syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
             ...langExts,
             editorTheme,
+            search(),
             keymap.of([
               ...defaultKeymap,
               ...historyKeymap,
@@ -231,7 +259,11 @@ export default function FileViewerPane({
   }, []);
 
   return (
-    <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
+    <div
+      className="flex flex-col h-full w-full"
+      data-pane-id={paneId}
+      style={{ backgroundColor: "var(--ezy-bg)" }}
+    >
       {/* Tab bar */}
       <div
         ref={tabsRef}
@@ -353,7 +385,7 @@ export default function FileViewerPane({
       </div>
 
       {/* Editor content */}
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div className="flex-1 min-h-0 overflow-auto relative">
         {loading ? (
           <div
             className="flex items-center justify-center h-full"
@@ -370,6 +402,13 @@ export default function FileViewerPane({
           </div>
         ) : null}
         <div ref={containerRef} className="h-full" />
+        {searchOpen && (
+          <PaneSearchBar
+            {...cmSearch}
+            onClose={closeSearch}
+            isActive={true}
+          />
+        )}
       </div>
     </div>
   );

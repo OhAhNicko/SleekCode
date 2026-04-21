@@ -307,6 +307,7 @@ export default function PaneGrid({
       return (
         <EditorPane
           key={node.id}
+          paneId={node.id}
           filePath={node.filePath}
           language={node.language}
           serverId={node.serverId}
@@ -319,6 +320,7 @@ export default function PaneGrid({
       return (
         <KanbanBoard
           key={node.id}
+          paneId={node.id}
           onClose={() => handleClose(node.id)}
           initialVertical={node.vertical}
           onReposition={handleKanbanReposition}
@@ -327,13 +329,14 @@ export default function PaneGrid({
     }
 
     if (node.type === "codereview") {
-      return <CodeReviewPane key={node.id} onClose={() => handleClose(node.id)} />;
+      return <CodeReviewPane key={node.id} paneId={node.id} onClose={() => handleClose(node.id)} />;
     }
 
     if (node.type === "fileviewer") {
       return (
         <FileViewerPane
           key={node.id}
+          paneId={node.id}
           initialFiles={node.files}
           initialActive={node.activeFile}
           onClose={() => handleClose(node.id)}

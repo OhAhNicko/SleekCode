@@ -32,7 +32,6 @@ const sections: ShortcutSection[] = [
       { keys: ["Ctrl", "Tab"], label: "Next tab" },
       { keys: ["Ctrl", "Shift", "Tab"], label: "Previous tab" },
       { keys: ["Alt", "1-9"], label: "Switch to tab by number" },
-      { keys: ["Alt", "Tab"], label: "Cycle open projects" },
       { keys: ["Ctrl", "Shift", "T"], label: "New tab" },
       { keys: ["Ctrl", "Shift", "N"], label: "New project / tab" },
       { keys: ["Ctrl", "Shift", "W"], label: "Close tab" },
@@ -40,13 +39,14 @@ const sections: ShortcutSection[] = [
       { keys: ["Ctrl", "Enter"], label: "Confirm commit" },
       { keys: ["Ctrl", "Z"], label: "Undo close tab" },
       { keys: ["Ctrl", "R"], label: "Search prompt history" },
+      { keys: ["Ctrl", "F"], label: "Search in active pane (terminal, editor, file viewer, code review, kanban)" },
       { keys: ["Ctrl", "/"], label: "Keyboard shortcuts" },
     ],
   },
   {
     title: "Terminal",
     items: [
-      { keys: ["Ctrl", "F"], label: "Search in terminal" },
+      { keys: ["Ctrl", "F"], label: "Search terminal buffer" },
       { keys: ["Ctrl", "I"], label: "Open prompt composer" },
       { keys: ["Ctrl", "L"], label: "Clear terminal" },
       { keys: ["Ctrl", "+"], label: "Zoom in (font size)" },

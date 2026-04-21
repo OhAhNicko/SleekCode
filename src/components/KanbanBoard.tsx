@@ -1,7 +1,9 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import { useAppStore } from "../store";
 import type { TaskCard as TaskCardType } from "../types";
 import TaskCard from "./TaskCard";
+import PaneSearchBar from "./PaneSearchBar";
+import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 
 const COLUMNS: { key: TaskCardType["status"]; label: string }[] = [
   { key: "todo", label: "To Do" },
@@ -13,9 +15,14 @@ interface KanbanBoardProps {
   onClose?: () => void;
   initialVertical?: boolean;
   onReposition?: (vertical: boolean) => void;
+  paneId?: string;
 }
 
-export default function KanbanBoard({ onClose, initialVertical = false, onReposition }: KanbanBoardProps) {
+function escapeRegExpKanban(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export default function KanbanBoard({ onClose, initialVertical = false, onReposition, paneId }: KanbanBoardProps) {
   const tasks = useAppStore((s) => s.tasks);
   const addTask = useAppStore((s) => s.addTask);
   const moveTask = useAppStore((s) => s.moveTask);
@@ -28,6 +35,103 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
   const [vertical, setVertical] = useState(initialVertical);
   const dragItemId = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Per-pane search state.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchCase, setSearchCase] = useState(false);
+  const [searchRegex, setSearchRegex] = useState(false);
+  const [searchWhole, setSearchWhole] = useState(false);
+  const [activeMatchIdx, setActiveMatchIdx] = useState(0);
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  useEffect(() => {
+    if (!paneId) return;
+    registerPaneSearch(paneId, () => setSearchOpen(true));
+    return () => unregisterPaneSearch(paneId);
+  }, [paneId]);
+
+  const searchRegexp = useMemo<RegExp | null>(() => {
+    if (!searchQuery) return null;
+    try {
+      const flags = searchCase ? "" : "i";
+      if (searchRegex) {
+        return new RegExp(
+          searchWhole ? `\\b(?:${searchQuery})\\b` : searchQuery,
+          flags,
+        );
+      }
+      const escaped = escapeRegExpKanban(searchQuery);
+      return new RegExp(
+        searchWhole ? `\\b${escaped}\\b` : escaped,
+        flags,
+      );
+    } catch {
+      return null;
+    }
+  }, [searchQuery, searchCase, searchRegex, searchWhole]);
+
+  const taskMatches = useCallback(
+    (t: TaskCardType): boolean => {
+      if (!searchRegexp) return true;
+      if (searchRegexp.test(t.title)) return true;
+      if (t.description && searchRegexp.test(t.description)) return true;
+      return false;
+    },
+    [searchRegexp],
+  );
+
+  // Ordered list of matching task ids (traversal: columns left→right, by order).
+  const matchingTaskIds = useMemo(() => {
+    if (!searchQuery) return [] as string[];
+    const out: string[] = [];
+    for (const col of COLUMNS) {
+      const rows = tasks
+        .filter((t) => t.status === col.key)
+        .sort((a, b) => a.order - b.order);
+      for (const t of rows) {
+        if (taskMatches(t)) out.push(t.id);
+      }
+    }
+    return out;
+  }, [tasks, searchQuery, taskMatches]);
+
+  // Clamp / reset the active match index whenever the match set changes.
+  useEffect(() => {
+    if (matchingTaskIds.length === 0) {
+      setActiveMatchIdx(0);
+      return;
+    }
+    setActiveMatchIdx((idx) => (idx >= matchingTaskIds.length ? 0 : idx));
+  }, [matchingTaskIds]);
+
+  // Scroll the currently active match into view.
+  useEffect(() => {
+    if (!searchQuery || matchingTaskIds.length === 0) return;
+    const id = matchingTaskIds[activeMatchIdx];
+    const el = cardRefs.current[id];
+    if (el) el.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [activeMatchIdx, matchingTaskIds, searchQuery]);
+
+  const handleSearchNext = useCallback(() => {
+    if (matchingTaskIds.length === 0) return;
+    setActiveMatchIdx((idx) => (idx + 1) % matchingTaskIds.length);
+  }, [matchingTaskIds]);
+
+  const handleSearchPrev = useCallback(() => {
+    if (matchingTaskIds.length === 0) return;
+    setActiveMatchIdx((idx) => (idx - 1 + matchingTaskIds.length) % matchingTaskIds.length);
+  }, [matchingTaskIds]);
+
+  const handleSearchClose = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setActiveMatchIdx(0);
+  }, []);
+
+  const matchInfo = searchQuery
+    ? { index: activeMatchIdx, count: matchingTaskIds.length }
+    : null;
 
   const handleAdd = useCallback(() => {
     const title = newTitle.trim();
@@ -90,9 +194,27 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
 
   return (
     <div
-      className="h-full w-full flex flex-col"
+      className="h-full w-full flex flex-col relative"
+      data-pane-id={paneId}
       style={{ backgroundColor: "var(--ezy-bg)", overflow: "hidden" }}
     >
+      {searchOpen && (
+        <PaneSearchBar
+          query={searchQuery}
+          setQuery={setSearchQuery}
+          caseSensitive={searchCase}
+          setCaseSensitive={setSearchCase}
+          regex={searchRegex}
+          setRegex={setSearchRegex}
+          wholeWord={searchWhole}
+          setWholeWord={setSearchWhole}
+          matchInfo={matchInfo}
+          onNext={handleSearchNext}
+          onPrev={handleSearchPrev}
+          onClose={handleSearchClose}
+          isActive={true}
+        />
+      )}
       {/* Header */}
       <div
         className="flex items-center justify-between select-none"
@@ -401,15 +523,36 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                   minHeight: 0,
                 }}
               >
-                {colTasks.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    onRun={task.status === "todo" ? () => handleRunTask(task.id) : undefined}
-                    onRemove={() => removeTask(task.id)}
-                    onDragStart={(e) => handleDragStart(e, task.id)}
-                  />
-                ))}
+                {colTasks.map((task) => {
+                  const matches = !searchQuery || taskMatches(task);
+                  const isActiveMatch =
+                    !!searchQuery &&
+                    matchingTaskIds.length > 0 &&
+                    matchingTaskIds[activeMatchIdx] === task.id;
+                  return (
+                    <div
+                      key={task.id}
+                      ref={(el) => {
+                        cardRefs.current[task.id] = el;
+                      }}
+                      style={{
+                        opacity: matches ? 1 : 0.2,
+                        pointerEvents: matches ? "auto" : "none",
+                        outline: isActiveMatch ? "2px solid var(--ezy-accent)" : "none",
+                        outlineOffset: isActiveMatch ? 2 : 0,
+                        borderRadius: 6,
+                        transition: "opacity 120ms ease",
+                      }}
+                    >
+                      <TaskCard
+                        task={task}
+                        onRun={task.status === "todo" ? () => handleRunTask(task.id) : undefined}
+                        onRemove={() => removeTask(task.id)}
+                        onDragStart={(e) => handleDragStart(e, task.id)}
+                      />
+                    </div>
+                  );
+                })}
 
                 {colTasks.length === 0 && (
                   <div

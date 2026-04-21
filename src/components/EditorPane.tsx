@@ -7,11 +7,15 @@ import { python } from "@codemirror/lang-python";
 import { css } from "@codemirror/lang-css";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter } from "@codemirror/language";
 import { closeBrackets } from "@codemirror/autocomplete";
+import { search } from "@codemirror/search";
 import { invoke } from "@tauri-apps/api/core";
 import { getTheme } from "../lib/themes";
 import { buildEditorTheme } from "../lib/editor-theme";
 import { useAppStore } from "../store";
 import type { Extension } from "@codemirror/state";
+import PaneSearchBar from "./PaneSearchBar";
+import { useCodeMirrorSearch } from "../hooks/usePaneSearch";
+import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 
 interface EditorPaneProps {
   filePath: string;
@@ -19,6 +23,8 @@ interface EditorPaneProps {
   onClose: () => void;
   /** When set, read/write route through ssh_read_file / ssh_write_file against this RemoteServer.id. */
   serverId?: string;
+  /** Layout node id — used so global Ctrl+F can reach this pane. */
+  paneId?: string;
 }
 
 function detectLanguage(filePath: string): Extension[] {
@@ -59,17 +65,31 @@ function getLanguageLabel(filePath: string): string {
   }
 }
 
-export default function EditorPane({ filePath, onClose, serverId }: EditorPaneProps) {
+export default function EditorPane({ filePath, onClose, serverId, paneId }: EditorPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [modified, setModified] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const cmSearch = useCodeMirrorSearch(viewRef);
   const themeId = useAppStore((s) => s.themeId);
   const theme = getTheme(themeId);
   const servers = useAppStore((s) => s.servers);
   const server = serverId ? servers.find((s) => s.id === serverId) : undefined;
+
+  useEffect(() => {
+    if (!paneId) return;
+    registerPaneSearch(paneId, () => setSearchOpen(true));
+    return () => unregisterPaneSearch(paneId);
+  }, [paneId]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    cmSearch.reset();
+    viewRef.current?.focus();
+  }, [cmSearch]);
 
   const fileName = filePath.split(/[\\/]/).pop() || filePath;
   const langLabel = getLanguageLabel(filePath);
@@ -138,6 +158,7 @@ export default function EditorPane({ filePath, onClose, serverId }: EditorPanePr
             syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
             ...langExts,
             editorTheme,
+            search(),
             keymap.of([
               ...defaultKeymap,
               ...historyKeymap,
@@ -184,6 +205,7 @@ export default function EditorPane({ filePath, onClose, serverId }: EditorPanePr
   return (
     <div
       className="flex flex-col h-full w-full"
+      data-pane-id={paneId}
       style={{ backgroundColor: "var(--ezy-bg)" }}
     >
       {/* Header */}
@@ -289,7 +311,7 @@ export default function EditorPane({ filePath, onClose, serverId }: EditorPanePr
       </div>
 
       {/* Editor content */}
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div className="flex-1 min-h-0 overflow-auto relative">
         {loading ? (
           <div
             className="flex items-center justify-center h-full"
@@ -306,6 +328,13 @@ export default function EditorPane({ filePath, onClose, serverId }: EditorPanePr
           </div>
         ) : null}
         <div ref={containerRef} className="h-full" />
+        {searchOpen && (
+          <PaneSearchBar
+            {...cmSearch}
+            onClose={closeSearch}
+            isActive={true}
+          />
+        )}
       </div>
     </div>
   );
