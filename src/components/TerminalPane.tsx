@@ -731,6 +731,28 @@ export default function TerminalPane({
       });
     }
 
+    // Match prompt-like lines for PgUp/PgDn fallback when shell integration
+    // is absent. Previously this tested `/[$#❯]\s/` anywhere on the line,
+    // which misfired on Python/shell comments like `# Populate...`.
+    function isPromptLine(raw: string): boolean {
+      const ttype = terminalTypeRef.current;
+      const isAI = ttype === "claude" || ttype === "codex" || ttype === "gemini";
+      const sigilRegex = isAI ? /[>❯›»]/ : /[$#❯]/;
+      const col = raw.search(sigilRegex);
+      // Require sigil at column 0 or 1 (allow one leading space for TUI boxes)
+      if (col < 0 || col > 1) return false;
+      const trimmed = raw.trim();
+      const startRegex = isAI ? /^[>❯›»]\s/ : /^[$#❯]\s/;
+      if (!startRegex.test(trimmed)) return false;
+      if (isAI) {
+        // Skip numbered selection items (`> 3. Option`) and empty markers.
+        const after = trimmed.replace(/^[>❯›»]\s?/, "").trim();
+        if (/^\d+[.)]/.test(after)) return false;
+        if (after.length < 2) return false;
+      }
+      return true;
+    }
+
     function scrollToPrompt() {
       scrollGuardActiveRef.current = true;
       const buf = term.buffer.active;
@@ -757,13 +779,14 @@ export default function TerminalPane({
         }
       }
 
-      // Fallback: scan buffer backwards for prompt-like lines ($ , # , ❯ )
+      // Fallback: scan buffer backwards for prompt-like lines.
+      // AI terminals use `> ` user-message markers; shells use `$`/`#`/`❯`.
       const startLine = Math.max(0, viewportTop - 1);
       for (let i = startLine; i >= 0; i--) {
         const line = buf.getLine(i);
         if (!line) continue;
-        const text = line.translateToString().trimEnd();
-        if (/[$#❯]\s/.test(text)) {
+        const raw = line.translateToString(false);
+        if (isPromptLine(raw)) {
           term.scrollToLine(i);
           clearScrollGuard();
           return;
@@ -795,13 +818,13 @@ export default function TerminalPane({
         }
       }
 
-      // Fallback: scan buffer forwards for prompt-like lines
+      // Fallback: scan buffer forwards for prompt-like lines.
       const maxLine = buf.baseY + term.rows;
       for (let i = viewportTop + 2; i < maxLine; i++) {
         const line = buf.getLine(i);
         if (!line) continue;
-        const text = line.translateToString().trimEnd();
-        if (/[$#❯]\s/.test(text)) {
+        const raw = line.translateToString(false);
+        if (isPromptLine(raw)) {
           term.scrollToLine(i);
           clearScrollGuard();
           return;
@@ -1919,6 +1942,23 @@ export default function TerminalPane({
     if (isActive) terminalRef.current?.focus();
   }, [isActive]);
 
+  // Manual context refresh — called when the user clicks the context-left
+  // percentage in TerminalHeader. Same read path as the periodic poll, minus
+  // the session-drift / registry side-effects (those stay on the timer).
+  const refreshContext = useCallback(async () => {
+    const supported = terminalType === "claude" || terminalType === "codex" || terminalType === "gemini";
+    if (!supported) return;
+    const backend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
+    const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend);
+    if (info !== null) {
+      setContextInfo((prev) => ({
+        ...info,
+        rateLimitFiveHour: info.rateLimitFiveHour ?? prev?.rateLimitFiveHour ?? null,
+        rateLimitWeekly: info.rateLimitWeekly ?? prev?.rateLimitWeekly ?? null,
+      }));
+    }
+  }, [terminalType, sessionResumeId]);
+
   // Register this pane's "open search" callback so the central Ctrl+F handler
   // in App.tsx can reach us regardless of xterm focus state.
   useEffect(() => {
@@ -1957,6 +1997,7 @@ export default function TerminalPane({
           onSwitchSession={handleSwitchSession}
           getPromptEntries={getPromptEntries}
           onScrollToPromptLine={handleScrollToPromptLine}
+          onRefreshContext={refreshContext}
         />
       )}
       <div className="flex-1 min-h-0 relative" style={{ backgroundColor: "var(--ezy-bg)" }}>

@@ -403,15 +403,12 @@ export default function App() {
       // Ctrl (no Shift) shortcuts
       if (!shiftKey) {
         // Ctrl+F — open search in the active pane (terminal, editor, file viewer, code review, kanban).
-        // Panes register their opener via lib/pane-search-registry. If no pane
-        // claims it, we don't consume the event (native webview Find stays available).
+        // Always consume so the WebView's native Find never shows — even when
+        // no pane claims the shortcut.
         if (key === "f" || key === "F") {
-          const opener = getActivePaneSearchOpener();
-          if (opener) {
-            consume();
-            opener();
-            return;
-          }
+          consume();
+          getActivePaneSearchOpener()?.();
+          return;
         }
         switch (key) {
           case "k":

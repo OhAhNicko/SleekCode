@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import type { TerminalType, TerminalBackend, ProjectSession, SessionIndexEntry } from "../types";
 import type { ContextInfo } from "../lib/context-parser";
 import { TERMINAL_CONFIGS, toWslPath } from "../lib/terminal-config";
@@ -80,6 +80,8 @@ interface TerminalHeaderProps {
   onSwitchSession?: (sessionId: string | undefined) => void;
   getPromptEntries?: () => PromptEntry[];
   onScrollToPromptLine?: (line: number) => void;
+  /** Called when the user clicks the context-left widget to trigger a manual refresh. */
+  onRefreshContext?: () => void | Promise<void>;
 }
 
 function TerminalIcon({ type }: { type: TerminalType }) {
@@ -821,8 +823,20 @@ export default function TerminalHeader({
   onSwitchSession,
   getPromptEntries,
   onScrollToPromptLine,
+  onRefreshContext,
 }: TerminalHeaderProps) {
   const contextPercent = contextInfo?.percent ?? null;
+  const [refreshingContext, setRefreshingContext] = useState(false);
+
+  const handleContextRefreshClick = useCallback(async () => {
+    if (!onRefreshContext || refreshingContext) return;
+    setRefreshingContext(true);
+    try {
+      await onRefreshContext();
+    } finally {
+      setRefreshingContext(false);
+    }
+  }, [onRefreshContext, refreshingContext]);
   const config = TERMINAL_CONFIGS[terminalType];
   const slToggles = useAppStore((s) => s.statuslineToggles[terminalType]);
   /** Check if a statusline feature is shown (falls back to the per-key default). */
@@ -1317,11 +1331,27 @@ export default function TerminalHeader({
               </span>
             );
           })()}
-          {/* Context bar + percentage — tooltip only on this section */}
+          {/* Context bar + percentage — click to manually refresh */}
           {sl("contextBar") && <div
             className="flex items-center gap-2"
-            title={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%`}
-            style={{ flexShrink: 0 }}
+            title={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%${onRefreshContext ? " — click to refresh" : ""}`}
+            onClick={onRefreshContext ? handleContextRefreshClick : undefined}
+            style={{
+              flexShrink: 0,
+              cursor: onRefreshContext ? "pointer" : "default",
+              padding: "2px 4px",
+              borderRadius: 4,
+              opacity: refreshingContext ? 0.6 : 1,
+              transition: "background-color 100ms ease, opacity 120ms ease",
+            }}
+            onMouseEnter={(e) => {
+              if (onRefreshContext && !refreshingContext) {
+                e.currentTarget.style.backgroundColor = "var(--ezy-border)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+            }}
           >
             <div
               style={{
