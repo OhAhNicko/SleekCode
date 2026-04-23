@@ -447,13 +447,17 @@ function SessionPicker({
   const [fallbackSlugs, setFallbackSlugs] = useState<Record<string, string>>({});
   const fallbackFetchedRef = useRef<Set<string>>(new Set());
 
-  // Fetch sessions-index on mount (only for Claude sessions)
+  // Fetch sessions-index on mount, then poll every 30s while the dropdown is
+  // open so newly created Claude Code sessions appear without reopening.
   useEffect(() => {
     if (!workingDir || (terminalType && terminalType !== "claude")) return;
     const effectiveBackend = backend ?? (useAppStore.getState().terminalBackend as TerminalBackend | undefined) ?? "wsl";
     // WSL backend needs a Unix path — convert UNC/Windows paths to /home/... form.
     const pathForBackend = effectiveBackend === "wsl" ? toWslPath(workingDir) : workingDir;
-    readSessionsIndex(pathForBackend, effectiveBackend).then(setIndexEntries);
+    const fetch = () => readSessionsIndex(pathForBackend, effectiveBackend).then(setIndexEntries);
+    fetch();
+    const interval = setInterval(fetch, 30_000);
+    return () => clearInterval(interval);
   }, [workingDir, backend, terminalType]);
 
   // Fetch first-prompt slugs for sessions that lack an index entry AND a store name.

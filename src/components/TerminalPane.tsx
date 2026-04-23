@@ -252,6 +252,8 @@ export default function TerminalPane({
   const sessionResumeIdPropRef = useRef(sessionResumeId);
   sessionResumeIdPropRef.current = sessionResumeId;
   const sessionLookupDone = useRef(false);
+  // Cancels any pending session-lookup retry timers. Reassigned per attempt chain.
+  const sessionRetryCancelRef = useRef<(() => void) | null>(null);
   // Records when the PTY first produced output — used to bound session detection
   // so brand-new panes can't be assigned to pre-existing sessions in the project.
   const ptySpawnTimeRef = useRef<number>(0);
@@ -455,18 +457,31 @@ export default function TerminalPane({
         return false;
       };
 
-      // First attempt after 5s, retry at 20s, final attempt at 60s.
-      // The recency filter (120s) prevents claiming old sessions, so retries
-      // give the new session time to create its JSONL file.
-      setTimeout(async () => {
-        if (!(await lookupSession())) {
-          setTimeout(async () => {
-            if (!(await lookupSession())) {
-              setTimeout(lookupSession, 40000);
-            }
-          }, 15000);
+      // Retry schedule: 5s, 20s, then 60s × 10 (12 attempts, ~10.5 min total).
+      // Claude Code can take >60s to create its session file on cold starts;
+      // extended polling gives slow spawns a chance without burning CPU.
+      // The recency filter (120s) still prevents claiming stale sessions.
+      const RETRY_DELAYS_MS = [5_000, 20_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000];
+      let attempt = 0;
+      let timerId: ReturnType<typeof setTimeout> | null = null;
+      const scheduleNext = () => {
+        if (attempt >= RETRY_DELAYS_MS.length) return;
+        const delay = RETRY_DELAYS_MS[attempt++];
+        timerId = setTimeout(async () => {
+          timerId = null;
+          if (await lookupSession()) return;
+          scheduleNext();
+        }, delay);
+      };
+      sessionRetryCancelRef.current?.();
+      sessionRetryCancelRef.current = () => {
+        if (timerId !== null) {
+          clearTimeout(timerId);
+          timerId = null;
         }
-      }, 5000);
+        attempt = RETRY_DELAYS_MS.length;
+      };
+      scheduleNext();
     }
   }, []);
 
@@ -476,6 +491,7 @@ export default function TerminalPane({
   const handlePtyExit = useCallback((exitCode: number) => {
     setExited(true);
     clearTerminalActivity(terminalId);
+    sessionRetryCancelRef.current?.();
     terminalRef.current?.write("\r\n\x1b[38;2;139;148;158m[Process exited]\x1b[0m\r\n");
     onPtyExitRef.current?.(exitCode);
   }, [terminalId]);
@@ -1433,6 +1449,7 @@ export default function TerminalPane({
       setExited(false);
       setContextInfo(null);
       setCommandBlocks([]);
+      sessionRetryCancelRef.current?.();
       sessionLookupDone.current = false;
     }
   }, [terminalType]);
@@ -1838,6 +1855,7 @@ export default function TerminalPane({
     // Only re-enable session lookup if we don't already have a session ID.
     // If we DO have one, keep it — restart should use the SAME session, not find a new one.
     if (!sessionResumeIdPropRef.current) {
+      sessionRetryCancelRef.current?.();
       sessionLookupDone.current = false;
     }
     setRestartKey((k) => k + 1);
@@ -1855,9 +1873,11 @@ export default function TerminalPane({
     }
     if (newSessionId) {
       claimedSessionIds.add(newSessionId);
+      sessionRetryCancelRef.current?.();
       sessionLookupDone.current = true;
     } else {
       // New session — allow auto-detection to pick up the fresh session
+      sessionRetryCancelRef.current?.();
       sessionLookupDone.current = false;
     }
     // Clear terminal

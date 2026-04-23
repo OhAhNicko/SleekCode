@@ -61,7 +61,14 @@ export function useClipboardImagePaste({
       }
 
       navigator.clipboard.readText().then((text) => {
-        if (text) write(text);
+        if (!text) return;
+        // Delegate to xterm's paste() so multiline text is wrapped in
+        // bracketed-paste escapes (\x1b[200~…\x1b[201~) when the underlying
+        // app has enabled it. Prevents each \r in the paste from submitting
+        // as its own command in Claude/Codex/Gemini and modern bash/pwsh.
+        const term = terminalRef.current;
+        if (term) term.paste(text);
+        else write(text);
       });
     };
 
