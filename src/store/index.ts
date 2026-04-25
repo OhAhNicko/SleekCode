@@ -156,6 +156,32 @@ export const useAppStore = create<AppStore>()(
           (state as Record<string, unknown>).panePromptHistory = {};
         }
 
+        // One-shot migration: before detectBackendForPath was fixed, projects
+        // with Windows-shaped paths (C:\… or non-WSL UNCs) inherited the
+        // global "wsl" fallback as their preferredBackend, which sent
+        // PowerShell panes to `wsl --cd C:\…` instead of Set-Location. Clear
+        // the stamp so resolveBackend re-detects them on next tab open.
+        if (state.recentProjects && Array.isArray(state.recentProjects)) {
+          state.recentProjects = state.recentProjects.map((p) => {
+            if (p.preferredBackend !== "wsl" || !p.path) return p;
+            const norm = p.path.replace(/\\/g, "/").toLowerCase();
+            const isWslShaped =
+              norm.startsWith("/mnt/") ||
+              norm.startsWith("/home/") ||
+              norm.startsWith("/root/") ||
+              norm.startsWith("//wsl.localhost/") ||
+              norm.startsWith("//wsl$/");
+            const isWindowsShaped =
+              /^[a-z]:\//.test(norm) || (norm.startsWith("//") && !isWslShaped);
+            if (isWindowsShaped) {
+              const { preferredBackend, ...rest } = p;
+              void preferredBackend;
+              return rest;
+            }
+            return p;
+          });
+        }
+
         // Migrate legacy RemoteServer fields → single host
         if (state.servers) {
           state.servers = (state.servers as unknown as Record<string, unknown>[]).map((server) => {
