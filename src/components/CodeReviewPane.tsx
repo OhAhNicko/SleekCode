@@ -80,11 +80,15 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
   const pushErrorRef = useRef<HTMLDivElement>(null);
   const diffSearchRef = useRef<HTMLDivElement>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusBump, setSearchFocusBump] = useState(0);
   const domSearch = useDomTextSearch(diffSearchRef);
 
   useEffect(() => {
     if (!paneId) return;
-    registerPaneSearch(paneId, () => setSearchOpen(true));
+    registerPaneSearch(paneId, () => {
+      setSearchOpen(true);
+      setSearchFocusBump((n) => n + 1);
+    });
     return () => unregisterPaneSearch(paneId);
   }, [paneId]);
 
@@ -1083,6 +1087,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
               {...domSearch}
               onClose={closeSearch}
               isActive={true}
+              focusBump={searchFocusBump}
             />
           )}
         </div>

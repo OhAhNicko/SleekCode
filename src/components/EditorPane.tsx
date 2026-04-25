@@ -73,6 +73,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
   const [modified, setModified] = useState(false);
   const [saving, setSaving] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusBump, setSearchFocusBump] = useState(0);
   const cmSearch = useCodeMirrorSearch(viewRef);
   const themeId = useAppStore((s) => s.themeId);
   const theme = getTheme(themeId);
@@ -81,7 +82,10 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
 
   useEffect(() => {
     if (!paneId) return;
-    registerPaneSearch(paneId, () => setSearchOpen(true));
+    registerPaneSearch(paneId, () => {
+      setSearchOpen(true);
+      setSearchFocusBump((n) => n + 1);
+    });
     return () => unregisterPaneSearch(paneId);
   }, [paneId]);
 
@@ -333,6 +337,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
             {...cmSearch}
             onClose={closeSearch}
             isActive={true}
+            focusBump={searchFocusBump}
           />
         )}
       </div>

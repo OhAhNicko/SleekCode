@@ -16,6 +16,8 @@ export interface PaneSearchBarProps {
   isActive: boolean;
   disableWholeWord?: boolean;
   placeholder?: string;
+  /** Increment from the parent on every Ctrl+F press to refocus + select the input. */
+  focusBump?: number;
 }
 
 export default function PaneSearchBar({
@@ -34,16 +36,18 @@ export default function PaneSearchBar({
   isActive,
   disableWholeWord,
   placeholder = "Find",
+  focusBump,
 }: PaneSearchBarProps) {
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-focus input on mount (guarded by isActive to prevent background focus theft).
+  // Auto-focus on mount and on every focusBump change (re-pressed Ctrl+F refocuses the input).
+  // Guarded by isActive to prevent background focus theft.
   useEffect(() => {
     if (isActive) {
       inputRef.current?.focus();
       inputRef.current?.select();
     }
-  }, [isActive]);
+  }, [isActive, focusBump]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") {

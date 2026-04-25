@@ -109,6 +109,7 @@ export default function FileViewerPane({
   const [modified, setModified] = useState(false);
   const [saving, setSaving] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusBump, setSearchFocusBump] = useState(0);
   const cmSearch = useCodeMirrorSearch(viewRef);
   const themeId = useAppStore((s) => s.themeId);
   const theme = getTheme(themeId);
@@ -116,7 +117,10 @@ export default function FileViewerPane({
 
   useEffect(() => {
     if (!paneId) return;
-    registerPaneSearch(paneId, () => setSearchOpen(true));
+    registerPaneSearch(paneId, () => {
+      setSearchOpen(true);
+      setSearchFocusBump((n) => n + 1);
+    });
     return () => unregisterPaneSearch(paneId);
   }, [paneId]);
 
@@ -407,6 +411,7 @@ export default function FileViewerPane({
             {...cmSearch}
             onClose={closeSearch}
             isActive={true}
+            focusBump={searchFocusBump}
           />
         )}
       </div>

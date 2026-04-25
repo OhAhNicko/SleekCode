@@ -38,6 +38,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
 
   // Per-pane search state.
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusBump, setSearchFocusBump] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchCase, setSearchCase] = useState(false);
   const [searchRegex, setSearchRegex] = useState(false);
@@ -47,7 +48,10 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
 
   useEffect(() => {
     if (!paneId) return;
-    registerPaneSearch(paneId, () => setSearchOpen(true));
+    registerPaneSearch(paneId, () => {
+      setSearchOpen(true);
+      setSearchFocusBump((n) => n + 1);
+    });
     return () => unregisterPaneSearch(paneId);
   }, [paneId]);
 
@@ -213,6 +217,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
           onPrev={handleSearchPrev}
           onClose={handleSearchClose}
           isActive={true}
+          focusBump={searchFocusBump}
         />
       )}
       {/* Header */}

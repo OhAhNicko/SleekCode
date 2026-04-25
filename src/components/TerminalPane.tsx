@@ -218,6 +218,7 @@ export default function TerminalPane({
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const [searchAddon, setSearchAddon] = useState<SearchAddon | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusBump, setSearchFocusBump] = useState(0);
   const xtermSearch = useXtermSearch(searchAddon);
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const scrollToPromptRef = useRef<() => void>(() => {});
@@ -1989,7 +1990,10 @@ export default function TerminalPane({
   // Register this pane's "open search" callback so the central Ctrl+F handler
   // in App.tsx can reach us regardless of xterm focus state.
   useEffect(() => {
-    registerPaneSearch(terminalId, () => setSearchOpen(true));
+    registerPaneSearch(terminalId, () => {
+      setSearchOpen(true);
+      setSearchFocusBump((n) => n + 1);
+    });
     return () => unregisterPaneSearch(terminalId);
   }, [terminalId]);
 
@@ -2045,6 +2049,7 @@ export default function TerminalPane({
             {...xtermSearch}
             onClose={handleSearchClose}
             isActive={isActive}
+            focusBump={searchFocusBump}
           />
         )}
         {pastedImage && (
