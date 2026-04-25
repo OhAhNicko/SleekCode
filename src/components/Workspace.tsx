@@ -8,6 +8,7 @@ import {
   findAllTerminalLeaves,
   findPaneIdForTerminal,
   removePane,
+  redistributeEqually,
   setTerminalTypeInLayout,
   splitPane,
   swapPanes,
@@ -33,6 +34,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const addTerminals = useAppStore((s) => s.addTerminals);
   const setActiveTerminal = useAppStore((s) => s.setActiveTerminal);
   const terminals = useAppStore((s) => s.terminals);
+  const redistributeOnClose = useAppStore((s) => s.redistributeOnClose);
   const [activeTerminalId, setLocalActiveTerminal] = useState<string | null>(
     null
   );
@@ -167,11 +169,12 @@ export default function Workspace({ tab }: WorkspaceProps) {
     const paneId = findPaneIdForTerminal(tab.layout, termId);
     if (!paneId) return;
     snapshotPane(tab.id, tab.layout);
-    const newLayout = removePane(tab.layout, paneId);
-    // newLayout may be null when the last pane is closed — propagate that so
+    const removed = removePane(tab.layout, paneId);
+    // `removed` may be null when the last pane is closed — propagate that so
     // the empty-state launcher renders.
-    handleLayoutChange(newLayout);
-  }, [tab.id, tab.layout, handleLayoutChange]);
+    const next = removed && redistributeOnClose ? redistributeEqually(removed) : removed;
+    handleLayoutChange(next);
+  }, [tab.id, tab.layout, handleLayoutChange, redistributeOnClose]);
 
 
 

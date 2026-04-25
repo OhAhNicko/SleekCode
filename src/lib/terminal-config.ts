@@ -124,6 +124,38 @@ const TERMINAL_CONFIGS_NATIVE: Record<TerminalType, TerminalConfig> = {
 };
 
 /**
+ * Build PowerShell launch args that drop the user into the project's
+ * working directory. Behavior is keyed on the project's resolved backend
+ * (auto-detected from the path on first add, then user-overridable —
+ * see detectBackendForPath / RecentProject.preferredBackend), NOT on the
+ * cwd string itself:
+ *  - "windows" → `Set-Location -LiteralPath '<path>'`
+ *  - "wsl"     → `wsl -d <distro> --cd <path>` so the user lands in WSL
+ *    bash inside the project. (Navigating PS to \\wsl.localhost\... breaks
+ *    PSReadLine and many tools, so we drop into bash instead.)
+ * Returns [] if no actionable cwd is supplied.
+ *
+ * The command runs via -NoExit -Command so it executes BEFORE PSReadLine
+ * takes over the input line — avoiding the char-by-char redraw chaos that
+ * happens when the same command is sent through stdin after launch.
+ */
+export function buildPowerShellLaunchArgsForCwd(cwd: string | undefined, backend: "windows" | "wsl"): string[] {
+  if (!cwd) return [];
+
+  if (backend === "wsl") {
+    // wsl.exe accepts both Linux paths (/home/foo) and Windows paths
+    // (C:\foo, which it auto-translates to /mnt/c/foo) for --cd.
+    const distro = getCachedDistro();
+    const distroFlag = distro ? `-d ${distro} ` : "";
+    return ["-NoExit", "-Command", `wsl ${distroFlag}--cd ${cwd}`];
+  }
+
+  // backend === "windows": Set-Location handles drive paths and UNCs alike.
+  const escaped = cwd.replace(/'/g, "''");
+  return ["-NoExit", "-Command", `Set-Location -LiteralPath '${escaped}'`];
+}
+
+/**
  * Get terminal config for a given type.
  * When backend is "native", uses direct macOS/Linux executables.
  * When backend is "windows", uses native Windows executables directly.
@@ -152,7 +184,10 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
   // Windows native backend — use resolved .exe/.cmd path directly
   if (backend === "windows") {
     const winBase = TERMINAL_CONFIGS_WINDOWS[type];
-    if (type === "shell" || type === "devserver") return winBase;
+    if (type === "shell" || type === "devserver") {
+      const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd, "windows");
+      return cwdArgs.length ? { ...winBase, args: cwdArgs } : winBase;
+    }
 
     const cliPath = getCachedWindowsCliPath(type);
     const resumeArgs = sessionResumeId && supportsSessionResume(type)
@@ -167,9 +202,14 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
     };
   }
 
-  // WSL backend (default)
+  // WSL backend (default). Shell type still spawns powershell.exe on Windows
+  // (we're not in a WSL pane — that's claude/codex/gemini). Apply the same
+  // cwd-injection so PS drops the user straight into WSL bash at the project.
   const base = TERMINAL_CONFIGS_BASE[type];
-  if (type === "shell" || type === "devserver") return base;
+  if (type === "shell" || type === "devserver") {
+    const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd, "wsl");
+    return cwdArgs.length ? { ...base, args: cwdArgs } : base;
+  }
 
   const resumeArgs = sessionResumeId && supportsSessionResume(type)
     ? getResumeFlag(type, sessionResumeId).split(" ")

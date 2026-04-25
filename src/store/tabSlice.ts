@@ -1,8 +1,26 @@
 import type { StateCreator } from "zustand";
-import type { Tab, PaneLayout, DevServer } from "../types";
+import type { Tab, PaneLayout, DevServer, TerminalBackend } from "../types";
 import { generatePaneId, generateTerminalId, setSessionResumeIdInLayout } from "../lib/layout-utils";
 import { snapshotTab } from "./undoCloseStore";
 import { getPtyWrite } from "./terminalSlice";
+import { detectBackendForPath } from "../lib/platform";
+import type { RecentProject } from "./recentProjectsSlice";
+
+/** Resolve the terminal backend for a new tab: per-project preference > path detection > global setting. */
+function resolveBackend(
+  workingDir: string,
+  serverId: string | undefined,
+  root: Record<string, unknown>,
+): TerminalBackend {
+  const globalBackend = (root.terminalBackend as TerminalBackend | undefined) ?? "wsl";
+  if (!workingDir) return globalBackend;
+  const projects = (root.recentProjects as RecentProject[] | undefined) ?? [];
+  const norm = workingDir.replace(/\\/g, "/");
+  const proj = projects.find(
+    (p) => p.path.replace(/\\/g, "/") === norm && p.serverId === serverId,
+  );
+  return proj?.preferredBackend ?? detectBackendForPath(workingDir, globalBackend);
+}
 
 /** Pending dev server kills — delayed until undo window expires */
 const pendingServerKills = new Map<string, { timerId: ReturnType<typeof setTimeout>; serverIds: string[] }>();
@@ -115,7 +133,7 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
   addTab: (name, workingDir, serverId?) => {
     const tabId = `tab-${Date.now()}`;
     const { layout } = createDefaultLayout(workingDir);
-    const backend = ((get() as unknown as Record<string, unknown>).terminalBackend as string | undefined) ?? "wsl";
+    const backend = resolveBackend(workingDir, serverId, get() as unknown as Record<string, unknown>);
     set((state) => ({
       tabs: [
         ...state.tabs,
@@ -129,7 +147,7 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
 
   addTabWithLayout: (name, workingDir, layout, serverId?) => {
     const tabId = `tab-${Date.now()}`;
-    const backend = ((get() as unknown as Record<string, unknown>).terminalBackend as string | undefined) ?? "wsl";
+    const backend = resolveBackend(workingDir, serverId, get() as unknown as Record<string, unknown>);
     set((state) => ({
       tabs: [
         ...state.tabs,

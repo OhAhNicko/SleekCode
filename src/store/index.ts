@@ -78,6 +78,7 @@ export const useAppStore = create<AppStore>()(
         showTabPath: state.showTabPath,
         openPanesInBackground: state.openPanesInBackground,
         wideGridLayout: state.wideGridLayout,
+        redistributeOnClose: state.redistributeOnClose,
         autoMinimizeGameOnAiDone: state.autoMinimizeGameOnAiDone,
         terminalBackend: state.terminalBackend,
         commitMsgMode: state.commitMsgMode,

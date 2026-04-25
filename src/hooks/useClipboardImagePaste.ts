@@ -17,6 +17,7 @@ interface UseClipboardImagePasteOptions {
   terminalId: string;
   write: (data: string) => void;
   exited: boolean;
+  onFocus?: () => void;
 }
 
 export function useClipboardImagePaste({
@@ -26,6 +27,7 @@ export function useClipboardImagePaste({
   terminalId,
   write,
   exited,
+  onFocus,
 }: UseClipboardImagePasteOptions) {
   const [pastedImage, setPastedImage] = useState<PastedImage | null>(null);
   const processingRef = useRef(false);
@@ -43,6 +45,10 @@ export function useClipboardImagePaste({
     // clipboard-image capture flow); otherwise pastes text via the system
     // clipboard.
     const pasteFromClipboard = () => {
+      // Activate this pane before pasting — paste implies the user intends to
+      // direct input here, even if it wasn't the active pane.
+      onFocus?.();
+
       const store = useClipboardImageStore.getState();
       const latestImage = store.images[0];
 
@@ -146,7 +152,7 @@ export function useClipboardImagePaste({
       container.removeEventListener("mousedown", handleMouseDown, true);
       container.removeEventListener("auxclick", handleAuxClick, true);
     };
-  }, [containerRef, terminalRef, terminalType, terminalId, write, exited]);
+  }, [containerRef, terminalRef, terminalType, terminalId, write, exited, onFocus]);
 
   return { pastedImage, dismissPreview };
 }

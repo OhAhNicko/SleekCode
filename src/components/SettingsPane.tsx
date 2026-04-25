@@ -655,6 +655,8 @@ export default function SettingsPane() {
   const setOpenPanesInBackground = useAppStore((s) => s.setOpenPanesInBackground);
   const wideGridLayout = useAppStore((s) => s.wideGridLayout);
   const setWideGridLayout = useAppStore((s) => s.setWideGridLayout);
+  const redistributeOnClose = useAppStore((s) => s.redistributeOnClose);
+  const setRedistributeOnClose = useAppStore((s) => s.setRedistributeOnClose);
   const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
   const setAutoMinimizeGameOnAiDone = useAppStore((s) => s.setAutoMinimizeGameOnAiDone);
   const autoStartServerCommand = useAppStore((s) => s.autoStartServerCommand);
@@ -736,6 +738,9 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Wide grid layout" description="First 4 panes open side-by-side before stacking vertically.">
                 <ToggleSwitch checked={wideGridLayout} onChange={setWideGridLayout} />
+              </SettingsRow>
+              <SettingsRow label="Redistribute space on pane close" description="When a pane closes, give every remaining pane an equal share of the freed space. Off: only the immediate sibling absorbs the space.">
+                <ToggleSwitch checked={redistributeOnClose} onChange={setRedistributeOnClose} />
               </SettingsRow>
               <SettingsRow label="Auto-hide games when AI done" description="Minimize game pane when AI task completes.">
                 <ToggleSwitch checked={autoMinimizeGameOnAiDone} onChange={setAutoMinimizeGameOnAiDone} />
@@ -830,7 +835,7 @@ export default function SettingsPane() {
         return (
           <>
             {isWindows() && (
-              <SettingsSection id="terminal-backend" title="Backend" description="Choose the backend for new terminal instances.">
+              <SettingsSection id="terminal-backend" title="Backend" description="Fallback for projects whose path doesn't clearly indicate WSL vs Windows. Per-project preference (in Recent Projects) wins when set.">
                 <SettingsRow label="Terminal backend">
                   <SegmentedControl
                     options={[
@@ -1202,6 +1207,39 @@ export default function SettingsPane() {
             letterSpacing: "0.06em",
             color: "var(--ezy-text-muted)",
           }}>Settings</span>
+          <button
+            type="button"
+            title="Reload (Ctrl+Shift+R)"
+            onClick={() => window.location.reload()}
+            style={{
+              width: 22,
+              height: 22,
+              padding: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: "transparent",
+              border: "none",
+              borderRadius: 4,
+              color: "var(--ezy-text-muted)",
+              cursor: "pointer",
+              fontFamily: "inherit",
+              transition: "background-color 120ms ease, color 120ms ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+              e.currentTarget.style.color = "var(--ezy-text)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+              e.currentTarget.style.color = "var(--ezy-text-muted)";
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13.5 4.5A6 6 0 1 0 14 9" />
+              <path d="M14 2v3h-3" />
+            </svg>
+          </button>
         </div>
         {NAV_SECTIONS.map((s) => {
           const isActive = activeSection === s.id;

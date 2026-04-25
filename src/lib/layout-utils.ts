@@ -64,29 +64,15 @@ export function removePane(
   };
 }
 
-// Regenerating the split id is required so react-resizable-panels' autoSaveId
-// cache (keyed on split id) misses and our recomputed sizes actually take effect.
-export function removePaneBalanced(
-  layout: PaneLayout,
-  targetId: string
-): PaneLayout | null {
-  if (layout.type !== "split") {
-    return layout.id === targetId ? null : layout;
-  }
+// Walk the tree and rebuild every split with sizes proportional to its child
+// leaf counts, giving every leaf an equal share of the viewport area.
+// Regenerating split ids busts react-resizable-panels' autoSaveId cache so our
+// recomputed sizes actually take effect.
+export function redistributeEqually(layout: PaneLayout): PaneLayout {
+  if (layout.type !== "split") return layout;
 
-  const [first, second] = layout.children;
-
-  if (first.id === targetId) return second;
-  if (second.id === targetId) return first;
-
-  const newFirst = removePaneBalanced(first, targetId);
-  const newSecond = removePaneBalanced(second, targetId);
-
-  if (!newFirst && !newSecond) return null;
-  if (!newFirst) return newSecond;
-  if (!newSecond) return newFirst;
-
-  if (newFirst === first && newSecond === second) return layout;
+  const newFirst = redistributeEqually(layout.children[0]);
+  const newSecond = redistributeEqually(layout.children[1]);
 
   const leftLeaves = countLeafPanes(newFirst);
   const rightLeaves = countLeafPanes(newSecond);

@@ -1,6 +1,6 @@
 import type { StateCreator } from "zustand";
 import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, ComposerExpansion, PaneLayout, Tab } from "../types";
-import { getDefaultBackend } from "../lib/platform";
+import { getDefaultBackend, detectBackendForPath } from "../lib/platform";
 
 export interface RecentProjectTemplate {
   templateId: string;
@@ -23,6 +23,8 @@ export interface RecentProject {
   lastLayout?: PaneLayout;
   /** Links to RemoteServer.id when the project lives on an SSH server. Presence means remote. */
   serverId?: string;
+  /** Sticky per-project terminal backend. Set on first add via path detection; user-overridable. */
+  preferredBackend?: TerminalBackend;
 }
 
 export function isRemoteProject(p: RecentProject): boolean {
@@ -110,6 +112,7 @@ export interface RecentProjectsSlice {
   setShowTabPath: (value: boolean) => void;
   openPanesInBackground: boolean;
   wideGridLayout: boolean;
+  redistributeOnClose: boolean;
   autoMinimizeGameOnAiDone: boolean;
   showMiniGamesButton: boolean;
   showKanbanButton: boolean;
@@ -166,9 +169,11 @@ export interface RecentProjectsSlice {
   setCodeReviewCollapseAll: (value: boolean) => void;
   setOpenPanesInBackground: (value: boolean) => void;
   setWideGridLayout: (value: boolean) => void;
+  setRedistributeOnClose: (value: boolean) => void;
   setAutoMinimizeGameOnAiDone: (value: boolean) => void;
   toggleMiniGamesButton: () => void;
   setTerminalBackend: (value: TerminalBackend) => void;
+  setProjectBackend: (path: string, serverId: string | undefined, backend: TerminalBackend) => void;
   setCommitMsgMode: (value: CommitMsgMode) => void;
   setShadowAiCli: (value: ShadowAiCli) => void;
   updateProjectTemplate: (path: string, template: RecentProjectTemplate, serverId?: string) => void;
@@ -211,6 +216,7 @@ export const createRecentProjectsSlice: StateCreator<
   setShowTabPath: (value) => set({ showTabPath: value }),
   openPanesInBackground: false,
   wideGridLayout: true,
+  redistributeOnClose: true,
   autoMinimizeGameOnAiDone: false,
   showMiniGamesButton: false,
   showKanbanButton: false,
@@ -272,7 +278,11 @@ export const createRecentProjectsSlice: StateCreator<
             : p
         );
       } else {
-        // Add new
+        // Add new — auto-detect backend from path; falls back to current global setting.
+        // Remote (SSH) projects don't use the local backend split, so leave it undefined.
+        const preferredBackend = serverId
+          ? undefined
+          : detectBackendForPath(path, state.terminalBackend);
         const newEntry: RecentProject = {
           id: `rp-${now}-${Math.random().toString(36).slice(2, 6)}`,
           path,
@@ -283,6 +293,7 @@ export const createRecentProjectsSlice: StateCreator<
           serverCommand: noDevServer ? undefined : serverCommand,
           noDevServer,
           serverId,
+          preferredBackend,
         };
         updated = [newEntry, ...state.recentProjects];
       }
@@ -411,6 +422,10 @@ export const createRecentProjectsSlice: StateCreator<
     set({ wideGridLayout: value });
   },
 
+  setRedistributeOnClose: (value) => {
+    set({ redistributeOnClose: value });
+  },
+
   setAutoMinimizeGameOnAiDone: (value) => {
     set({ autoMinimizeGameOnAiDone: value });
   },
@@ -421,6 +436,16 @@ export const createRecentProjectsSlice: StateCreator<
 
   setTerminalBackend: (value) => {
     set({ terminalBackend: value });
+  },
+  setProjectBackend: (path, serverId, backend) => {
+    const normalized = normalizePath(path);
+    set((state) => ({
+      recentProjects: state.recentProjects.map((p) =>
+        normalizePath(p.path) === normalized && p.serverId === serverId
+          ? { ...p, preferredBackend: backend }
+          : p
+      ),
+    }));
   },
   setCommitMsgMode: (value) => {
     set({ commitMsgMode: value });

@@ -333,7 +333,7 @@ function PromptHistoryDropdown({
               No prompts yet
             </div>
           ) : (
-            entries.map((entry, i) => (
+            entries.slice().reverse().map((entry, i) => (
               <div
                 key={`${entry.line}-${i}`}
                 style={{
@@ -366,7 +366,7 @@ function PromptHistoryDropdown({
                     flexShrink: 0,
                   }}
                 >
-                  #{i + 1}
+                  #{entries.length - i}
                 </span>
                 <span
                   style={{

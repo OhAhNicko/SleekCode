@@ -153,8 +153,11 @@ export function usePty({
           args = [...config.args];
           // cwd stays as native path
         } else if (backend === "windows") {
-          // Windows native: use resolved CLI path directly, native Windows cwd
-          const config = getTerminalConfig(terminalType, resumeId, extraArgs, undefined, "windows");
+          // Windows native: use resolved CLI path directly, native Windows cwd.
+          // For shell type, pass the project cwd so PS launches with
+          // -NoExit -Command "Set-Location ..." baked in.
+          const cwdForConfig = terminalType === "shell" ? (currentWorkingDir || undefined) : undefined;
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, "windows");
           command = config.command;
           args = [...config.args];
           // cwd stays as native Windows path
@@ -165,9 +168,14 @@ export function usePty({
             wslCwd = toWslPath(cwd);
           }
 
-          // For resume spawns, pass wslCwd so cd is baked into bash -lic command
-          // (avoids wsl.exe --cd flag which can cause arg parsing issues)
-          const config = getTerminalConfig(terminalType, resumeId, extraArgs, resumeId ? wslCwd : undefined);
+          // For shell type on WSL backend we still spawn powershell.exe, so
+          // pass the original (possibly Linux) cwd; getTerminalConfig will
+          // translate it into either Set-Location (Windows path) or `wsl --cd`
+          // (Linux path) launch args.
+          const cwdForConfig = terminalType === "shell"
+            ? (currentWorkingDir || undefined)
+            : (resumeId ? wslCwd : undefined);
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig);
           command = config.command;
 
           args = [...config.args];

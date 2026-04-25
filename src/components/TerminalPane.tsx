@@ -554,8 +554,14 @@ export default function TerminalPane({
       allowTransparency: true,
       allowProposedApi: true,
       scrollback: paneCount <= 3 ? 10000 : paneCount <= 6 ? 5000 : paneCount <= 9 ? 3000 : 1500,
-      convertEol: true,
       minimumContrastRatio: 1,
+      // ConPTY (Windows/PowerShell) needs explicit pty hinting so xterm.js applies
+      // its Windows-specific reflow + cursor-tracking heuristics. Without this,
+      // PSReadLine's cursor coordinates desync after line wraps and typed text
+      // overlaps prior output. Apply for any non-native backend on Windows —
+      // PowerShell shell panes spawn through ConPTY whether the backend is
+      // "windows" or "wsl".
+      ...(backend !== "native" ? { windowsPty: { backend: "conpty" as const } } : {}),
     });
 
     const fitAddon = new FitAddon();
@@ -1781,6 +1787,7 @@ export default function TerminalPane({
     terminalId,
     write,
     exited,
+    onFocus,
   });
 
   // Auto-dismiss image preview after 8 seconds

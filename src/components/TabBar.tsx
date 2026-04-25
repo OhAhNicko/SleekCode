@@ -6,7 +6,8 @@ import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAl
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
-import type { RemoteServer, TerminalType } from "../types";
+import { isWindows, detectBackendForPath } from "../lib/platform";
+import type { RemoteServer, TerminalType, TerminalBackend } from "../types";
 import type { WorkspaceTemplate } from "../lib/workspace-templates";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import TemplatePicker, { type ExtraPaneType } from "./TemplatePicker";
@@ -43,6 +44,8 @@ export default function TabBar() {
   const servers = useAppStore((s) => s.servers);
   const cliYolo = useAppStore((s) => s.cliYolo);
   const toggleProjectQuickOpen = useAppStore((s) => s.toggleProjectQuickOpen);
+  const setProjectBackend = useAppStore((s) => s.setProjectBackend);
+  const terminalBackend = useAppStore((s) => s.terminalBackend);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
   const setConfirmQuit = useAppStore((s) => s.setConfirmQuit);
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
@@ -1161,6 +1164,42 @@ export default function TabBar() {
                       </button>
                     </>
                   )}
+                  {/* Per-project backend toggle (Windows-only, local projects only) */}
+                  {isWindows() && !project.serverId && (() => {
+                    const effective: TerminalBackend =
+                      project.preferredBackend ?? detectBackendForPath(project.path, terminalBackend);
+                    if (effective !== "wsl" && effective !== "windows") return null;
+                    const isWsl = effective === "wsl";
+                    const next: TerminalBackend = isWsl ? "windows" : "wsl";
+                    const label = isWsl ? "WSL" : "WIN";
+                    return (
+                      <button
+                        title={`Backend: ${isWsl ? "WSL" : "Windows"} — click to use ${next === "wsl" ? "WSL" : "Windows"} for new tabs`}
+                        style={{
+                          flexShrink: 0,
+                          padding: "2px 6px",
+                          border: "1px solid var(--ezy-border)",
+                          borderRadius: 4,
+                          backgroundColor: "transparent",
+                          color: "var(--ezy-text-muted)",
+                          fontSize: 10,
+                          fontWeight: 600,
+                          letterSpacing: "0.04em",
+                          cursor: "pointer",
+                          lineHeight: 1,
+                          transition: "all 120ms ease",
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setProjectBackend(project.path, project.serverId, next);
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--ezy-text-muted)"; e.currentTarget.style.color = "var(--ezy-text)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--ezy-border)"; e.currentTarget.style.color = "var(--ezy-text-muted)"; }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })()}
                   {/* Remove button */}
                   <FaXmark
                     size={14}
