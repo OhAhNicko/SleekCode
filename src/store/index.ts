@@ -157,23 +157,25 @@ export const useAppStore = create<AppStore>()(
         }
 
         // One-shot migration: before detectBackendForPath was fixed, projects
-        // with Windows-shaped paths (C:\… or non-WSL UNCs) inherited the
-        // global "wsl" fallback as their preferredBackend, which sent
-        // PowerShell panes to `wsl --cd C:\…` instead of Set-Location. Clear
-        // the stamp so resolveBackend re-detects them on next tab open.
+        // on Windows-filesystem paths inherited the global "wsl" fallback as
+        // their preferredBackend, which sent PowerShell panes to
+        // `wsl --cd …` instead of Set-Location. Strip the stamp so
+        // resolveBackend re-detects on next tab open. Covers C:\… drives,
+        // /mnt/<drive>/ views, and non-WSL UNCs.
         if (state.recentProjects && Array.isArray(state.recentProjects)) {
           state.recentProjects = state.recentProjects.map((p) => {
             if (p.preferredBackend !== "wsl" || !p.path) return p;
             const norm = p.path.replace(/\\/g, "/").toLowerCase();
-            const isWslShaped =
-              norm.startsWith("/mnt/") ||
+            const isWslFs =
               norm.startsWith("/home/") ||
               norm.startsWith("/root/") ||
               norm.startsWith("//wsl.localhost/") ||
               norm.startsWith("//wsl$/");
-            const isWindowsShaped =
-              /^[a-z]:\//.test(norm) || (norm.startsWith("//") && !isWslShaped);
-            if (isWindowsShaped) {
+            const isWindowsFs =
+              /^[a-z]:\//.test(norm) ||
+              /^\/mnt\/[a-z]\//.test(norm) ||
+              (norm.startsWith("//") && !isWslFs);
+            if (isWindowsFs) {
               const { preferredBackend, ...rest } = p;
               void preferredBackend;
               return rest;

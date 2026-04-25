@@ -150,9 +150,21 @@ export function buildPowerShellLaunchArgsForCwd(cwd: string | undefined, backend
     return ["-NoExit", "-Command", `wsl ${distroFlag}--cd ${cwd}`];
   }
 
-  // backend === "windows": Set-Location handles drive paths and UNCs alike.
-  const escaped = cwd.replace(/'/g, "''");
+  // backend === "windows": Set-Location needs a Windows path. If we received
+  // a /mnt/<drive>/ form (the WSL view of a Windows drive), translate it back
+  // to <drive>:\ so PS is happy.
+  const winPath = mntToWindowsPath(cwd);
+  const escaped = winPath.replace(/'/g, "''");
   return ["-NoExit", "-Command", `Set-Location -LiteralPath '${escaped}'`];
+}
+
+/** /mnt/c/Users/foo → C:\Users\foo. Pass-through for any non-/mnt path. */
+function mntToWindowsPath(p: string): string {
+  const m = p.match(/^\/mnt\/([a-zA-Z])\/(.*)$/);
+  if (!m) return p;
+  const drive = m[1].toUpperCase();
+  const rest = m[2].replace(/\//g, "\\");
+  return `${drive}:\\${rest}`;
 }
 
 /**

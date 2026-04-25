@@ -42,25 +42,27 @@ export function getDefaultBackend(): "wsl" | "windows" | "native" {
 /**
  * Pick the terminal backend for a project path. macOS/Linux always return "native".
  * On Windows:
- *  - WSL-shaped paths (`/home/`, `/root/`, `/mnt/`, `\\wsl.localhost\`, `\\wsl$\`)
+ *  - WSL-filesystem paths (`/home/`, `/root/`, `\\wsl.localhost\`, `\\wsl$\`)
  *    → "wsl"
- *  - Windows-shaped paths (`C:\…` drive paths, non-WSL UNCs `\\server\share\…`)
+ *  - Windows-filesystem paths (`C:\…` drive paths, `/mnt/<drive>/…` WSL views
+ *    of Windows drives, non-WSL UNCs `\\server\share\…`)
  *    → "windows" (NOT the global fallback — those projects belong in PowerShell
- *    regardless of the user's default backend setting)
+ *    regardless of the user's default backend setting; `/mnt/c/foo` is just a
+ *    WSL view of `C:\foo`, the underlying filesystem is Windows)
  *  - Anything else (relative, malformed, empty) → fallback
  */
 export function detectBackendForPath(rawPath: string, fallback: TerminalBackend): TerminalBackend {
   if (getPlatform() !== "windows") return "native";
   if (!rawPath) return fallback;
   const p = rawPath.replace(/\\/g, "/").toLowerCase();
-  // WSL paths first — they share the `//` prefix with non-WSL UNCs so order matters.
-  if (p.startsWith("/mnt/")) return "wsl";
+  // WSL filesystem
   if (p.startsWith("/home/")) return "wsl";
   if (p.startsWith("/root/")) return "wsl";
   if (p.startsWith("//wsl.localhost/")) return "wsl";
   if (p.startsWith("//wsl$/")) return "wsl";
-  // Windows drive path (C:\…) or non-WSL UNC (\\server\share\…).
+  // Windows filesystem — drive path, /mnt/<drive>/ view, or non-WSL UNC.
   if (/^[a-z]:\//.test(p)) return "windows";
+  if (/^\/mnt\/[a-z]\//.test(p)) return "windows";
   if (p.startsWith("//")) return "windows";
   return fallback;
 }
