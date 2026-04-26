@@ -162,25 +162,44 @@ export const useAppStore = create<AppStore>()(
         // `wsl --cd …` instead of Set-Location. Strip the stamp so
         // resolveBackend re-detects on next tab open. Covers C:\… drives,
         // /mnt/<drive>/ views, and non-WSL UNCs.
+        // Helper: is this path Windows-filesystem-shaped?
+        const isWindowsFsPath = (raw: string): boolean => {
+          if (!raw) return false;
+          const norm = raw.replace(/\\/g, "/").toLowerCase();
+          const isWslFs =
+            norm.startsWith("/home/") ||
+            norm.startsWith("/root/") ||
+            norm.startsWith("//wsl.localhost/") ||
+            norm.startsWith("//wsl$/");
+          if (isWslFs) return false;
+          return (
+            /^[a-z]:\//.test(norm) ||
+            /^\/mnt\/[a-z]\//.test(norm) ||
+            norm.startsWith("//")
+          );
+        };
         if (state.recentProjects && Array.isArray(state.recentProjects)) {
           state.recentProjects = state.recentProjects.map((p) => {
             if (p.preferredBackend !== "wsl" || !p.path) return p;
-            const norm = p.path.replace(/\\/g, "/").toLowerCase();
-            const isWslFs =
-              norm.startsWith("/home/") ||
-              norm.startsWith("/root/") ||
-              norm.startsWith("//wsl.localhost/") ||
-              norm.startsWith("//wsl$/");
-            const isWindowsFs =
-              /^[a-z]:\//.test(norm) ||
-              /^\/mnt\/[a-z]\//.test(norm) ||
-              (norm.startsWith("//") && !isWslFs);
-            if (isWindowsFs) {
+            if (isWindowsFsPath(p.path)) {
               const { preferredBackend, ...rest } = p;
               void preferredBackend;
               return rest;
             }
             return p;
+          });
+        }
+        // Also fix already-open tabs: tab.backend is stamped at addTab time and
+        // never re-derived. Any tab on a Windows-filesystem path stamped "wsl"
+        // came from the same buggy detection. Flip to "windows" so the next
+        // PTY spawn for that tab uses Set-Location.
+        if (state.tabs && Array.isArray(state.tabs)) {
+          state.tabs = state.tabs.map((t) => {
+            if (t.backend !== "wsl" || !t.workingDir) return t;
+            if (isWindowsFsPath(t.workingDir)) {
+              return { ...t, backend: "windows" };
+            }
+            return t;
           });
         }
 
