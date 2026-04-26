@@ -191,17 +191,16 @@ export const useAppStore = create<AppStore>()(
         }
         // Also fix already-open tabs: tab.backend is stamped at addTab time and
         // never re-derived. Any tab on a Windows-filesystem path stamped "wsl"
-        // came from the same buggy detection. Flip to "windows" so the next
-        // PTY spawn for that tab uses Set-Location.
-        if (state.tabs && Array.isArray(state.tabs)) {
-          state.tabs = state.tabs.map((t) => {
-            if (t.backend !== "wsl" || !t.workingDir) return t;
-            if (isWindowsFsPath(t.workingDir)) {
-              return { ...t, backend: "windows" };
-            }
-            return t;
-          });
-        }
+        // came from the same buggy detection. Flip to "windows" on filteredTabs
+        // (which is what actually gets returned — modifying state.tabs would be
+        // dead code since the return statement uses filteredTabs).
+        filteredTabs = filteredTabs.map((t) => {
+          if (t.backend !== "wsl" || !t.workingDir) return t;
+          if (isWindowsFsPath(t.workingDir)) {
+            return { ...t, backend: "windows" };
+          }
+          return t;
+        });
 
         // Migrate legacy RemoteServer fields → single host
         if (state.servers) {
