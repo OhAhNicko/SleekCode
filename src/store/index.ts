@@ -189,18 +189,12 @@ export const useAppStore = create<AppStore>()(
             return p;
           });
         }
-        // Also fix already-open tabs: tab.backend is stamped at addTab time and
-        // never re-derived. Any tab on a Windows-filesystem path stamped "wsl"
-        // came from the same buggy detection. Flip to "windows" on filteredTabs
-        // (which is what actually gets returned — modifying state.tabs would be
-        // dead code since the return statement uses filteredTabs).
-        filteredTabs = filteredTabs.map((t) => {
-          if (t.backend !== "wsl" || !t.workingDir) return t;
-          if (isWindowsFsPath(t.workingDir)) {
-            return { ...t, backend: "windows" };
-          }
-          return t;
-        });
+        // Tab-level backend migration disabled: v0.1.35 enabled this and broke
+        // pane rendering for all users (root cause TBD). Reverted in v0.1.36.
+        // The recentProjects fix above still works; new tab opens will pick up
+        // the correct backend via resolveBackend → detectBackendForPath.
+        // (helper retained — used by the recentProjects branch)
+        void isWindowsFsPath;
 
         // Migrate legacy RemoteServer fields → single host
         if (state.servers) {
