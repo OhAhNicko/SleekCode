@@ -203,19 +203,22 @@ export default function App() {
     return actions;
   }, [launchConfigs, loadLaunchConfig, snippets]);
 
-  // Pre-warm CLI paths at startup (background) — branches on terminal backend
+  // Pre-warm CLI paths at startup (background). On Windows we MUST resolve both
+  // WSL and Windows CLI paths because per-project auto-detect (detectBackendForPath)
+  // can stamp individual tabs as "windows" even when the global backend is "wsl".
+  // If either cache is missing when a tab tries to spawn, getCachedXxxCliPath
+  // returns null, command falls back to a bare name, the PTY can't resolve it,
+  // and the pane spawns blank with no output.
   useEffect(() => {
     const backend = useAppStore.getState().terminalBackend ?? "wsl";
     if (backend === "native") {
       resolveNativeCliPaths();
-      // Install statusline wrapper directly on macOS/Linux
       installStatuslineWrapper();
-    } else if (backend === "windows") {
-      resolveWindowsCliPaths();
-      // Statusline wrapper is WSL-only — skip in Windows mode
     } else {
+      // On Windows OS — resolve both caches regardless of global default,
+      // since any tab can be either wsl- or windows-backed via auto-detect.
+      resolveWindowsCliPaths();
       resolveWslCliPaths();
-      // Install statusline wrapper for Claude context data (chains to existing statusline)
       installStatuslineWrapper();
     }
     // Clean up clipboard images older than 24h
