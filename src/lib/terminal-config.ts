@@ -125,34 +125,44 @@ const TERMINAL_CONFIGS_NATIVE: Record<TerminalType, TerminalConfig> = {
 
 /**
  * Build PowerShell launch args that drop the user into the project's
- * working directory. Behavior is keyed on the project's resolved backend
- * (auto-detected from the path on first add, then user-overridable —
- * see detectBackendForPath / RecentProject.preferredBackend), NOT on the
- * cwd string itself:
- *  - "windows" → `Set-Location -LiteralPath '<path>'`
- *  - "wsl"     → `wsl -d <distro> --cd <path>` so the user lands in WSL
- *    bash inside the project. (Navigating PS to \\wsl.localhost\... breaks
- *    PSReadLine and many tools, so we drop into bash instead.)
- * Returns [] if no actionable cwd is supplied.
+ * working directory. Decision is purely **path-shape based** — independent
+ * of tab.backend / global terminalBackend, since powershell.exe is always
+ * the same executable regardless of where the project lives. PS panes
+ * therefore have their OWN routing, decoupled from CLI-pane routing.
  *
- * The command runs via -NoExit -Command so it executes BEFORE PSReadLine
+ *  - Windows filesystem (`C:\…`, `\\server\share\…`, `/mnt/<drive>/…`):
+ *    → `-NoExit -Command "Set-Location -LiteralPath '<winpath>'"`
+ *    `/mnt/<drive>/foo` translates to `<drive>:\foo` first, since `/mnt/c`
+ *    is just the WSL view of a real Windows disk.
+ *  - WSL filesystem (`/home/…`, `/root/…`, `\\wsl.localhost\…`, `\\wsl$\…`):
+ *    → `-NoExit -Command "wsl -d <distro> --cd <path>"` — PS opens and
+ *    immediately drops into bash inside WSL. Navigating PS to a
+ *    \\wsl.localhost\ UNC breaks PSReadLine and many tools, so we don't.
+ *  - Empty cwd: returns `[]` — PS spawns at parent process's cwd.
+ *
+ * The command runs via `-NoExit -Command` so it executes BEFORE PSReadLine
  * takes over the input line — avoiding the char-by-char redraw chaos that
- * happens when the same command is sent through stdin after launch.
+ * would happen if the same command were piped through stdin after launch.
  */
-export function buildPowerShellLaunchArgsForCwd(cwd: string | undefined, backend: "windows" | "wsl"): string[] {
+export function buildPowerShellLaunchArgsForCwd(cwd: string | undefined): string[] {
   if (!cwd) return [];
 
-  if (backend === "wsl") {
-    // wsl.exe accepts both Linux paths (/home/foo) and Windows paths
-    // (C:\foo, which it auto-translates to /mnt/c/foo) for --cd.
+  const norm = cwd.replace(/\\/g, "/").toLowerCase();
+  const isWslFs =
+    norm.startsWith("/home/") ||
+    norm.startsWith("/root/") ||
+    norm.startsWith("//wsl.localhost/") ||
+    norm.startsWith("//wsl$/");
+
+  if (isWslFs) {
+    // WSL filesystem — drop into bash inside the distro at the project path.
     const distro = getCachedDistro();
     const distroFlag = distro ? `-d ${distro} ` : "";
     return ["-NoExit", "-Command", `wsl ${distroFlag}--cd ${cwd}`];
   }
 
-  // backend === "windows": Set-Location needs a Windows path. If we received
-  // a /mnt/<drive>/ form (the WSL view of a Windows drive), translate it back
-  // to <drive>:\ so PS is happy.
+  // Windows filesystem (incl. /mnt/<drive>/ which is just a WSL view of a
+  // Windows disk) — Set-Location to the translated Windows path.
   const winPath = mntToWindowsPath(cwd);
   const escaped = winPath.replace(/'/g, "''");
   return ["-NoExit", "-Command", `Set-Location -LiteralPath '${escaped}'`];
@@ -197,7 +207,7 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
   if (backend === "windows") {
     const winBase = TERMINAL_CONFIGS_WINDOWS[type];
     if (type === "shell" || type === "devserver") {
-      const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd, "windows");
+      const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd);
       return cwdArgs.length ? { ...winBase, args: cwdArgs } : winBase;
     }
 
@@ -231,7 +241,7 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
   // cwd-injection so PS drops the user straight into WSL bash at the project.
   const base = TERMINAL_CONFIGS_BASE[type];
   if (type === "shell" || type === "devserver") {
-    const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd, "wsl");
+    const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd);
     return cwdArgs.length ? { ...base, args: cwdArgs } : base;
   }
 
