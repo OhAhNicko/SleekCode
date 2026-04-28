@@ -156,45 +156,28 @@ export const useAppStore = create<AppStore>()(
           (state as Record<string, unknown>).panePromptHistory = {};
         }
 
-        // One-shot migration: before detectBackendForPath was fixed, projects
-        // on Windows-filesystem paths inherited the global "wsl" fallback as
-        // their preferredBackend, which sent PowerShell panes to
-        // `wsl --cd …` instead of Set-Location. Strip the stamp so
-        // resolveBackend re-detects on next tab open. Covers C:\… drives,
-        // /mnt/<drive>/ views, and non-WSL UNCs.
-        // Helper: is this path Windows-filesystem-shaped?
-        const isWindowsFsPath = (raw: string): boolean => {
-          if (!raw) return false;
-          const norm = raw.replace(/\\/g, "/").toLowerCase();
-          const isWslFs =
-            norm.startsWith("/home/") ||
-            norm.startsWith("/root/") ||
-            norm.startsWith("//wsl.localhost/") ||
-            norm.startsWith("//wsl$/");
-          if (isWslFs) return false;
-          return (
-            /^[a-z]:\//.test(norm) ||
-            /^\/mnt\/[a-z]\//.test(norm) ||
-            norm.startsWith("//")
-          );
-        };
+        // One-shot migration: drop ALL "windows"-stamped backends from
+        // recentProjects[].preferredBackend and tabs[].backend left over
+        // from v0.1.33–v0.1.38. Those versions tried to auto-stamp Windows-
+        // filesystem projects to backend "windows", which routed Claude/Codex/
+        // Gemini through `.cmd` shims that ConPTY/CreateProcessW can't run
+        // reliably ("[Process exited]"). v0.1.39 reverts to v0.1.34 behavior:
+        // every tab uses the global terminalBackend ("wsl" by default), which
+        // is the path that's been working for users for months.
         if (state.recentProjects && Array.isArray(state.recentProjects)) {
           state.recentProjects = state.recentProjects.map((p) => {
-            if (p.preferredBackend !== "wsl" || !p.path) return p;
-            if (isWindowsFsPath(p.path)) {
-              const { preferredBackend, ...rest } = p;
-              void preferredBackend;
-              return rest;
-            }
-            return p;
+            if (p.preferredBackend !== "windows") return p;
+            const { preferredBackend, ...rest } = p;
+            void preferredBackend;
+            return rest;
           });
         }
-        // Tab-level backend migration disabled: v0.1.35 enabled this and broke
-        // pane rendering for all users (root cause TBD). Reverted in v0.1.36.
-        // The recentProjects fix above still works; new tab opens will pick up
-        // the correct backend via resolveBackend → detectBackendForPath.
-        // (helper retained — used by the recentProjects branch)
-        void isWindowsFsPath;
+        filteredTabs = filteredTabs.map((t) => {
+          if (t.backend !== "windows") return t;
+          const { backend, ...rest } = t;
+          void backend;
+          return rest as typeof t;
+        });
 
         // Migrate legacy RemoteServer fields → single host
         if (state.servers) {

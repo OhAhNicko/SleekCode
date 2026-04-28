@@ -41,28 +41,22 @@ export function getDefaultBackend(): "wsl" | "windows" | "native" {
 
 /**
  * Pick the terminal backend for a project path. macOS/Linux always return "native".
- * On Windows:
- *  - WSL-filesystem paths (`/home/`, `/root/`, `\\wsl.localhost\`, `\\wsl$\`)
- *    → "wsl"
- *  - Windows-filesystem paths (`C:\…` drive paths, `/mnt/<drive>/…` WSL views
- *    of Windows drives, non-WSL UNCs `\\server\share\…`)
- *    → "windows" (NOT the global fallback — those projects belong in PowerShell
- *    regardless of the user's default backend setting; `/mnt/c/foo` is just a
- *    WSL view of `C:\foo`, the underlying filesystem is Windows)
- *  - Anything else (relative, malformed, empty) → fallback
+ * On Windows, only paths that unambiguously live in the WSL filesystem
+ * (`/home/`, `/root/`, `\\wsl.localhost\`, `\\wsl$\`) return "wsl"; everything
+ * else (Windows drives, `/mnt/<drive>/`, non-WSL UNCs) falls through to the
+ * supplied fallback so the user's global preference still wins. This matches
+ * v0.1.34 behavior — actively returning "windows" introduced regressions in
+ * the Windows-backend spawn path (npm `.cmd` shim execution, CLI cache
+ * timing) that v0.1.35-v0.1.38 couldn't reliably fix.
  */
 export function detectBackendForPath(rawPath: string, fallback: TerminalBackend): TerminalBackend {
   if (getPlatform() !== "windows") return "native";
   if (!rawPath) return fallback;
   const p = rawPath.replace(/\\/g, "/").toLowerCase();
-  // WSL filesystem
+  if (p.startsWith("/mnt/")) return "wsl";
   if (p.startsWith("/home/")) return "wsl";
   if (p.startsWith("/root/")) return "wsl";
   if (p.startsWith("//wsl.localhost/")) return "wsl";
   if (p.startsWith("//wsl$/")) return "wsl";
-  // Windows filesystem — drive path, /mnt/<drive>/ view, or non-WSL UNC.
-  if (/^[a-z]:\//.test(p)) return "windows";
-  if (/^\/mnt\/[a-z]\//.test(p)) return "windows";
-  if (p.startsWith("//")) return "windows";
   return fallback;
 }
