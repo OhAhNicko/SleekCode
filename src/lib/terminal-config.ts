@@ -207,6 +207,18 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
       : [];
     const extra = extraArgs ?? [];
 
+    // npm-installed CLIs on Windows are typically .cmd/.bat shims. CreateProcessW
+    // (which portable_pty uses) can't execute batch files directly — they must be
+    // run through cmd.exe /c. Without this wrapper, the spawn fails immediately
+    // and the user sees "[Process exited]" before any output appears.
+    if (cliPath && /\.(cmd|bat)$/i.test(cliPath)) {
+      return {
+        ...winBase,
+        command: "cmd.exe",
+        args: ["/c", cliPath, ...extra, ...resumeArgs],
+      };
+    }
+
     return {
       ...winBase,
       command: cliPath ?? winBase.command,
