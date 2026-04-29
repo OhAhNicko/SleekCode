@@ -14,6 +14,7 @@ import {
   swapPanes,
   generatePaneId,
   generateTerminalId,
+  repositionKanbanPane,
 } from "../lib/layout-utils";
 import { getPtyWrite } from "../store/terminalSlice";
 import { snapshotPane } from "../store/undoCloseStore";
@@ -22,6 +23,8 @@ import PaneGrid from "./PaneGrid";
 import TerminalPane, { suppressFocusTerminals } from "./TerminalPane";
 import ToolSelector from "./ToolSelector";
 import EmptyTabLauncher from "./EmptyTabLauncher";
+import FloatingPanesLayer from "./FloatingPanesLayer";
+import type { RenderLeafCallbacks } from "../lib/render-pane";
 
 interface WorkspaceProps {
   tab: Tab;
@@ -164,6 +167,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
 
   // --- Terminal pane callbacks (used by portal-rendered TerminalPanes) ---
 
+  const cleanupPaneMode = useAppStore((s) => s.cleanupPaneMode);
+
   const handleTerminalClose = useCallback((termId: string) => {
     if (!tab.layout) return;
     const paneId = findPaneIdForTerminal(tab.layout, termId);
@@ -173,8 +178,55 @@ export default function Workspace({ tab }: WorkspaceProps) {
     // `removed` may be null when the last pane is closed — propagate that so
     // the empty-state launcher renders.
     const next = removed && redistributeOnClose ? redistributeEqually(removed) : removed;
+    cleanupPaneMode(paneId);
     handleLayoutChange(next);
-  }, [tab.id, tab.layout, handleLayoutChange, redistributeOnClose]);
+  }, [tab.id, tab.layout, handleLayoutChange, redistributeOnClose, cleanupPaneMode]);
+
+  // Generic pane close (used by FloatingPanesLayer + non-terminal panes).
+  const handlePaneClose = useCallback((paneId: string) => {
+    if (!tab.layout) return;
+    snapshotPane(tab.id, tab.layout);
+    const removed = removePane(tab.layout, paneId);
+    const next = removed && redistributeOnClose ? redistributeEqually(removed) : removed;
+    cleanupPaneMode(paneId);
+    handleLayoutChange(next);
+  }, [tab.id, tab.layout, handleLayoutChange, redistributeOnClose, cleanupPaneMode]);
+
+  const handleKanbanReposition = useCallback((vertical: boolean) => {
+    if (!tab.layout) return;
+    const newLayout = repositionKanbanPane(tab.layout, vertical);
+    if (newLayout) handleLayoutChange(newLayout);
+  }, [tab.layout, handleLayoutChange]);
+
+  // Title helper for floating-window header. Type-narrowed by node.type.
+  const paneTitleFor = useCallback((node: PaneLayout): string => {
+    switch (node.type) {
+      case "terminal": {
+        const t = terminals[node.terminalId];
+        return t ? `${t.type[0].toUpperCase()}${t.type.slice(1)}` : "Terminal";
+      }
+      case "browser":
+        return node.url || "Browser";
+      case "editor":
+        return node.filePath?.split(/[/\\]/).pop() || "Editor";
+      case "fileviewer":
+        return node.activeFile?.split(/[/\\]/).pop() || "Files";
+      case "codereview":
+        return "Code Review";
+      case "kanban":
+        return "Kanban";
+      case "game":
+        return "Games";
+      default:
+        return "Pane";
+    }
+  }, [terminals]);
+
+  const floatingCallbacks: RenderLeafCallbacks = useMemo(() => ({
+    onClose: handlePaneClose,
+    onKanbanReposition: handleKanbanReposition,
+    getTerminalSlot: getSlotEl,
+  }), [handlePaneClose, handleKanbanReposition, getSlotEl]);
 
 
 
@@ -487,6 +539,11 @@ export default function Workspace({ tab }: WorkspaceProps) {
         tabId={tab.id}
         onLayoutChange={handleLayoutChange}
         getTerminalSlot={getSlotEl}
+      />
+      <FloatingPanesLayer
+        layout={tab.layout}
+        callbacks={floatingCallbacks}
+        paneTitleFor={paneTitleFor}
       />
       {/* Render terminal panes via portals into persistent slot elements.
           This keeps them mounted even when the layout tree restructures. */}

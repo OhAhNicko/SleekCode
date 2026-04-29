@@ -5,6 +5,38 @@ export function generatePaneId(): string {
   return `pane-${Date.now()}-${++paneCounter}`;
 }
 
+/**
+ * Compute the analytical viewport rect of a leaf pane within a layout tree,
+ * given the rect of the grid container. Returns null if the leaf is not in
+ * the tree. Walks the binary split tree, dividing the rect by each split's
+ * sizes (defaulting to 50/50 when unset). Used by the floating-pane FLIP
+ * animation to find a target rect for a leaf that may currently be skipped
+ * in PaneGrid (because it's expanded/floating/closing).
+ */
+export function computeLeafRect(
+  layout: PaneLayout,
+  paneId: string,
+  containerRect: { left: number; top: number; width: number; height: number }
+): { left: number; top: number; width: number; height: number } | null {
+  if (layout.id === paneId) return { ...containerRect };
+  if (layout.type !== "split") return null;
+  const sizes = layout.sizes ?? [50, 50];
+  const total = sizes[0] + sizes[1] || 1;
+  const f0 = sizes[0] / total;
+  if (layout.direction === "horizontal") {
+    const w0 = containerRect.width * f0;
+    const w1 = containerRect.width - w0;
+    const r0 = { left: containerRect.left, top: containerRect.top, width: w0, height: containerRect.height };
+    const r1 = { left: containerRect.left + w0, top: containerRect.top, width: w1, height: containerRect.height };
+    return computeLeafRect(layout.children[0], paneId, r0) ?? computeLeafRect(layout.children[1], paneId, r1);
+  }
+  const h0 = containerRect.height * f0;
+  const h1 = containerRect.height - h0;
+  const r0 = { left: containerRect.left, top: containerRect.top, width: containerRect.width, height: h0 };
+  const r1 = { left: containerRect.left, top: containerRect.top + h0, width: containerRect.width, height: h1 };
+  return computeLeafRect(layout.children[0], paneId, r0) ?? computeLeafRect(layout.children[1], paneId, r1);
+}
+
 export function generateTerminalId(): string {
   return `term-${Date.now()}-${++paneCounter}`;
 }

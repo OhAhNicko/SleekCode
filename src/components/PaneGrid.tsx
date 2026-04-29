@@ -16,6 +16,39 @@ import CodeReviewPane from "./CodeReviewPane";
 import FileViewerPane from "./FileViewerPane";
 import GamePane from "./GamePane";
 
+/** True if a pane is currently outside the grid (expanded/float) or animating closed. */
+function isFloatingId(
+  paneId: string,
+  paneModes: Record<string, string>,
+  closingPanes: Record<string, true>
+): boolean {
+  const mode = paneModes[paneId];
+  return mode === "expanded" || mode === "float" || !!closingPanes[paneId];
+}
+
+/**
+ * Determine what to render for a node, accounting for floating panes.
+ * - If a leaf is floating/closing, return null (caller skips it).
+ * - If a split has both children floating, return null.
+ * - If a split has one child floating, return the surviving child node.
+ * Otherwise return the node unchanged.
+ */
+function resolveNodeForRender(
+  node: PaneLayout,
+  paneModes: Record<string, string>,
+  closingPanes: Record<string, true>
+): PaneLayout | null {
+  if (node.type !== "split") {
+    return isFloatingId(node.id, paneModes, closingPanes) ? null : node;
+  }
+  const left = resolveNodeForRender(node.children[0], paneModes, closingPanes);
+  const right = resolveNodeForRender(node.children[1], paneModes, closingPanes);
+  if (left && right) return node;
+  if (left) return left;
+  if (right) return right;
+  return null;
+}
+
 // Remember last active game so toggling off/on resumes it
 let lastActiveGame: GameType | undefined;
 // When game pane was auto-closed by AI-done, reopen it paused
@@ -36,6 +69,8 @@ export default function PaneGrid({
 }: PaneGridProps) {
   const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
   const redistributeOnClose = useAppStore((s) => s.redistributeOnClose);
+  const paneModes = useAppStore((s) => s.paneModes);
+  const closingPanes = useAppStore((s) => s.closingPanes);
 
   const handleClose = useCallback(
     (paneId: string) => {
@@ -267,10 +302,17 @@ export default function PaneGrid({
   }, [layout, onLayoutChange]);
 
   const renderPane = (node: PaneLayout): React.ReactNode => {
+    // Skip leaves that are currently expanded/floating/closing — siblings reflow.
+    const resolved = resolveNodeForRender(node, paneModes, closingPanes);
+    if (!resolved) return null;
+    if (resolved.id !== node.id) return renderPane(resolved);
+    node = resolved;
+
     if (node.type === "terminal") {
       return (
         <div
           key={node.id}
+          data-pane-id={node.id}
           className="h-full w-full"
           ref={(el) => {
             if (el) {
@@ -297,63 +339,72 @@ export default function PaneGrid({
 
     if (node.type === "browser") {
       return (
-        <BrowserPreview
-          key={node.id}
-          initialUrl={node.url}
-          onClose={() => handleClose(node.id)}
-        />
+        <div key={node.id} data-pane-id={node.id} className="h-full w-full">
+          <BrowserPreview
+            initialUrl={node.url}
+            onClose={() => handleClose(node.id)}
+          />
+        </div>
       );
     }
 
     if (node.type === "editor") {
       return (
-        <EditorPane
-          key={node.id}
-          paneId={node.id}
-          filePath={node.filePath}
-          language={node.language}
-          serverId={node.serverId}
-          onClose={() => handleClose(node.id)}
-        />
+        <div key={node.id} data-pane-id={node.id} className="h-full w-full">
+          <EditorPane
+            paneId={node.id}
+            filePath={node.filePath}
+            language={node.language}
+            serverId={node.serverId}
+            onClose={() => handleClose(node.id)}
+          />
+        </div>
       );
     }
 
     if (node.type === "kanban") {
       return (
-        <KanbanBoard
-          key={node.id}
-          paneId={node.id}
-          onClose={() => handleClose(node.id)}
-          initialVertical={node.vertical}
-          onReposition={handleKanbanReposition}
-        />
+        <div key={node.id} data-pane-id={node.id} className="h-full w-full">
+          <KanbanBoard
+            paneId={node.id}
+            onClose={() => handleClose(node.id)}
+            initialVertical={node.vertical}
+            onReposition={handleKanbanReposition}
+          />
+        </div>
       );
     }
 
     if (node.type === "codereview") {
-      return <CodeReviewPane key={node.id} paneId={node.id} onClose={() => handleClose(node.id)} />;
+      return (
+        <div key={node.id} data-pane-id={node.id} className="h-full w-full">
+          <CodeReviewPane paneId={node.id} onClose={() => handleClose(node.id)} />
+        </div>
+      );
     }
 
     if (node.type === "fileviewer") {
       return (
-        <FileViewerPane
-          key={node.id}
-          paneId={node.id}
-          initialFiles={node.files}
-          initialActive={node.activeFile}
-          onClose={() => handleClose(node.id)}
-        />
+        <div key={node.id} data-pane-id={node.id} className="h-full w-full">
+          <FileViewerPane
+            paneId={node.id}
+            initialFiles={node.files}
+            initialActive={node.activeFile}
+            onClose={() => handleClose(node.id)}
+          />
+        </div>
       );
     }
 
     if (node.type === "game") {
       return (
-        <GamePane
-          key={node.id}
-          onClose={() => handleClose(node.id)}
-          initialGame={node.game}
-          startPaused={node.startPaused}
-        />
+        <div key={node.id} data-pane-id={node.id} className="h-full w-full">
+          <GamePane
+            onClose={() => handleClose(node.id)}
+            initialGame={node.game}
+            startPaused={node.startPaused}
+          />
+        </div>
       );
     }
 
@@ -388,7 +439,7 @@ export default function PaneGrid({
   };
 
   return (
-    <div className="h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
+    <div data-grid-root className="h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
       {renderPane(layout)}
     </div>
   );

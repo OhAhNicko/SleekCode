@@ -697,6 +697,8 @@ export default function SettingsPane() {
   const setVibrantColors = useAppStore((s) => s.setVibrantColors);
   const aiTimeBursts = useAppStore((s) => s.aiTimeBursts);
   const clearAiTimeStats = useAppStore((s) => s.clearAiTimeStats);
+  const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
+  const setVerticalModeEnabled = useAppStore((s) => s.setVerticalModeEnabled);
   const theme = getTheme(themeId);
 
   // Render only the active section content
@@ -729,6 +731,9 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Confirm before quitting" description="Show a confirmation dialog when closing the app.">
                 <ToggleSwitch checked={confirmQuit} onChange={setConfirmQuit} />
+              </SettingsRow>
+              <SettingsRow label="Auto-rotate topbar in portrait" description="When the window is taller than wide, replace the horizontal topbar with a vertical tab strip on the left to give the main pane more vertical space.">
+                <ToggleSwitch checked={verticalModeEnabled} onChange={setVerticalModeEnabled} />
               </SettingsRow>
               <SettingsRow label="Slash command ghost text" description="Show inline autocomplete suggestions for slash commands.">
                 <ToggleSwitch checked={slashCommandGhostText} onChange={setSlashCommandGhostText} />

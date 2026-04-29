@@ -16,6 +16,7 @@ import type { Extension } from "@codemirror/state";
 import PaneSearchBar from "./PaneSearchBar";
 import { useCodeMirrorSearch } from "../hooks/usePaneSearch";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
+import PaneExpandButton from "./PaneExpandButton";
 
 interface EditorPaneProps {
   filePath: string;
@@ -291,6 +292,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
               <path d="M5 14v-4h6v4" />
             </svg>
           </button>
+          <PaneExpandButton paneId={paneId} />
           <button
             onClick={onClose}
             title="Close Editor"

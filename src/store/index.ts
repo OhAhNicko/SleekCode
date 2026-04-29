@@ -13,9 +13,11 @@ import { createRecentProjectsSlice, type RecentProjectsSlice } from "./recentPro
 import { createGameSlice, type GameSlice } from "./gameSlice";
 import { createSessionSlice, type SessionSlice } from "./sessionSlice";
 import { createAiTimeSlice, type AiTimeSlice } from "./aiTimeSlice";
+import { createFloatingPanesSlice, type FloatingPanesSlice } from "./floatingPanesSlice";
+import { createLayoutSlice, type LayoutSlice } from "./layoutSlice";
 import type { Tab } from "../types";
 
-export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice;
+export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice;
 
 function isSystemTab(tab: Tab): boolean {
   return !!(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab);
@@ -37,6 +39,8 @@ export const useAppStore = create<AppStore>()(
       ...createGameSlice(...a),
       ...createSessionSlice(...a),
       ...createAiTimeSlice(...a),
+      ...createFloatingPanesSlice(...a),
+      ...createLayoutSlice(...a),
     }),
     {
       name: "ezydev-storage",
@@ -101,6 +105,10 @@ export const useAppStore = create<AppStore>()(
         projectsDir: state.projectsDir,
         defaultClaudeMdPath: state.defaultClaudeMdPath,
         defaultAgentsMdPath: state.defaultAgentsMdPath,
+        paneModes: state.paneModes,
+        floatRects: state.floatRects,
+        floatOrder: state.floatOrder,
+        verticalModeEnabled: state.verticalModeEnabled,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;

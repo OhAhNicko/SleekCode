@@ -2,6 +2,14 @@ import { useEffect, useState, useMemo, useCallback } from "react";
 import { useAppStore } from "./store";
 import { getTheme } from "./lib/themes";
 import TabBar from "./components/TabBar";
+import VerticalTabBar from "./components/VerticalTabBar";
+import TemplatePicker, { type ExtraPaneType } from "./components/TemplatePicker";
+import { useOrientation } from "./lib/use-orientation";
+import { spawnDevServer } from "./lib/spawn-dev-server";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { buildLayoutFromTemplate, stampTerminalTypes, addPaneAsGrid, generatePaneId, addKanbanPane } from "./lib/layout-utils";
+import type { WorkspaceTemplate } from "./lib/workspace-templates";
+import type { TerminalType } from "./types";
 import Workspace from "./components/Workspace";
 import DevServerTab from "./components/DevServerTab";
 import ServersPanel from "./components/ServersPanel";
@@ -52,6 +60,15 @@ export default function App() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
+  const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
+  const orientation = useOrientation();
+  const isVertical = orientation === "portrait" && verticalModeEnabled;
+  const pendingDir = useAppStore((s) => s.pendingDir);
+  const setPendingDir = useAppStore((s) => s.setPendingDir);
+  const addTerminals = useAppStore((s) => s.addTerminals);
+  const addTabWithLayout = useAppStore((s) => s.addTabWithLayout);
+  const addRecentProject = useAppStore((s) => s.addRecentProject);
+  const autoStartServerCommand = useAppStore((s) => s.autoStartServerCommand);
   const recentProjects = useAppStore((s) => s.recentProjects);
   const onboardingCompleted = useAppStore((s) => s.onboardingCompleted);
   const setOnboardingCompleted = useAppStore((s) => s.setOnboardingCompleted);
@@ -96,6 +113,115 @@ export default function App() {
       useAppStore.getState().setSettingsPanelOpen(false);
     }
   }, [sidebarOpen, devServerPanelOpen]);
+
+  // ─── New-tab pipeline (lifted from TabBar so VerticalTabBar can use it) ───
+  const handleNewLocalTab = useCallback(async () => {
+    try {
+      const selected = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Select Project Directory",
+      });
+      if (selected && typeof selected === "string") {
+        const name = selected.split(/[\\/]/).pop() || "Project";
+        setPendingDir({ name, dir: selected });
+      }
+    } catch {
+      // User cancelled or dialog error
+    }
+  }, [setPendingDir]);
+
+  useEffect(() => {
+    const handler = () => handleNewLocalTab();
+    window.addEventListener("ezydev:new-tab", handler);
+    return () => window.removeEventListener("ezydev:new-tab", handler);
+  }, [handleNewLocalTab]);
+
+  const handleTemplateSelected = useCallback(
+    (
+      template: WorkspaceTemplate,
+      slotTypes: TerminalType[],
+      serverCommand?: string,
+      extraPanes?: ExtraPaneType[],
+      noDevServer?: boolean,
+    ) => {
+      if (!pendingDir) return;
+      const { layout, terminalIds } = buildLayoutFromTemplate(
+        template.id,
+        template.cols,
+        template.rows,
+        template.paneCount,
+      );
+      const typedLayout = stampTerminalTypes(layout, terminalIds, slotTypes);
+      let finalLayout: import("./types").PaneLayout = typedLayout;
+      if (extraPanes && extraPanes.length > 0) {
+        for (const extra of extraPanes) {
+          if (extra === "kanban") {
+            const kanbanLayout = addKanbanPane(finalLayout);
+            if (kanbanLayout) finalLayout = kanbanLayout;
+            continue;
+          }
+          let extraNode: import("./types").PaneLayout;
+          switch (extra) {
+            case "codereview":
+              extraNode = { type: "codereview" as const, id: generatePaneId() };
+              break;
+            case "fileviewer":
+              extraNode = { type: "fileviewer" as const, id: generatePaneId(), files: [], activeFile: "" };
+              break;
+            case "browser":
+              extraNode = { type: "browser" as const, id: generatePaneId(), url: "about:blank" };
+              break;
+            default:
+              continue;
+          }
+          const { browserFullColumn: fullCol, browserSpawnLeft: spawnLeft, wideGridLayout } = useAppStore.getState();
+          if (fullCol) {
+            finalLayout = {
+              type: "split" as const,
+              id: generatePaneId(),
+              direction: "horizontal" as const,
+              children: (spawnLeft
+                ? [extraNode, finalLayout]
+                : [finalLayout, extraNode]) as [import("./types").PaneLayout, import("./types").PaneLayout],
+              sizes: (spawnLeft ? [30, 70] : [70, 30]) as [number, number],
+            };
+          } else {
+            finalLayout = addPaneAsGrid(finalLayout, extraNode, wideGridLayout);
+          }
+        }
+      }
+      const batch = terminalIds.map((id, i) => ({
+        id,
+        type: slotTypes[i] ?? ("shell" as TerminalType),
+        workingDir: pendingDir.dir,
+        serverId: pendingDir.serverId,
+      }));
+      addTerminals(batch);
+      const tabId = addTabWithLayout(pendingDir.name, pendingDir.dir, finalLayout, pendingDir.serverId);
+      addRecentProject({
+        path: pendingDir.dir,
+        name: pendingDir.name,
+        template: { templateId: template.id, cols: template.cols, rows: template.rows, paneCount: template.paneCount, slotTypes },
+        serverCommand,
+        noDevServer,
+        serverId: pendingDir.serverId,
+      });
+      if (serverCommand && autoStartServerCommand && !pendingDir.serverId) {
+        spawnDevServer(tabId, pendingDir.name, pendingDir.dir, serverCommand);
+      }
+      setPendingDir(null);
+    },
+    [pendingDir, addTerminals, addTabWithLayout, addRecentProject, autoStartServerCommand, setPendingDir],
+  );
+
+  const matchingRecentForPending = pendingDir
+    ? recentProjects.find(
+        (p) =>
+          p.path.replace(/\\/g, "/") === pendingDir.dir.replace(/\\/g, "/") &&
+          p.serverId === pendingDir.serverId,
+      )
+    : null;
 
   // On mount, detect a version bump and surface the cached changelog if the
   // auto-updater installed a new build. First-ever launches (null lastSeenVersion
@@ -384,6 +510,30 @@ export default function App() {
       // Helper: prevent default AND stop propagation (capture phase blocks xterm)
       const consume = () => { e.preventDefault(); e.stopPropagation(); };
 
+      // Esc → minimize topmost expanded/floating pane back into the grid.
+      // Skip when no expanded/floating pane exists, or when a non-textarea/input
+      // dialog is open (palette, modals) — those have their own Esc handlers.
+      if (key === "Escape" && !ctrlKey && !shiftKey && !altKey) {
+        const store = useAppStore.getState();
+        const ids = Object.keys(store.paneModes);
+        if (ids.length > 0) {
+          // Prefer the topmost one in floatOrder (last entry).
+          const topmost = [...store.floatOrder].reverse().find((id) => store.paneModes[id]) ?? ids[ids.length - 1];
+          // Don't shadow Esc inside text inputs (autocomplete dropdowns etc.).
+          const target = e.target as HTMLElement | null;
+          const isEditable = !!target && (
+            target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.isContentEditable
+          );
+          if (!isEditable) {
+            consume();
+            store.minimizePane(topmost);
+            return;
+          }
+        }
+      }
+
       // Alt+1..9 → Switch to tab by number
       // Use e.code (physical key) because Alt+digit on Windows can produce
       // special characters in e.key depending on keyboard layout / alt-codes.
@@ -627,9 +777,10 @@ export default function App() {
   return (
     <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
       <WindowResizeHandles />
-      <TabBar />
+      {!isVertical && <TabBar />}
       <UpdateBanner {...updateState} />
       <div className="flex-1 min-h-0 flex">
+        {isVertical && <VerticalTabBar />}
         {sidebarOpen && (
           <Sidebar
             rootDir={activeTab?.workingDir || ""}
@@ -766,6 +917,14 @@ export default function App() {
           version={changelogToShow.version}
           notes={changelogToShow.notes}
           onClose={handleCloseChangelog}
+        />
+      )}
+      {pendingDir && (
+        <TemplatePicker
+          onSelect={handleTemplateSelected}
+          onClose={() => setPendingDir(null)}
+          initialServerCommand={matchingRecentForPending?.serverCommand}
+          initialNoDevServer={matchingRecentForPending?.noDevServer}
         />
       )}
     </div>

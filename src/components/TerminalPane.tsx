@@ -1100,6 +1100,16 @@ export default function TerminalPane({
           currentFontSize = targetSize;
           term.options.fontSize = targetSize;
         }
+        // Skip fit when proposed cols would be too narrow. Layout transitions
+        // (panel drag, animation, browser-preview slide) can briefly yield
+        // tiny container widths. Applying the fit would resize the PTY to
+        // e.g. cols=10, causing TUI apps (Claude CLI) to re-render at that
+        // width — those hard-wrapped lines get baked into the scrollback
+        // and never reflow when the layout settles, leaving permanent
+        // narrow text visible when scrolling up. ResizeObserver fires again
+        // when the container grows, so skipping here is safe.
+        const proposed = fitAddon.proposeDimensions();
+        if (proposed && proposed.cols < MIN_READY_COLS) return;
         // Preserve scroll position across fit — layout changes (e.g. game pane
         // toggle, browser preview) resize the container, and fit() resets viewport.
         // Save BEFORE fit, restore AFTER fit + after a rAF to ensure xterm has
@@ -1727,6 +1737,10 @@ export default function TerminalPane({
           const buf = term.buffer.active;
           const wasAtBottom = buf.baseY - buf.viewportY <= 3;
           const savedViewport = buf.viewportY;
+          // Skip fit when the container measures too narrow. ResizeObserver
+          // will re-fire once layout settles to a sane size.
+          const proposed = fit.proposeDimensions();
+          if (proposed && proposed.cols < 20) return;
           fit.fit();
           if (wasAtBottom) {
             term.scrollToBottom();

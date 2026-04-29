@@ -4,6 +4,7 @@ import type { TaskCard as TaskCardType } from "../types";
 import TaskCard from "./TaskCard";
 import PaneSearchBar from "./PaneSearchBar";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
+import PaneExpandButton from "./PaneExpandButton";
 
 const COLUMNS: { key: TaskCardType["status"]; label: string }[] = [
   { key: "todo", label: "To Do" },
@@ -320,6 +321,8 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
             </svg>
             Add Task
           </button>
+          {/* Expand (pane mode only) */}
+          {onClose && <PaneExpandButton paneId={paneId} />}
           {/* Close (pane mode only) */}
           {onClose && (
             <button

@@ -4,6 +4,7 @@ import { useBrowserConsoleStore, type ConsoleEntry } from "../store/browserConso
 import { FaCheck, FaChevronLeft, FaChevronRight, FaGlobe, FaExternalLinkAlt, FaCrosshairs, FaTerminal, FaDesktop, FaTrash, FaLock, FaLockOpen, FaBug } from "react-icons/fa";
 import { FaArrowsRotate, FaXmark } from "react-icons/fa6";
 import { BiRefresh, BiTimer } from "react-icons/bi";
+import PaneExpandButton from "./PaneExpandButton";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -709,6 +710,9 @@ export default function BrowserPreview({
         >
           <BiTimer size={14} color="currentColor" />
         </NavButton>
+
+        {/* Expand */}
+        <PaneExpandButton className="p-1.5 rounded transition-colors hover:bg-[var(--ezy-border)]" />
 
         {/* Close */}
         <NavButton title="Close Preview" onClick={onClose} hoverColor="var(--ezy-red)">

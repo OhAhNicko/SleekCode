@@ -1,16 +1,14 @@
 import { useCallback, useState, useRef, useEffect } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
-import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, generateTerminalId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes, hasGamePane } from "../lib/layout-utils";
+import { spawnDevServer } from "../lib/spawn-dev-server";
+import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes, hasGamePane } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { isWindows, detectBackendForPath } from "../lib/platform";
 import type { RemoteServer, TerminalType, TerminalBackend } from "../types";
-import type { WorkspaceTemplate } from "../lib/workspace-templates";
 import RemoteFileBrowser from "./RemoteFileBrowser";
-import TemplatePicker, { type ExtraPaneType } from "./TemplatePicker";
 import CreateProjectModal from "./CreateProjectModal";
 import ClipboardImageStrip from "./ClipboardImageStrip";
 import GitStatusBar from "./GitStatusBar";
@@ -66,7 +64,7 @@ export default function TabBar() {
   const [showRecentMenu, setShowRecentMenu] = useState(false);
   const [browsingServer, setBrowsingServer] = useState<RemoteServer | null>(null);
   const [showServersTab] = useState(false);
-  const [pendingDir, setPendingDir] = useState<{ name: string; dir: string; serverId?: string } | null>(null);
+  const setPendingDir = useAppStore((s) => s.setPendingDir);
   const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
   const projectsDir = useAppStore((s) => s.projectsDir);
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
@@ -154,22 +152,9 @@ export default function TabBar() {
     };
   }, [getInsertBeforeId, reorderTabs]);
 
-  const handleNewLocalTab = useCallback(async () => {
+  const handleNewLocalTab = useCallback(() => {
     setShowNewTabMenu(false);
-    try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        title: "Select Project Directory",
-      });
-
-      if (selected && typeof selected === "string") {
-        const name = selected.split(/[\\/]/).pop() || "Project";
-        setPendingDir({ name, dir: selected });
-      }
-    } catch {
-      // User cancelled or dialog error
-    }
+    window.dispatchEvent(new Event("ezydev:new-tab"));
   }, []);
 
   const handleRemotePathSelected = useCallback((remotePath: string) => {
@@ -179,123 +164,7 @@ export default function TabBar() {
     setPendingDir({ name, dir: remotePath, serverId: browsingServer.id });
   }, [browsingServer]);
 
-  const addTerminal = useAppStore((s) => s.addTerminal);
-  const addDevServer = useAppStore((s) => s.addDevServer);
   const autoStartServerCommand = useAppStore((s) => s.autoStartServerCommand);
-
-  const spawnDevServer = useCallback(
-    (tabId: string, tabName: string, workingDir: string, command: string) => {
-      // Skip if a dev server already exists for the same project directory
-      const norm = (p: string) => p.replace(/\\/g, "/");
-      const existing = useAppStore.getState().devServers.find(
-        (ds) => norm(ds.workingDir) === norm(workingDir)
-      );
-      if (existing) return existing.terminalId;
-
-      const terminalId = generateTerminalId();
-      addTerminal(terminalId, "devserver", workingDir);
-      addDevServer({
-        id: `ds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        terminalId,
-        tabId,
-        projectName: tabName,
-        command,
-        workingDir,
-        port: 0,
-        status: "running",
-      });
-      // Persist server command on the tab for session restore
-      useAppStore.setState((state) => ({
-        tabs: state.tabs.map((t) =>
-          t.id === tabId ? { ...t, serverCommand: command } : t
-        ),
-      }));
-      return terminalId;
-    },
-    [addTerminal, addDevServer]
-  );
-
-  const handleTemplateSelected = useCallback(
-    (template: WorkspaceTemplate, slotTypes: TerminalType[], serverCommand?: string, extraPanes?: ExtraPaneType[], noDevServer?: boolean) => {
-      if (!pendingDir) return;
-      const { layout, terminalIds } = buildLayoutFromTemplate(
-        template.id,
-        template.cols,
-        template.rows,
-        template.paneCount
-      );
-
-      // Stamp terminal types into layout tree for session restore
-      const typedLayout = stampTerminalTypes(layout, terminalIds, slotTypes);
-
-      // Append extra panes (code review, browser, etc.) as horizontal splits
-      let finalLayout: import("../types").PaneLayout = typedLayout;
-      if (extraPanes && extraPanes.length > 0) {
-        for (const extra of extraPanes) {
-          // Kanban uses smart placement (bottom or right depending on row count)
-          if (extra === "kanban") {
-            const kanbanLayout = addKanbanPane(finalLayout);
-            if (kanbanLayout) finalLayout = kanbanLayout;
-            continue;
-          }
-
-          let extraNode: import("../types").PaneLayout;
-          switch (extra) {
-            case "codereview":
-              extraNode = { type: "codereview" as const, id: generatePaneId() };
-              break;
-            case "fileviewer":
-              extraNode = { type: "fileviewer" as const, id: generatePaneId(), files: [], activeFile: "" };
-              break;
-            case "browser":
-              extraNode = { type: "browser" as const, id: generatePaneId(), url: "about:blank" };
-              break;
-            default:
-              continue;
-          }
-          // Wrap current layout + extra pane in a horizontal split (or add to grid)
-          const { browserFullColumn: fullCol, browserSpawnLeft: spawnLeft, wideGridLayout } = useAppStore.getState();
-          if (fullCol) {
-            finalLayout = {
-              type: "split" as const,
-              id: generatePaneId(),
-              direction: "horizontal" as const,
-              children: (spawnLeft
-                ? [extraNode, finalLayout]
-                : [finalLayout, extraNode]) as [import("../types").PaneLayout, import("../types").PaneLayout],
-              sizes: (spawnLeft ? [30, 70] : [70, 30]) as [number, number],
-            };
-          } else {
-            finalLayout = addPaneAsGrid(finalLayout, extraNode, wideGridLayout);
-          }
-        }
-      }
-
-      // Batch-create all terminals
-      const batch = terminalIds.map((id, i) => ({
-        id,
-        type: slotTypes[i] ?? ("shell" as TerminalType),
-        workingDir: pendingDir.dir,
-        serverId: pendingDir.serverId,
-      }));
-      addTerminals(batch);
-      const tabId = addTabWithLayout(pendingDir.name, pendingDir.dir, finalLayout, pendingDir.serverId);
-      addRecentProject({
-        path: pendingDir.dir,
-        name: pendingDir.name,
-        template: { templateId: template.id, cols: template.cols, rows: template.rows, paneCount: template.paneCount, slotTypes },
-        serverCommand,
-        noDevServer,
-        serverId: pendingDir.serverId,
-      });
-      // Auto-start server command if provided and enabled (local only — dev servers don't run over SSH today)
-      if (serverCommand && autoStartServerCommand && !pendingDir.serverId) {
-        spawnDevServer(tabId, pendingDir.name, pendingDir.dir, serverCommand);
-      }
-      setPendingDir(null);
-    },
-    [pendingDir, addTerminals, addTabWithLayout, addRecentProject, autoStartServerCommand, spawnDevServer]
-  );
 
   /** Quick-open a recent project using saved layout (or template fallback) */
   const quickOpenProject = useCallback(
@@ -334,7 +203,7 @@ export default function TabBar() {
         }
       }
     },
-    [addTerminals, addTabWithLayout, addRecentProject, autoStartServerCommand, spawnDevServer]
+    [addTerminals, addTabWithLayout, addRecentProject, autoStartServerCommand]
   );
 
   // Track maximized state for window control icon
@@ -350,13 +219,6 @@ export default function TabBar() {
     setup();
     return () => { unlisten?.(); };
   }, []);
-
-  // Listen for Ctrl+Shift+T event from App.tsx
-  useEffect(() => {
-    const handler = () => handleNewLocalTab();
-    window.addEventListener("ezydev:new-tab", handler);
-    return () => window.removeEventListener("ezydev:new-tab", handler);
-  }, [handleNewLocalTab]);
 
   // Listen for open-recent event from startup screen
   useEffect(() => {
@@ -1928,21 +1790,6 @@ export default function TabBar() {
           onClose={() => setShowCreateProjectModal(false)}
         />
       )}
-
-      {/* Template Picker modal */}
-      {pendingDir && (() => {
-        const matchingRecent = recentProjects.find(
-          (p) => p.path.replace(/\\/g, "/") === pendingDir.dir.replace(/\\/g, "/") && p.serverId === pendingDir.serverId
-        );
-        return (
-          <TemplatePicker
-            onSelect={handleTemplateSelected}
-            onClose={() => setPendingDir(null)}
-            initialServerCommand={matchingRecent?.serverCommand}
-            initialNoDevServer={matchingRecent?.noDevServer}
-          />
-        );
-      })()}
 
       {/* Delayed path tooltip (2s hover on tab) */}
       {pathTooltip && (() => {

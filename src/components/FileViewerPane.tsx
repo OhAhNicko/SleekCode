@@ -16,6 +16,7 @@ import type { Extension } from "@codemirror/state";
 import PaneSearchBar from "./PaneSearchBar";
 import { useCodeMirrorSearch } from "../hooks/usePaneSearch";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
+import PaneExpandButton from "./PaneExpandButton";
 
 interface FileViewerPaneProps {
   initialFiles: string[];
@@ -372,6 +373,7 @@ export default function FileViewerPane({
             <path d="M5 2v4h5V2" />
             <path d="M5 14v-4h6v4" />
           </svg>
+          <PaneExpandButton paneId={paneId} />
           <svg
             width="12"
             height="12"

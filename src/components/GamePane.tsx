@@ -22,6 +22,7 @@ import DuckHuntGame from "./games/DuckHuntGame";
 import DonkeyKongGame from "./games/DonkeyKongGame";
 import { CROSSWORD_PUZZLES } from "../lib/crossword-puzzles";
 import { FaXmark, FaChevronLeft, FaPause, FaPlay } from "react-icons/fa6";
+import PaneExpandButton from "./PaneExpandButton";
 
 interface GamePaneProps {
   onClose: () => void;
@@ -683,6 +684,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
             {paused ? <FaPlay size={10} color="var(--ezy-accent)" /> : <FaPause size={10} color="var(--ezy-text-muted)" />}
           </div>
         )}
+        <PaneExpandButton />
         <div
           onClick={onClose}
           style={{

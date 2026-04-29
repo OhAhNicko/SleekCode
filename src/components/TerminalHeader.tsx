@@ -8,6 +8,7 @@ import { useAppStore } from "../store";
 import { FaChevronDown, FaCheck, FaPen } from "react-icons/fa";
 import { FaXmark, FaGripVertical, FaPlus } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
+import PaneExpandButton from "./PaneExpandButton";
 
 const TOOL_ORDER: TerminalType[] = ["claude", "codex", "gemini", "shell"];
 
@@ -1436,8 +1437,9 @@ export default function TerminalHeader({
         </button>
       )}
 
-      {/* Right: restart + close (visible on header hover) */}
+      {/* Right: expand + restart + close (visible on header hover) */}
       <div className={`flex items-center gap-0.5 ${contextPercent == null && !(terminalType === "claude" || terminalType === "codex" || terminalType === "gemini") ? "ml-auto" : ""} opacity-0 group-hover:opacity-100 transition-opacity`} style={{ flexShrink: 0 }}>
+        <PaneExpandButton />
         {onRestart && (
           <button
             onClick={onRestart}

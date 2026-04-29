@@ -8,8 +8,13 @@ import { insertImagePath, resolveImagePath } from "../lib/clipboard-insert";
 import { useAppStore } from "../store";
 import ImagePreviewModal from "./ImagePreviewModal";
 
+interface ClipboardImageStripProps {
+  orientation?: "horizontal" | "vertical";
+}
+
 /** Shows a snip button + the 5 most recent session clipboard images in the TabBar. */
-export default function ClipboardImageStrip() {
+export default function ClipboardImageStrip({ orientation = "horizontal" }: ClipboardImageStripProps = {}) {
+  const isVertical = orientation === "vertical";
   const images = useClipboardImageStore((s) => s.images);
   const removeImage = useClipboardImageStore((s) => s.removeImage);
   const setPendingComposerImage = useClipboardImageStore((s) => s.setPendingComposerImage);
@@ -26,7 +31,7 @@ export default function ClipboardImageStrip() {
   const [galleryCtxMenu, setGalleryCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
   const [previewFromGallery, setPreviewFromGallery] = useState(false);
 
-  const latestThumbnails = images.slice(0, 5);
+  const latestThumbnails = images.slice(0, isVertical ? 4 : 5);
 
   // Escape key closes gallery
   useEffect(() => {
@@ -60,6 +65,8 @@ export default function ClipboardImageStrip() {
           gap: 4,
           padding: "0 6px",
           flexShrink: 0,
+          flexWrap: isVertical ? "wrap" : "nowrap",
+          justifyContent: isVertical ? "flex-start" : undefined,
         }}
       >
         {/* Snip button — launches Windows Snipping Tool (Win+Shift+S) */}
@@ -144,8 +151,8 @@ export default function ClipboardImageStrip() {
                 position: "absolute",
                 top: 0,
                 left: 0,
-                width: 12,
-                height: 12,
+                width: 11,
+                height: 11,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -173,8 +180,8 @@ export default function ClipboardImageStrip() {
                 position: "absolute",
                 top: 0,
                 right: 0,
-                width: 14,
-                height: 14,
+                width: 11,
+                height: 11,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -190,7 +197,7 @@ export default function ClipboardImageStrip() {
                 e.currentTarget.style.opacity = "0";
               }}
             >
-              <FaExpand size={8} color="white" />
+              <FaExpand size={6} color="white" />
             </div>
           </div>
         ))}

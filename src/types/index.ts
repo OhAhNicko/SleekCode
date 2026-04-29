@@ -183,6 +183,17 @@ export interface SearchResult {
 
 export type SidebarTab = "files" | "remote-files" | "search" | "terminals";
 
+/** Visual placement of a pane: in the grid, full-screen overlay, or free-floating window. */
+export type PaneMode = "grid" | "expanded" | "float";
+
+/** Position + size of a floating pane in viewport coordinates. */
+export interface FloatRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface AppState {
   tabs: Tab[];
   activeTabId: string;
