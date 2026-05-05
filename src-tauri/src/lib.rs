@@ -5464,6 +5464,37 @@ fn encode_remote_project_key(path: &str) -> String {
     s.trim_start_matches('-').to_string()
 }
 
+/// Allowlist for values interpolated into the shell command body sent to
+/// `ssh user@host <body>`. Allows ASCII alnum + `.`, `_`, `-`, ` ` (the
+/// chars that legitimately appear in encoded Claude project keys, e.g.
+/// `home-user-My Project`). Rejects every shell metacharacter that could
+/// break out of a double-quoted string — `$` (var/cmd subst), backtick
+/// (cmd subst), `\` (escapes), `"` (closes quote), plus the obvious
+/// uglies (`;`, `&`, `|`, `<`, `>`, parens, braces, glob chars, control
+/// chars, NUL).
+fn is_safe_shell_identifier(s: &str) -> bool {
+    if s.is_empty() || s.len() > 256 { return false; }
+    s.bytes().all(|b| {
+        // Allow: alnum, dot, underscore, dash, space, colon, comma, equals, plus
+        b.is_ascii_alphanumeric()
+            || matches!(b, b'.' | b'_' | b'-' | b' ' | b':' | b',' | b'=' | b'+')
+    })
+}
+
+/// True iff `s` is `__latest__` or a UUID like `8-4-4-4-12` hex.
+fn is_uuid_or_latest(s: &str) -> bool {
+    if s == "__latest__" { return true; }
+    if s.len() != 36 { return false; }
+    let b = s.as_bytes();
+    let is_hex = |c: u8| c.is_ascii_hexdigit();
+    b[8] == b'-' && b[13] == b'-' && b[18] == b'-' && b[23] == b'-'
+        && b[..8].iter().all(|&c| is_hex(c))
+        && b[9..13].iter().all(|&c| is_hex(c))
+        && b[14..18].iter().all(|&c| is_hex(c))
+        && b[19..23].iter().all(|&c| is_hex(c))
+        && b[24..36].iter().all(|&c| is_hex(c))
+}
+
 /// Pipe-delimited block separator the SSH context fetcher uses to bundle
 /// multiple files into a single round-trip.
 const SSH_SEP: &str = "\n___EZYDEV_SSH_SEP___\n";
@@ -5510,25 +5541,28 @@ async fn read_session_context_ssh(
     if session_id.is_empty() {
         return Ok(String::new());
     }
+    if !is_uuid_or_latest(&session_id) {
+        return Err("invalid session_id (not UUID or __latest__)".to_string());
+    }
     let is_latest = session_id == "__latest__";
 
     match terminal_type.as_str() {
         "claude" => {
             let key = encode_remote_project_key(&remote_project_path);
-            let session_path = if is_latest {
-                String::new()
-            } else {
-                format!("$HOME/.claude/projects/{}/{}.jsonl", key, session_id)
-            };
+            if !is_safe_shell_identifier(&key) {
+                return Err("invalid remote_project_path (unsafe characters in encoded key)".to_string());
+            }
             // Single round-trip: fetch statusline JSON, settings, and the
-            // session JSONL, separated by SSH_SEP.
+            // session JSONL, separated by SSH_SEP. `key` and `session_id`
+            // are both pre-validated against an allowlist so direct
+            // interpolation is safe (no shell metachars possible).
             let cmd = format!(
                 r#"set -e; ( cat /tmp/ezydev-claude-statusline.json 2>/dev/null || cat $HOME/.ezydev/claude-statusline.json 2>/dev/null || true ); printf '{sep}'; ( cat $HOME/.claude/settings.json 2>/dev/null || true ); printf '{sep}'; {tail_or_empty}"#,
                 sep = SSH_SEP,
                 tail_or_empty = if is_latest {
                     "true".to_string()
                 } else {
-                    format!("( cat {} 2>/dev/null || true )", shell_escape(&session_path))
+                    format!("( cat \"$HOME/.claude/projects/{}/{}.jsonl\" 2>/dev/null || true )", key, session_id)
                 },
             );
             let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await?;
@@ -5640,12 +5674,13 @@ async fn read_session_context_ssh(
         "codex" => {
             // Find the latest sessions JSONL on the remote (or the one matching session_id).
             // Skip rate-limit aggregation and SQLite title — best-effort for SSH.
+            // session_id is pre-validated as UUID or __latest__ — safe to interpolate.
             let cmd = if is_latest {
                 "find $HOME/.codex/sessions -type f -name '*.jsonl' 2>/dev/null | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- | xargs -I{} cat {} 2>/dev/null".to_string()
             } else {
                 format!(
                     "find $HOME/.codex/sessions -type f -name '*{}*' 2>/dev/null | head -1 | xargs -I{{}} cat {{}} 2>/dev/null",
-                    session_id.replace('\'', "")
+                    session_id
                 )
             };
             let content = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
@@ -5699,12 +5734,13 @@ async fn read_session_context_ssh(
         },
         "gemini" => {
             // Best-effort: find the latest chat JSON for the project and parse it.
+            // session_id is pre-validated — safe to interpolate.
             let cmd = if is_latest {
                 "find $HOME/.gemini/tmp -type f -name '*.json' 2>/dev/null | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- | xargs -I{} cat {} 2>/dev/null".to_string()
             } else {
                 format!(
                     "find $HOME/.gemini/tmp -type f -name '*{}*' 2>/dev/null | head -1 | xargs -I{{}} cat {{}} 2>/dev/null",
-                    session_id.replace('\'', "")
+                    session_id
                 )
             };
             let content = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
@@ -5740,7 +5776,10 @@ async fn read_sessions_index_ssh(
     remote_project_path: String,
 ) -> Result<String, String> {
     let key = encode_remote_project_key(&remote_project_path);
-    // Fetch with case-insensitive directory fallback.
+    if !is_safe_shell_identifier(&key) {
+        return Err("invalid remote_project_path".to_string());
+    }
+    // Fetch with case-insensitive directory fallback. `key` is pre-validated.
     let cmd = format!(
         r#"DIR="$HOME/.claude/projects/{key}"; if [ ! -d "$DIR" ]; then enc_lower=$(echo '{key}' | tr '[:upper:]' '[:lower:]'); for d in $HOME/.claude/projects/*/; do base=$(basename "$d"); if [ "$(echo "$base" | tr '[:upper:]' '[:lower:]')" = "$enc_lower" ]; then DIR="$d"; break; fi; done; fi; cat "$DIR/sessions-index.json" 2>/dev/null || true"#,
         key = key
@@ -5759,8 +5798,15 @@ async fn read_session_first_prompt_ssh(
     session_id: String,
 ) -> Result<String, String> {
     let key = encode_remote_project_key(&remote_project_path);
+    if !is_safe_shell_identifier(&key) {
+        return Err("invalid remote_project_path".to_string());
+    }
+    if !is_uuid_or_latest(&session_id) || session_id == "__latest__" {
+        return Err("invalid session_id (must be UUID)".to_string());
+    }
+    // Both key and session_id are pre-validated against an allowlist.
     let cmd = format!(
-        "cat $HOME/.claude/projects/{}/{}.jsonl 2>/dev/null || true",
+        "cat \"$HOME/.claude/projects/{}/{}.jsonl\" 2>/dev/null || true",
         key, session_id
     );
     let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await?;
@@ -5779,9 +5825,13 @@ async fn get_claude_session_id_ssh(
     max_age_secs: Option<u64>,
 ) -> Result<Option<String>, String> {
     let key = encode_remote_project_key(&remote_project_path);
+    if !is_safe_shell_identifier(&key) {
+        return Err("invalid remote_project_path".to_string());
+    }
     // List jsonl files newest-first, with mtime in epoch seconds.
+    // `key` is pre-validated against an allowlist.
     let cmd = format!(
-        "ls -t $HOME/.claude/projects/{}/*.jsonl 2>/dev/null | head -50 | while read f; do printf '%s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null)\" \"$f\"; done",
+        "ls -t \"$HOME/.claude/projects/{}\"/*.jsonl 2>/dev/null | head -50 | while read f; do printf '%s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null)\" \"$f\"; done",
         key
     );
     let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
@@ -5862,8 +5912,12 @@ async fn get_gemini_session_id_ssh(
     if basename.is_empty() {
         return Ok(None);
     }
+    if !is_safe_shell_identifier(&basename) {
+        return Err("invalid remote_project_path basename (unsafe characters)".to_string());
+    }
+    // `basename` is pre-validated against an allowlist.
     let cmd = format!(
-        r#"for d in $HOME/.gemini/tmp/{base}*/chats; do [ -d "$d" ] || continue; ls -t "$d"/*.json 2>/dev/null | head -20 | while read f; do mt=$(stat -c %Y "$f" 2>/dev/null); printf '%s %s\n' "$mt" "$f"; done; done"#,
+        r#"for d in "$HOME/.gemini/tmp/{base}"*/chats; do [ -d "$d" ] || continue; ls -t "$d"/*.json 2>/dev/null | head -20 | while read f; do mt=$(stat -c %Y "$f" 2>/dev/null); printf '%s %s\n' "$mt" "$f"; done; done"#,
         base = basename
     );
     let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
