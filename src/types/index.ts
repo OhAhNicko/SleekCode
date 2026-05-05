@@ -41,6 +41,8 @@ export interface DevServer {
   errorMessage?: string;
   /** When set, the dev server PTY is spawned via SSH against this RemoteServer. */
   serverId?: string;
+  /** Additional non-local addresses parsed from server output (e.g. LAN / Tailscale IPs). */
+  networkUrls?: string[];
 }
 
 // Recursive pane layout tree

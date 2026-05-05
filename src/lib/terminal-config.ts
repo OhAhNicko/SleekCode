@@ -416,7 +416,9 @@ export function getSshCommand(
   args.push(userHost);
 
   // Build the remote command: cd to dir (if specified) then exec the tool
-  const envExport = "export TERM=xterm-256color COLORTERM=truecolor;";
+  // BASH_SILENCE_DEPRECATION_WARNING suppresses macOS's "default shell is now zsh"
+  // banner that /etc/bashrc prints on every interactive bash login.
+  const envExport = "export TERM=xterm-256color COLORTERM=truecolor BASH_SILENCE_DEPRECATION_WARNING=1;";
   const remoteCmd = getRemoteExecCommand(terminalType, sessionResumeId);
   if (remoteCwd) {
     args.push(`${envExport} cd ${sh(remoteCwd)} && ${remoteCmd}`);

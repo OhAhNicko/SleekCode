@@ -1,4 +1,5 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useLayoutEffect } from "react";
+import { createPortal } from "react-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand, FaServer } from "react-icons/fa";
@@ -76,6 +77,158 @@ function SmallIconButton({
   );
 }
 
+/** Tag a captured Network URL — Tailscale (100.64.0.0/10), private LAN, or generic. */
+function classifyHost(url: string): string {
+  const m = url.match(/^https?:\/\/([^:/]+)/);
+  const host = m ? m[1] : url;
+  if (/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(host)) return "Tailscale";
+  if (/^192\.168\./.test(host) || /^10\./.test(host) || /^172\.(?:1[6-9]|2\d|3[01])\./.test(host)) return "LAN";
+  return "Network";
+}
+
+/**
+ * Card that floats above the URL link after a 3s hover, listing every
+ * known address (Local + LAN/Tailscale/etc.) so the user can pick one.
+ * Anchored via getBoundingClientRect so it can escape the sidebar's
+ * overflow:hidden, and rendered through a portal for the same reason.
+ */
+function UrlPopover({
+  anchorRect,
+  localUrl,
+  networkUrls,
+  onSelect,
+  onClose,
+  onMouseEnter,
+  onMouseLeave,
+}: {
+  anchorRect: DOMRect;
+  localUrl: string;
+  networkUrls: string[];
+  onSelect: (url: string, openExternal: boolean) => void;
+  onClose: () => void;
+  onMouseEnter: () => void;
+  onMouseLeave: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  // After mount, measure ourselves and place above the anchor (or below if no room).
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const margin = 8;
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    let top = anchorRect.top - h - margin;
+    if (top < margin) top = anchorRect.bottom + margin;
+    let left = anchorRect.right - w; // right-align with the URL
+    if (left < margin) left = margin;
+    if (left + w > vw - margin) left = vw - margin - w;
+    if (top + h > vh - margin) top = Math.max(margin, vh - margin - h);
+    setPos({ left, top });
+  }, [anchorRect]);
+
+  // Close on Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const rows: Array<{ label: string; url: string; accent?: boolean }> = [
+    { label: "Local", url: localUrl, accent: true },
+    ...networkUrls.map((u) => ({ label: classifyHost(u), url: u })),
+  ];
+
+  return createPortal(
+    <div
+      ref={ref}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      style={{
+        position: "fixed",
+        left: pos ? pos.left : -9999,
+        top: pos ? pos.top : -9999,
+        zIndex: 500,
+        minWidth: 240,
+        maxWidth: 360,
+        backgroundColor: "var(--ezy-surface)",
+        border: "1px solid var(--ezy-border)",
+        borderRadius: 6,
+        boxShadow: "0 10px 28px rgba(0,0,0,0.45), 0 2px 6px rgba(0,0,0,0.3)",
+        padding: "4px 0",
+        opacity: pos ? 1 : 0,
+        transform: pos ? "translateY(0)" : "translateY(2px)",
+        transition: "opacity 120ms ease, transform 120ms ease",
+        pointerEvents: pos ? "auto" : "none",
+      }}
+    >
+      <div
+        style={{
+          padding: "4px 12px 6px",
+          fontSize: 9,
+          fontWeight: 600,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: "var(--ezy-text-muted)",
+          borderBottom: "1px solid var(--ezy-border-subtle)",
+          marginBottom: 2,
+        }}
+      >
+        Server addresses
+      </div>
+      {rows.map((row) => (
+        <div
+          key={row.url}
+          onClick={(e) => onSelect(row.url, e.ctrlKey || e.metaKey)}
+          title={`${row.url} — Click to preview / Ctrl+Click to open in browser`}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "6px 12px",
+            cursor: "pointer",
+            transition: "background-color 100ms ease",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+        >
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+              color: row.accent ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
+              minWidth: 56,
+              flexShrink: 0,
+            }}
+          >
+            {row.label}
+          </span>
+          <span
+            style={{
+              fontSize: 11,
+              color: "var(--ezy-cyan)",
+              flex: 1,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {row.url}
+          </span>
+        </div>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
 /** Open a browser preview pane on the far right of a tab */
 function openBrowserInTab(tabId: string, url: string) {
   const store = useAppStore.getState();
@@ -112,6 +265,38 @@ function DevServerRow({ server }: { server: DevServer }) {
   const [portValue, setPortValue] = useState(String(server.port));
 
   const serverUrl = server.port > 0 ? `http://localhost:${server.port}` : null;
+  const networkUrls = server.networkUrls ?? [];
+
+  // 3-second-hover popover that lists every detected address (Local + LAN/Tailscale).
+  const urlSpanRef = useRef<HTMLSpanElement>(null);
+  const [popoverRect, setPopoverRect] = useState<DOMRect | null>(null);
+  const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelOpenTimer = useCallback(() => {
+    if (openTimerRef.current) { clearTimeout(openTimerRef.current); openTimerRef.current = null; }
+  }, []);
+  const cancelCloseTimer = useCallback(() => {
+    if (closeTimerRef.current) { clearTimeout(closeTimerRef.current); closeTimerRef.current = null; }
+  }, []);
+  const scheduleOpen = useCallback(() => {
+    if (networkUrls.length === 0) return; // nothing extra to show
+    cancelCloseTimer();
+    cancelOpenTimer();
+    openTimerRef.current = setTimeout(() => {
+      const rect = urlSpanRef.current?.getBoundingClientRect();
+      if (rect) setPopoverRect(rect);
+    }, 3000);
+  }, [networkUrls.length, cancelOpenTimer, cancelCloseTimer]);
+  const scheduleClose = useCallback(() => {
+    cancelOpenTimer();
+    cancelCloseTimer();
+    closeTimerRef.current = setTimeout(() => setPopoverRect(null), 180);
+  }, [cancelOpenTimer, cancelCloseTimer]);
+
+  useEffect(() => () => { cancelOpenTimer(); cancelCloseTimer(); }, [cancelOpenTimer, cancelCloseTimer]);
+  // Drop the popover if the URL list changes out from under it
+  useEffect(() => { if (networkUrls.length === 0) setPopoverRect(null); }, [networkUrls.length]);
 
   const handleRestart = useCallback(() => {
     const write = getPtyWrite(server.terminalId);
@@ -182,19 +367,25 @@ function DevServerRow({ server }: { server: DevServer }) {
     setEditingPort(false);
   }, [server.command]);
 
+  const openServerUrl = useCallback(
+    (url: string, openExternal: boolean) => {
+      if (openExternal) {
+        openUrl(url).catch(() => {});
+        return;
+      }
+      const targetTabId = previewInProjectTab && server.tabId ? server.tabId : activeTabId;
+      if (targetTabId) openBrowserInTab(targetTabId, url);
+    },
+    [previewInProjectTab, server.tabId, activeTabId]
+  );
+
   const handleUrlClick = useCallback(
     (e: React.MouseEvent) => {
       if (!serverUrl) return;
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        openUrl(serverUrl).catch(() => {});
-      } else {
-        // Open preview in the server's project tab or the active tab
-        const targetTabId = previewInProjectTab && server.tabId ? server.tabId : activeTabId;
-        if (targetTabId) openBrowserInTab(targetTabId, serverUrl);
-      }
+      if (e.ctrlKey || e.metaKey) e.preventDefault();
+      openServerUrl(serverUrl, e.ctrlKey || e.metaKey);
     },
-    [serverUrl, previewInProjectTab, server.tabId, activeTabId]
+    [serverUrl, openServerUrl]
   );
 
   const hasError = server.status === "error" && server.errorMessage;
@@ -347,8 +538,13 @@ function DevServerRow({ server }: { server: DevServer }) {
             </span>
             {serverUrl ? (
               <span
+                ref={urlSpanRef}
                 onClick={handleUrlClick}
-                title={`${serverUrl} — Click for preview / Ctrl+Click to open in browser`}
+                title={
+                  networkUrls.length > 0
+                    ? `${serverUrl} — Click for preview / Ctrl+Click to open in browser\nHover 3s to see ${networkUrls.length} network address${networkUrls.length === 1 ? "" : "es"}`
+                    : `${serverUrl} — Click for preview / Ctrl+Click to open in browser`
+                }
                 style={{
                   fontSize: 11,
                   color: "var(--ezy-cyan)",
@@ -363,9 +559,11 @@ function DevServerRow({ server }: { server: DevServer }) {
                 }}
                 onMouseEnter={(e) => {
                   e.currentTarget.style.borderBottomColor = "var(--ezy-cyan)";
+                  scheduleOpen();
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.borderBottomColor = "transparent";
+                  scheduleClose();
                 }}
               >
                 {serverUrl}
@@ -402,6 +600,18 @@ function DevServerRow({ server }: { server: DevServer }) {
         >
           {server.errorMessage}
         </div>
+      )}
+
+      {popoverRect && serverUrl && (
+        <UrlPopover
+          anchorRect={popoverRect}
+          localUrl={serverUrl}
+          networkUrls={networkUrls}
+          onSelect={(url, openExternal) => { openServerUrl(url, openExternal); setPopoverRect(null); }}
+          onClose={() => setPopoverRect(null)}
+          onMouseEnter={cancelCloseTimer}
+          onMouseLeave={scheduleClose}
+        />
       )}
     </div>
   );

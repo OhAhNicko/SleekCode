@@ -45,6 +45,30 @@ async function stopSshForward(handleId: number): Promise<void> {
 
 // Regex to detect common dev server port patterns in terminal output
 const PORT_REGEX = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{2,5})/;
+// Find every http(s) URL with a port — used to harvest "Network: http://192.168.x.x:port" lines etc.
+const ALL_URLS_REGEX = /https?:\/\/(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:]+\]):\d{2,5}\/?/g;
+
+/**
+ * Pull all addresses from a chunk of dev-server output and split them into
+ * the local URL (used to set `port`) and any remote URLs (LAN, Tailscale, …)
+ * surfaced to the user via the hover popup on the URL link.
+ */
+function extractAddresses(buf: string): { networkUrls: string[] } {
+  const seen = new Set<string>();
+  const network: string[] = [];
+  const matches = buf.match(ALL_URLS_REGEX);
+  if (!matches) return { networkUrls: network };
+  for (const raw of matches) {
+    const url = raw.replace(/\/$/, "");
+    if (seen.has(url)) continue;
+    seen.add(url);
+    // skip local addresses — those are represented by the localhost link in the UI
+    if (/^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::|$)/.test(url)) continue;
+    network.push(url);
+    if (network.length >= 6) break;
+  }
+  return { networkUrls: network };
+}
 
 // Common error patterns in dev server output
 const ERROR_PATTERNS = [
@@ -127,6 +151,7 @@ export default function DevServerTerminalHost() {
   const updateDevServerStatus = useAppStore((s) => s.updateDevServerStatus);
   const updateDevServerPort = useAppStore((s) => s.updateDevServerPort);
   const updateDevServerError = useAppStore((s) => s.updateDevServerError);
+  const setDevServerNetworkUrls = useAppStore((s) => s.setDevServerNetworkUrls);
 
   // Track which servers have had their command written
   const commandSentRef = useRef<Set<string>>(new Set());
@@ -200,9 +225,10 @@ export default function DevServerTerminalHost() {
       updateDevServerStatus(serverId, "starting");
       updateDevServerPort(serverId, 0);
       updateDevServerError(serverId, undefined);
+      setDevServerNetworkUrls(serverId, []);
       setTimeout(() => write(command + "\r"), delayMs);
     },
-    [updateDevServerStatus, updateDevServerPort, updateDevServerError]
+    [updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls]
   );
 
   // Timers for grace-period unregistration after port detection
@@ -328,6 +354,9 @@ export default function DevServerTerminalHost() {
                 }
               };
 
+              // Harvest LAN / Tailscale / 0.0.0.0 addresses printed alongside the localhost line
+              setDevServerNetworkUrls(ds.id, extractAddresses(cleanBuffer).networkUrls);
+
               if (ds.serverId) {
                 setPort(port); // optimistic; replaced once tunnel is up
                 startSshForward(ds.serverId, port).then((res) => {
@@ -359,10 +388,13 @@ export default function DevServerTerminalHost() {
                 const monDec = new TextDecoder();
                 registerTerminalDataListener(ds.terminalId, (rawData) => {
                   monBuf += monDec.decode(rawData, { stream: true });
-                  if (monBuf.length > 500) monBuf = monBuf.slice(-500);
+                  if (monBuf.length > 2048) monBuf = monBuf.slice(-2048);
                   const clean = monBuf
                     .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
                     .replace(/\x1b\][^\x07]*\x07/g, "");
+                  // Late-arriving Network: lines (e.g. Vite prints them after the local URL)
+                  const late = extractAddresses(clean).networkUrls;
+                  if (late.length) setDevServerNetworkUrls(ds.id, late);
                   // Shell prompt: $, %, or # followed by a space
                   if (/[\$%#] $/.test(clean)) {
                     stoppedMonitorRef.current.delete(ds.id);
@@ -401,7 +433,7 @@ export default function DevServerTerminalHost() {
         }
       }
     };
-  }, [devServers, updateDevServerStatus, updateDevServerPort, updateDevServerError, restartServer]);
+  }, [devServers, updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls, restartServer]);
 
   // Clean up tracked state when servers are removed, or re-enable detection
   // when a server is restarted (status changed back to "running" without a port)

@@ -73,6 +73,7 @@ export interface TerminalSlice {
   updateDevServerCommand: (serverId: string, command: string) => void;
   updateDevServerPort: (serverId: string, port: number) => void;
   updateDevServerError: (serverId: string, errorMessage: string | undefined) => void;
+  setDevServerNetworkUrls: (serverId: string, urls: string[]) => void;
   setExpandedDevServerId: (id: string | null) => void;
 }
 
@@ -190,6 +191,17 @@ export const createTerminalSlice: StateCreator<
       devServers: state.devServers.map((ds) =>
         ds.id === serverId ? { ...ds, errorMessage, status: errorMessage ? "error" : ds.status } : ds
       ),
+    }));
+  },
+
+  setDevServerNetworkUrls: (serverId, urls) => {
+    set((state) => ({
+      devServers: state.devServers.map((ds) => {
+        if (ds.id !== serverId) return ds;
+        const prev = ds.networkUrls ?? [];
+        if (prev.length === urls.length && prev.every((u, i) => u === urls[i])) return ds;
+        return { ...ds, networkUrls: urls };
+      }),
     }));
   },
 
