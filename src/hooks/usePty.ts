@@ -8,6 +8,7 @@ import { nativeReady } from "../lib/macos-cli-cache";
 import { useAppStore } from "../store";
 import type { TerminalBackend } from "../types";
 import { getShellIntegrationCommand } from "../lib/shell-integration";
+import { installStatuslineWrapper } from "../lib/statusline-setup";
 
 interface UsePtyOptions {
   terminalType: TerminalType;
@@ -130,6 +131,12 @@ export function usePty({
         if (!server) {
           onExitRef.current(1);
           return;
+        }
+        // Install the statusline wrapper on the remote so context-window %
+        // can be read for Claude tabs. Idempotent + per-server dedup.
+        // Fire-and-forget: install in parallel with the spawn.
+        if (terminalType === "claude") {
+          void installStatuslineWrapper(currentServerId);
         }
         const remoteCwd = currentWorkingDir || undefined;
         const ssh = getSshCommand(server, terminalType, remoteCwd, sessionResumeIdRef.current);

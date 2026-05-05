@@ -1,19 +1,36 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCachedDistro } from "./wsl-cache";
+import { useAppStore } from "../store";
 import type { TerminalBackend, SessionIndexEntry } from "../types";
 
 /**
  * Read sessions-index.json for a project path.
  * Returns session entries sorted by modified desc, capped at 30.
  * Returns [] if the file doesn't exist or on any error.
+ *
+ * For SSH projects, pass `backend = "ssh"` and the linked `serverId`. The
+ * `projectPath` should be the REMOTE Unix path (the same cwd Claude sees on
+ * the remote host), since the project-key encoding happens server-side.
  */
 export async function readSessionsIndex(
   projectPath: string,
   backend: TerminalBackend,
+  serverId?: string,
 ): Promise<SessionIndexEntry[]> {
   try {
     let raw: string;
-    if (backend === "native") {
+    if (backend === "ssh") {
+      const server = serverId
+        ? useAppStore.getState().servers.find((s) => s.id === serverId)
+        : undefined;
+      if (!server || server.authMethod !== "ssh-key" || !server.sshKeyPath) return [];
+      raw = await invoke<string>("read_sessions_index_ssh", {
+        host: server.host,
+        username: server.username,
+        identityFile: server.sshKeyPath,
+        remoteProjectPath: projectPath,
+      });
+    } else if (backend === "native") {
       raw = await invoke<string>("read_sessions_index_native", { projectPath });
     } else if (backend === "windows") {
       raw = await invoke<string>("read_sessions_index_windows", { projectPath });
@@ -37,8 +54,22 @@ export async function readSessionFirstPrompt(
   projectPath: string,
   backend: TerminalBackend,
   sessionId: string,
+  serverId?: string,
 ): Promise<string> {
   try {
+    if (backend === "ssh") {
+      const server = serverId
+        ? useAppStore.getState().servers.find((s) => s.id === serverId)
+        : undefined;
+      if (!server || server.authMethod !== "ssh-key" || !server.sshKeyPath) return "";
+      return await invoke<string>("read_session_first_prompt_ssh", {
+        host: server.host,
+        username: server.username,
+        identityFile: server.sshKeyPath,
+        remoteProjectPath: projectPath,
+        sessionId,
+      });
+    }
     if (backend === "native") {
       return await invoke<string>("read_session_first_prompt_native", { projectPath, sessionId });
     } else if (backend === "windows") {

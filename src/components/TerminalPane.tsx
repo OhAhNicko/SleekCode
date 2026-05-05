@@ -137,11 +137,14 @@ export default function TerminalPane({
       const existing = (store.projectSessions[key] ?? []).find((s) => s.id === sid);
       if (existing?.isRenamed) return true;
       if (existing?.name) return true;
-      const effectiveBackend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
-      // WSL backend needs a Unix path — convert UNC/Windows paths to /home/... form.
+      const isSsh = !!serverId;
+      const effectiveBackend = isSsh
+        ? "ssh"
+        : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
+      // WSL backend needs a Unix path; SSH wd is already remote Unix.
       const pathForBackend = effectiveBackend === "wsl" ? toWslPath(wd) : wd;
       try {
-        const prompt = await readSessionFirstPrompt(pathForBackend, effectiveBackend, sid);
+        const prompt = await readSessionFirstPrompt(pathForBackend, effectiveBackend, sid, serverId);
         if (prompt) {
           const slug = slugify(prompt);
           if (slug) {
@@ -169,7 +172,7 @@ export default function TerminalPane({
       clearTimeout(start);
       if (intervalId) clearInterval(intervalId);
     };
-  }, [sessionResumeId, workingDir, terminalType]);
+  }, [sessionResumeId, workingDir, terminalType, serverId]);
   const serverName = useAppStore((s) => {
     if (!serverId) return undefined;
     return s.servers.find((srv) => srv.id === serverId)?.name;
@@ -184,6 +187,10 @@ export default function TerminalPane({
   useEffect(() => { copyOnSelectRef.current = copyOnSelect; }, [copyOnSelect]);
   const backendRef = useRef(backend);
   backendRef.current = backend;
+  // Same pattern for serverId — the late-detection effect has empty deps so
+  // it needs a ref to see the latest serverId without remounting.
+  const serverIdRef = useRef(serverId);
+  serverIdRef.current = serverId;
   // isActive may change between effect schedule and async initTerminal completion;
   // the ref lets initTerminal decide whether to focus without stale closure.
   const isActiveRef = useRef(isActive);
@@ -343,7 +350,11 @@ export default function TerminalPane({
 
       const lookupSession = async (): Promise<boolean> => {
         try {
-          const backend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
+          const sshServerId = serverIdRef.current;
+          const isSsh = !!sshServerId;
+          const backend = isSsh
+            ? "ssh"
+            : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
           const type = terminalTypeRef.current;
           const excludeIds = [...claimedSessionIds, ...skippedIds];
           let id: string | null = null;
@@ -351,7 +362,8 @@ export default function TerminalPane({
           // For Claude, prefer precise detection via ~/.claude/sessions/*.json
           // (pid sidecars with cwd + startedAt). Only returns sessions started
           // AFTER this pane spawned. Falls back to mtime-based detection below.
-          if (type === "claude") {
+          // Skipped for SSH — sidecar precise detection isn't mirrored remotely.
+          if (type === "claude" && !isSsh) {
             try {
               const minStartedAt = ptySpawnTimeRef.current;
               if (backend === "native") {
@@ -394,7 +406,32 @@ export default function TerminalPane({
           // would be incorrectly shown as this pane's cost).
           const claudeMaxAge = type === "claude" ? 120 : undefined;
 
-          if (backend === "native") {
+          if (isSsh) {
+            // SSH backend: workingDir is already the remote Unix path. Look up
+            // server creds and dispatch to the *_ssh commands.
+            const server = useAppStore.getState().servers.find((s) => s.id === sshServerId);
+            const remoteCwd = workingDirRef.current;
+            console.log(`[SessionResume] lookup for ${type} (ssh), remoteCwd="${remoteCwd}"`);
+            if (!server || !remoteCwd) { console.log(`[SessionResume] missing ssh server or cwd, skipping`); return false; }
+            if (server.authMethod !== "ssh-key" || !server.sshKeyPath) {
+              console.warn(`[SessionResume] ssh-key required for ${server.name || server.host}, skipping`);
+              return false;
+            }
+            const sshArgs = {
+              host: server.host,
+              username: server.username,
+              identityFile: server.sshKeyPath,
+              remoteProjectPath: remoteCwd,
+              excludeIds,
+            };
+            if (type === "claude") {
+              id = await invoke<string | null>("get_claude_session_id_ssh", { ...sshArgs, maxAgeSecs: claudeMaxAge });
+            } else if (type === "codex") {
+              id = await invoke<string | null>("get_codex_session_id_ssh", { ...sshArgs, maxAgeSecs: null });
+            } else if (type === "gemini") {
+              id = await invoke<string | null>("get_gemini_session_id_ssh", { ...sshArgs, maxAgeSecs: null });
+            }
+          } else if (backend === "native") {
             // macOS/Linux native: use native paths and native session commands
             const nativeCwd = workingDirRef.current;
             console.log(`[SessionResume] lookup for ${type} (native), cwd="${nativeCwd}"`);
@@ -1496,8 +1533,11 @@ export default function TerminalPane({
     let pollCount = 0;
 
     const poll = async () => {
-      const backend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
-      const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend);
+      const isSsh = !!serverIdRef.current;
+      const backend = isSsh
+        ? "ssh"
+        : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
+      const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, isSsh ? workingDirRef.current : undefined);
       if (info !== null) {
         // Merge partial updates — rate_limits and info come from different
         // server events. Keep previous rate_limits when new poll has none.
@@ -1516,9 +1556,13 @@ export default function TerminalPane({
             const type = terminalType;
             const excludeIds = [...claimedSessionIds];
             let id: string | null = null;
+            const isSsh = backend === "ssh";
+            const sshServer = isSsh
+              ? useAppStore.getState().servers.find((s) => s.id === serverIdRef.current)
+              : undefined;
             // Precise spawn-based lookup for Claude (only session files started
-            // after this pane's PTY spawned, in this exact cwd).
-            if (type === "claude" && ptySpawnTimeRef.current > 0) {
+            // after this pane's PTY spawned, in this exact cwd). Skipped for SSH.
+            if (type === "claude" && ptySpawnTimeRef.current > 0 && !isSsh) {
               const minStartedAt = ptySpawnTimeRef.current;
               if (backend === "native") {
                 if (workingDir) id = await invoke<string | null>("get_claude_session_id_by_spawn_native", { projectPath: workingDir, minStartedAtMs: minStartedAt, excludeIds });
@@ -1531,7 +1575,19 @@ export default function TerminalPane({
             }
             // Fallback: mtime-based for Codex/Gemini, or Claude if precise lookup returned nothing.
             if (!id) {
-              if (backend === "native") {
+              if (isSsh && sshServer && sshServer.authMethod === "ssh-key" && sshServer.sshKeyPath) {
+                const sshArgs = {
+                  host: sshServer.host,
+                  username: sshServer.username,
+                  identityFile: sshServer.sshKeyPath,
+                  remoteProjectPath: workingDir,
+                  excludeIds,
+                  maxAgeSecs: null,
+                };
+                if (type === "claude") id = await invoke<string | null>("get_claude_session_id_ssh", sshArgs);
+                else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_ssh", sshArgs);
+                else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_ssh", sshArgs);
+              } else if (backend === "native") {
                 const cwd = workingDir;
                 if (type === "claude") id = await invoke<string | null>("get_claude_session_id_native", { projectPath: cwd, excludeIds });
                 else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
@@ -2008,8 +2064,11 @@ export default function TerminalPane({
   const refreshContext = useCallback(async () => {
     const supported = terminalType === "claude" || terminalType === "codex" || terminalType === "gemini";
     if (!supported) return;
-    const backend = backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl";
-    const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend);
+    const isSsh = !!serverIdRef.current;
+    const backend = isSsh
+      ? "ssh"
+      : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
+    const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, isSsh ? workingDirRef.current : undefined);
     if (info !== null) {
       setContextInfo((prev) => ({
         ...info,
@@ -2051,6 +2110,7 @@ export default function TerminalPane({
           onRestart={handleRestart}
           onSwapPane={onSwapPane}
           serverName={serverName}
+          serverId={serverId}
           isYolo={launchedWithYolo}
           contextInfo={contextInfo}
           workingDir={workingDir}

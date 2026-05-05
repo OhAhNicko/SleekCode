@@ -5159,7 +5159,16 @@ fn parse_sessions_index(index_path: &std::path::Path) -> Result<String, String> 
         Ok(c) => c,
         Err(_) => return Ok("[]".to_string()),
     };
-    let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+    parse_sessions_index_from_content(&content)
+}
+
+/// Same as parse_sessions_index but operates on already-loaded content.
+/// Used by SSH variants that fetch the file contents over the network.
+fn parse_sessions_index_from_content(content: &str) -> Result<String, String> {
+    if content.trim().is_empty() {
+        return Ok("[]".to_string());
+    }
+    let v: serde_json::Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
     let entries = match v.get("entries").and_then(|e| e.as_array()) {
         Some(arr) => arr,
         None => return Ok("[]".to_string()),
@@ -5272,6 +5281,36 @@ print(json.dumps(out))
     Ok(stdout)
 }
 
+/// Read the first user prompt from JSONL content (already loaded into memory).
+/// Used by SSH variants that fetch the file contents over the network.
+fn read_first_user_prompt_from_content(content: &str) -> Option<String> {
+    for line in content.lines() {
+        if !line.contains("\"type\":\"user\"") { continue; }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) { continue; }
+        if v.get("type").and_then(|t| t.as_str()) != Some("user") { continue; }
+        let content_v = v.get("message").and_then(|m| m.get("content"))?;
+        let text = if let Some(s) = content_v.as_str() {
+            s.to_string()
+        } else if let Some(arr) = content_v.as_array() {
+            arr.iter()
+                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            continue;
+        };
+        if text.trim().is_empty() { continue; }
+        if text.starts_with('/') || text.starts_with("<") || text.starts_with("[Request") { continue; }
+        let truncated: String = text.chars().take(200).collect();
+        return Some(truncated);
+    }
+    None
+}
+
 /// Read the first user prompt from a session JSONL file (streaming).
 /// Skips sidechain entries. Returns truncated text (max 200 chars) or None.
 fn read_first_user_prompt_from_jsonl(path: &std::path::Path) -> Option<String> {
@@ -5375,6 +5414,555 @@ async fn read_session_first_prompt(project_path: String, session_id: String, dis
     Ok(read_first_user_prompt_from_jsonl(&path).unwrap_or_default())
 }
 
+// ─── SSH session lookups ──────────────────────────────────────────────────
+// These mirror the local read_session_*/get_*_session_id_* commands but read
+// the remote host's filesystem over SSH. Required by the SSH backend in
+// src/lib/context-parser.ts, src/lib/sessions-index.ts, etc.
+//
+// All commands require ssh-key auth (identity_file). Password auth is
+// rejected up front because the existing SSH primitives use BatchMode,
+// which blocks password prompts.
+
+/// Run an arbitrary command on a remote host over SSH and return stdout.
+/// Used by the read_*_ssh / get_*_ssh / install_*_ssh commands below.
+/// Hard-requires ssh-key auth; returns Err if identity_file is None.
+async fn ssh_exec_internal(
+    host: &str,
+    username: &str,
+    identity_file: Option<&str>,
+    command: &str,
+) -> Result<String, String> {
+    let key = match identity_file {
+        Some(k) if !k.is_empty() => k,
+        _ => return Err("SSH-key auth required (no identity file)".to_string()),
+    };
+    let user_host = format!("{}@{}", username, host);
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout=10",
+        "-i", key,
+        &user_host,
+        command,
+    ]);
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to spawn ssh: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ssh exec failed: {}", stderr.trim()));
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("ssh stdout not UTF-8: {}", e))
+}
+
+/// Encode a remote project path the way Claude/Codex/Gemini do, e.g.
+/// `/home/user/foo` → `home-user-foo`. Always uses `/` as separator since
+/// remote hosts are Unix.
+fn encode_remote_project_key(path: &str) -> String {
+    let s = path.replace('\\', "-").replace('/', "-");
+    s.trim_start_matches('-').to_string()
+}
+
+/// Pipe-delimited block separator the SSH context fetcher uses to bundle
+/// multiple files into a single round-trip.
+const SSH_SEP: &str = "\n___EZYDEV_SSH_SEP___\n";
+
+/// Extract a UUID-like substring (8-4-4-4-12 hex) from a path. Used by the
+/// SSH session-id lookups in lieu of a regex dependency.
+fn extract_uuid_from_path(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let n = bytes.len();
+    if n < 36 { return None; }
+    fn is_hex(c: u8) -> bool { matches!(c, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F') }
+    // Slide a 36-char window
+    for start in 0..=(n - 36) {
+        let w = &bytes[start..start + 36];
+        if w[8] == b'-' && w[13] == b'-' && w[18] == b'-' && w[23] == b'-'
+            && w[..8].iter().all(|&c| is_hex(c))
+            && w[9..13].iter().all(|&c| is_hex(c))
+            && w[14..18].iter().all(|&c| is_hex(c))
+            && w[19..23].iter().all(|&c| is_hex(c))
+            && w[24..36].iter().all(|&c| is_hex(c))
+        {
+            return Some(String::from_utf8_lossy(w).to_lowercase());
+        }
+    }
+    None
+}
+
+/// Read context info for a Claude/Codex/Gemini session over SSH.
+///
+/// Mirrors `read_session_context_native` for the essential fields:
+/// context window, used %, model, cost, version, effort, custom title.
+/// Project-wide cost aggregation and `~/.claude/sessions/` sidecar
+/// fallback are intentionally skipped — they would require many extra
+/// SSH round-trips for marginal UX gain.
+#[tauri::command]
+async fn read_session_context_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    terminal_type: String,
+    remote_project_path: String,
+    session_id: String,
+) -> Result<String, String> {
+    if session_id.is_empty() {
+        return Ok(String::new());
+    }
+    let is_latest = session_id == "__latest__";
+
+    match terminal_type.as_str() {
+        "claude" => {
+            let key = encode_remote_project_key(&remote_project_path);
+            let session_path = if is_latest {
+                String::new()
+            } else {
+                format!("$HOME/.claude/projects/{}/{}.jsonl", key, session_id)
+            };
+            // Single round-trip: fetch statusline JSON, settings, and the
+            // session JSONL, separated by SSH_SEP.
+            let cmd = format!(
+                r#"set -e; ( cat /tmp/ezydev-claude-statusline.json 2>/dev/null || cat $HOME/.ezydev/claude-statusline.json 2>/dev/null || true ); printf '{sep}'; ( cat $HOME/.claude/settings.json 2>/dev/null || true ); printf '{sep}'; {tail_or_empty}"#,
+                sep = SSH_SEP,
+                tail_or_empty = if is_latest {
+                    "true".to_string()
+                } else {
+                    format!("( cat {} 2>/dev/null || true )", shell_escape(&session_path))
+                },
+            );
+            let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await?;
+            let parts: Vec<&str> = raw.split(SSH_SEP).collect();
+            let sl_json = parts.first().map(|s| s.trim()).unwrap_or("");
+            let settings_json = parts.get(1).map(|s| s.trim()).unwrap_or("");
+            let session_jsonl = parts.get(2).map(|s| s.trim()).unwrap_or("");
+
+            // Parse statusline JSON
+            let mut sl_window: Option<u64> = None;
+            let mut sl_model: Option<String> = None;
+            let mut sl_used_pct: Option<u64> = None;
+            let mut sl_cost: Option<f64> = None;
+            let mut sl_duration: Option<u64> = None;
+            let mut sl_version: Option<String> = None;
+            let mut sl_session_id: Option<String> = None;
+            if !sl_json.is_empty() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(sl_json) {
+                    sl_window = v.pointer("/context_window/context_window_size").and_then(|v| v.as_u64());
+                    sl_model = v.pointer("/model/display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    sl_used_pct = v.pointer("/context_window/used_percentage").and_then(|v| v.as_u64());
+                    sl_cost = v.pointer("/cost/total_cost_usd").and_then(|v| v.as_f64());
+                    sl_duration = v.pointer("/cost/total_duration_ms").and_then(|v| v.as_u64());
+                    sl_version = v.pointer("/version").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    sl_session_id = v.pointer("/session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+                }
+            }
+
+            let used_pct_str = sl_used_pct.map(|v| v.to_string()).unwrap_or_default();
+            let ver_str = sl_version.unwrap_or_default();
+
+            // Parse settings.json for effortLevel
+            let effort_level: String = if settings_json.is_empty() {
+                String::new()
+            } else {
+                serde_json::from_str::<serde_json::Value>(settings_json).ok()
+                    .and_then(|v| v.get("effortLevel").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .unwrap_or_default()
+            };
+
+            if is_latest {
+                if let Some(w) = sl_window {
+                    return Ok(format!("0|{}|{}|{}|||{}|||||{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, ver_str, effort_level));
+                }
+                return Ok(String::new());
+            }
+
+            // Parse session JSONL for last usage line + custom title
+            let mut total: u64 = 0;
+            let mut service_tier = String::new();
+            let mut speed = String::new();
+            for line in session_jsonl.lines().rev() {
+                if line.contains("\"message\"") && line.contains("\"usage\"") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(usage) = v.pointer("/message/usage") {
+                            let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let cache_create = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            total = input + cache_create + cache_read + output;
+                            if let Some(st) = usage.get("service_tier").and_then(|v| v.as_str()) {
+                                service_tier = st.to_string();
+                            }
+                            if let Some(sp) = usage.get("speed").and_then(|v| v.as_str()) {
+                                speed = sp.to_string();
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let compact_count = session_jsonl.lines().filter(|l| l.contains("compact_boundary")).count();
+            let mut custom_title = String::new();
+            for line in session_jsonl.lines().rev() {
+                if line.contains("\"custom-title\"") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(t) = v.get("customTitle").and_then(|v| v.as_str()) {
+                            custom_title = t.to_string();
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Per-session cost: only available if statusline matches this session.
+            // Project-wide cost aggregation is skipped for SSH (would require many round-trips).
+            let (sess_cost, sess_duration): (Option<f64>, Option<u64>) =
+                if sl_session_id.as_deref() == Some(&session_id) {
+                    (sl_cost, sl_duration)
+                } else {
+                    (None, None)
+                };
+            let cost_str = sess_cost.map(|c| format!("{:.6}", c)).unwrap_or_default();
+            let dur_str = sess_duration.map(|d| d.to_string()).unwrap_or_default();
+            let proj_str = String::new();
+
+            if total == 0 {
+                if let Some(w) = sl_window {
+                    return Ok(format!("0|{}|{}|{}|{}|{}|{}|||{}|{}|{}|{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, cost_str, dur_str, ver_str, compact_count, proj_str, effort_level, custom_title));
+                }
+                return Ok(String::new());
+            }
+
+            let window = sl_window.unwrap_or(200000);
+            let model_str = sl_model.unwrap_or_default();
+            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", total, window, model_str, used_pct_str, cost_str, dur_str, ver_str, service_tier, speed, compact_count, proj_str, effort_level, custom_title))
+        },
+        "codex" => {
+            // Find the latest sessions JSONL on the remote (or the one matching session_id).
+            // Skip rate-limit aggregation and SQLite title — best-effort for SSH.
+            let cmd = if is_latest {
+                "find $HOME/.codex/sessions -type f -name '*.jsonl' 2>/dev/null | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- | xargs -I{} cat {} 2>/dev/null".to_string()
+            } else {
+                format!(
+                    "find $HOME/.codex/sessions -type f -name '*{}*' 2>/dev/null | head -1 | xargs -I{{}} cat {{}} 2>/dev/null",
+                    session_id.replace('\'', "")
+                )
+            };
+            let content = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
+            if content.trim().is_empty() {
+                return Ok(String::new());
+            }
+            let mut used: Option<u64> = None;
+            let mut window: Option<u64> = None;
+            let mut model = String::new();
+            let mut effort = String::new();
+            let mut collab_mode = String::new();
+            for line in content.lines().rev() {
+                if window.is_some() && (used.is_some() || is_latest) { break; }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    if window.is_none() {
+                        if let Some(w) = v.pointer("/payload/info/model_context_window").and_then(|v| v.as_u64()) {
+                            if w > 0 { window = Some(w); }
+                        }
+                        if used.is_none() && !is_latest {
+                            if let Some(u) = v.pointer("/payload/info/last_token_usage/total_tokens").and_then(|v| v.as_u64()) {
+                                if u > 0 { used = Some(u); }
+                            }
+                        }
+                    }
+                    if model.is_empty() {
+                        if let Some(m) = v.pointer("/payload/model").and_then(|v| v.as_str()) {
+                            model = m.to_string();
+                        }
+                    }
+                    if effort.is_empty() {
+                        if let Some(e) = v.pointer("/payload/effort").and_then(|v| v.as_str()) {
+                            effort = e.to_string();
+                        }
+                    }
+                    if collab_mode.is_empty() {
+                        if let Some(cm) = v.pointer("/payload/collaboration_mode/mode").and_then(|v| v.as_str()) {
+                            collab_mode = cm.to_string();
+                        }
+                    }
+                }
+            }
+            if is_latest { used = None; }
+            let used_val = used.unwrap_or(0);
+            let window_val = match window {
+                Some(w) => w,
+                None => return Ok(String::new()),
+            };
+            // Codex format: USED|WINDOW|MODEL|RL_5H|RL_WEEKLY|EFFORT|COLLAB_MODE|TITLE
+            // Rate-limits and title omitted for SSH.
+            Ok(format!("{}|{}|{}|||{}|{}|", used_val, window_val, model, effort, collab_mode))
+        },
+        "gemini" => {
+            // Best-effort: find the latest chat JSON for the project and parse it.
+            let cmd = if is_latest {
+                "find $HOME/.gemini/tmp -type f -name '*.json' 2>/dev/null | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- | xargs -I{} cat {} 2>/dev/null".to_string()
+            } else {
+                format!(
+                    "find $HOME/.gemini/tmp -type f -name '*{}*' 2>/dev/null | head -1 | xargs -I{{}} cat {{}} 2>/dev/null",
+                    session_id.replace('\'', "")
+                )
+            };
+            let content = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
+            if content.trim().is_empty() {
+                return Ok(String::new());
+            }
+            let v: serde_json::Value = match serde_json::from_str(&content) {
+                Ok(v) => v,
+                Err(_) => return Ok(String::new()),
+            };
+            let model = v.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let window = v.pointer("/contextWindow").and_then(|v| v.as_u64())
+                .or_else(|| v.pointer("/context_window").and_then(|v| v.as_u64()))
+                .unwrap_or(1_000_000);
+            let used = v.pointer("/usedTokens").and_then(|v| v.as_u64())
+                .or_else(|| v.pointer("/used_tokens").and_then(|v| v.as_u64()))
+                .unwrap_or(0);
+            let summary = v.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            // Gemini format: USED|WINDOW|MODEL|RPD_USED|SUMMARY|THOUGHTS|RESET_TIME
+            Ok(format!("{}|{}|{}||{}||", used, window, model, summary))
+        },
+        _ => Ok(String::new()),
+    }
+}
+
+/// Fetch sessions-index.json from a remote host and parse it.
+/// Returns the same JSON array shape as `read_sessions_index_native`.
+#[tauri::command]
+async fn read_sessions_index_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    remote_project_path: String,
+) -> Result<String, String> {
+    let key = encode_remote_project_key(&remote_project_path);
+    // Fetch with case-insensitive directory fallback.
+    let cmd = format!(
+        r#"DIR="$HOME/.claude/projects/{key}"; if [ ! -d "$DIR" ]; then enc_lower=$(echo '{key}' | tr '[:upper:]' '[:lower:]'); for d in $HOME/.claude/projects/*/; do base=$(basename "$d"); if [ "$(echo "$base" | tr '[:upper:]' '[:lower:]')" = "$enc_lower" ]; then DIR="$d"; break; fi; done; fi; cat "$DIR/sessions-index.json" 2>/dev/null || true"#,
+        key = key
+    );
+    let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await?;
+    parse_sessions_index_from_content(&raw)
+}
+
+/// Fetch a single session JSONL from a remote host and extract the first user prompt.
+#[tauri::command]
+async fn read_session_first_prompt_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    remote_project_path: String,
+    session_id: String,
+) -> Result<String, String> {
+    let key = encode_remote_project_key(&remote_project_path);
+    let cmd = format!(
+        "cat $HOME/.claude/projects/{}/{}.jsonl 2>/dev/null || true",
+        key, session_id
+    );
+    let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await?;
+    Ok(read_first_user_prompt_from_content(&raw).unwrap_or_default())
+}
+
+/// Find the newest Claude session UUID on a remote host for a given project.
+/// Mirrors `find_newest_uuid_jsonl` but over SSH.
+#[tauri::command]
+async fn get_claude_session_id_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    remote_project_path: String,
+    exclude_ids: Vec<String>,
+    max_age_secs: Option<u64>,
+) -> Result<Option<String>, String> {
+    let key = encode_remote_project_key(&remote_project_path);
+    // List jsonl files newest-first, with mtime in epoch seconds.
+    let cmd = format!(
+        "ls -t $HOME/.claude/projects/{}/*.jsonl 2>/dev/null | head -50 | while read f; do printf '%s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null)\" \"$f\"; done",
+        key
+    );
+    let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    for line in raw.lines() {
+        let mut parts = line.splitn(2, ' ');
+        let mtime = parts.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let path = parts.next().unwrap_or("");
+        if let Some(max) = max_age_secs {
+            if now.saturating_sub(mtime) > max { continue; }
+        }
+        if let Some(id) = extract_uuid_from_path(path) {
+            if exclude_ids.contains(&id) { continue; }
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+/// Find the newest Codex session ID on a remote host for a given project.
+/// Falls back to scanning JSONL files (no SQLite over SSH).
+#[tauri::command]
+async fn get_codex_session_id_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    remote_project_path: String,
+    exclude_ids: Vec<String>,
+    max_age_secs: Option<u64>,
+) -> Result<Option<String>, String> {
+    let cwd = remote_project_path.replace('\'', "");
+    // Walk ~/.codex/sessions/, sort by mtime, read first line of each, match cwd.
+    let cmd = format!(
+        r#"find $HOME/.codex/sessions -type f -name '*.jsonl' 2>/dev/null | xargs -I{{}} stat -c '%Y {{}}' {{}} 2>/dev/null | sort -rn | head -30 | while read mt path; do first=$(head -1 "$path" 2>/dev/null); echo "$mt|$first"; done"#
+    );
+    let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    for line in raw.lines() {
+        let mut parts = line.splitn(2, '|');
+        let mtime = parts.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let json_line = parts.next().unwrap_or("");
+        if let Some(max) = max_age_secs {
+            if now.saturating_sub(mtime) > max { continue; }
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_line) {
+            let session_cwd = v.pointer("/payload/cwd").and_then(|v| v.as_str()).unwrap_or("");
+            if session_cwd != cwd { continue; }
+            if let Some(id) = v.get("id").and_then(|v| v.as_str()) {
+                if exclude_ids.iter().any(|e| e == id) { continue; }
+                return Ok(Some(id.to_string()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Find the newest Gemini session ID on a remote host for a given project.
+#[tauri::command]
+async fn get_gemini_session_id_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    remote_project_path: String,
+    exclude_ids: Vec<String>,
+    max_age_secs: Option<u64>,
+) -> Result<Option<String>, String> {
+    let basename = std::path::Path::new(&remote_project_path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if basename.is_empty() {
+        return Ok(None);
+    }
+    let cmd = format!(
+        r#"for d in $HOME/.gemini/tmp/{base}*/chats; do [ -d "$d" ] || continue; ls -t "$d"/*.json 2>/dev/null | head -20 | while read f; do mt=$(stat -c %Y "$f" 2>/dev/null); printf '%s %s\n' "$mt" "$f"; done; done"#,
+        base = basename
+    );
+    let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0);
+    for line in raw.lines() {
+        let mut parts = line.splitn(2, ' ');
+        let mtime = parts.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let path = parts.next().unwrap_or("");
+        if let Some(max) = max_age_secs {
+            if now.saturating_sub(mtime) > max { continue; }
+        }
+        if let Some(id) = extract_uuid_from_path(path) {
+            if exclude_ids.contains(&id) { continue; }
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+/// Bundled wrapper version. Bumping this number forces a re-install on the
+/// remote on next call so wrapper drift is self-healing.
+const SSH_STATUSLINE_WRAPPER_VERSION: u32 = 1;
+
+/// Install the EzyDev statusline wrapper on a remote SSH host. Idempotent:
+/// if `~/.ezydev/statusline-wrapper.version` already matches the bundled
+/// version, returns "ALREADY_INSTALLED" without touching anything.
+#[tauri::command]
+async fn install_statusline_wrapper_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+) -> Result<String, String> {
+    // Same wrapper script as the local install — keeps the on-disk format
+    // identical so SSH and local context-parser code paths stay symmetrical.
+    let wrapper_script = r#"#!/bin/bash
+input=$(cat)
+echo "$input" > /tmp/ezydev-claude-statusline.json 2>/dev/null
+_chain="$(cat "$HOME/.ezydev/statusline-chain" 2>/dev/null)"
+case "$_chain" in *statusline-wrapper*) _chain="" ;; esac
+if [ -n "$_chain" ] && [ -x "$_chain" ]; then
+  echo "$input" | "$_chain"
+else
+  echo "$input"
+fi
+"#;
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(wrapper_script.trim());
+    let version = SSH_STATUSLINE_WRAPPER_VERSION;
+    let script = format!(
+        r#"WRAPPER="$HOME/.ezydev/statusline-wrapper.sh"
+VERSION_FILE="$HOME/.ezydev/statusline-wrapper.version"
+CHAIN_FILE="$HOME/.ezydev/statusline-chain"
+SETTINGS="$HOME/.claude/settings.json"
+if [ -f "$VERSION_FILE" ] && [ "$(cat "$VERSION_FILE" 2>/dev/null)" = "{ver}" ] && [ -x "$WRAPPER" ]; then
+  echo "ALREADY_INSTALLED"
+  exit 0
+fi
+mkdir -p "$HOME/.ezydev" 2>/dev/null
+CURRENT=""
+if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+  CURRENT=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || true)
+fi
+echo "{b64}" | base64 -d > "$WRAPPER"
+chmod +x "$WRAPPER" 2>/dev/null || true
+echo "{ver}" > "$VERSION_FILE"
+case "$CURRENT" in
+  *statusline-wrapper*) ;;
+  *)
+    if [ -n "$CURRENT" ]; then
+      EXPANDED=$(eval echo "$CURRENT" 2>/dev/null || echo "$CURRENT")
+      echo "$EXPANDED" > "$CHAIN_FILE"
+    fi
+    ;;
+esac
+case "$CURRENT" in
+  *statusline-wrapper*)
+    echo "UPDATED_WRAPPER"
+    exit 0
+    ;;
+esac
+if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+  TMP=$(mktemp)
+  if jq '.statusLine = {{"type": "command", "command": "~/.ezydev/statusline-wrapper.sh"}}' "$SETTINGS" > "$TMP" 2>/dev/null; then
+    mv "$TMP" "$SETTINGS"
+  else
+    rm -f "$TMP"
+    echo "ERR_JQ_UPDATE"
+    exit 1
+  fi
+fi
+echo "INSTALLED""#,
+        ver = version,
+        b64 = b64
+    );
+    ssh_exec_internal(&host, &username, identity_file.as_deref(), &script).await
+}
+
 #[tauri::command]
 fn preview_proxy_port(state: State<'_, preview_proxy::ProxyHandle>) -> u16 {
     state.port()
@@ -5397,7 +5985,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             // Registry of active `ssh -N -L` port-forward processes for remote
             // dev servers (commands: ssh_forward_port_start / _stop).

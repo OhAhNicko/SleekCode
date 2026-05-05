@@ -71,6 +71,8 @@ interface TerminalHeaderProps {
   onRestart?: () => void;
   onSwapPane?: (fromTerminalId: string, toTerminalId: string) => void;
   serverName?: string;
+  /** When set, sessions index/first-prompt are read from this remote server over SSH. */
+  serverId?: string;
   isYolo?: boolean;
   contextInfo?: ContextInfo | null;
   workingDir?: string;
@@ -421,6 +423,7 @@ function SessionPicker({
   anchorRef,
   workingDir,
   backend,
+  serverId,
   terminalType,
   onSelect,
   onRename,
@@ -434,6 +437,7 @@ function SessionPicker({
   anchorRef?: React.RefObject<HTMLDivElement | null>;
   workingDir?: string;
   backend?: TerminalBackend;
+  serverId?: string;
   terminalType?: TerminalType;
   onSelect: (sessionId: string) => void;
   onRename: (sessionId: string, newName: string) => void;
@@ -452,20 +456,26 @@ function SessionPicker({
   // open so newly created Claude Code sessions appear without reopening.
   useEffect(() => {
     if (!workingDir || (terminalType && terminalType !== "claude")) return;
-    const effectiveBackend = backend ?? (useAppStore.getState().terminalBackend as TerminalBackend | undefined) ?? "wsl";
-    // WSL backend needs a Unix path — convert UNC/Windows paths to /home/... form.
+    const isSsh = !!serverId;
+    const effectiveBackend: TerminalBackend = isSsh
+      ? "ssh"
+      : (backend ?? (useAppStore.getState().terminalBackend as TerminalBackend | undefined) ?? "wsl");
+    // WSL backend needs a Unix path; SSH workingDir is already remote Unix.
     const pathForBackend = effectiveBackend === "wsl" ? toWslPath(workingDir) : workingDir;
-    const fetch = () => readSessionsIndex(pathForBackend, effectiveBackend).then(setIndexEntries);
+    const fetch = () => readSessionsIndex(pathForBackend, effectiveBackend, serverId).then(setIndexEntries);
     fetch();
     const interval = setInterval(fetch, 30_000);
     return () => clearInterval(interval);
-  }, [workingDir, backend, terminalType]);
+  }, [workingDir, backend, terminalType, serverId]);
 
   // Fetch first-prompt slugs for sessions that lack an index entry AND a store name.
   // This covers the common v2.1.109 case where sessions-index.json doesn't exist.
   useEffect(() => {
     if (!workingDir || (terminalType && terminalType !== "claude")) return;
-    const effectiveBackend = backend ?? (useAppStore.getState().terminalBackend as TerminalBackend | undefined) ?? "wsl";
+    const isSsh = !!serverId;
+    const effectiveBackend: TerminalBackend = isSsh
+      ? "ssh"
+      : (backend ?? (useAppStore.getState().terminalBackend as TerminalBackend | undefined) ?? "wsl");
     const pathForBackend = effectiveBackend === "wsl" ? toWslPath(workingDir) : workingDir;
     const indexIds = new Set(indexEntries.map((e) => e.sessionId));
     const needSlug = sessions.filter((s) =>
@@ -475,7 +485,7 @@ function SessionPicker({
     needSlug.forEach((s) => fallbackFetchedRef.current.add(s.id));
     Promise.all(
       needSlug.map(async (s) => {
-        const prompt = await readSessionFirstPrompt(pathForBackend, effectiveBackend, s.id);
+        const prompt = await readSessionFirstPrompt(pathForBackend, effectiveBackend, s.id, serverId);
         return [s.id, prompt] as const;
       })
     ).then((results) => {
@@ -490,7 +500,7 @@ function SessionPicker({
         setFallbackSlugs((prev) => ({ ...prev, ...next }));
       }
     });
-  }, [sessions, indexEntries, workingDir, backend, terminalType]);
+  }, [sessions, indexEntries, workingDir, backend, terminalType, serverId]);
 
   // Merge store sessions with index entries
   const mergedSessions = useMemo((): MergedSession[] => {
@@ -819,6 +829,7 @@ export default function TerminalHeader({
   onRestart,
   onSwapPane,
   serverName,
+  serverId,
   isYolo = false,
   contextInfo,
   workingDir,
@@ -1475,6 +1486,7 @@ export default function TerminalHeader({
           anchorRef={sessionNameRef}
           workingDir={workingDir}
           backend={backend}
+          serverId={serverId}
           terminalType={terminalType}
           onSelect={(id) => onSwitchSession?.(id)}
           onRename={(id, name) => {

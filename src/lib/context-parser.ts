@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCachedDistro } from "./wsl-cache";
+import { useAppStore } from "../store";
 import type { TerminalType, TerminalBackend } from "../types";
 
 export interface ContextInfo {
@@ -77,6 +78,8 @@ export async function readSessionContext(
   terminalType: TerminalType,
   sessionId?: string,
   backend?: TerminalBackend,
+  serverId?: string,
+  remoteProjectPath?: string,
 ): Promise<ContextInfo | null> {
 
   const supported = terminalType === "claude" || terminalType === "codex" || terminalType === "gemini";
@@ -84,7 +87,20 @@ export async function readSessionContext(
 
   try {
     let raw: string;
-    if (backend === "native") {
+    if (backend === "ssh") {
+      const server = serverId
+        ? useAppStore.getState().servers.find((s) => s.id === serverId)
+        : undefined;
+      if (!server || server.authMethod !== "ssh-key" || !server.sshKeyPath || !remoteProjectPath) return null;
+      raw = await invoke<string>("read_session_context_ssh", {
+        host: server.host,
+        username: server.username,
+        identityFile: server.sshKeyPath,
+        terminalType,
+        remoteProjectPath,
+        sessionId: sessionId || "__latest__",
+      });
+    } else if (backend === "native") {
       // macOS/Linux: read session context directly (same as Windows path but uses $HOME)
       raw = await invoke<string>("read_session_context_native", {
         terminalType,
