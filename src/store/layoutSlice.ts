@@ -9,6 +9,8 @@ export interface PendingDir {
 export interface LayoutSlice {
   verticalModeEnabled: boolean;
   setVerticalModeEnabled: (enabled: boolean) => void;
+  verticalTabBarCompact: boolean;
+  setVerticalTabBarCompact: (compact: boolean) => void;
   pendingDir: PendingDir | null;
   setPendingDir: (dir: PendingDir | null) => void;
 }
@@ -23,6 +25,12 @@ export const createLayoutSlice: StateCreator<
 
   setVerticalModeEnabled: (enabled) => {
     set({ verticalModeEnabled: enabled });
+  },
+
+  verticalTabBarCompact: false,
+
+  setVerticalTabBarCompact: (compact) => {
+    set({ verticalTabBarCompact: compact });
   },
 
   pendingDir: null,

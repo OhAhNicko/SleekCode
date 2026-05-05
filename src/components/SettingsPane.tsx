@@ -14,6 +14,12 @@ import { FaCheck } from "react-icons/fa";
 import { STATUSLINE_FEATURES, getStatuslineDefault } from "./TerminalHeader";
 import ClearDataModal from "./ClearDataModal";
 import type { TerminalType, ComposerExpansion } from "../types";
+import type { VoiceLanguage, VoiceWhisperFormat, VoiceActivationMode } from "../store/voiceSlice";
+import { pingWhisper } from "../lib/voice/whisperClient";
+import { pingLlm } from "../lib/voice/llmClient";
+import { pingTts } from "../lib/voice/ttsClient";
+import { parseHotkey } from "../lib/voice/hotkey";
+import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 
 // ─── Internal sub-components ───────────────────────────────────────────────
 
@@ -77,6 +83,7 @@ function SegmentedControl<T extends string>({ options, value, onChange, disabled
               fontFamily: "inherit",
               transition: "background-color 150ms ease",
               opacity: isOff ? 0.35 : 1,
+              whiteSpace: "nowrap",
             }}
             onMouseEnter={(e) => { if (!isActive && !isOff) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
             onMouseLeave={(e) => { if (!isActive && !isOff) e.currentTarget.style.backgroundColor = "transparent"; }}
@@ -612,6 +619,286 @@ function UpdatesSection() {
   );
 }
 
+// ─── Voice agent section ──────────────────────────────────────────────────
+
+function TextInput({
+  value,
+  onChange,
+  placeholder,
+  monospace,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  monospace?: boolean;
+}) {
+  return (
+    <input
+      type="text"
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        width: 260,
+        padding: "5px 8px",
+        fontSize: 12,
+        fontFamily: monospace ? "var(--ezy-font-mono, ui-monospace, Menlo, monospace)" : "inherit",
+        color: "var(--ezy-text)",
+        backgroundColor: "var(--ezy-surface)",
+        border: "1px solid var(--ezy-border)",
+        borderRadius: 5,
+        outline: "none",
+      }}
+    />
+  );
+}
+
+type PingState = { status: "idle" | "checking" | "ok" | "fail"; ms?: number; error?: string };
+
+function TestButton({ onClick, state }: { onClick: () => void; state: PingState }) {
+  const label =
+    state.status === "checking" ? "Testing…" :
+    state.status === "ok" ? `OK ${state.ms}ms` :
+    state.status === "fail" ? "Failed" :
+    "Test";
+  const color =
+    state.status === "ok" ? "#10b981" :
+    state.status === "fail" ? "var(--ezy-red, #e55)" :
+    "var(--ezy-text-secondary)";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <button
+        onClick={onClick}
+        disabled={state.status === "checking"}
+        style={{
+          padding: "4px 10px",
+          fontSize: 11,
+          fontWeight: 500,
+          color: "var(--ezy-text-secondary)",
+          backgroundColor: "var(--ezy-surface)",
+          border: "1px solid var(--ezy-border)",
+          borderRadius: 5,
+          cursor: state.status === "checking" ? "default" : "pointer",
+          fontFamily: "inherit",
+        }}
+      >
+        {label}
+      </button>
+      {state.status === "fail" && state.error && (
+        <span title={state.error} style={{ fontSize: 10, color, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {state.error}
+        </span>
+      )}
+      {state.status === "ok" && (
+        <span style={{ fontSize: 10, color }}>connected</span>
+      )}
+    </div>
+  );
+}
+
+function HotkeyCapture({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [recording, setRecording] = useState(false);
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (!recording) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const parts: string[] = [];
+    if (e.ctrlKey) parts.push("Ctrl");
+    if (e.altKey) parts.push("Alt");
+    if (e.shiftKey) parts.push("Shift");
+    if (e.metaKey) parts.push("Meta");
+    let key = e.key;
+    if (key === " ") key = "Space";
+    // Skip pure modifier keys
+    if (["Control", "Alt", "Shift", "Meta"].includes(key)) return;
+    parts.push(key.length === 1 ? key.toUpperCase() : key);
+    onChange(parts.join("+"));
+    setRecording(false);
+  };
+
+  return (
+    <div
+      onKeyDown={onKeyDown}
+      tabIndex={0}
+      onClick={() => setRecording(true)}
+      onBlur={() => setRecording(false)}
+      style={{
+        minWidth: 160,
+        padding: "5px 10px",
+        fontSize: 12,
+        color: recording ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
+        backgroundColor: recording ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
+        border: `1px solid ${recording ? "var(--ezy-accent)" : "var(--ezy-border)"}`,
+        borderRadius: 5,
+        cursor: "pointer",
+        outline: "none",
+        textAlign: "center",
+        fontFamily: "var(--ezy-font-mono, ui-monospace, Menlo, monospace)",
+      }}
+    >
+      {recording ? "Press a key…" : (value || "Click to set")}
+    </div>
+  );
+}
+
+function VoiceAgentSection() {
+  const voiceEnabled = useAppStore((s) => s.voiceEnabled);
+  const setVoiceEnabled = useAppStore((s) => s.setVoiceEnabled);
+  const whisperUrl = useAppStore((s) => s.whisperUrl);
+  const setWhisperUrl = useAppStore((s) => s.setWhisperUrl);
+  const whisperFormat = useAppStore((s) => s.whisperFormat);
+  const setWhisperFormat = useAppStore((s) => s.setWhisperFormat);
+  const llmUrl = useAppStore((s) => s.llmUrl);
+  const setLlmUrl = useAppStore((s) => s.setLlmUrl);
+  const llmModel = useAppStore((s) => s.llmModel);
+  const setLlmModel = useAppStore((s) => s.setLlmModel);
+  const ttsUrl = useAppStore((s) => s.ttsUrl);
+  const setTtsUrl = useAppStore((s) => s.setTtsUrl);
+  const ttsVoice = useAppStore((s) => s.ttsVoice);
+  const setTtsVoice = useAppStore((s) => s.setTtsVoice);
+  const language = useAppStore((s) => s.voiceLanguage);
+  const setLanguage = useAppStore((s) => s.setVoiceLanguage);
+  const activationMode = useAppStore((s) => s.voiceActivationMode);
+  const setActivationMode = useAppStore((s) => s.setVoiceActivationMode);
+  const pttHotkey = useAppStore((s) => s.pttHotkey);
+  const setPttHotkey = useAppStore((s) => s.setPttHotkey);
+  const confirmDestructive = useAppStore((s) => s.voiceConfirmDestructive);
+  const setConfirmDestructive = useAppStore((s) => s.setVoiceConfirmDestructive);
+
+  const [whisperPing, setWhisperPing] = useState<PingState>({ status: "idle" });
+  const [llmPing, setLlmPing] = useState<PingState>({ status: "idle" });
+  const [ttsPing, setTtsPing] = useState<PingState>({ status: "idle" });
+
+  const testWhisper = async () => {
+    setWhisperPing({ status: "checking" });
+    try {
+      const ms = await pingWhisper(whisperUrl);
+      setWhisperPing({ status: "ok", ms });
+    } catch (err) {
+      setWhisperPing({ status: "fail", error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  const testLlm = async () => {
+    setLlmPing({ status: "checking" });
+    try {
+      const ms = await pingLlm(llmUrl, llmModel);
+      setLlmPing({ status: "ok", ms });
+    } catch (err) {
+      setLlmPing({ status: "fail", error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+  const testTts = async () => {
+    setTtsPing({ status: "checking" });
+    try {
+      const ms = await pingTts(ttsUrl);
+      setTtsPing({ status: "ok", ms });
+    } catch (err) {
+      setTtsPing({ status: "fail", error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  const hotkeyValid = !!parseHotkey(pttHotkey);
+
+  return (
+    <>
+      <SettingsSection
+        id="voice"
+        title="Voice agent"
+        description="Speak commands in English or Swedish. Audio goes to your self-hosted Whisper server, intent is mapped to actions by a local LLM, and an optional TTS endpoint speaks the reply."
+      >
+        <SettingsRow label="Enable voice agent" description="Master switch. When off, the mic button and hotkey are inactive.">
+          <ToggleSwitch checked={voiceEnabled} onChange={setVoiceEnabled} />
+        </SettingsRow>
+        <SettingsRow
+          label="Activation"
+          description="Toggle: click the mic (or tap the hotkey) once to start, again to stop. Hold: press and hold the mic / hotkey while you speak; release to send."
+        >
+          <SegmentedControl<VoiceActivationMode>
+            options={[
+              { value: "toggle", label: "Toggle" },
+              { value: "hold", label: "Hold" },
+            ]}
+            value={activationMode}
+            onChange={setActivationMode}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={activationMode === "hold" ? "Hold-to-talk hotkey" : "Toggle hotkey"}
+          description={activationMode === "hold"
+            ? "Hold this combination to record; release to transcribe and act."
+            : "Press once to start recording; press again to stop."}
+        >
+          <HotkeyCapture value={pttHotkey} onChange={setPttHotkey} />
+        </SettingsRow>
+        {!hotkeyValid && pttHotkey && (
+          <div style={{ fontSize: 11, color: "var(--ezy-red, #e55)", padding: "0 0 6px" }}>
+            Hotkey "{pttHotkey}" is invalid. Click the field and press a new combination.
+          </div>
+        )}
+        <SettingsRow label="Language" description="Influences Whisper transcription and the agent's reply language.">
+          <SegmentedControl<VoiceLanguage>
+            options={[
+              { value: "auto", label: "Auto" },
+              { value: "en", label: "English" },
+              { value: "sv", label: "Svenska" },
+            ]}
+            value={language}
+            onChange={setLanguage}
+          />
+        </SettingsRow>
+        <SettingsRow label="Confirm destructive actions" description="Require a yes/no confirmation before closing tabs with content, etc.">
+          <ToggleSwitch checked={confirmDestructive} onChange={setConfirmDestructive} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection id="voice-whisper" title="Whisper (speech-to-text)" description="Self-hosted MLX Whisper server reachable over Tailscale.">
+        <SettingsRow label="Endpoint URL">
+          <TextInput value={whisperUrl} onChange={setWhisperUrl} placeholder="http://<mac-mini-tailscale>:8765/transcribe" monospace />
+        </SettingsRow>
+        <SettingsRow label="Server format" description="Pick the API shape your MLX Whisper wrapper exposes.">
+          <SegmentedControl<VoiceWhisperFormat>
+            options={[
+              { value: "openai", label: "OpenAI-compat" },
+              { value: "asr-webservice", label: "ASR" },
+              { value: "custom", label: "Custom" },
+            ]}
+            value={whisperFormat}
+            onChange={setWhisperFormat}
+          />
+        </SettingsRow>
+        <SettingsRow label="Test connection">
+          <TestButton onClick={testWhisper} state={whisperPing} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection id="voice-llm" title="LLM (intent → action)" description="OpenAI-compatible chat-completions endpoint with native tool calling. Both Mistral Nemo and Qwen 2.5 handle Swedish well.">
+        <SettingsRow label="Endpoint URL">
+          <TextInput value={llmUrl} onChange={setLlmUrl} placeholder="http://<mac-mini-tailscale>:8765/v1/chat/completions" monospace />
+        </SettingsRow>
+        <SettingsRow label="Model">
+          <TextInput value={llmModel} onChange={setLlmModel} placeholder="qwen2.5:14b" monospace />
+        </SettingsRow>
+        <SettingsRow label="Test connection">
+          <TestButton onClick={testLlm} state={llmPing} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection id="voice-tts" title="Text-to-speech (optional)" description="Self-hosted TTS endpoint that returns audio bytes. Leave blank for visual-only feedback.">
+        <SettingsRow label="Endpoint URL">
+          <TextInput value={ttsUrl} onChange={setTtsUrl} placeholder="http://mac-mini.tail-xxxxx.ts.net:5005/speak" monospace />
+        </SettingsRow>
+        <SettingsRow label="Voice" description="Server-specific voice id (e.g. sv_SE-nst-medium for Piper). Leave blank for default.">
+          <TextInput value={ttsVoice} onChange={setTtsVoice} placeholder="" monospace />
+        </SettingsRow>
+        <SettingsRow label="Test connection">
+          <TestButton onClick={testTts} state={ttsPing} />
+        </SettingsRow>
+      </SettingsSection>
+    </>
+  );
+}
+
 // ─── Nav sections ──────────────────────────────────────────────────────────
 
 const NAV_SECTIONS = [
@@ -620,6 +907,7 @@ const NAV_SECTIONS = [
   { id: "projects", label: "Projects" },
   { id: "editor", label: "Editor" },
   { id: "ai", label: "AI" },
+  ...(VOICE_ENABLED ? [{ id: "voice", label: "Voice agent" }] : []),
   { id: "updates", label: "Updates" },
 ];
 
@@ -1169,6 +1457,9 @@ export default function SettingsPane() {
             <AiTimeStatsSection bursts={aiTimeBursts} onClear={clearAiTimeStats} />
           </>
         );
+
+      case "voice":
+        return VOICE_ENABLED ? <VoiceAgentSection /> : null;
 
       case "updates":
         return <UpdatesSection />;

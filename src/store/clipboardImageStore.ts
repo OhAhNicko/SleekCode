@@ -20,6 +20,15 @@ export interface LastInsertion {
   timestamp: number;
 }
 
+export interface UploadError {
+  /** Display title (e.g. "Upload to Mac mini failed") */
+  title: string;
+  /** Underlying error detail */
+  detail: string;
+  /** Timestamp — used to dedupe rapid-fire errors */
+  timestamp: number;
+}
+
 interface ClipboardImageStore {
   images: ClipboardImage[];
   /** Clipboard sequence number from the last poll */
@@ -28,6 +37,8 @@ interface ClipboardImageStore {
   lastImageSeq: number;
   /** Last path insertion (for undo) — cleared after 5 seconds or after undo */
   lastInsertion: LastInsertion | null;
+  /** Last upload failure — drives a transient toast, cleared after ~6 seconds */
+  uploadError: UploadError | null;
   /** Pending image for a specific EzyComposer to pick up (set by TabBar/auto-paste, consumed by composer) */
   pendingComposerImage: { image: ClipboardImage; terminalId: string } | null;
   /** Terminal ID of the last focused EzyComposer (set by composer on focus) */
@@ -37,6 +48,7 @@ interface ClipboardImageStore {
   clearAll: () => void;
   setLastSeq: (seq: number) => void;
   setLastInsertion: (insertion: LastInsertion | null) => void;
+  setUploadError: (err: UploadError | null) => void;
   setPendingComposerImage: (pending: { image: ClipboardImage; terminalId: string } | null) => void;
   setActiveComposerTerminalId: (id: string | null) => void;
 }
@@ -49,6 +61,7 @@ export const useClipboardImageStore = create<ClipboardImageStore>((set) => ({
   lastSeq: 0,
   lastImageSeq: 0,
   lastInsertion: null,
+  uploadError: null,
   pendingComposerImage: null,
   activeComposerTerminalId: null,
   addImage: (image, seq) =>
@@ -64,6 +77,7 @@ export const useClipboardImageStore = create<ClipboardImageStore>((set) => ({
   clearAll: () => set({ images: [] }),
   setLastSeq: (seq) => set({ lastSeq: seq }),
   setLastInsertion: (insertion) => set({ lastInsertion: insertion }),
+  setUploadError: (err) => set({ uploadError: err }),
   setPendingComposerImage: (pending) => set({ pendingComposerImage: pending }),
   setActiveComposerTerminalId: (id) => set({ activeComposerTerminalId: id }),
 }));

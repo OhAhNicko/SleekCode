@@ -30,6 +30,7 @@ import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
 import { useFileDrop } from "./hooks/useFileDrop";
 import { useAiTimeTracker } from "./hooks/useAiTimeTracker";
 import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
+import UploadErrorToast from "./components/UploadErrorToast";
 import UndoCloseToast from "./components/UndoCloseToast";
 import UndoClearToast from "./components/UndoClearToast";
 import KeyboardShortcutsModal from "./components/KeyboardShortcutsModal";
@@ -40,6 +41,10 @@ import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
 import UpdateBanner from "./components/UpdateBanner";
 import ChangelogModal from "./components/ChangelogModal";
+import VoiceHud from "./components/VoiceHud";
+import VoiceController from "./components/VoiceController";
+import { matchesHotkey, matchesHotkeyRelease } from "./lib/voice/hotkey";
+import { VOICE_ENABLED } from "./lib/voice/feature-flag";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { getVersion } from "@tauri-apps/api/app";
 import { getActivePaneSearchOpener } from "./lib/pane-search-registry";
@@ -207,8 +212,8 @@ export default function App() {
         noDevServer,
         serverId: pendingDir.serverId,
       });
-      if (serverCommand && autoStartServerCommand && !pendingDir.serverId) {
-        spawnDevServer(tabId, pendingDir.name, pendingDir.dir, serverCommand);
+      if (serverCommand && autoStartServerCommand) {
+        spawnDevServer(tabId, pendingDir.name, pendingDir.dir, serverCommand, pendingDir.serverId);
       }
       setPendingDir(null);
     },
@@ -313,6 +318,17 @@ export default function App() {
       keywords: "git diff code review changes uncommitted",
       execute: () => window.dispatchEvent(new Event("ezydev:open-codereview")),
     });
+
+    // Voice agent: speak a command (only when enabled)
+    if (VOICE_ENABLED && useAppStore.getState().voiceEnabled) {
+      actions.push({
+        id: "action-voice-speak",
+        label: "Voice: speak a command…",
+        category: "action",
+        keywords: "voice agent speak microphone whisper say",
+        execute: () => window.dispatchEvent(new Event("ezydev:voice-toggle")),
+      });
+    }
 
     // File Viewer action (placeholder — files opened from sidebar go to viewer automatically)
     actions.push({
@@ -509,6 +525,24 @@ export default function App() {
       const { ctrlKey, shiftKey, altKey, key } = e;
       // Helper: prevent default AND stop propagation (capture phase blocks xterm)
       const consume = () => { e.preventDefault(); e.stopPropagation(); };
+
+      // Voice activation: hotkey behaviour depends on voiceActivationMode.
+      //   "toggle" — pressing the hotkey starts; pressing again stops.
+      //   "hold"   — keydown starts, keyup stops (push-to-talk).
+      const voiceState = useAppStore.getState();
+      if (VOICE_ENABLED && voiceState.voiceEnabled && matchesHotkey(e, voiceState.pttHotkey)) {
+        if (e.repeat) {
+          consume();
+          return;
+        }
+        consume();
+        if (voiceState.voiceActivationMode === "hold") {
+          window.dispatchEvent(new Event("ezydev:voice-start"));
+        } else {
+          window.dispatchEvent(new Event("ezydev:voice-toggle"));
+        }
+        return;
+      }
 
       // Esc → minimize topmost expanded/floating pane back into the grid.
       // Skip when no expanded/floating pane exists, or when a non-textarea/input
@@ -762,10 +796,30 @@ export default function App() {
       }
     };
 
+    // Push-to-talk release: stop recording when ANY part of the hotkey is
+    // released, but only while we're actually listening. Using the permissive
+    // matchesHotkeyRelease handles the user lifting keys one at a time.
+    // Only fires in "hold" mode; toggle mode handles start/stop on keydown.
+    const upHandler = (e: KeyboardEvent) => {
+      if (!VOICE_ENABLED) return;
+      const v = useAppStore.getState();
+      if (!v.voiceEnabled || v.voiceActivationMode !== "hold") return;
+      if (v.voiceHudState !== "listening") return;
+      if (matchesHotkeyRelease(e, v.pttHotkey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(new Event("ezydev:voice-stop"));
+      }
+    };
+
     // Use capture phase so global shortcuts fire BEFORE xterm's key handler
     // (xterm textarea intercepts keys in bubble phase and sends them to PTY)
     window.addEventListener("keydown", handler, true);
-    return () => window.removeEventListener("keydown", handler, true);
+    window.addEventListener("keyup", upHandler, true);
+    return () => {
+      window.removeEventListener("keydown", handler, true);
+      window.removeEventListener("keyup", upHandler, true);
+    };
   }, []);
 
   const handleOpenFile = useCallback((filePath: string, lineNumber?: number) => {
@@ -902,8 +956,11 @@ export default function App() {
         />
       )}
       <ImageInsertUndoToast />
+      <UploadErrorToast />
       <UndoCloseToast />
       <UndoClearToast />
+      {VOICE_ENABLED && <VoiceHud />}
+      {VOICE_ENABLED && <VoiceController />}
       <GlobalContextMenu />
       <DevServerTerminalHost />
       {!onboardingCompleted && (

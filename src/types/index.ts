@@ -39,6 +39,8 @@ export interface DevServer {
   port: number;
   status: "starting" | "running" | "stopped" | "error";
   errorMessage?: string;
+  /** When set, the dev server PTY is spawned via SSH against this RemoteServer. */
+  serverId?: string;
 }
 
 // Recursive pane layout tree

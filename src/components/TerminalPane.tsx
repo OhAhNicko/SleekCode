@@ -629,8 +629,6 @@ export default function TerminalPane({
       // Fall back to default unicode handling
     }
 
-    fitAddon.fit();
-
     // Defer PTY-ready signal until layout has settled. The first fit() can
     // race with CSS grid distribution during session restore — measuring
     // before panels have final sizes yields tiny cols (e.g. 5). Double-rAF
@@ -644,6 +642,22 @@ export default function TerminalPane({
     const MIN_READY_COLS = 20;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
+    // Wraps fitAddon.fit() with a min-cols guard. Layout transitions
+    // (panel drag, animation, browser-preview slide, splitter drag) can
+    // briefly yield tiny container widths. Applying fit at that moment
+    // resizes the PTY to e.g. cols=5, causing TUI apps (Claude CLI) to
+    // re-render at that width — those hard-wrapped lines get baked into
+    // the scrollback as permanent narrow text. We skip the fit when
+    // proposed cols would be too narrow; ResizeObserver / next timer
+    // tick re-evaluates once the layout settles.
+    function safeFit() {
+      const proposed = fitAddon.proposeDimensions();
+      if (proposed && proposed.cols < MIN_READY_COLS) return;
+      fitAddon.fit();
+    }
+
+    safeFit();
+
     function signalReady() {
       if (readySignalled || disposed) return;
 
@@ -656,7 +670,7 @@ export default function TerminalPane({
           if (disposed) return;
           try {
             if (el.clientWidth > 0 && el.clientHeight > 0) {
-              fitAddon.fit();
+              safeFit();
             }
           } catch { /* container may be detached */ }
           signalReady();
@@ -674,7 +688,7 @@ export default function TerminalPane({
       settleRaf2 = requestAnimationFrame(() => {
         try {
           if (!disposed && el.clientWidth > 0 && el.clientHeight > 0) {
-            fitAddon.fit();
+            safeFit();
           }
         } catch { /* container may be detached */ }
         signalReady();
@@ -684,7 +698,7 @@ export default function TerminalPane({
     const settleTimer = setTimeout(() => {
       try {
         if (!disposed && el.clientWidth > 0 && el.clientHeight > 0) {
-          fitAddon.fit();
+          safeFit();
         }
       } catch { /* container may be detached */ }
       signalReady();
@@ -708,7 +722,7 @@ export default function TerminalPane({
           // Force WebGL to rebuild glyph atlas with the correct font
           term.options.fontFamily = "Hack, monospace";
           term.options.fontSize = baseFontSize;
-          fitAddon.fit();
+          safeFit();
           if (wasAtBottom) {
             term.scrollToBottom();
           } else {
@@ -1780,6 +1794,10 @@ export default function TerminalPane({
         const buf = term.buffer.active;
         const wasAtBottom = buf.baseY - buf.viewportY <= 3;
         const savedViewport = buf.viewportY;
+        // Skip fit if proposed cols would be too narrow — same guard as
+        // doFit() / visibilitychange to prevent baking narrow output.
+        const proposed = fit.proposeDimensions();
+        if (proposed && proposed.cols < 20) return;
         fit.fit();
         if (wasAtBottom) {
           term.scrollToBottom();

@@ -44,7 +44,7 @@ export function useClipboardImagePaste({
     // If the clipboard has a tracked image, inserts its file path (the active
     // clipboard-image capture flow); otherwise pastes text via the system
     // clipboard.
-    const pasteFromClipboard = () => {
+    const pasteFromClipboard = async () => {
       // Activate this pane before pasting — paste implies the user intends to
       // direct input here, even if it wasn't the active pane.
       onFocus?.();
@@ -53,17 +53,22 @@ export function useClipboardImagePaste({
       const latestImage = store.images[0];
 
       if (latestImage && store.lastSeq === store.lastImageSeq) {
-        const filePath = resolveImagePath(latestImage.winPath);
-        const label = getImageLabel(latestImage.winPath);
-        write(filePath);
-        setPastedImage({ thumbnailUrl: latestImage.dataUri, filePath: label });
+        // resolveImagePath may upload to a remote SSH host; if it returns null
+        // the upload failed and a toast is already showing — fall through to
+        // the text-paste path so the user isn't stuck.
+        const filePath = await resolveImagePath(latestImage.winPath, "clipboard");
+        if (filePath) {
+          const label = getImageLabel(latestImage.winPath);
+          write(filePath);
+          setPastedImage({ thumbnailUrl: latestImage.dataUri, filePath: label });
 
-        store.setLastInsertion({
-          text: filePath,
-          terminalId,
-          timestamp: Date.now(),
-        });
-        return;
+          store.setLastInsertion({
+            text: filePath,
+            terminalId,
+            timestamp: Date.now(),
+          });
+          return;
+        }
       }
 
       navigator.clipboard.readText().then((text) => {
@@ -121,7 +126,7 @@ export function useClipboardImagePaste({
 
       e.preventDefault();
       e.stopPropagation();
-      pasteFromClipboard();
+      void pasteFromClipboard();
     };
 
     // Middle-click (scroll wheel) paste — mirrors Ctrl+V behavior.
@@ -132,7 +137,7 @@ export function useClipboardImagePaste({
       if (exited || processingRef.current) return;
       e.preventDefault();
       e.stopPropagation();
-      pasteFromClipboard();
+      void pasteFromClipboard();
     };
 
     // Browsers that fire `auxclick` for button 1 still trigger autoscroll

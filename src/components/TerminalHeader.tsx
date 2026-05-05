@@ -703,8 +703,8 @@ function SessionPicker({
                       >
                         {session.name}
                       </span>
-                      {/* Relative time for historical sessions */}
-                      {!session.isFromStore && session.modified && (
+                      {/* Relative time — last updated */}
+                      {session.modified && (
                         <span
                           style={{
                             fontSize: 10,

@@ -1,8 +1,47 @@
 import { useEffect, useRef, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import { getPtyWrite, registerTerminalDataListener, unregisterTerminalDataListener } from "../store/terminalSlice";
 import { injectPort } from "../lib/server-commands";
 import TerminalPane from "./TerminalPane";
+
+/**
+ * For remote (SSH) dev servers we open an `ssh -N -L <local>:localhost:<remote>`
+ * tunnel so the user can hit `http://localhost:<port>` on their machine without
+ * touching `--host`, Tailscale IPs, or remote firewall config. The lifecycle is
+ * managed below — start on port detection, stop on restart/exit/removal.
+ */
+async function startSshForward(
+  serverId: string,
+  remotePort: number,
+): Promise<{ handleId: number; localPort: number } | null> {
+  const server = useAppStore.getState().servers.find((s) => s.id === serverId);
+  if (!server) return null;
+  try {
+    const result = await invoke<{ handle_id: number; local_port: number }>(
+      "ssh_forward_port_start",
+      {
+        host: server.host,
+        username: server.username,
+        identityFile: server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null,
+        remotePort,
+        preferredLocalPort: remotePort,
+      },
+    );
+    return { handleId: result.handle_id, localPort: result.local_port };
+  } catch (e) {
+    console.error("[DevServer] ssh_forward_port_start failed:", e);
+    return null;
+  }
+}
+
+async function stopSshForward(handleId: number): Promise<void> {
+  try {
+    await invoke("ssh_forward_port_stop", { handleId });
+  } catch (e) {
+    console.error("[DevServer] ssh_forward_port_stop failed:", e);
+  }
+}
 
 // Regex to detect common dev server port patterns in terminal output
 const PORT_REGEX = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{2,5})/;
@@ -99,6 +138,8 @@ export default function DevServerTerminalHost() {
   const lockRetryRef = useRef<Map<string, number>>(new Map());
   // Track active stopped-detection monitors (serverId → terminalId)
   const stoppedMonitorRef = useRef<Map<string, string>>(new Map());
+  // Active SSH port-forward tunnels keyed by dev-server id
+  const tunnelHandlesRef = useRef<Map<string, number>>(new Map());
 
   const handlePtyReady = useCallback(
     (serverId: string, terminalId: string, command: string) => {
@@ -117,6 +158,12 @@ export default function DevServerTerminalHost() {
   // Handle PTY exit — set status to error if no port was detected
   const handlePtyExit = useCallback(
     (serverId: string, exitCode: number) => {
+      // Process is gone — tear down its SSH tunnel if any
+      const tunnel = tunnelHandlesRef.current.get(serverId);
+      if (tunnel !== undefined) {
+        tunnelHandlesRef.current.delete(serverId);
+        stopSshForward(tunnel);
+      }
       if (resolvedRef.current.has(serverId)) {
         // Port was already detected — mark as stopped (server was running, then exited)
         updateDevServerStatus(serverId, "stopped");
@@ -144,6 +191,12 @@ export default function DevServerTerminalHost() {
       resolvedRef.current.delete(serverId);
       portDetectedRef.current.delete(serverId);
       stoppedMonitorRef.current.delete(serverId);
+      // Tear down any active SSH tunnel; a fresh one will spawn on next port detect
+      const tunnel = tunnelHandlesRef.current.get(serverId);
+      if (tunnel !== undefined) {
+        tunnelHandlesRef.current.delete(serverId);
+        stopSshForward(tunnel);
+      }
       updateDevServerStatus(serverId, "starting");
       updateDevServerPort(serverId, 0);
       updateDevServerError(serverId, undefined);
@@ -190,6 +243,12 @@ export default function DevServerTerminalHost() {
               lockRetryRef.current.set(ds.id, attempts + 1);
               resolvedRef.current.delete(ds.id);
               unregisterTerminalDataListener(ds.terminalId);
+              // Drop any tunnel from a previous (failed) attempt
+              const tunnel = tunnelHandlesRef.current.get(ds.id);
+              if (tunnel !== undefined) {
+                tunnelHandlesRef.current.delete(ds.id);
+                stopSshForward(tunnel);
+              }
 
               const write = getPtyWrite(ds.terminalId);
               if (!write) return;
@@ -254,15 +313,42 @@ export default function DevServerTerminalHost() {
               lockRetryRef.current.delete(ds.id);
               updateDevServerStatus(ds.id, "running");
               updateDevServerError(ds.id, undefined);
-              // Update port in store
-              const store = useAppStore.getState();
-              const current = store.devServers.find((s) => s.id === ds.id);
-              if (current && current.port !== port) {
-                useAppStore.setState({
-                  devServers: store.devServers.map((srv) =>
-                    srv.id === ds.id ? { ...srv, port } : srv
-                  ),
+
+              // For remote dev servers, start an SSH tunnel and surface the
+              // *local* port to the UI so opening the browser just works.
+              const setPort = (p: number) => {
+                const store = useAppStore.getState();
+                const current = store.devServers.find((s) => s.id === ds.id);
+                if (current && current.port !== p) {
+                  useAppStore.setState({
+                    devServers: store.devServers.map((srv) =>
+                      srv.id === ds.id ? { ...srv, port: p } : srv
+                    ),
+                  });
+                }
+              };
+
+              if (ds.serverId) {
+                setPort(port); // optimistic; replaced once tunnel is up
+                startSshForward(ds.serverId, port).then((res) => {
+                  if (!res) return;
+                  // If the dev server was stopped/removed while the tunnel was
+                  // starting, kill it right away instead of orphaning it.
+                  const cur = useAppStore.getState().devServers.find((s) => s.id === ds.id);
+                  if (!cur || cur.status === "stopped" || cur.status === "error") {
+                    stopSshForward(res.handleId);
+                    return;
+                  }
+                  // Drop any older tunnel for this dev server (race-safe)
+                  const prev = tunnelHandlesRef.current.get(ds.id);
+                  if (prev !== undefined && prev !== res.handleId) {
+                    stopSshForward(prev);
+                  }
+                  tunnelHandlesRef.current.set(ds.id, res.handleId);
+                  setPort(res.localPort);
                 });
+              } else {
+                setPort(port);
               }
               // After grace period, replace with a lightweight stopped-detection listener
               const timer = setTimeout(() => {
@@ -344,6 +430,13 @@ export default function DevServerTerminalHost() {
       if (!currentIds.has(serverId)) {
         unregisterTerminalDataListener(terminalId);
         stoppedMonitorRef.current.delete(serverId);
+      }
+    }
+    // Tear down SSH tunnels for removed servers
+    for (const [serverId, handle] of tunnelHandlesRef.current.entries()) {
+      if (!currentIds.has(serverId)) {
+        tunnelHandlesRef.current.delete(serverId);
+        stopSshForward(handle);
       }
     }
     // Re-enable detection for servers that were restarted
@@ -493,6 +586,11 @@ export default function DevServerTerminalHost() {
                   onClick={() => {
                     const write = getPtyWrite(expandedServer.terminalId);
                     if (write) write("\x03");
+                    const tunnel = tunnelHandlesRef.current.get(expandedServer.id);
+                    if (tunnel !== undefined) {
+                      tunnelHandlesRef.current.delete(expandedServer.id);
+                      stopSshForward(tunnel);
+                    }
                     updateDevServerStatus(expandedServer.id, "stopped");
                   }}
                   onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "rgba(220,60,60,0.15)"; }}
@@ -545,6 +643,7 @@ export default function DevServerTerminalHost() {
                 terminalId={ds.terminalId}
                 terminalType="devserver"
                 workingDir={ds.workingDir}
+                serverId={ds.serverId}
                 isActive={ds.id === expandedDevServerId}
                 paneCount={99}
                 hideChrome

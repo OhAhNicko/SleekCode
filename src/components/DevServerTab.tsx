@@ -417,6 +417,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
 
   const [selectedPath, setSelectedPath] = useState("");
   const [selectedName, setSelectedName] = useState("");
+  const [selectedServerId, setSelectedServerId] = useState<string | undefined>(undefined);
   const [command, setCommand] = useState("");
   const [showCmdDropdown, setShowCmdDropdown] = useState(false);
   const [showProjectDropdown, setShowProjectDropdown] = useState(false);
@@ -450,6 +451,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
         const name = selected.split(/[\\/]/).pop() || "Project";
         setSelectedPath(selected);
         setSelectedName(name);
+        setSelectedServerId(undefined);
         setShowProjectDropdown(false);
       }
     } catch {
@@ -459,10 +461,10 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
 
   const handleStart = useCallback(() => {
     if (!selectedPath || !command.trim()) return;
-    // Skip if a dev server already exists for the same project directory
+    // Skip if a dev server already exists for the same project + server
     const norm = (p: string) => p.replace(/\\/g, "/");
     const existing = useAppStore.getState().devServers.find(
-      (ds) => norm(ds.workingDir) === norm(selectedPath)
+      (ds) => norm(ds.workingDir) === norm(selectedPath) && ds.serverId === selectedServerId
     );
     if (existing) { onClose(); return; }
 
@@ -471,7 +473,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
       addCustomServerCommand(trimmed);
     }
     const terminalId = generateTerminalId();
-    addTerminal(terminalId, "devserver", selectedPath);
+    addTerminal(terminalId, "devserver", selectedPath, selectedServerId);
     addDevServer({
       id: `ds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       terminalId,
@@ -481,9 +483,10 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
       workingDir: selectedPath,
       port: 0,
       status: "starting",
+      serverId: selectedServerId,
     });
     onClose();
-  }, [selectedPath, selectedName, command, addTerminal, addDevServer, addCustomServerCommand, onClose]);
+  }, [selectedPath, selectedName, selectedServerId, command, addTerminal, addDevServer, addCustomServerCommand, onClose]);
 
   const inputStyle: React.CSSProperties = {
     width: "100%",
@@ -590,6 +593,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
                 onClick={() => {
                   setSelectedPath(project.path);
                   setSelectedName(project.name);
+                  setSelectedServerId(project.serverId);
                   if (project.serverCommand && !command) {
                     setCommand(project.serverCommand);
                   }

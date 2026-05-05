@@ -54,7 +54,10 @@ export function useClipboardWatcher() {
                 cs.setPendingComposerImage({ image: newImg, terminalId: activeId });
               }
             } else {
-              insertImagePath(result.image.path);
+              // insertImagePath is async (may upload to remote SSH host); the
+              // promise resolves itself even on failure (toast is surfaced
+              // via the clipboard image store), so just kick it off.
+              void insertImagePath(result.image.path);
             }
           }
         }

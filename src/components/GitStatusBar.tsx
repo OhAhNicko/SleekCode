@@ -5,6 +5,7 @@ import { useAppStore } from "../store";
 
 interface Props {
   workingDir: string;
+  compact?: boolean;
 }
 
 interface GitPullResult {
@@ -14,7 +15,7 @@ interface GitPullResult {
   conflicts: string[];
 }
 
-export default function GitStatusBar({ workingDir }: Props) {
+export default function GitStatusBar({ workingDir, compact = false }: Props) {
   const [isGitRepo, setIsGitRepo] = useState(false);
   const [branches, setBranches] = useState<GitBranchInfo | null>(null);
   const [diffStats, setDiffStats] = useState<GitDiffStats | null>(null);
@@ -240,12 +241,14 @@ export default function GitStatusBar({ workingDir }: Props) {
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 8,
+        gap: compact ? 4 : 8,
+        flexWrap: compact ? "wrap" : "nowrap",
+        rowGap: compact ? 4 : undefined,
         position: "relative",
-        fontSize: 12,
+        fontSize: compact ? 11 : 12,
         fontVariantNumeric: "tabular-nums",
-        marginLeft: 6,
-        marginRight: 6,
+        marginLeft: compact ? 0 : 6,
+        marginRight: compact ? 0 : 6,
         color: "var(--ezy-text-muted)",
       }}
     >
@@ -281,7 +284,7 @@ export default function GitStatusBar({ workingDir }: Props) {
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
-            maxWidth: 140,
+            maxWidth: compact ? 48 : 140,
             fontStyle: isDetached ? "italic" : undefined,
           }}
         >
@@ -289,8 +292,10 @@ export default function GitStatusBar({ workingDir }: Props) {
         </span>
       </div>
 
-      {/* Divider between branch and file count */}
-      <div style={{ width: 1, height: 14, backgroundColor: "var(--ezy-border)", opacity: 0.5, flexShrink: 0 }} />
+      {/* Divider between branch and file count — hidden in compact mode (rows wrap instead) */}
+      {!compact && (
+        <div style={{ width: 1, height: 14, backgroundColor: "var(--ezy-border)", opacity: 0.5, flexShrink: 0 }} />
+      )}
 
       {/* View changes — file count + bullet + diff stats as one clickable unit (Warp-style) */}
       <div

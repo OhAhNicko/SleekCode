@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import { getPtyWrite, getTerminalFocus } from "../store/terminalSlice";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
@@ -17,19 +18,78 @@ export function getImageLabel(winPath: string): string {
 }
 
 /**
- * Resolve a Windows image path to the correct format for the current terminal backend.
+ * Build a stable POSIX remote path for a Windows file under /tmp/ezydev/.
+ * Uses the basename plus a millisecond timestamp to avoid collisions across
+ * rapid pastes. Caller decides the prefix (e.g. "clipboard" vs "drop").
  */
-export function resolveImagePath(winPath: string): string {
-  const backend = useAppStore.getState().terminalBackend ?? "wsl";
+export function buildRemotePath(localPath: string, prefix: string): string {
+  const basename = localPath.split(/[\\/]/).pop() || `${prefix}.bin`;
+  const ts = Date.now();
+  return `/tmp/ezydev/${prefix}-${ts}-${basename}`;
+}
+
+/**
+ * Resolve a local Windows file path to whatever path string should actually
+ * be inserted into the active terminal.
+ *
+ * - If the active terminal is bound to a remote SSH server, the local file
+ *   is uploaded to /tmp/ezydev/<prefix>-<ts>-<basename> on the remote and
+ *   the remote path is returned.
+ * - Otherwise, the path is converted to the right local format (Windows or
+ *   WSL) for the configured terminal backend.
+ *
+ * Returns null if the upload was attempted but failed — the caller must NOT
+ * insert anything in that case (a toast is surfaced via the clipboard image
+ * store).
+ */
+export async function resolveImagePath(
+  winPath: string,
+  prefix: "clipboard" | "drop" = "clipboard"
+): Promise<string | null> {
+  const state = useAppStore.getState();
+  const activeTerminal = Object.values(state.terminals).find((t) => t.isActive);
+
+  if (activeTerminal?.serverId) {
+    const server = state.servers.find((s) => s.id === activeTerminal.serverId);
+    if (!server) {
+      useClipboardImageStore.getState().setUploadError({
+        title: "Upload failed",
+        detail: `Remote server ${activeTerminal.serverId} not found`,
+        timestamp: Date.now(),
+      });
+      return null;
+    }
+
+    const remotePath = buildRemotePath(winPath, prefix);
+    try {
+      const uploaded = await invoke<string>("ssh_upload_file_bytes", {
+        host: server.host,
+        username: server.username,
+        localPath: winPath,
+        remotePath,
+        identityFile: server.sshKeyPath,
+      });
+      return uploaded;
+    } catch (e) {
+      useClipboardImageStore.getState().setUploadError({
+        title: `Upload to ${server.name} failed`,
+        detail: String(e),
+        timestamp: Date.now(),
+      });
+      return null;
+    }
+  }
+
+  const backend = state.terminalBackend ?? "wsl";
   return backend === "windows" ? winPath : toWslPath(winPath);
 }
 
 /**
  * Insert a clipboard image file path into the active terminal.
  * Records the insertion for undo support.
- * Returns the inserted text, or null if no active terminal.
+ * Returns the inserted text, or null if no active terminal or upload failed.
  */
-export function insertImagePath(winPath: string): string | null {
+export async function insertImagePath(winPath: string): Promise<string | null> {
   const terminals = useAppStore.getState().terminals;
   const activeTerminal = Object.values(terminals).find((t) => t.isActive);
   if (!activeTerminal) return null;
@@ -37,7 +97,9 @@ export function insertImagePath(winPath: string): string | null {
   const writeFn = getPtyWrite(activeTerminal.id);
   if (!writeFn) return null;
 
-  const filePath = resolveImagePath(winPath);
+  const filePath = await resolveImagePath(winPath, "clipboard");
+  if (!filePath) return null;
+
   // Append a trailing space so the user can immediately start typing
   // without the next character colliding with the path.
   const insertion = filePath + " ";

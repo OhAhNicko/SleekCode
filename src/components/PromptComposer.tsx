@@ -7,7 +7,6 @@ import { useClipboardImageStore, type ClipboardImage } from "../store/clipboardI
 import { useBrowserConsoleStore } from "../store/browserConsoleStore";
 import { getImageLabel, resolveImagePath } from "../lib/clipboard-insert";
 import { registerImageMask } from "../lib/image-mask";
-import { toWslPath } from "../lib/terminal-config";
 import { SLASH_COMMANDS, SLASH_ARG_HINTS, loadUserSkills, type SlashCommand } from "../lib/slash-commands";
 import type { TerminalType } from "../types";
 import { HiMiniArrowLongRight, HiMiniArrowLongLeft } from "react-icons/hi2";
@@ -1166,43 +1165,63 @@ export default function PromptComposer({
     }, 0);
   }
 
-  function submit() {
+  async function submit() {
     const ta = textareaRef.current;
     if (!ta) return;
     let text = ta.value.trim();
     if (!text) return;
     // Resolve attached images: replace [Img N] labels with actual file paths
-    // so CLIs (Claude, Codex, Gemini) can read the image files
+    // so CLIs (Claude, Codex, Gemini) can read the image files. For remote
+    // SSH terminals, resolveImagePath uploads the bytes and returns a remote
+    // /tmp/ezydev/... path; null means upload failed and the image is dropped
+    // from the prompt (an error toast is shown by resolveImagePath).
     if (localImages.length > 0) {
-      const backend = useAppStore.getState().terminalBackend ?? "wsl";
-      const resolvePath = (winPath: string) =>
-        backend === "windows" ? winPath : toWslPath(winPath);
       const storeImages = useClipboardImageStore.getState().images;
       const imageNumberFor = (winPath: string) => {
         const idx = storeImages.findIndex((im) => im.winPath === winPath);
         return idx >= 0 ? idx + 1 : storeImages.length + 1;
       };
 
+      const resolvedEntries = await Promise.all(
+        localImages.map(async (img) => ({
+          img,
+          filePath: await resolveImagePath(img.winPath, "clipboard"),
+        }))
+      );
+      const resolvedImages = resolvedEntries.filter(
+        (e): e is { img: ClipboardImage; filePath: string } => e.filePath !== null
+      );
+
       // Replace any [Img N] labels already in text (from autocomplete) with file paths
-      for (const img of localImages) {
+      for (const { img, filePath } of resolvedImages) {
         const label = getImageLabel(img.winPath);
         if (text.includes(label)) {
-          const filePath = resolvePath(img.winPath);
           text = text.split(label).join(filePath);
           registerImageMask(terminalId, filePath, imageNumberFor(img.winPath));
         }
       }
 
       // Append file paths for attached images not yet referenced in text
-      const unreferenced = localImages.filter((img) => {
-        const filePath = resolvePath(img.winPath);
-        return !text.includes(filePath);
-      });
+      const unreferenced = resolvedImages.filter(
+        ({ filePath }) => !text.includes(filePath)
+      );
       if (unreferenced.length > 0) {
-        text = text + " " + unreferenced.map((img) => resolvePath(img.winPath)).join(" ");
-        for (const img of unreferenced) {
-          registerImageMask(terminalId, resolvePath(img.winPath), imageNumberFor(img.winPath));
+        text =
+          text + " " + unreferenced.map(({ filePath }) => filePath).join(" ");
+        for (const { img, filePath } of unreferenced) {
+          registerImageMask(terminalId, filePath, imageNumberFor(img.winPath));
         }
+      }
+
+      // Strip any [Img N] labels left over from images that failed to upload
+      // — leaving raw labels would send "[Img 2]" to the CLI as if it were the
+      // user's text, which is just noise.
+      const failedImages = resolvedEntries
+        .filter((e) => e.filePath === null)
+        .map((e) => e.img);
+      for (const img of failedImages) {
+        const label = getImageLabel(img.winPath);
+        text = text.split(label).join("").replace(/\s{2,}/g, " ").trim();
       }
     }
     // Expand console snippet placeholder into formatted text
@@ -2307,7 +2326,9 @@ export default function PromptComposer({
         {
           label: "Copy filepath",
           action: () => {
-            navigator.clipboard.writeText(resolveImagePath(ctxImg.winPath)).catch(() => {});
+            void resolveImagePath(ctxImg.winPath, "clipboard").then((p) => {
+              if (p) navigator.clipboard.writeText(p).catch(() => {});
+            });
             setImgCtxMenu(null);
           },
         },

@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useBrowserConsoleStore, type ConsoleEntry } from "../store/browserConsoleStore";
-import { FaCheck, FaChevronLeft, FaChevronRight, FaGlobe, FaExternalLinkAlt, FaCrosshairs, FaTerminal, FaDesktop, FaTrash, FaLock, FaLockOpen, FaBug } from "react-icons/fa";
+import { FaCheck, FaChevronLeft, FaChevronRight, FaChevronDown, FaExternalLinkAlt, FaCrosshairs, FaTerminal, FaDesktop, FaTrash, FaLock, FaLockOpen, FaBug } from "react-icons/fa";
 import { FaArrowsRotate, FaXmark } from "react-icons/fa6";
 import { BiRefresh, BiTimer } from "react-icons/bi";
 import PaneExpandButton from "./PaneExpandButton";
@@ -353,26 +354,26 @@ export default function BrowserPreview({
     iframeRef.current?.contentWindow?.postMessage({ type: msg }, "*");
   }, []);
 
-  /* ---- Fetch proxy port on mount (with retry) ---- */
+  /* ---- Fetch proxy port on mount (with retry) ----                  */
+  /*  The preview proxy lives in the Tauri Rust backend so it works in  */
+  /*  both `npm run tauri:dev` and a packaged production build.         */
 
   useEffect(() => {
     let cancelled = false;
-    const fetchPort = (retries = 3) => {
-      fetch("/__ezy_proxy__/port")
-        .then((r) => r.json())
-        .then((d: { port: number }) => {
-          if (cancelled) return;
-          if (d.port > 0) {
-            setProxyPort(d.port);
-          } else if (retries > 0) {
-            setTimeout(() => fetchPort(retries - 1), 500);
-          }
-        })
-        .catch(() => {
-          if (!cancelled && retries > 0) {
-            setTimeout(() => fetchPort(retries - 1), 500);
-          }
-        });
+    const fetchPort = async (retries = 3) => {
+      try {
+        const port = await invoke<number>("preview_proxy_port");
+        if (cancelled) return;
+        if (port > 0) {
+          setProxyPort(port);
+        } else if (retries > 0) {
+          setTimeout(() => fetchPort(retries - 1), 500);
+        }
+      } catch {
+        if (!cancelled && retries > 0) {
+          setTimeout(() => fetchPort(retries - 1), 500);
+        }
+      }
     };
     fetchPort();
     return () => {
@@ -383,12 +384,15 @@ export default function BrowserPreview({
   /* ---- Configure proxy target when URL changes ---- */
 
   useEffect(() => {
-    if (!proxyPort) return;
+    if (!proxyPort) {
+      setProxyActive(false);
+      return;
+    }
     try {
       const parsed = new URL(url);
-      fetch(
-        `/__ezy_proxy__/set-target?url=${encodeURIComponent(parsed.origin)}`,
-      ).then(() => setProxyActive(true));
+      invoke("preview_proxy_set_target", { url: parsed.origin })
+        .then(() => setProxyActive(true))
+        .catch(() => setProxyActive(false));
     } catch {
       setProxyActive(false);
     }
@@ -570,6 +574,27 @@ export default function BrowserPreview({
 
   const vpDims = getViewportDims();
 
+  /* ---- Derived: hostname & first-letter badge ---- */
+
+  const hostInitial = (() => {
+    try {
+      const h = new URL(url).hostname.replace(/^www\./, "");
+      const letter = h.match(/[A-Za-z0-9]/)?.[0];
+      return (letter ?? "?").toUpperCase();
+    } catch {
+      return "?";
+    }
+  })();
+
+  const isSecure = url.toLowerCase().startsWith("https://");
+
+  const viewportLabel = (() => {
+    if (viewportMode === "responsive") return "Responsive";
+    if (viewportMode === "custom") return `${customWidth}`;
+    const preset = VIEWPORT_PRESETS.find((p) => p.mode === viewportMode);
+    return preset?.width ? `${preset.width}` : preset?.label ?? "—";
+  })();
+
   /* ---- Devtools context actions ---- */
 
   const clearActive = useCallback(() => {
@@ -613,44 +638,166 @@ export default function BrowserPreview({
       className="flex flex-col h-full w-full"
       style={{ backgroundColor: "var(--ezy-bg)" }}
     >
+      {/* ---- Title Row (centered "Browser" pill + right action group) ---- */}
+      <div
+        className="flex items-center select-none"
+        style={{
+          height: 32,
+          backgroundColor: "var(--ezy-surface)",
+          borderBottom: "1px solid var(--ezy-border-subtle)",
+          padding: "0 8px",
+          position: "relative",
+        }}
+      >
+        {/* Centered title pill */}
+        <div
+          className="flex items-center gap-1.5"
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: "50%",
+            transform: "translate(-50%, -50%)",
+            padding: "3px 14px",
+            borderRadius: 999,
+            backgroundColor: "var(--ezy-bg)",
+            border: "1px solid var(--ezy-border)",
+            fontSize: 12,
+            fontWeight: 500,
+            color: "var(--ezy-text-secondary)",
+            pointerEvents: "none",
+          }}
+        >
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 14,
+              height: 14,
+              borderRadius: "50%",
+              border: "1.5px solid var(--ezy-accent)",
+              flexShrink: 0,
+            }}
+          >
+            <span
+              style={{
+                width: 4,
+                height: 4,
+                borderRadius: "50%",
+                backgroundColor: "var(--ezy-accent)",
+              }}
+            />
+          </span>
+          Browser
+        </div>
+
+        {/* Spacer to push right group */}
+        <div className="flex-1" />
+
+        {/* Right action group */}
+        <div className="flex items-center gap-1">
+          <NavButton
+            title={devtoolsTab !== null ? "Hide DevTools" : "Show DevTools"}
+            onClick={toggleDevtools}
+            active={devtoolsTab !== null}
+          >
+            <FaTerminal size={13} color="currentColor" />
+          </NavButton>
+
+          <NavButton
+            title={inspectMode ? "Stop Inspecting" : "Inspect Element"}
+            onClick={toggleInspect}
+            active={inspectMode}
+          >
+            <FaCrosshairs size={13} color="currentColor" />
+          </NavButton>
+
+          <NavButton
+            title={autoReload ? "Stop Auto-reload" : "Auto-reload every 2s"}
+            onClick={() => setAutoReload((v) => !v)}
+            active={autoReload}
+          >
+            <BiTimer size={14} color="currentColor" />
+          </NavButton>
+
+          <NavButton
+            title="Open in Default Browser"
+            onClick={() => openUrl(url).catch(() => {})}
+          >
+            <FaExternalLinkAlt size={12} color="currentColor" />
+          </NavButton>
+
+          <PaneExpandButton className="p-1 rounded transition-colors hover:bg-[var(--ezy-border)]" />
+
+          <NavButton
+            title="Close Preview"
+            onClick={onClose}
+            hoverColor="var(--ezy-red)"
+          >
+            <FaXmark size={12} color="currentColor" />
+          </NavButton>
+        </div>
+      </div>
+
       {/* ---- URL Bar ---- */}
       <div
         className="flex items-center gap-1.5 select-none"
         style={{
-          height: 36,
+          height: 32,
           backgroundColor: "var(--ezy-surface)",
           borderBottom: "1px solid var(--ezy-border)",
           padding: "0 8px",
         }}
       >
         <NavButton title="Back" disabled={!canGoBack} onClick={goBack}>
-          <FaChevronLeft size={14} color="currentColor" />
+          <FaChevronLeft size={12} color="currentColor" />
         </NavButton>
 
         <NavButton title="Forward" disabled={!canGoForward} onClick={goForward}>
-          <FaChevronRight size={14} color="currentColor" />
+          <FaChevronRight size={12} color="currentColor" />
         </NavButton>
 
-        <NavButton title="Refresh" onClick={refresh}>
-          <BiRefresh size={14} color="currentColor" />
-        </NavButton>
-
-        <NavButton title="Hard Reload (clear storage)" onClick={hardReload}>
-          <FaArrowsRotate size={14} color="currentColor" />
-        </NavButton>
-
-        {/* URL input */}
+        {/* URL input pill (security badge + input + inline refresh) */}
         <div
           className="flex-1 flex items-center"
           style={{
-            height: 24,
+            height: 22,
             backgroundColor: "var(--ezy-bg)",
-            borderRadius: 4,
+            borderRadius: 6,
             border: "1px solid var(--ezy-border)",
-            padding: "0 8px",
+            padding: "0 4px 0 0",
           }}
         >
-          <FaGlobe size={12} color="var(--ezy-text-muted)" style={{ flexShrink: 0, marginRight: 6 }} />
+          {/* Site initial badge — green when proxy is forwarding (active session),
+              dim when not yet connected. Color reflects connection health, not
+              certificate validity. */}
+          <span
+            title={
+              proxyActive
+                ? `${isSecure ? "Secure" : "Not secure"} — proxy active`
+                : "Proxy idle"
+            }
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 22,
+              height: 20,
+              margin: "0 6px 0 1px",
+              borderRadius: 4,
+              backgroundColor: proxyActive
+                ? "var(--ezy-accent-dim)"
+                : "var(--ezy-surface-raised)",
+              color: proxyActive ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
+              fontSize: 11,
+              fontWeight: 700,
+              flexShrink: 0,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {hostInitial}
+          </span>
+
           <input
             type="text"
             value={inputUrl}
@@ -662,62 +809,81 @@ export default function BrowserPreview({
               color: "var(--ezy-text)",
               border: "none",
               fontFamily: "inherit",
+              minWidth: 0,
             }}
             spellCheck={false}
           />
+
+          {/* Inline refresh */}
+          <div
+            role="button"
+            tabIndex={0}
+            title="Refresh"
+            onClick={refresh}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") refresh();
+            }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 20,
+              height: 20,
+              borderRadius: 4,
+              cursor: "pointer",
+              color: "var(--ezy-text-muted)",
+              flexShrink: 0,
+              outline: "none",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "var(--ezy-border)";
+              e.currentTarget.style.color = "var(--ezy-text)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+              e.currentTarget.style.color = "var(--ezy-text-muted)";
+            }}
+          >
+            <BiRefresh size={14} color="currentColor" />
+          </div>
         </div>
 
-        {/* Open in default browser */}
-        <NavButton
-          title="Open in Default Browser"
-          onClick={() => openUrl(url).catch(() => {})}
-        >
-          <FaExternalLinkAlt size={14} color="currentColor" />
+        {/* Hard reload */}
+        <NavButton title="Hard Reload (clear storage)" onClick={hardReload}>
+          <FaArrowsRotate size={12} color="currentColor" />
         </NavButton>
 
-        {/* Inspect element */}
-        <NavButton
-          title={inspectMode ? "Stop Inspecting" : "Inspect Element"}
-          onClick={toggleInspect}
-          active={inspectMode}
-        >
-          <FaCrosshairs size={14} color="currentColor" />
-        </NavButton>
-
-        {/* DevTools toggle */}
-        <NavButton
-          title={devtoolsTab !== null ? "Hide DevTools" : "Show DevTools"}
-          onClick={toggleDevtools}
-          active={devtoolsTab !== null}
-        >
-          <FaTerminal size={14} color="currentColor" />
-        </NavButton>
-
-        {/* Viewport bar toggle */}
-        <NavButton
-          title={showViewportBar ? "Hide Viewport Bar" : "Show Viewport Bar"}
+        {/* Viewport selector — toggles the preset bar below */}
+        <div
+          role="button"
+          tabIndex={0}
+          title={showViewportBar ? "Hide viewport options" : "Show viewport options"}
           onClick={() => setShowViewportBar((v) => !v)}
-          active={showViewportBar}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") setShowViewportBar((v) => !v);
+          }}
+          className="flex items-center gap-1"
+          style={{
+            height: 22,
+            padding: "0 6px 0 8px",
+            borderRadius: 6,
+            cursor: "pointer",
+            backgroundColor: showViewportBar
+              ? "var(--ezy-accent-dim)"
+              : "var(--ezy-surface-raised)",
+            color: showViewportBar ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
+            fontSize: 11,
+            fontWeight: 500,
+            flexShrink: 0,
+            outline: "none",
+            fontVariantNumeric: "tabular-nums",
+            transition: "background-color 0.15s, color 0.15s",
+          }}
         >
-          <FaDesktop size={14} color="currentColor" />
-        </NavButton>
-
-        {/* Auto-reload toggle */}
-        <NavButton
-          title={autoReload ? "Stop Auto-reload" : "Auto-reload every 2s"}
-          onClick={() => setAutoReload((v) => !v)}
-          active={autoReload}
-        >
-          <BiTimer size={14} color="currentColor" />
-        </NavButton>
-
-        {/* Expand */}
-        <PaneExpandButton className="p-1.5 rounded transition-colors hover:bg-[var(--ezy-border)]" />
-
-        {/* Close */}
-        <NavButton title="Close Preview" onClick={onClose} hoverColor="var(--ezy-red)">
-          <FaXmark size={12} color="currentColor" />
-        </NavButton>
+          <FaDesktop size={11} color="currentColor" style={{ marginRight: 2 }} />
+          <span>{viewportLabel}</span>
+          <FaChevronDown size={9} color="currentColor" style={{ marginLeft: 1 }} />
+        </div>
       </div>
 
       {/* ---- Viewport Toolbar ---- */}

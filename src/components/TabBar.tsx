@@ -11,6 +11,8 @@ import type { RemoteServer, TerminalType, TerminalBackend } from "../types";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import CreateProjectModal from "./CreateProjectModal";
 import ClipboardImageStrip from "./ClipboardImageStrip";
+import VoiceMicButton from "./VoiceMicButton";
+import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 import GitStatusBar from "./GitStatusBar";
 import { FaFolder, FaChevronDown, FaCheck } from "react-icons/fa";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
@@ -181,8 +183,8 @@ export default function TabBar() {
         addTerminals(batch);
         const tabId = addTabWithLayout(project.name, project.path, layout, project.serverId);
         addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate, serverId: project.serverId });
-        if (project.serverCommand && autoStartServerCommand && !project.noDevServer && !project.serverId) {
-          spawnDevServer(tabId, project.name, project.path, project.serverCommand);
+        if (project.serverCommand && autoStartServerCommand && !project.noDevServer) {
+          spawnDevServer(tabId, project.name, project.path, project.serverCommand, project.serverId);
         }
       } else if (project.lastTemplate) {
         // Fallback to template-based rebuild
@@ -198,8 +200,8 @@ export default function TabBar() {
         addTerminals(batch);
         const tabId = addTabWithLayout(project.name, project.path, typedLayout, project.serverId);
         addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate, serverId: project.serverId });
-        if (project.serverCommand && autoStartServerCommand && !project.noDevServer && !project.serverId) {
-          spawnDevServer(tabId, project.name, project.path, project.serverCommand);
+        if (project.serverCommand && autoStartServerCommand && !project.noDevServer) {
+          spawnDevServer(tabId, project.name, project.path, project.serverCommand, project.serverId);
         }
       }
     },
@@ -1353,6 +1355,9 @@ export default function TabBar() {
         })() && (
           <GitStatusBar workingDir={tabs.find((t) => t.id === activeTabId)!.workingDir!} />
         )}
+
+        {/* Voice agent mic — sits to the left of the clipboard image strip */}
+        {VOICE_ENABLED && <VoiceMicButton />}
 
         {/* Clipboard image thumbnails */}
         <ClipboardImageStrip />

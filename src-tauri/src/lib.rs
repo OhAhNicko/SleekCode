@@ -1,9 +1,30 @@
+mod preview_proxy;
 mod pty;
 
-use std::process::Command;
+use std::process::{Child, Command};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Manager, State};
+
+/// Registry of active `ssh -N -L` port-forward processes, one per remote dev
+/// server. The frontend starts a forward when it detects a port and stops it
+/// when the dev server exits or is removed, so the user never has to think
+/// about Tailscale IPs or `--host` flags — `http://localhost:<port>` always
+/// reaches the remote dev server.
+#[derive(Default)]
+pub struct SshForwardRegistry {
+    next_id: AtomicU64,
+    forwards: Mutex<HashMap<u64, Child>>,
+}
+
+#[derive(Serialize)]
+pub struct SshForwardHandle {
+    handle_id: u64,
+    local_port: u16,
+}
 
 /// Spawn `wsl.exe` with `CREATE_NO_WINDOW` so no console window flashes.
 #[cfg(target_os = "windows")]
@@ -371,6 +392,156 @@ async fn ssh_ls(
 }
 
 #[tauri::command]
+async fn ssh_mkdir(
+    host: String,
+    username: String,
+    path: String,
+    identity_file: Option<String>,
+) -> Result<(), String> {
+    let user_host = format!("{}@{}", username, host);
+
+    let mut cmd = Command::new("ssh");
+    cmd.args(["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5"]);
+
+    if let Some(ref key) = identity_file {
+        cmd.args(["-i", key]);
+    }
+
+    cmd.arg(&user_host);
+    // -p so it succeeds if the directory already exists; we still surface
+    // errors like permission denied or invalid path.
+    cmd.arg(format!("mkdir -p -- {}", shell_escape(&path)));
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run ssh: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("SSH mkdir failed: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+/// Pick a free local port for the tunnel. Try `preferred` first (so the URL
+/// matches what the dev server printed); if it's taken, ask the OS for any
+/// free loopback port.
+fn pick_local_port(preferred: u16) -> Result<u16, String> {
+    use std::net::TcpListener;
+    if preferred != 0 {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", preferred)) {
+            let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+            drop(listener);
+            return Ok(port);
+        }
+    }
+    let listener = TcpListener::bind(("127.0.0.1", 0u16))
+        .map_err(|e| format!("Failed to allocate local port: {}", e))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    drop(listener);
+    Ok(port)
+}
+
+/// Build an `ssh` command suitable for running headlessly in the background.
+/// On Windows we suppress the console window the same way `wsl_command` does.
+fn ssh_background_command() -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        let mut cmd = Command::new("ssh.exe");
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("ssh")
+    }
+}
+
+/// Spawn `ssh -N -L <local>:localhost:<remote>` to forward a remote dev
+/// server's port to the user's machine. Returns a handle id used by
+/// `ssh_forward_port_stop` and the local port that was actually bound (may
+/// differ from `preferred_local_port` if it was already in use).
+#[tauri::command]
+async fn ssh_forward_port_start(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    remote_port: u16,
+    preferred_local_port: Option<u16>,
+    state: State<'_, SshForwardRegistry>,
+) -> Result<SshForwardHandle, String> {
+    if remote_port == 0 {
+        return Err("remote_port must be > 0".into());
+    }
+
+    let local_port = pick_local_port(preferred_local_port.unwrap_or(remote_port))?;
+    let user_host = format!("{}@{}", username, host);
+
+    let mut cmd = ssh_background_command();
+    cmd.args([
+        "-N",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout=5",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=3",
+        "-o", "ExitOnForwardFailure=yes",
+    ]);
+
+    if let Some(ref key) = identity_file {
+        cmd.args(["-i", key]);
+    }
+
+    cmd.args([
+        "-L",
+        &format!("127.0.0.1:{}:localhost:{}", local_port, remote_port),
+        &user_host,
+    ]);
+
+    // Detach stdio so the child doesn't block on a pipe nobody is reading.
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    let child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start ssh tunnel: {}", e))?;
+
+    let handle_id = state.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+    state
+        .forwards
+        .lock()
+        .map_err(|e| format!("forward registry poisoned: {}", e))?
+        .insert(handle_id, child);
+
+    Ok(SshForwardHandle { handle_id, local_port })
+}
+
+/// Kill a previously-started SSH port-forward. Idempotent — silently succeeds
+/// if the handle is unknown (e.g. the tunnel already died on its own).
+#[tauri::command]
+async fn ssh_forward_port_stop(
+    handle_id: u64,
+    state: State<'_, SshForwardRegistry>,
+) -> Result<(), String> {
+    let mut child = {
+        let mut map = state
+            .forwards
+            .lock()
+            .map_err(|e| format!("forward registry poisoned: {}", e))?;
+        match map.remove(&handle_id) {
+            Some(c) => c,
+            None => return Ok(()),
+        }
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(())
+}
+
+#[tauri::command]
 async fn ssh_test_connection(
     host: String,
     username: String,
@@ -568,6 +739,86 @@ async fn ssh_write_file(
     }
 
     Ok(())
+}
+
+/// Upload a local file to a remote SSH host as raw bytes.
+/// Used for clipboard screenshots and drag-dropped files when the active
+/// project is a remote SSH project — the local Windows path is meaningless
+/// to the AI/CLI running on the remote host, so we copy the bytes over and
+/// return the remote path for insertion into the terminal.
+///
+/// Enforces a 25 MB cap (config'd at the call site too) before touching ssh
+/// to avoid silent slow uploads on large drag-dropped files.
+#[tauri::command]
+async fn ssh_upload_file_bytes(
+    host: String,
+    username: String,
+    local_path: String,
+    remote_path: String,
+    identity_file: Option<String>,
+) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    const MAX_BYTES: u64 = 25 * 1024 * 1024;
+
+    let metadata = std::fs::metadata(&local_path)
+        .map_err(|e| format!("Failed to stat local file: {}", e))?;
+    let size = metadata.len();
+    if size > MAX_BYTES {
+        let mb = size as f64 / (1024.0 * 1024.0);
+        return Err(format!(
+            "File too large ({:.1} MB > 25 MB cap)",
+            mb
+        ));
+    }
+
+    let bytes = std::fs::read(&local_path)
+        .map_err(|e| format!("Failed to read local file: {}", e))?;
+
+    // Derive parent dir from remote_path so the remote shell can mkdir -p it.
+    let remote_dir = match remote_path.rfind('/') {
+        Some(0) => "/".to_string(),
+        Some(i) => remote_path[..i].to_string(),
+        None => ".".to_string(),
+    };
+
+    let user_host = format!("{}@{}", username, host);
+    let mut cmd = Command::new("ssh");
+    cmd.args(["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"]);
+    if let Some(ref key) = identity_file {
+        cmd.args(["-i", key]);
+    }
+    cmd.arg(&user_host);
+    cmd.arg(format!(
+        "mkdir -p {} && cat > {}",
+        shell_escape(&remote_dir),
+        shell_escape(&remote_path)
+    ));
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ssh: {}", e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(&bytes)
+            .map_err(|e| format!("Failed to stream bytes to ssh: {}", e))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait for ssh: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("SSH upload failed: {}", stderr.trim()));
+    }
+
+    Ok(remote_path)
 }
 
 #[tauri::command]
@@ -5124,6 +5375,19 @@ async fn read_session_first_prompt(project_path: String, session_id: String, dis
     Ok(read_first_user_prompt_from_jsonl(&path).unwrap_or_default())
 }
 
+#[tauri::command]
+fn preview_proxy_port(state: State<'_, preview_proxy::ProxyHandle>) -> u16 {
+    state.port()
+}
+
+#[tauri::command]
+fn preview_proxy_set_target(
+    url: String,
+    state: State<'_, preview_proxy::ProxyHandle>,
+) -> Result<(), String> {
+    state.set_target(&url)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -5133,8 +5397,24 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
+            // Registry of active `ssh -N -L` port-forward processes for remote
+            // dev servers (commands: ssh_forward_port_start / _stop).
+            app.manage(SshForwardRegistry::default());
+
+            // Start the local preview proxy. The browser pane forwards iframe
+            // requests through this so it can inject the devtools script and
+            // strip framing/CSP headers — works in dev AND prod.
+            match preview_proxy::start() {
+                Ok(handle) => {
+                    eprintln!("[ezydev] preview proxy listening on 127.0.0.1:{}", handle.port());
+                    app.manage(handle);
+                }
+                Err(e) => eprintln!("[ezydev] preview proxy failed to start: {e}"),
+            }
+
+
             #[cfg(target_os = "windows")]
             {
                 // Allocate a hidden console so child processes (wsl.exe) don't

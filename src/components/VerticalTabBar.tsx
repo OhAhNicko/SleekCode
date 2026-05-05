@@ -5,15 +5,26 @@ import { findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowse
 import { getProjectColor } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import ClipboardImageStrip from "./ClipboardImageStrip";
+import VoiceMicButton from "./VoiceMicButton";
+import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 import GitStatusBar from "./GitStatusBar";
 import { FaXmark, FaGear, FaServer, FaPlus } from "react-icons/fa6";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
 import { PiKanbanDuotone, PiGameControllerDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
-import { BiSidebar } from "react-icons/bi";
+import { BiSidebar, BiCollapseHorizontal, BiExpandHorizontal } from "react-icons/bi";
 
-const STRIP_WIDTH = 200;
+const WIDE_WIDTH = 200;
+const COMPACT_WIDTH = 80;
 const TAB_ROW_HEIGHT = 32;
+
+function tabInitials(name: string): string {
+  const cleaned = name.trim().replace(/[_\-./\\]+/g, " ");
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
 
 export default function VerticalTabBar() {
   const tabs = useAppStore((s) => s.tabs);
@@ -31,6 +42,9 @@ export default function VerticalTabBar() {
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
   const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
+  const compact = useAppStore((s) => s.verticalTabBarCompact);
+  const setCompact = useAppStore((s) => s.setVerticalTabBarCompact);
+  const stripWidth = compact ? COMPACT_WIDTH : WIDE_WIDTH;
 
   const [isMaximized, setIsMaximized] = useState(false);
   useEffect(() => {
@@ -41,6 +55,16 @@ export default function VerticalTabBar() {
       unlisten = u;
     });
     return () => { unlisten?.(); };
+  }, []);
+
+  // Poll terminal-activity state once per second so the per-tab WIP badge
+  // updates while AI CLIs (Claude/Codex/Gemini) are streaming output.
+  // Mirrors horizontal TabBar's activityTick — without it, isTerminalActive()
+  // values are read once at mount and never refreshed.
+  const [, setActivityTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setActivityTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
   }, []);
 
   const handleMinimize = async () => {
@@ -148,7 +172,7 @@ export default function VerticalTabBar() {
   return (
     <div
       style={{
-        width: STRIP_WIDTH,
+        width: stripWidth,
         flexShrink: 0,
         height: "100%",
         backgroundColor: "var(--ezy-bg)",
@@ -161,7 +185,7 @@ export default function VerticalTabBar() {
     >
       {/* TOP — window controls row, then nav buttons */}
       <div style={{ display: "flex", flexDirection: "column", flexShrink: 0 }}>
-        {/* Window controls: [X] [maximize] [minimize] */}
+        {/* Window controls: [X] [maximize] [minimize] [drag region] */}
         <div
           style={{
             display: "flex",
@@ -175,12 +199,13 @@ export default function VerticalTabBar() {
             onClick={handleClose}
             title="Close"
             style={{
-              flex: 1,
+              width: compact ? 20 : 40,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               cursor: "pointer",
               transition: "background-color 120ms ease",
+              flexShrink: 0,
             }}
             onMouseEnter={(e) => {
               e.currentTarget.style.backgroundColor = "#c42b1c";
@@ -204,12 +229,13 @@ export default function VerticalTabBar() {
             onClick={handleMaximizeToggle}
             title={isMaximized ? "Restore" : "Maximize"}
             style={{
-              flex: 1,
+              width: compact ? 20 : 40,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               cursor: "pointer",
               transition: "background-color 120ms ease",
+              flexShrink: 0,
             }}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)")}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
@@ -231,12 +257,13 @@ export default function VerticalTabBar() {
             onClick={handleMinimize}
             title="Minimize"
             style={{
-              flex: 1,
+              width: compact ? 20 : 40,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
               cursor: "pointer",
               transition: "background-color 120ms ease",
+              flexShrink: 0,
             }}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)")}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
@@ -244,6 +271,28 @@ export default function VerticalTabBar() {
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
               <line x1="1" y1="5" x2="9" y2="5" stroke="var(--ezy-text-muted)" strokeWidth="1" />
             </svg>
+          </div>
+
+          {/* Draggable spacer — only meaningful in wide mode (compact has no leftover width) */}
+          {!compact && <div data-tauri-drag-region style={{ flex: 1, cursor: "default" }} />}
+
+          {/* New tab (far right of controls row) */}
+          <div
+            onClick={() => window.dispatchEvent(new Event("ezydev:new-tab"))}
+            title="New tab"
+            style={{
+              width: compact ? 20 : 32,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              transition: "background-color 120ms ease",
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)")}
+            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+          >
+            <FaPlus size={11} color="var(--ezy-text-muted)" />
           </div>
         </div>
 
@@ -253,9 +302,10 @@ export default function VerticalTabBar() {
           style={{
             display: "flex",
             alignItems: "center",
+            justifyContent: compact ? "center" : "flex-start",
             gap: 10,
             height: 36,
-            padding: "0 12px",
+            padding: compact ? "0 6px" : "0 12px",
             cursor: "pointer",
             backgroundColor: sidebarOpen ? "var(--ezy-surface)" : "transparent",
             color: sidebarOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
@@ -271,7 +321,40 @@ export default function VerticalTabBar() {
           }}
         >
           <BiSidebar size={14} color="currentColor" />
-          <span>Sidebar</span>
+          {!compact && <span>Sidebar</span>}
+        </div>
+
+        {/* Browser Preview — only meaningful for project tabs, but always visible for symmetry */}
+        <div
+          onClick={activeIsProject ? handleBrowserClick : undefined}
+          title="Browser Preview"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: compact ? "center" : "flex-start",
+            gap: 10,
+            height: 36,
+            padding: compact ? "0 6px" : "0 12px",
+            cursor: activeIsProject ? "pointer" : "not-allowed",
+            backgroundColor: activeHasBrowser ? "var(--ezy-surface)" : "transparent",
+            color: activeHasBrowser ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
+            opacity: activeIsProject ? 1 : 0.4,
+            fontSize: 12,
+            transition: "background-color 120ms ease, color 120ms ease",
+          }}
+          onMouseEnter={(e) => {
+            if (!activeHasBrowser && activeIsProject) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+          }}
+          onMouseLeave={(e) => {
+            if (!activeHasBrowser) e.currentTarget.style.backgroundColor = "transparent";
+          }}
+        >
+          {activeHasBrowser ? (
+            <TbBrowserMinus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
+          ) : (
+            <TbBrowserPlus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
+          )}
+          {!compact && <span>Browser</span>}
         </div>
 
         {/* Dev Servers */}
@@ -280,9 +363,10 @@ export default function VerticalTabBar() {
           style={{
             display: "flex",
             alignItems: "center",
+            justifyContent: compact ? "center" : "flex-start",
             gap: 10,
             height: 36,
-            padding: "0 12px",
+            padding: compact ? "0 6px" : "0 12px",
             cursor: "pointer",
             position: "relative",
             backgroundColor: devServerPanelOpen ? "var(--ezy-surface)" : "transparent",
@@ -300,11 +384,11 @@ export default function VerticalTabBar() {
           }}
         >
           <FaServer size={13} color="currentColor" />
-          <span>Servers</span>
+          {!compact && <span>Servers</span>}
           {runningDevCount > 0 && (
             <span
               style={{
-                marginLeft: "auto",
+                marginLeft: compact ? 4 : "auto",
                 minWidth: 14,
                 height: 14,
                 borderRadius: 7,
@@ -357,11 +441,13 @@ export default function VerticalTabBar() {
                 aria-selected={isActive}
                 onClick={() => setActiveTab(tab.id)}
                 className="group"
+                title={compact ? label : undefined}
                 style={{
                   display: "flex",
                   alignItems: "center",
-                  gap: 6,
-                  padding: "0 10px 0 12px",
+                  justifyContent: compact ? "center" : "flex-start",
+                  gap: compact ? 4 : 6,
+                  padding: compact ? "0 6px" : "0 10px 0 12px",
                   height: TAB_ROW_HEIGHT,
                   position: "relative",
                   backgroundColor: isActive ? "var(--ezy-surface)" : "transparent",
@@ -369,7 +455,7 @@ export default function VerticalTabBar() {
                     ? "repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(255,255,255,0.05) 4px, rgba(255,255,255,0.05) 8px)"
                     : undefined,
                   border: "none",
-                  borderLeft: tabColor ? `2px solid ${tabColor}` : "2px solid transparent",
+                  borderRight: tabColor ? `2px solid ${tabColor}` : "2px solid transparent",
                   borderBottom: "1px solid var(--ezy-border-subtle)",
                   cursor: "pointer",
                   fontSize: 12,
@@ -395,19 +481,40 @@ export default function VerticalTabBar() {
                   }
                 }}
               >
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {label}
-                </span>
+                {compact ? (
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 26,
+                      height: 22,
+                      borderRadius: 4,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      letterSpacing: "0.02em",
+                      backgroundColor: tabColor ?? "var(--ezy-surface-raised)",
+                      color: tabColor ? "#fff" : "var(--ezy-text-secondary)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {tabInitials(label)}
+                  </span>
+                ) : (
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {label}
+                  </span>
+                )}
 
-                {cliCount > 1 && (
+                {!compact && cliCount > 1 && (
                   <span
                     style={{
                       fontSize: 9,
@@ -450,9 +557,56 @@ export default function VerticalTabBar() {
                   </span>
                 )}
 
+                {/* Compact-mode WIP dot — small accent overlay on the right edge of the row */}
+                {compact && activeCount > 0 && (
+                  <span
+                    title={`${activeCount} working`}
+                    style={{
+                      position: "absolute",
+                      top: 4,
+                      right: 4,
+                      width: 8,
+                      height: 8,
+                      borderRadius: 4,
+                      backgroundColor: "var(--ezy-accent)",
+                      border: "1px solid var(--ezy-bg)",
+                    }}
+                  />
+                )}
+
+                {/* Compact-mode close-on-hover (top-left overlay) */}
+                {compact && !isUserPinned && (
+                  <span
+                    role="button"
+                    aria-label="Close tab"
+                    className="opacity-0 group-hover:opacity-100"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeTab(tab.id);
+                    }}
+                    style={{
+                      position: "absolute",
+                      top: 2,
+                      left: 2,
+                      width: 14,
+                      height: 14,
+                      borderRadius: 3,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: "var(--ezy-bg)",
+                      border: "1px solid var(--ezy-border)",
+                      cursor: "pointer",
+                      transition: "opacity 120ms ease",
+                    }}
+                  >
+                    <FaXmark size={8} color="var(--ezy-text-muted)" />
+                  </span>
+                )}
+
                 <div
                   style={{
-                    display: "flex",
+                    display: compact ? "none" : "flex",
                     alignItems: "center",
                     gap: 6,
                     flexShrink: 0,
@@ -497,46 +651,12 @@ export default function VerticalTabBar() {
               </button>
             );
           })}
-
-          {/* + New tab — opens folder picker via App.tsx listener */}
-          <button
-            onClick={() => window.dispatchEvent(new Event("ezydev:new-tab"))}
-            title="New tab"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "0 12px",
-              height: TAB_ROW_HEIGHT,
-              border: "none",
-              borderBottom: "1px solid var(--ezy-border-subtle)",
-              background: "transparent",
-              cursor: "pointer",
-              color: "var(--ezy-text-muted)",
-              fontSize: 12,
-              fontFamily: "inherit",
-              textAlign: "left",
-              width: "100%",
-              transition: "background-color 120ms ease, color 120ms ease",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-              e.currentTarget.style.color = "var(--ezy-text)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = "var(--ezy-text-muted)";
-            }}
-          >
-            <FaPlus size={11} color="currentColor" />
-            <span>New tab</span>
-          </button>
         </div>
 
         {/* GitStatusBar — only for project tabs with workingDir */}
         {activeTab && activeTab.workingDir && activeIsProject && (
-          <div style={{ padding: "6px 10px", borderTop: "1px solid var(--ezy-border-subtle)" }}>
-            <GitStatusBar workingDir={activeTab.workingDir} />
+          <div style={{ padding: compact ? "6px 6px" : "6px 10px", borderTop: "1px solid var(--ezy-border-subtle)" }}>
+            <GitStatusBar workingDir={activeTab.workingDir} compact={compact} />
           </div>
         )}
 
@@ -547,7 +667,7 @@ export default function VerticalTabBar() {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-around",
-              padding: "6px 8px",
+              padding: compact ? "6px 4px" : "6px 8px",
               borderTop: "1px solid var(--ezy-border-subtle)",
             }}
           >
@@ -572,29 +692,6 @@ export default function VerticalTabBar() {
               </div>
             )}
 
-            <div
-              onClick={handleBrowserClick}
-              title="Browser Preview"
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 34,
-                height: 26,
-                cursor: "pointer",
-                borderRadius: 4,
-                transition: "background-color 120ms ease",
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-            >
-              {activeHasBrowser ? (
-                <TbBrowserMinus size={14} color="var(--ezy-text-muted)" style={{ transform: "scale(1.2)" }} />
-              ) : (
-                <TbBrowserPlus size={14} color="var(--ezy-text-muted)" style={{ transform: "scale(1.2)" }} />
-              )}
-            </div>
-
             {showMiniGamesButton && (
               <div
                 onClick={() => window.dispatchEvent(new CustomEvent("ezydev:open-game"))}
@@ -617,38 +714,88 @@ export default function VerticalTabBar() {
             )}
           </div>
         )}
+
+        {/* Draggable filler — empty space below tabs is grabbable to move the window */}
+        <div data-tauri-drag-region style={{ flex: 1, minHeight: 24 }} />
       </div>
 
-      {/* BOTTOM — snip + thumbnails (wrap), divider, Settings */}
+      {/* BOTTOM — voice mic, snip + thumbnails (wrap), divider, Settings */}
       <div style={{ flexShrink: 0, borderTop: "1px solid var(--ezy-border)" }}>
+        {VOICE_ENABLED && (
+          <div style={{ display: "flex", justifyContent: "center", padding: "8px 0 4px" }}>
+            <VoiceMicButton size="vertical" />
+          </div>
+        )}
         <div style={{ padding: "6px 4px" }}>
           <ClipboardImageStrip orientation="vertical" />
         </div>
+        {/* Settings + compact toggle, side by side */}
         <div
-          title="Settings"
           style={{
             display: "flex",
-            alignItems: "center",
-            gap: 10,
+            alignItems: "stretch",
             height: 36,
-            padding: "0 12px",
-            cursor: "pointer",
-            backgroundColor: settingsPanelOpen ? "var(--ezy-surface)" : "transparent",
-            color: settingsPanelOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-            fontSize: 12,
             borderTop: "1px solid var(--ezy-border-subtle)",
-            transition: "background-color 120ms ease, color 120ms ease",
-          }}
-          onClick={handleSettingsClick}
-          onMouseEnter={(e) => {
-            if (!settingsPanelOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-          }}
-          onMouseLeave={(e) => {
-            if (!settingsPanelOpen) e.currentTarget.style.backgroundColor = "transparent";
           }}
         >
-          <FaGear size={13} color="currentColor" />
-          <span>Settings</span>
+          <div
+            title="Settings"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: compact ? "center" : "flex-start",
+              gap: 10,
+              padding: compact ? "0 6px" : "0 12px",
+              cursor: "pointer",
+              backgroundColor: settingsPanelOpen ? "var(--ezy-surface)" : "transparent",
+              color: settingsPanelOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
+              fontSize: 12,
+              transition: "background-color 120ms ease, color 120ms ease",
+            }}
+            onClick={handleSettingsClick}
+            onMouseEnter={(e) => {
+              if (!settingsPanelOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+            }}
+            onMouseLeave={(e) => {
+              if (!settingsPanelOpen) e.currentTarget.style.backgroundColor = "transparent";
+            }}
+          >
+            <FaGear size={13} color="currentColor" />
+            {!compact && <span>Settings</span>}
+          </div>
+
+          {/* Compact-mode toggle — collapses (200→80) or expands (80→200) the strip */}
+          <div
+            onClick={() => setCompact(!compact)}
+            title={compact ? "Expand sidebar" : "Collapse sidebar"}
+            style={{
+              width: compact ? 28 : 36,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              borderLeft: "1px solid var(--ezy-border-subtle)",
+              color: "var(--ezy-text-muted)",
+              transition: "background-color 120ms ease, color 120ms ease",
+              flexShrink: 0,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+              e.currentTarget.style.color = "var(--ezy-text)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+              e.currentTarget.style.color = "var(--ezy-text-muted)";
+            }}
+          >
+            {compact ? (
+              <BiExpandHorizontal size={14} color="currentColor" />
+            ) : (
+              <BiCollapseHorizontal size={14} color="currentColor" />
+            )}
+          </div>
         </div>
       </div>
     </div>

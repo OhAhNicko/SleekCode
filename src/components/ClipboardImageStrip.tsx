@@ -256,7 +256,9 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
           {
             label: "Copy filepath",
             action: () => {
-              navigator.clipboard.writeText(resolveImagePath(ctxImg.winPath)).catch(() => {});
+              void resolveImagePath(ctxImg.winPath, "clipboard").then((p) => {
+                if (p) navigator.clipboard.writeText(p).catch(() => {});
+              });
               setCtxMenu(null);
             },
           },
@@ -569,7 +571,9 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
           {
             label: "Copy filepath",
             action: () => {
-              navigator.clipboard.writeText(resolveImagePath(gImg.winPath)).catch(() => {});
+              void resolveImagePath(gImg.winPath, "clipboard").then((p) => {
+                if (p) navigator.clipboard.writeText(p).catch(() => {});
+              });
               setGalleryCtxMenu(null);
             },
           },

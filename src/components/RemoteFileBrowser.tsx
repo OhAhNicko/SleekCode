@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { RemoteServer } from "../types";
 
@@ -17,6 +17,11 @@ export default function RemoteFileBrowser({
   const [entries, setEntries] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const newFolderInputRef = useRef<HTMLInputElement | null>(null);
 
   const host = server.host;
   const identityFile = server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null;
@@ -39,6 +44,50 @@ export default function RemoteFileBrowser({
       setLoading(false);
     }
   }, [host, server.username, identityFile]);
+
+  const joinPath = useCallback((base: string, name: string) => {
+    return base === "/" ? `/${name}` : `${base}/${name}`;
+  }, []);
+
+  const startCreateFolder = useCallback(() => {
+    setCreateError(null);
+    setNewFolderName("");
+    setCreatingFolder(true);
+    requestAnimationFrame(() => newFolderInputRef.current?.focus());
+  }, []);
+
+  const cancelCreateFolder = useCallback(() => {
+    setCreatingFolder(false);
+    setNewFolderName("");
+    setCreateError(null);
+  }, []);
+
+  const submitCreateFolder = useCallback(async () => {
+    const name = newFolderName.trim();
+    if (!name) return;
+    if (name.includes("/") || name === "." || name === "..") {
+      setCreateError("Invalid folder name");
+      return;
+    }
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const target = joinPath(currentPath, name);
+      await invoke("ssh_mkdir", {
+        host,
+        username: server.username,
+        path: target,
+        identityFile,
+      });
+      setCreatingFolder(false);
+      setNewFolderName("");
+      await loadDirectory(target);
+    } catch (e) {
+      setCreateError(String(e));
+    } finally {
+      setCreating(false);
+    }
+  }, [newFolderName, currentPath, host, server.username, identityFile, joinPath, loadDirectory]);
 
   useEffect(() => {
     loadDirectory("/");
@@ -118,20 +167,49 @@ export default function RemoteFileBrowser({
                 — Select project directory
               </span>
             </div>
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="var(--ezy-text-muted)"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              style={{ cursor: "pointer" }}
-              onClick={onClose}
-            >
-              <line x1="4" y1="4" x2="12" y2="12" />
-              <line x1="12" y1="4" x2="4" y2="12" />
-            </svg>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={startCreateFolder}
+                disabled={creatingFolder || loading}
+                title="Create new folder in current directory"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "3px 8px",
+                  backgroundColor: "transparent",
+                  border: "1px solid var(--ezy-border)",
+                  borderRadius: 5,
+                  color: creatingFolder || loading ? "var(--ezy-text-muted)" : "var(--ezy-text)",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: creatingFolder || loading ? "default" : "pointer",
+                  fontFamily: "inherit",
+                  opacity: creatingFolder || loading ? 0.5 : 1,
+                }}
+              >
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+                  <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.879a1.5 1.5 0 0 1 1.06.44l.872.871A.5.5 0 0 0 8.665 3.5H13.5A1.5 1.5 0 0 1 15 5v7.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9Z" />
+                  <line x1="8" y1="7" x2="8" y2="11" />
+                  <line x1="6" y1="9" x2="10" y2="9" />
+                </svg>
+                <span>New Folder</span>
+              </button>
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="var(--ezy-text-muted)"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                style={{ cursor: "pointer" }}
+                onClick={onClose}
+              >
+                <line x1="4" y1="4" x2="12" y2="12" />
+                <line x1="12" y1="4" x2="4" y2="12" />
+              </svg>
+            </div>
           </div>
 
           {/* Breadcrumb */}
@@ -158,6 +236,100 @@ export default function RemoteFileBrowser({
 
         {/* Entries */}
         <div style={{ flex: 1, overflowY: "auto", minHeight: 200 }}>
+          {creatingFolder && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 16px",
+                borderBottom: "1px solid var(--ezy-border-subtle)",
+                backgroundColor: "var(--ezy-surface)",
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="var(--ezy-cyan)">
+                <path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.879a1.5 1.5 0 0 1 1.06.44l.872.871A.5.5 0 0 0 8.665 3.5H13.5A1.5 1.5 0 0 1 15 5v7.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9Z" />
+              </svg>
+              <input
+                ref={newFolderInputRef}
+                value={newFolderName}
+                onChange={(e) => {
+                  setNewFolderName(e.target.value);
+                  if (createError) setCreateError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitCreateFolder();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelCreateFolder();
+                  }
+                }}
+                placeholder="New folder name"
+                disabled={creating}
+                style={{
+                  flex: 1,
+                  padding: "4px 8px",
+                  backgroundColor: "var(--ezy-surface-raised)",
+                  border: `1px solid ${createError ? "var(--ezy-red)" : "var(--ezy-border)"}`,
+                  borderRadius: 4,
+                  color: "var(--ezy-text)",
+                  fontSize: 13,
+                  fontFamily: "inherit",
+                  outline: "none",
+                }}
+              />
+              <button
+                onClick={submitCreateFolder}
+                disabled={creating || !newFolderName.trim()}
+                style={{
+                  padding: "4px 10px",
+                  backgroundColor: "var(--ezy-accent-dim)",
+                  border: "none",
+                  borderRadius: 4,
+                  color: "#ffffff",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: creating || !newFolderName.trim() ? "default" : "pointer",
+                  opacity: creating || !newFolderName.trim() ? 0.5 : 1,
+                  fontFamily: "inherit",
+                }}
+              >
+                {creating ? "Creating..." : "Create"}
+              </button>
+              <button
+                onClick={cancelCreateFolder}
+                disabled={creating}
+                style={{
+                  padding: "4px 10px",
+                  backgroundColor: "transparent",
+                  border: "1px solid var(--ezy-border)",
+                  borderRadius: 4,
+                  color: "var(--ezy-text-muted)",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: creating ? "default" : "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          {createError && (
+            <div
+              style={{
+                padding: "6px 16px",
+                fontSize: 12,
+                color: "var(--ezy-red)",
+                borderBottom: "1px solid var(--ezy-border-subtle)",
+                backgroundColor: "var(--ezy-surface)",
+              }}
+            >
+              {createError}
+            </div>
+          )}
           {loading ? (
             <div
               className="flex items-center justify-center"

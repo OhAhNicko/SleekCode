@@ -106,6 +106,7 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
           display: "flex",
           borderBottom: "1px solid var(--ezy-border-subtle)",
           flexShrink: 0,
+          alignItems: "center",
         }}
       >
         {visibleTabs.map((tab) => {

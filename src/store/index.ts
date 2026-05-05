@@ -15,9 +15,10 @@ import { createSessionSlice, type SessionSlice } from "./sessionSlice";
 import { createAiTimeSlice, type AiTimeSlice } from "./aiTimeSlice";
 import { createFloatingPanesSlice, type FloatingPanesSlice } from "./floatingPanesSlice";
 import { createLayoutSlice, type LayoutSlice } from "./layoutSlice";
+import { createVoiceSlice, type VoiceSlice } from "./voiceSlice";
 import type { Tab } from "../types";
 
-export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice;
+export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice & VoiceSlice;
 
 function isSystemTab(tab: Tab): boolean {
   return !!(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab);
@@ -41,6 +42,7 @@ export const useAppStore = create<AppStore>()(
       ...createAiTimeSlice(...a),
       ...createFloatingPanesSlice(...a),
       ...createLayoutSlice(...a),
+      ...createVoiceSlice(...a),
     }),
     {
       name: "ezydev-storage",
@@ -109,6 +111,18 @@ export const useAppStore = create<AppStore>()(
         floatRects: state.floatRects,
         floatOrder: state.floatOrder,
         verticalModeEnabled: state.verticalModeEnabled,
+        verticalTabBarCompact: state.verticalTabBarCompact,
+        voiceEnabled: state.voiceEnabled,
+        whisperUrl: state.whisperUrl,
+        whisperFormat: state.whisperFormat,
+        llmUrl: state.llmUrl,
+        llmModel: state.llmModel,
+        ttsUrl: state.ttsUrl,
+        ttsVoice: state.ttsVoice,
+        voiceLanguage: state.voiceLanguage,
+        voiceActivationMode: state.voiceActivationMode,
+        pttHotkey: state.pttHotkey,
+        voiceConfirmDestructive: state.voiceConfirmDestructive,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;

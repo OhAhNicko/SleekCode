@@ -126,6 +126,73 @@ Violating this rule destroys user work. There are no exceptions.
 - Read Rule #1 at the top of this file before any git operation that modifies files.
 - **NEVER use `git stash` mid-session to probe pre-existing errors** — stash pop can fail due to unrelated changes, leaving working-tree changes inaccessible. Instead, just run `tsc --noEmit` with changes in place and note which error lines you didn't touch.
 
+## Updating the EzyDev voice server (Mac mini)
+
+The voice agent (push-to-talk + intent → action) calls a small FastAPI service on the user's Mac mini. The server is **separate from** the podcast app's `podd-ad-server` and lives at `~/projects/ezydev-voice-server/server.py` on the Mac mini, listening on **port 8770**. It exposes:
+
+- `GET /health` → `{"status":"ok","whisper_model":"..."}`
+- `POST /transcribe` (multipart `file`, optional `language`) → `{"text","language"}`  — backed by MLX Whisper
+- `POST /v1/chat/completions` (OpenAI-compat passthrough) → forwards to local Ollama on `127.0.0.1:11434`
+
+We never edit the Mac mini directly — we follow the same 5-step workflow as the podcast project.
+
+### 5-step workflow
+
+1. **Edit local working copy** at `/tmp/ezydev_voice_server.py` using Edit/Write tools. Never edit the Mac mini's `server.py` directly.
+2. **Syntax-check**:
+   ```bash
+   python3 -c "import ast; ast.parse(open('/tmp/ezydev_voice_server.py').read()); print('syntax ok')"
+   ```
+3. **Upload to temp.sh**:
+   ```bash
+   curl -sF "file=@/tmp/ezydev_voice_server.py" "https://temp.sh/upload"
+   ```
+   Returns a URL like `https://temp.sh/ABCDE/ezydev_voice_server.py`.
+4. **Hand the user the deploy one-liner** (template below) with the temp.sh URL substituted in.
+5. **User runs it on the Mac mini**, verifies `/health` returns ok JSON.
+
+### Deploy one-liner template
+
+**The EzyDev voice server runs in its own isolated venv at `~/projects/ezydev-voice-server/.venv/`** so it can't be broken by changes to the podcast server (or vice versa). MLX Whisper is reinstalled into that venv on first deploy (~3 minutes); subsequent deploys reuse the cached venv and take seconds.
+
+Substitute `<TEMPSH_URL>` with the URL from step 3. The template covers two cases:
+
+**First deploy (no `.venv` yet) — slow path, ~3 minutes:**
+```bash
+mkdir -p ~/projects/ezydev-voice-server && cd ~/projects/ezydev-voice-server && curl -fsSL -X POST <TEMPSH_URL> -o server.py && head -1 server.py | grep -q '^"""' && python3 -c "import ast; ast.parse(open('server.py').read())" && python3 -m venv .venv && .venv/bin/pip install --quiet --upgrade pip && .venv/bin/pip install --quiet fastapi uvicorn python-multipart httpx mlx-whisper && pkill -f "uvicorn server:app --port 8770" 2>/dev/null; nohup .venv/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8770 > server.log 2>&1 & sleep 180 && curl -s http://127.0.0.1:8770/health && echo
+```
+
+**Subsequent deploys (venv already exists) — fast path, ~5 seconds:**
+```bash
+cd ~/projects/ezydev-voice-server && curl -fsSL -X POST <TEMPSH_URL> -o server.py && head -1 server.py | grep -q '^"""' && python3 -c "import ast; ast.parse(open('server.py').read())" && pkill -f "uvicorn server:app --port 8770" 2>/dev/null; nohup .venv/bin/python -m uvicorn server:app --host 0.0.0.0 --port 8770 > server.log 2>&1 & sleep 4 && curl -s http://127.0.0.1:8770/health && echo
+```
+
+Both paths verify the downloaded file is actually Python (line 1 starts with a `"""` docstring) and pass `ast.parse` BEFORE killing the running server — fail-fast prevents replacing a working server with a broken one.
+
+Expected last line:
+```
+{"status":"ok","whisper_model":"mlx-community/whisper-large-v3-turbo"}
+```
+
+### Critical gotchas
+
+- **`curl` MUST use `-X POST` against temp.sh URLs.** A plain GET returns an HTML "click here to download" landing page that silently overwrites `server.py`. Symptom: uvicorn dies with `SyntaxError: invalid decimal literal` pointing at a line like `font-size: 18px;` in `server.log` — that's Python trying to parse CSS. The one-liner above uses `curl -fsSL -X POST <TEMPSH_URL> -o server.py` plus a `head -1 ... grep '^"""'` check that fails fast if the download is still HTML. Never weaken either guard.
+- **temp.sh URLs expire.** If you re-run a one-liner hours later and the `head` check fails, re-upload (step 3) to get a fresh URL.
+- **Isolated venv at `~/projects/ezydev-voice-server/.venv/`.** Do NOT share the podcast server's venv — that re-couples the two projects. First deploy installs `mlx-whisper` into the EzyDev venv (~3 min, ~2 GB disk); subsequent deploys reuse it instantly.
+- **System Python is blocked by PEP 668 on this Mac mini** (Homebrew Python 3.14). That's why we use a venv, not `pip install --user`.
+- **Use port 8770, not 8765.** 8765 is the podcast server. Never touch that.
+- **The fail-fast checks (`head` + `ast.parse`) come BEFORE `pkill`.** If the new file is broken, the running server keeps running. Order matters; don't reorder them.
+- **The download filename matters.** `curl ... -o server.py` writes directly to `server.py`. If you change to `-O` (capital, "save as remote name"), you also need a `mv` step.
+- **First `/transcribe` call downloads ~1.5 GB Whisper model weights.** That's normal, one-time, cached at `~/.cache/huggingface/`.
+- **`pkill` before `nohup`** is intentional and idempotent — re-running the one-liner replaces the running instance instead of stacking duplicates.
+- **Verify from the Windows machine** after deploy: `curl http://<mac-mini-tailscale>:8770/health` must succeed before EzyDev's "Test" buttons will go green.
+- **EzyDev settings** after a successful deploy:
+  - Whisper URL: `http://<mac-mini-tailscale>:8770/transcribe`, format **Custom**
+  - LLM URL:     `http://<mac-mini-tailscale>:8770/v1/chat/completions`
+  - Model:       whatever Ollama has pulled (`mistral-nemo` is the user's current pick — handles Swedish well; tool-calling requires Ollama ≥ 0.4)
+- **Streaming is disabled in EzyDev's LLM client** (`stream: false`), so the chat-completions handler is a single forward-and-return. Don't add SSE complexity unless EzyDev's client changes.
+- **Do NOT extend `podd-ad-server/server.py`** to host EzyDev endpoints. The two services stay isolated so podcast-server changes can never break voice and vice versa.
+
 ## /ship commits - CRITICAL
 - **ALWAYS chain `git add -A && git commit` in ONE command** to prevent race conditions with file watchers/HMR
 - **ALWAYS run `git status` after commit** to verify working tree is clean before pushing
