@@ -3,8 +3,7 @@ import type { AppStore } from "../../store";
 import type { PaneLayout, TerminalType } from "../../types";
 import {
   addPaneAsGrid,
-  addBrowserPaneRight,
-  addBrowserPaneLeft,
+  openOrUpdateBrowserPane,
   removePane,
   generatePaneId,
   generateTerminalId,
@@ -270,9 +269,15 @@ function executeOne(call: ToolCall): { ok: boolean; message: string } {
         // Empty tab — just use a single browser pane.
         store.updateTabLayout(tab.id, { type: "browser", id: generatePaneId(), url });
       } else {
-        const { layout } = side === "left"
-          ? addBrowserPaneLeft(tab.layout, url, size)
-          : addBrowserPaneRight(tab.layout, url, size);
+        // Enforce one browser pane per tab: retarget the existing pane if any,
+        // else add a fresh one on the chosen side. Voice "open browser to X"
+        // shouldn't stack panes — the user expects the single preview to
+        // navigate to the new URL.
+        const { layout } = openOrUpdateBrowserPane(tab.layout, url, {
+          sizePercent: size,
+          fullColumn: true,
+          spawnLeft: side === "left",
+        });
         store.updateTabLayout(tab.id, layout);
       }
       return { ok: true, message: `Opened browser pane to ${host}.` };

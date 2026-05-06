@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef, useContext, createContext, Fragment } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
@@ -22,6 +22,8 @@ import { parseHotkey } from "../lib/voice/hotkey";
 import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 
 // ─── Internal sub-components ───────────────────────────────────────────────
+
+const SettingsSearchContext = createContext<{ query: string }>({ query: "" });
 
 function ToggleSwitch({ checked, onChange, color }: { checked: boolean; onChange: (v: boolean) => void; color?: string }) {
   const bg = checked ? (color ?? "var(--ezy-accent)") : "transparent";
@@ -104,7 +106,7 @@ function SettingsSection({ id, title, description, children }: {
   children: React.ReactNode;
 }) {
   return (
-    <section id={id} style={{ paddingBottom: 32 }}>
+    <section id={id} data-settings-section style={{ paddingBottom: 32 }}>
       <h2 style={{
         fontSize: 15,
         fontWeight: 600,
@@ -128,8 +130,13 @@ function SettingsRow({ label, description, children }: {
   description?: string;
   children: React.ReactNode;
 }) {
+  const { query } = useContext(SettingsSearchContext);
+  if (query) {
+    const haystack = `${label} ${description ?? ""}`.toLowerCase();
+    if (!haystack.includes(query.toLowerCase())) return null;
+  }
   return (
-    <div style={{
+    <div data-settings-row style={{
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
@@ -917,6 +924,27 @@ export default function SettingsPane() {
   const [activeSection, setActiveSection] = useState(NAV_SECTIONS[0]?.id ?? "behavior");
   const [showClearModal, setShowClearModal] = useState(false);
   const [cliExpanded, setCliExpanded] = useState<Partial<Record<TerminalType, boolean>>>({});
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
+  const trimmedQuery = searchQuery.trim();
+  const isSearching = trimmedQuery.length > 0;
+
+  useEffect(() => {
+    if (searchOpen) {
+      requestAnimationFrame(() => searchInputRef.current?.focus());
+    }
+  }, [searchOpen]);
+
+  useEffect(() => {
+    contentScrollRef.current?.scrollTo({ top: 0 });
+  }, [isSearching, activeSection]);
+
+  const closeSearch = useCallback(() => {
+    setSearchQuery("");
+    setSearchOpen(false);
+  }, []);
 
   // Store selectors
   const terminalBackend = useAppStore((s) => s.terminalBackend ?? "wsl");
@@ -989,9 +1017,9 @@ export default function SettingsPane() {
   const setVerticalModeEnabled = useAppStore((s) => s.setVerticalModeEnabled);
   const theme = getTheme(themeId);
 
-  // Render only the active section content
-  const renderSection = () => {
-    switch (activeSection) {
+  // Render only the requested section's content
+  const renderSection = (sectionId: string) => {
+    switch (sectionId) {
       case "general":
         return (
           <>
@@ -1470,15 +1498,23 @@ export default function SettingsPane() {
   };
 
   return (
-    <div style={{
-      display: "flex",
-      height: "100%",
-      width: 620,
-      flexShrink: 0,
-      borderRight: "1px solid var(--ezy-border)",
-      backgroundColor: "var(--ezy-bg)",
-      color: "var(--ezy-text)",
-    }}>
+    <div
+      data-settings-search-active={isSearching ? "" : undefined}
+      style={{
+        display: "flex",
+        height: "100%",
+        width: 620,
+        flexShrink: 0,
+        borderRight: "1px solid var(--ezy-border)",
+        backgroundColor: "var(--ezy-bg)",
+        color: "var(--ezy-text)",
+      }}
+    >
+      <style>{`
+        [data-settings-search-active] [data-settings-section]:not(:has([data-settings-row])) {
+          display: none;
+        }
+      `}</style>
       {/* Left nav sidebar */}
       <nav style={{
         width: 160,
@@ -1494,50 +1530,164 @@ export default function SettingsPane() {
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "0 16px 12px",
+          padding: "0 12px 12px 16px",
+          gap: 4,
+          minHeight: 22,
         }}>
-          <span style={{
-            fontSize: 11,
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: "0.06em",
-            color: "var(--ezy-text-muted)",
-          }}>Settings</span>
-          <button
-            type="button"
-            title="Reload (Ctrl+Shift+R)"
-            onClick={() => window.location.reload()}
-            style={{
-              width: 22,
-              height: 22,
-              padding: 0,
+          {!searchOpen && (
+            <span style={{
+              fontSize: 11,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+              color: "var(--ezy-text-muted)",
+              flex: 1,
+              minWidth: 0,
+            }}>Settings</span>
+          )}
+          {searchOpen && (
+            <div style={{
               display: "flex",
               alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: "transparent",
-              border: "none",
+              flex: 1,
+              minWidth: 0,
+              height: 22,
+              padding: "0 6px",
               borderRadius: 4,
-              color: "var(--ezy-text-muted)",
-              cursor: "pointer",
-              fontFamily: "inherit",
-              transition: "background-color 120ms ease, color 120ms ease",
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-              e.currentTarget.style.color = "var(--ezy-text)";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.backgroundColor = "transparent";
-              e.currentTarget.style.color = "var(--ezy-text-muted)";
-            }}
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M13.5 4.5A6 6 0 1 0 14 9" />
-              <path d="M14 2v3h-3" />
-            </svg>
-          </button>
+              backgroundColor: "var(--ezy-surface)",
+              gap: 6,
+              transition: "width 160ms ease",
+            }}>
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--ezy-text-muted)", flexShrink: 0 }}>
+                <circle cx="7" cy="7" r="5" />
+                <path d="m11 11 3 3" />
+              </svg>
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchQuery}
+                placeholder="Search settings"
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    closeSearch();
+                  }
+                }}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  background: "transparent",
+                  border: "none",
+                  outline: "none",
+                  padding: 0,
+                  fontFamily: "inherit",
+                  fontSize: 12,
+                  color: "var(--ezy-text)",
+                }}
+              />
+              <button
+                type="button"
+                title="Close search (Esc)"
+                onClick={closeSearch}
+                style={{
+                  width: 16,
+                  height: 16,
+                  padding: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "transparent",
+                  border: "none",
+                  borderRadius: 3,
+                  color: "var(--ezy-text-muted)",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                  transition: "color 120ms ease",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--ezy-text)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--ezy-text-muted)"; }}
+              >
+                <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 3l10 10M13 3 3 13" />
+                </svg>
+              </button>
+            </div>
+          )}
+          {!searchOpen && (
+            <>
+              <button
+                type="button"
+                title="Search settings"
+                onClick={() => setSearchOpen(true)}
+                style={{
+                  width: 22,
+                  height: 22,
+                  padding: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "transparent",
+                  border: "none",
+                  borderRadius: 4,
+                  color: "var(--ezy-text-muted)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  flexShrink: 0,
+                  transition: "background-color 120ms ease, color 120ms ease",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+                  e.currentTarget.style.color = "var(--ezy-text)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "transparent";
+                  e.currentTarget.style.color = "var(--ezy-text-muted)";
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="7" cy="7" r="5" />
+                  <path d="m11 11 3 3" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                title="Reload (Ctrl+Shift+R)"
+                onClick={() => window.location.reload()}
+                style={{
+                  width: 22,
+                  height: 22,
+                  padding: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "transparent",
+                  border: "none",
+                  borderRadius: 4,
+                  color: "var(--ezy-text-muted)",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                  flexShrink: 0,
+                  transition: "background-color 120ms ease, color 120ms ease",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+                  e.currentTarget.style.color = "var(--ezy-text)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "transparent";
+                  e.currentTarget.style.color = "var(--ezy-text-muted)";
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M13.5 4.5A6 6 0 1 0 14 9" />
+                  <path d="M14 2v3h-3" />
+                </svg>
+              </button>
+            </>
+          )}
         </div>
-        {NAV_SECTIONS.map((s) => {
+        {!isSearching && NAV_SECTIONS.map((s) => {
           const isActive = activeSection === s.id;
           return (
             <div
@@ -1566,13 +1716,19 @@ export default function SettingsPane() {
         })}
       </nav>
 
-      {/* Right content area — only the active section */}
-      <div style={{
+      {/* Right content area — only the active section, or all sections during search */}
+      <div ref={contentScrollRef} style={{
         flex: 1,
         overflowY: "auto",
         padding: "24px 24px 60px",
       }}>
-        {renderSection()}
+        <SettingsSearchContext.Provider value={{ query: trimmedQuery }}>
+          {isSearching
+            ? NAV_SECTIONS.map((s) => (
+                <Fragment key={s.id}>{renderSection(s.id)}</Fragment>
+              ))
+            : renderSection(activeSection)}
+        </SettingsSearchContext.Provider>
       </div>
 
       {showClearModal && <ClearDataModal onClose={() => setShowClearModal(false)} />}

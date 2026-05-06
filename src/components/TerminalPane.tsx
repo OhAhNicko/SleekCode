@@ -5,7 +5,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
-import { getTheme, getEffectiveTerminalTheme } from "../lib/themes";
+import { getTheme, getEffectiveTerminalTheme, getActivePaneBg } from "../lib/themes";
 import { usePty } from "../hooks/usePty";
 import { useAppStore } from "../store";
 import { registerPtyWrite, unregisterPtyWrite, registerTerminalFocus, unregisterTerminalFocus, getTerminalDataListener } from "../store/terminalSlice";
@@ -180,7 +180,9 @@ export default function TerminalPane({
   const themeId = useAppStore((s) => s.themeId);
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const theme = getTheme(themeId);
-  const effectiveTerminalTheme = useMemo(() => getEffectiveTerminalTheme(themeId, vibrantColors), [themeId, vibrantColors]);
+  const effectiveTerminalTheme = useMemo(() => getEffectiveTerminalTheme(themeId, vibrantColors, isActive), [themeId, vibrantColors, isActive]);
+  const activePaneBg = useMemo(() => getActivePaneBg(themeId), [themeId]);
+  const containerBg = isActive ? activePaneBg : "var(--ezy-bg)";
   const cliFontSize = useAppStore((s) => s.cliFontSizes[terminalType] ?? DEFAULT_CLI_FONT_SIZE);
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
   const copyOnSelectRef = useRef(copyOnSelect);
@@ -2096,7 +2098,7 @@ export default function TerminalPane({
   return (
     <div
       className={`terminal-pane flex flex-col h-full w-full ${isActive ? "pane-active" : ""}`}
-      style={{ backgroundColor: "var(--ezy-bg)" }}
+      style={{ backgroundColor: containerBg }}
       data-terminal-id={terminalId}
       onClick={onFocus}
     >
@@ -2123,7 +2125,7 @@ export default function TerminalPane({
           onRefreshContext={refreshContext}
         />
       )}
-      <div className="flex-1 min-h-0 relative" style={{ backgroundColor: "var(--ezy-bg)" }}>
+      <div className="flex-1 min-h-0 relative" style={{ backgroundColor: containerBg }}>
         <div
           ref={containerRef}
           className="h-full w-full"

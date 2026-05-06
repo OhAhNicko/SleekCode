@@ -589,11 +589,41 @@ function buildVibrantExtendedAnsi(): string[] {
 // Pre-compute once — avoids recalculating on every toggle
 const VIBRANT_EXTENDED_ANSI = buildVibrantExtendedAnsi();
 
-/** Returns the effective terminal theme, optionally with vibrant colors overlaid. */
-export function getEffectiveTerminalTheme(themeId: string, vibrant: boolean): ITheme {
+/** Subtle brightness lift applied to the active CLI pane (both container + xterm canvas). */
+export const ACTIVE_PANE_LIFT = 0.05;
+
+/** Lift each channel of #rrggbb toward 255 by `amount` (0..1). */
+function lightenHex(hex: string, amount: number): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return hex;
+  const r = parseInt(m[1], 16);
+  const g = parseInt(m[2], 16);
+  const b = parseInt(m[3], 16);
+  const lift = (c: number) => Math.round(c + (255 - c) * amount);
+  return toHex(lift(r), lift(g), lift(b));
+}
+
+/** Container bg color for an active CLI pane in the given theme (lifted from `surface.bg`). */
+export function getActivePaneBg(themeId: string): string {
+  return lightenHex(getTheme(themeId).surface.bg, ACTIVE_PANE_LIFT);
+}
+
+/** Returns the effective terminal theme, optionally with vibrant colors overlaid and an active-pane lift. */
+export function getEffectiveTerminalTheme(
+  themeId: string,
+  vibrant: boolean,
+  isActive: boolean = false,
+): ITheme {
   const base = getTheme(themeId).terminal;
-  if (!vibrant) return base;
-  return { ...base, ...VIBRANT_ANSI_16, extendedAnsi: VIBRANT_EXTENDED_ANSI };
+  const withVibrant = vibrant
+    ? { ...base, ...VIBRANT_ANSI_16, extendedAnsi: VIBRANT_EXTENDED_ANSI }
+    : base;
+  if (!isActive) return withVibrant;
+  return {
+    ...withVibrant,
+    background: lightenHex(withVibrant.background ?? "#000000", ACTIVE_PANE_LIFT),
+    cursorAccent: lightenHex(withVibrant.cursorAccent ?? withVibrant.background ?? "#000000", ACTIVE_PANE_LIFT),
+  };
 }
 
 // ─── Exports ─────────────────────────────────────────────────────────

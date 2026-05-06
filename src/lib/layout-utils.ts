@@ -539,6 +539,78 @@ export function findAllBrowserPanes(layout: PaneLayout): PaneBrowser[] {
   return [];
 }
 
+/** Replace url + linkedTabId on a specific browser pane in the tree (immutable). */
+export function setBrowserPaneUrl(
+  layout: PaneLayout,
+  paneId: string,
+  url: string,
+  linkedTabId?: string,
+): PaneLayout {
+  if (layout.type === "browser") {
+    return layout.id === paneId ? { ...layout, url, linkedTabId } : layout;
+  }
+  if (layout.type === "split") {
+    return {
+      ...layout,
+      children: [
+        setBrowserPaneUrl(layout.children[0], paneId, url, linkedTabId),
+        setBrowserPaneUrl(layout.children[1], paneId, url, linkedTabId),
+      ] as [PaneLayout, PaneLayout],
+    };
+  }
+  return layout;
+}
+
+/**
+ * Open a browser pane at `url` while enforcing the "at most one browser pane per
+ * tab" invariant: if any browser pane already exists in the tree, retarget the
+ * first one to the new URL and prune any stragglers; otherwise insert a fresh
+ * pane using the layout-mode flags (full column vs. grid). Use this for
+ * URL-driven open-from-link callers (DevServerTab, voice dispatcher) — the
+ * toggle-style toolbar buttons in TabBar/VerticalTabBar are unchanged.
+ */
+export function openOrUpdateBrowserPane(
+  layout: PaneLayout,
+  url: string,
+  options: {
+    linkedTabId?: string;
+    sizePercent?: number;
+    spawnLeft?: boolean;
+    fullColumn?: boolean;
+    wideGridLayout?: boolean;
+  } = {},
+): { layout: PaneLayout; paneId: string } {
+  const existing = findAllBrowserPanes(layout);
+
+  if (existing.length > 0) {
+    // Update first; remove the rest (legacy duplicates from older sessions).
+    const target = existing[0];
+    let next: PaneLayout | null = layout;
+    for (const extra of existing.slice(1)) {
+      if (next) next = removePane(next, extra.id);
+    }
+    if (!next) next = layout;
+    next = setBrowserPaneUrl(next, target.id, url, options.linkedTabId);
+    return { layout: next, paneId: target.id };
+  }
+
+  const sizePercent = options.sizePercent ?? 35;
+  if (options.fullColumn) {
+    return options.spawnLeft
+      ? addBrowserPaneLeft(layout, url, sizePercent, options.linkedTabId)
+      : addBrowserPaneRight(layout, url, sizePercent, options.linkedTabId);
+  }
+  const paneId = generatePaneId();
+  const newPane: PaneBrowser = {
+    type: "browser",
+    id: paneId,
+    url,
+    linkedTabId: options.linkedTabId,
+  };
+  const newLayout = addPaneAsGrid(layout, newPane, options.wideGridLayout ?? false);
+  return { layout: newLayout, paneId };
+}
+
 /** Check if a kanban pane already exists anywhere in the layout tree */
 export function hasKanbanPane(layout: PaneLayout): boolean {
   if (layout.type === "kanban") return true;

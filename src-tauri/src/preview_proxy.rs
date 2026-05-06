@@ -1,18 +1,35 @@
 // Preview proxy server.
 //
-// Runs a local HTTP server that forwards iframe requests to a configured
-// target origin, injecting the EzyDev DevTools script into HTML responses
-// and stripping framing/CSP headers so the page renders inside our pane.
-//
-// In dev this used to live in vite.config.ts as a Vite plugin, which meant
-// production builds had no proxy. Moving it into Tauri makes the browser
-// pane work in both dev and prod with the same code path.
+// Runs a local HTTP/1.1 server (hyper + tokio) that forwards iframe requests
+// to a configured target origin. For HTML responses, strips framing/CSP
+// headers and injects the EzyDev DevTools script so console + network capture
+// works inside the BrowserPreview pane. For WebSocket upgrades (e.g. Vite
+// HMR), the proxy speaks the WS handshake on both sides and bridges frames
+// transparently — without WS proxying, HMR can't reach the dev server through
+// the proxied iframe origin.
 
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use tiny_http::{Header, Method, Response, Server, StatusCode};
+use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
+use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
+use hyper::body::Incoming;
+use hyper::header::{
+    HeaderName, HeaderValue, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_KEY,
+    SEC_WEBSOCKET_PROTOCOL, UPGRADE,
+};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::derive_accept_key;
+use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::WebSocketStream;
 
 const DEVTOOLS_INJECT_SCRIPT: &str = include_str!("preview_proxy_inject.js");
 
@@ -65,84 +82,160 @@ fn url_parse(raw: &str) -> Result<String, String> {
 }
 
 pub fn start() -> Result<ProxyHandle, String> {
-    let server = Server::http("127.0.0.1:0")
-        .map_err(|e| format!("bind failed: {e}"))?;
-    let port = server
-        .server_addr()
-        .to_ip()
-        .ok_or("no ip")?
+    // Bind synchronously so we can return the chosen port immediately, then
+    // hand the listener to a tokio runtime running on a background thread.
+    let std_listener =
+        std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| format!("bind failed: {e}"))?;
+    let port = std_listener
+        .local_addr()
+        .map_err(|e| format!("local_addr: {e}"))?
         .port();
+    std_listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("nonblocking: {e}"))?;
 
     let target: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let target_for_thread = target.clone();
 
     thread::spawn(move || {
-        let server = Arc::new(server);
-        loop {
-            let req = match server.recv() {
-                Ok(r) => r,
-                Err(_) => continue,
+        let rt = match tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(2)
+            .thread_name("ezydev-proxy")
+            .build()
+        {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        rt.block_on(async move {
+            let listener = match TcpListener::from_std(std_listener) {
+                Ok(l) => l,
+                Err(_) => return,
             };
-            let target = target_for_thread.clone();
-            // Spawn per-request so concurrent page assets don't queue.
-            thread::spawn(move || handle_request(req, target));
-        }
+            loop {
+                let (stream, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let io = TokioIo::new(stream);
+                let target = target_for_thread.clone();
+                tokio::spawn(async move {
+                    let svc = service_fn(move |req: Request<Incoming>| {
+                        let target = target.clone();
+                        async move { Ok::<_, Infallible>(handle_request(req, target).await) }
+                    });
+                    let _ = http1::Builder::new()
+                        .serve_connection(io, svc)
+                        .with_upgrades()
+                        .await;
+                });
+            }
+        });
     });
 
     Ok(ProxyHandle { port, target })
 }
 
-fn handle_request(mut req: tiny_http::Request, target: Arc<Mutex<Option<String>>>) {
+type BodyResp = BoxBody<Bytes, Infallible>;
+
+fn full_body(b: impl Into<Bytes>) -> BodyResp {
+    Full::new(b.into()).boxed()
+}
+
+fn empty_body() -> BodyResp {
+    Empty::<Bytes>::new().boxed()
+}
+
+async fn handle_request(
+    req: Request<Incoming>,
+    target: Arc<Mutex<Option<String>>>,
+) -> Response<BodyResp> {
     // CORS preflight
-    if req.method() == &Method::Options {
-        let mut res = Response::empty(204);
-        for h in cors_headers() {
-            res.add_header(h);
-        }
-        let _ = req.respond(res);
-        return;
+    if req.method() == hyper::Method::OPTIONS {
+        return cors_preflight();
     }
 
     let target_origin = match target.lock().unwrap().clone() {
         Some(t) => t,
         None => {
-            respond_error(
-                req,
-                503,
+            return error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
                 "Preview not configured",
                 "The preview proxy hasn't been pointed at a target URL yet. Enter a URL in the address bar and press Enter.",
                 None,
                 None,
             );
-            return;
         }
     };
 
-    let path = req.url().to_string();
-    let target_url = format!("{}{}", target_origin, path);
+    if is_websocket_upgrade(&req) {
+        return handle_websocket(req, target_origin).await;
+    }
 
-    // Read inbound body (drain even for GETs — some clients send Content-Length: 0).
-    let mut body_bytes: Vec<u8> = Vec::new();
-    let _ = req.as_reader().read_to_end(&mut body_bytes);
+    handle_http(req, target_origin).await
+}
 
-    // Build outbound request.
+fn is_websocket_upgrade(req: &Request<Incoming>) -> bool {
+    let h = req.headers();
+    let conn_upgrade = h
+        .get(CONNECTION)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| {
+            s.split(',')
+                .any(|p| p.trim().eq_ignore_ascii_case("upgrade"))
+        })
+        .unwrap_or(false);
+    let upgrade_ws = h
+        .get(UPGRADE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+    conn_upgrade && upgrade_ws
+}
+
+async fn handle_http(req: Request<Incoming>, target_origin: String) -> Response<BodyResp> {
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "/".into());
+    let target_url = format!("{}{}", target_origin, path_and_query);
+
     let method_str = req.method().as_str().to_string();
     let method = match reqwest::Method::from_bytes(method_str.as_bytes()) {
         Ok(m) => m,
         Err(_) => {
-            respond_error(
-                req,
-                400,
+            return error_response(
+                StatusCode::BAD_REQUEST,
                 "Bad request",
                 &format!("Unknown method: {method_str}"),
                 Some(&target_url),
                 None,
             );
-            return;
         }
     };
 
-    let client = match reqwest::blocking::Client::builder()
+    // Snapshot headers to forward, before consuming the body.
+    let mut forward_headers: Vec<(String, String)> = Vec::new();
+    for (name, value) in req.headers().iter() {
+        let n = name.as_str().to_ascii_lowercase();
+        if matches!(
+            n.as_str(),
+            "host" | "origin" | "referer" | "accept-encoding" | "connection"
+        ) {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            forward_headers.push((name.as_str().to_string(), v.to_string()));
+        }
+    }
+
+    let body_bytes = match req.into_body().collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(_) => Bytes::new(),
+    };
+
+    let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .danger_accept_invalid_certs(false)
         .redirect(reqwest::redirect::Policy::none())
@@ -150,41 +243,37 @@ fn handle_request(mut req: tiny_http::Request, target: Arc<Mutex<Option<String>>
     {
         Ok(c) => c,
         Err(e) => {
-            respond_error(
-                req,
-                500,
+            return error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "Proxy init failed",
                 &format!("Could not build HTTP client: {e}"),
                 Some(&target_url),
                 None,
             );
-            return;
         }
     };
 
-    let mut req_builder = client.request(method, &target_url);
-    for header in req.headers() {
-        let name = header.field.as_str().as_str().to_ascii_lowercase();
-        if matches!(
-            name.as_str(),
-            "host" | "origin" | "referer" | "accept-encoding" | "connection"
-        ) {
-            continue;
-        }
-        let value = header.value.as_str();
-        req_builder = req_builder.header(header.field.as_str().as_str(), value);
+    let mut builder = client.request(method, &target_url);
+    for (n, v) in forward_headers {
+        builder = builder.header(&n, v);
     }
-    req_builder = req_builder.header("accept-encoding", "identity");
+    builder = builder.header("accept-encoding", "identity");
     if !body_bytes.is_empty() {
-        req_builder = req_builder.body(body_bytes);
+        builder = builder.body(body_bytes.to_vec());
     }
 
-    let proxy_res = match req_builder.send() {
+    let proxy_res = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
             let (title, detail, hint) = describe_error(&e);
-            respond_error(req, 502, &title, &detail, Some(&target_url), Some(&hint));
-            return;
+            let hint_ref = if hint.is_empty() { None } else { Some(hint.as_str()) };
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                &title,
+                &detail,
+                Some(&target_url),
+                hint_ref,
+            );
         }
     };
 
@@ -196,8 +285,8 @@ fn handle_request(mut req: tiny_http::Request, target: Arc<Mutex<Option<String>>
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    // Collect headers, dropping ones that would break injection or framing.
-    let mut headers_out: Vec<Header> = Vec::new();
+    // Collect response headers, dropping ones that would break injection or framing.
+    let mut response_headers: Vec<(String, String)> = Vec::new();
     for (name, value) in proxy_res.headers().iter() {
         let n = name.as_str().to_ascii_lowercase();
         if matches!(
@@ -213,24 +302,17 @@ fn handle_request(mut req: tiny_http::Request, target: Arc<Mutex<Option<String>>
         ) {
             continue;
         }
-        let v = match value.to_str() {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if let Ok(h) = Header::from_bytes(name.as_str().as_bytes(), v.as_bytes()) {
-            headers_out.push(h);
+        if let Ok(v) = value.to_str() {
+            response_headers.push((name.as_str().to_string(), v.to_string()));
         }
     }
-    if let Ok(h) = Header::from_bytes(b"access-control-allow-origin", b"*") {
-        headers_out.push(h);
-    }
+    response_headers.push(("access-control-allow-origin".into(), "*".into()));
 
-    let body = proxy_res.bytes().unwrap_or_default().to_vec();
+    let body_bytes = proxy_res.bytes().await.unwrap_or_default();
 
-    let final_body: Vec<u8> = if content_type.contains("text/html") {
-        let html = String::from_utf8_lossy(&body).into_owned();
+    let final_body: Bytes = if content_type.contains("text/html") {
+        let html = String::from_utf8_lossy(&body_bytes).into_owned();
         let tag = format!("<script>{}</script>", DEVTOOLS_INJECT_SCRIPT);
-        // Find first <head ...> open tag (case-insensitive) and inject after it.
         let lower = html.to_ascii_lowercase();
         let injected = if let Some(idx) = lower.find("<head") {
             if let Some(rel_end) = html[idx..].find('>') {
@@ -246,16 +328,200 @@ fn handle_request(mut req: tiny_http::Request, target: Arc<Mutex<Option<String>>
         } else {
             format!("{tag}{html}")
         };
-        injected.into_bytes()
+        Bytes::from(injected.into_bytes())
     } else {
-        body
+        body_bytes
     };
 
-    let status = StatusCode(status_code);
-    let body_len = final_body.len();
-    let cursor = std::io::Cursor::new(final_body);
-    let response = Response::new(status, headers_out, cursor, Some(body_len), None);
-    let _ = req.respond(response);
+    let mut builder =
+        Response::builder().status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK));
+    for (n, v) in response_headers {
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::try_from(n.as_bytes()),
+            HeaderValue::from_str(&v),
+        ) {
+            builder = builder.header(name, val);
+        }
+    }
+    builder
+        .body(full_body(final_body))
+        .unwrap_or_else(|_| internal_error())
+}
+
+async fn handle_websocket(
+    req: Request<Incoming>,
+    target_origin: String,
+) -> Response<BodyResp> {
+    // Validate WS handshake fields.
+    let key = match req
+        .headers()
+        .get(SEC_WEBSOCKET_KEY)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+    {
+        Some(k) if !k.is_empty() => k,
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "Bad WebSocket request",
+                "Missing Sec-WebSocket-Key header.",
+                None,
+                None,
+            );
+        }
+    };
+
+    let subprotocol = req
+        .headers()
+        .get(SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let path_and_query = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "/".into());
+
+    // Build upstream WS URL by swapping http(s) → ws(s) on the configured target.
+    let upstream_url = if let Some(rest) = target_origin.strip_prefix("http://") {
+        format!("ws://{rest}{path_and_query}")
+    } else if let Some(rest) = target_origin.strip_prefix("https://") {
+        format!("wss://{rest}{path_and_query}")
+    } else {
+        return error_response(
+            StatusCode::BAD_GATEWAY,
+            "Bad target",
+            "Target origin scheme is unsupported.",
+            Some(&target_origin),
+            None,
+        );
+    };
+
+    // Build the upstream WS request, propagating any subprotocol the client asked for.
+    let mut upstream_request = match upstream_url.as_str().into_client_request() {
+        Ok(r) => r,
+        Err(e) => {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                "Upstream WS request failed",
+                &format!("Could not build upstream WebSocket request: {e}"),
+                Some(&upstream_url),
+                None,
+            );
+        }
+    };
+    if let Some(ref sp) = subprotocol {
+        if let Ok(v) = HeaderValue::from_str(sp) {
+            upstream_request
+                .headers_mut()
+                .insert(SEC_WEBSOCKET_PROTOCOL, v);
+        }
+    }
+
+    let (upstream_ws, upstream_resp) =
+        match tokio_tungstenite::connect_async(upstream_request).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                return error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "Can't reach the dev server",
+                    &format!("WebSocket connect failed: {e}"),
+                    Some(&upstream_url),
+                    Some("<b>Tip:</b> make sure your dev server is running and supports WebSocket connections (HMR)."),
+                );
+            }
+        };
+
+    // Echo whichever subprotocol the upstream actually accepted (if any).
+    let accepted_protocol = upstream_resp
+        .headers()
+        .get(SEC_WEBSOCKET_PROTOCOL)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    // Spawn the bridge once the client side completes the upgrade.
+    let on_upgrade = hyper::upgrade::on(req);
+    tokio::spawn(async move {
+        let upgraded = match on_upgrade.await {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        let upgraded = TokioIo::new(upgraded);
+        let client_ws = WebSocketStream::from_raw_socket(upgraded, Role::Server, None).await;
+        bridge_ws(client_ws, upstream_ws).await;
+    });
+
+    // Build the 101 response for the client.
+    let accept = derive_accept_key(key.as_bytes());
+    let mut builder = Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header(UPGRADE, "websocket")
+        .header(CONNECTION, "upgrade")
+        .header(SEC_WEBSOCKET_ACCEPT, accept);
+    if let Some(p) = accepted_protocol {
+        if let Ok(v) = HeaderValue::from_str(&p) {
+            builder = builder.header(SEC_WEBSOCKET_PROTOCOL, v);
+        }
+    }
+    builder
+        .body(empty_body())
+        .unwrap_or_else(|_| internal_error())
+}
+
+async fn bridge_ws<S1, S2>(client: WebSocketStream<S1>, upstream: WebSocketStream<S2>)
+where
+    S1: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    S2: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut client_tx, mut client_rx) = client.split();
+    let (mut upstream_tx, mut upstream_rx) = upstream.split();
+
+    // Forward in both directions until either side closes.
+    let c2u = async {
+        while let Some(msg) = client_rx.next().await {
+            match msg {
+                Ok(m) => {
+                    if upstream_tx.send(m).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = upstream_tx.close().await;
+    };
+    let u2c = async {
+        while let Some(msg) = upstream_rx.next().await {
+            match msg {
+                Ok(m) => {
+                    if client_tx.send(m).await.is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = client_tx.close().await;
+    };
+    tokio::join!(c2u, u2c);
+}
+
+fn cors_preflight() -> Response<BodyResp> {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("access-control-allow-origin", "*")
+        .header("access-control-allow-methods", "GET,POST,PUT,DELETE,OPTIONS")
+        .header("access-control-allow-headers", "*")
+        .body(empty_body())
+        .unwrap_or_else(|_| internal_error())
+}
+
+fn internal_error() -> Response<BodyResp> {
+    Response::builder()
+        .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .body(empty_body())
+        .unwrap()
 }
 
 fn describe_error(err: &reqwest::Error) -> (String, String, String) {
@@ -288,34 +554,28 @@ fn describe_error(err: &reqwest::Error) -> (String, String, String) {
     }
 }
 
-fn cors_headers() -> Vec<Header> {
-    vec![
-        Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap(),
-        Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"GET,POST,PUT,DELETE,OPTIONS"[..]).unwrap(),
-        Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"*"[..]).unwrap(),
-    ]
-}
-
-fn respond_error(
-    req: tiny_http::Request,
-    status: u16,
+fn error_response(
+    status: StatusCode,
     title: &str,
     detail: &str,
     target: Option<&str>,
     hint: Option<&str>,
-) {
+) -> Response<BodyResp> {
     let html = render_error_page(title, detail, target, hint);
-    let mut response = Response::from_string(html).with_status_code(status);
-    if let Ok(h) = Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..]) {
-        response.add_header(h);
-    }
-    if let Ok(h) = Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]) {
-        response.add_header(h);
-    }
-    let _ = req.respond(response);
+    Response::builder()
+        .status(status)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("access-control-allow-origin", "*")
+        .body(full_body(html))
+        .unwrap_or_else(|_| internal_error())
 }
 
-fn render_error_page(title: &str, detail: &str, target: Option<&str>, hint: Option<&str>) -> String {
+fn render_error_page(
+    title: &str,
+    detail: &str,
+    target: Option<&str>,
+    hint: Option<&str>,
+) -> String {
     let target_block = target
         .map(|t| format!(r#"<code class="target">{}</code>"#, html_escape(t)))
         .unwrap_or_default();

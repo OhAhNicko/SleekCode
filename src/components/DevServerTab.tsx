@@ -8,7 +8,7 @@ import { BiRefresh } from "react-icons/bi";
 import { useAppStore } from "../store";
 import ServersPanel from "./ServersPanel";
 import { getPtyWrite } from "../store/terminalSlice";
-import { findAllBrowserPanes, addBrowserPaneRight, generateTerminalId } from "../lib/layout-utils";
+import { openOrUpdateBrowserPane, generateTerminalId } from "../lib/layout-utils";
 import type { DevServer } from "../types";
 import { getServerCommandSuggestions, BUILTIN_SERVER_COMMANDS, injectPort } from "../lib/server-commands";
 
@@ -229,24 +229,24 @@ function UrlPopover({
   );
 }
 
-/** Open a browser preview pane on the far right of a tab */
+/** Open or retarget the (single) browser preview pane in a tab. Enforces the
+ *  one-pane invariant: if a pane already exists, its URL is updated in place
+ *  rather than spawning a duplicate. */
 function openBrowserInTab(tabId: string, url: string) {
   const store = useAppStore.getState();
   const tab = store.tabs.find((t) => t.id === tabId);
-  if (!tab) return;
-
-  if (!tab.layout) return;
-  const existingBrowsers = findAllBrowserPanes(tab.layout);
-  const baseUrl = url.replace(/\/$/, "");
-  if (existingBrowsers.some((b) => b.url.replace(/\/$/, "") === baseUrl)) {
-    store.setActiveTab(tabId);
-    return;
-  }
+  if (!tab || !tab.layout) return;
 
   // Link to this tab so the browser pane mirrors the live dev-server URL
   // (and shows the "Waiting for dev server" state if we ever open it before
   // the port is bound).
-  const { layout } = addBrowserPaneRight(tab.layout, url, 35, tabId);
+  const { layout } = openOrUpdateBrowserPane(tab.layout, url, {
+    linkedTabId: tabId,
+    sizePercent: 35,
+    fullColumn: store.browserFullColumn,
+    spawnLeft: store.browserSpawnLeft,
+    wideGridLayout: store.wideGridLayout,
+  });
   store.updateTabLayout(tabId, layout);
   store.setActiveTab(tabId);
 }
