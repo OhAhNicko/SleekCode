@@ -6,6 +6,7 @@ import {
   addPaneAsGrid,
   findAllTerminalIds,
   findAllTerminalLeaves,
+  findAllBrowserPanes,
   findPaneIdForTerminal,
   removePane,
   redistributeEqually,
@@ -20,11 +21,12 @@ import { getPtyWrite } from "../store/terminalSlice";
 import { snapshotPane } from "../store/undoCloseStore";
 import type { CommandBlock } from "../lib/command-block-parser";
 import PaneGrid from "./PaneGrid";
+import BrowserPreview from "./BrowserPreview";
 import TerminalPane, { suppressFocusTerminals } from "./TerminalPane";
 import ToolSelector from "./ToolSelector";
 import EmptyTabLauncher from "./EmptyTabLauncher";
 import FloatingPanesLayer from "./FloatingPanesLayer";
-import type { RenderLeafCallbacks } from "../lib/render-pane";
+import { type RenderLeafCallbacks, parkSlot } from "../lib/render-pane";
 
 interface WorkspaceProps {
   tab: Tab;
@@ -113,6 +115,43 @@ export default function Workspace({ tab }: WorkspaceProps) {
       }
     }
   }, [allTerminalIds]);
+
+  // Persistent slot divs per browser-preview pane — keep iframe alive across
+  // layout restructures (any pane open/close re-runs PaneGrid.renderPane and
+  // changes element types in the React tree, which would otherwise unmount
+  // BrowserPreview and reload its iframe).
+  const browserSlotMapRef = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  const getBrowserSlotEl = useCallback((paneId: string): HTMLDivElement => {
+    let el = browserSlotMapRef.current.get(paneId);
+    if (!el) {
+      el = document.createElement("div");
+      el.style.width = "100%";
+      el.style.height = "100%";
+      // Park immediately so the slot is attached to the document from creation.
+      // Once the placeholder ref fires, it'll be moved into the placeholder.
+      parkSlot(el);
+      browserSlotMapRef.current.set(paneId, el);
+    }
+    return el;
+  }, []);
+
+  // Active browser panes derived from layout (used to drive portal mounts)
+  const allBrowserPanes = useMemo(
+    () => (tab.layout ? findAllBrowserPanes(tab.layout) : []),
+    [tab.layout]
+  );
+
+  // Cleanup slots for removed browser panes
+  useEffect(() => {
+    const activeSet = new Set(allBrowserPanes.map((p) => p.id));
+    for (const [id, el] of browserSlotMapRef.current) {
+      if (!activeSet.has(id)) {
+        el.remove();
+        browserSlotMapRef.current.delete(id);
+      }
+    }
+  }, [allBrowserPanes]);
 
   const handleLayoutChange = useCallback(
     (layout: PaneLayout | null) => {
@@ -226,7 +265,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
     onClose: handlePaneClose,
     onKanbanReposition: handleKanbanReposition,
     getTerminalSlot: getSlotEl,
-  }), [handlePaneClose, handleKanbanReposition, getSlotEl]);
+    getBrowserSlot: getBrowserSlotEl,
+  }), [handlePaneClose, handleKanbanReposition, getSlotEl, getBrowserSlotEl]);
 
 
 
@@ -539,6 +579,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
         tabId={tab.id}
         onLayoutChange={handleLayoutChange}
         getTerminalSlot={getSlotEl}
+        getBrowserSlot={getBrowserSlotEl}
       />
       <FloatingPanesLayer
         layout={tab.layout}
@@ -583,6 +624,19 @@ export default function Workspace({ tab }: WorkspaceProps) {
           />,
           slotEl,
           termId
+        );
+      })}
+      {/* Render browser previews via portals into persistent slot elements.
+          Keeps the iframe alive when the layout tree restructures. */}
+      {allBrowserPanes.map((pane) => {
+        const slotEl = getBrowserSlotEl(pane.id);
+        return createPortal(
+          <BrowserPreview
+            initialUrl={pane.url}
+            onClose={() => handlePaneClose(pane.id)}
+          />,
+          slotEl,
+          pane.id
         );
       })}
     </div>

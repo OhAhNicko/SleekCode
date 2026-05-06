@@ -127,7 +127,7 @@ function NavButton({
             ? "var(--ezy-border)"
             : "transparent",
         color: active
-          ? "var(--ezy-accent)"
+          ? "#ffffff"
           : hovered && hoverColor
             ? hoverColor
             : "var(--ezy-text-muted)",
@@ -215,6 +215,12 @@ export default function BrowserPreview({
     () => localStorage.getItem("ezydev-devtools-pinned") === "true" ? "console" : null
   );
   const lastTabRef = useRef<DevtoolsTab>("console");
+  const [devtoolsHeight, setDevtoolsHeight] = useState<number>(() => {
+    const saved = Number(localStorage.getItem("ezydev-devtools-height"));
+    return Number.isFinite(saved) && saved >= 80 ? saved : 220;
+  });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const resizingRef = useRef(false);
 
   /* ---- Console ---- */
   const [consoleEntries, setConsoleEntries] = useState<ConsoleEntry[]>([]);
@@ -560,6 +566,42 @@ export default function BrowserPreview({
 
   const togglePin = useCallback(() => setDevtoolsPinned((v) => !v), []);
 
+  /* ---- DevTools resize ---- */
+
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    resizingRef.current = true;
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+
+    const onMove = (ev: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const container = containerRef.current;
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      // Distance from cursor to bottom of container = new panel height.
+      // Reserve ~120px for URL bar + iframe minimum.
+      const next = Math.max(80, Math.min(rect.bottom - ev.clientY, rect.height - 120));
+      setDevtoolsHeight(next);
+    };
+
+    const onUp = () => {
+      resizingRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      // Persist final height
+      setDevtoolsHeight((h) => {
+        localStorage.setItem("ezydev-devtools-height", String(h));
+        return h;
+      });
+    };
+
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, []);
+
   /* ---- Viewport dimensions ---- */
 
   const getViewportDims = (): { width: number; height: number } | null => {
@@ -614,6 +656,7 @@ export default function BrowserPreview({
 
   return (
     <div
+      ref={containerRef}
       className="flex flex-col h-full w-full"
       style={{ backgroundColor: "var(--ezy-bg)" }}
     >
@@ -833,11 +876,25 @@ export default function BrowserPreview({
         <div
           className="flex flex-col"
           style={{
-            height: 220,
+            height: devtoolsHeight,
             borderTop: "1px solid var(--ezy-border)",
             backgroundColor: "var(--ezy-surface)",
+            flexShrink: 0,
           }}
         >
+          {/* Resize handle */}
+          <div
+            onMouseDown={startResize}
+            title="Drag to resize"
+            style={{
+              height: 4,
+              marginTop: -2,
+              marginBottom: -2,
+              cursor: "row-resize",
+              flexShrink: 0,
+              zIndex: 1,
+            }}
+          />
           {/* Tab header */}
           <div
             className="flex items-center gap-1 select-none"
@@ -866,7 +923,7 @@ export default function BrowserPreview({
                       : "transparent",
                   color:
                     devtoolsTab === tab
-                      ? "var(--ezy-accent)"
+                      ? "#ffffff"
                       : "var(--ezy-text-muted)",
                   fontWeight: devtoolsTab === tab ? 600 : 400,
                   fontFamily: "inherit",
@@ -883,7 +940,7 @@ export default function BrowserPreview({
                 style={{
                   fontSize: 10, padding: "1px 6px", borderRadius: 8,
                   backgroundColor: "var(--ezy-accent-dim)",
-                  color: "var(--ezy-accent)", marginLeft: 2,
+                  color: "#ffffff", marginLeft: 2, fontWeight: 600,
                 }}
               >
                 live

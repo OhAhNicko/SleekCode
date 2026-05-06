@@ -100,10 +100,6 @@ export async function insertImagePath(winPath: string): Promise<string | null> {
   const filePath = await resolveImagePath(winPath, "clipboard");
   if (!filePath) return null;
 
-  // Append a trailing space so the user can immediately start typing
-  // without the next character colliding with the path.
-  const insertion = filePath + " ";
-
   // Register a display mask BEFORE writing so the echo (if enabled in settings)
   // can be rewritten to [Image #N] when the shell echoes the path back.
   const images = useClipboardImageStore.getState().images;
@@ -111,7 +107,20 @@ export async function insertImagePath(winPath: string): Promise<string | null> {
   const imageNumber = idx >= 0 ? idx + 1 : images.length + 1;
   registerImageMask(activeTerminal.id, filePath, imageNumber);
 
-  writeFn(insertion);
+  // For CLI TUIs (Claude/Codex/Gemini) wrap in bracketed paste so the TUI
+  // ingests the path as a single paste atom and renders [Image #N] cleanly.
+  // Without it, raw character input leaves an invisible whitespace gap where
+  // the rest of the path would visually sit.
+  const isCli =
+    activeTerminal.type === "claude" ||
+    activeTerminal.type === "codex" ||
+    activeTerminal.type === "gemini";
+  const insertion = isCli ? filePath : filePath + " ";
+  if (isCli) {
+    writeFn("\x1b[200~" + filePath + "\x1b[201~");
+  } else {
+    writeFn(insertion);
+  }
 
   // Record for undo (includes the trailing space so undo removes both)
   useClipboardImageStore.getState().setLastInsertion({

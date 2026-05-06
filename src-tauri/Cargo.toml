@@ -1,6 +1,6 @@
 [package]
 name = "ezydev"
-version = "0.1.45"
+version = "0.1.46"
 description = "AI Terminal Workspace"
 authors = ["you"]
 edition = "2021"

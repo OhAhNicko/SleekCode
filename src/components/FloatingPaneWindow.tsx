@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PaneLayout, FloatRect } from "../types";
 import { useAppStore } from "../store";
-import { renderLeafPane, type RenderLeafCallbacks, mountTerminalSlot } from "../lib/render-pane";
+import { renderLeafPane, type RenderLeafCallbacks, mountTerminalSlot, mountSlot, parkSlot } from "../lib/render-pane";
 import { animateRect, FLIP_DURATION, FLIP_EASING } from "../lib/flip";
 
 const MIN_W = 320;
@@ -117,13 +117,25 @@ export default function FloatingPaneWindow({
     }
   }, [mode, floatRect]);
 
-  // Mount terminal slot into the floating wrapper for terminal nodes
+  // Mount persistent slot into the floating wrapper for slot-backed pane types
+  // (terminals + browser previews). This is what keeps the iframe / xterm DOM
+  // alive across expand/float/grid transitions.
   useLayoutEffect(() => {
-    if (node.type !== "terminal") return;
     const el = slotMountTargetRef.current;
     if (!el) return;
-    const slot = callbacks.getTerminalSlot(node.terminalId);
-    mountTerminalSlot(el, slot);
+    if (node.type === "terminal") {
+      mountTerminalSlot(el, callbacks.getTerminalSlot(node.terminalId));
+      return;
+    }
+    if (node.type === "browser") {
+      const slot = callbacks.getBrowserSlot(node.id);
+      mountSlot(el, slot);
+      return () => {
+        // Park before unmount so the slot stays document-attached and the
+        // iframe inside doesn't reload when going expand → grid (or close).
+        parkSlot(slot);
+      };
+    }
   }, [node, callbacks]);
 
   // ----- Drag (header) -----
@@ -352,7 +364,7 @@ export default function FloatingPaneWindow({
         {buttons}
       </div>
       <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        {node.type === "terminal" ? (
+        {node.type === "terminal" || node.type === "browser" ? (
           <div ref={slotMountTargetRef} className="h-full w-full" />
         ) : (
           renderLeafPane(node, callbacks)

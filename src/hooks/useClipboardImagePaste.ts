@@ -59,7 +59,18 @@ export function useClipboardImagePaste({
         const filePath = await resolveImagePath(latestImage.winPath, "clipboard");
         if (filePath) {
           const label = getImageLabel(latestImage.winPath);
-          write(filePath);
+          // For CLI TUIs (Claude/Codex/Gemini) wrap in bracketed paste so the
+          // TUI renders [Image #N] cleanly without trailing whitespace where
+          // the path would visually sit.
+          const isCli =
+            terminalType === "claude" ||
+            terminalType === "codex" ||
+            terminalType === "gemini";
+          if (isCli) {
+            write("\x1b[200~" + filePath + "\x1b[201~");
+          } else {
+            write(filePath);
+          }
           setPastedImage({ thumbnailUrl: latestImage.dataUri, filePath: label });
 
           store.setLastInsertion({

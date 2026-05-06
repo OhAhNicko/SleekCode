@@ -1,5 +1,4 @@
 import type { PaneLayout } from "../types";
-import BrowserPreview from "../components/BrowserPreview";
 import EditorPane from "../components/EditorPane";
 import KanbanBoard from "../components/KanbanBoard";
 import CodeReviewPane from "../components/CodeReviewPane";
@@ -11,6 +10,8 @@ export interface RenderLeafCallbacks {
   onKanbanReposition?: (vertical: boolean) => void;
   /** Returns the persistent slot element for a terminal (managed by Workspace). */
   getTerminalSlot: (terminalId: string) => HTMLDivElement;
+  /** Returns the persistent slot element for a browser preview (managed by Workspace). */
+  getBrowserSlot: (paneId: string) => HTMLDivElement;
 }
 
 /**
@@ -28,6 +29,43 @@ export function mountTerminalSlot(container: HTMLElement, slot: HTMLDivElement) 
     const scrollTop = parseFloat(saved);
     if (scrollTop > 0) viewport.scrollTop = scrollTop;
   }
+}
+
+/**
+ * Generic slot mount used by browser-preview panes. Reparents the slot DOM
+ * into `container` without unmounting it — the iframe inside survives.
+ */
+export function mountSlot(container: HTMLElement, slot: HTMLDivElement) {
+  if (slot.parentElement === container) return;
+  while (container.firstChild) container.removeChild(container.firstChild);
+  container.appendChild(slot);
+}
+
+/**
+ * Hidden "park" div under document.body. Slots live here while no placeholder
+ * is mounted (between layout reshuffles, tab switches, etc.). Keeping the slot
+ * permanently attached to the document is what stops iframes from reloading
+ * when the React tree restructures — per the HTML spec, an iframe disconnected
+ * from a Document closes its navigation context.
+ */
+const SLOT_PARK_ID = "ezydev-slot-park";
+
+export function getSlotPark(): HTMLDivElement {
+  let park = document.getElementById(SLOT_PARK_ID) as HTMLDivElement | null;
+  if (!park) {
+    park = document.createElement("div");
+    park.id = SLOT_PARK_ID;
+    park.style.cssText =
+      "position:absolute;left:-9999px;top:-9999px;width:0;height:0;overflow:hidden;pointer-events:none;";
+    document.body.appendChild(park);
+  }
+  return park;
+}
+
+/** Move a slot back to the park — call this when its placeholder is unmounting. */
+export function parkSlot(slot: HTMLDivElement) {
+  const park = getSlotPark();
+  if (slot.parentElement !== park) park.appendChild(slot);
 }
 
 /**
@@ -52,10 +90,12 @@ export function renderLeafPane(
 
   if (node.type === "browser") {
     return (
-      <BrowserPreview
+      <div
         key={node.id}
-        initialUrl={node.url}
-        onClose={() => cb.onClose(node.id)}
+        className="h-full w-full"
+        ref={(el) => {
+          if (el) mountSlot(el, cb.getBrowserSlot(node.id));
+        }}
       />
     );
   }
