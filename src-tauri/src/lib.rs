@@ -4061,7 +4061,14 @@ case "$_chain" in *statusline-wrapper*) _chain="" ;; esac
 if [ -n "$_chain" ] && [ -x "$_chain" ]; then
   echo "$input" | "$_chain"
 else
-  echo "$input"
+  # No user statusline configured — emit a minimal one-liner instead of the
+  # raw JSON (Claude Code renders this directly in the prompt area, so dumping
+  # the JSON would leak {"session_id":...,"cwd":...} into the user's view).
+  cwd=$(printf '%s' "$input" | sed -n 's/.*"cwd":"\([^"]*\)".*/\1/p')
+  base="${cwd##*/}"
+  if [ -n "$base" ]; then
+    printf '%s' "$base"
+  fi
 fi
 "#;
 
@@ -6004,7 +6011,7 @@ async fn get_gemini_session_id_ssh(
 
 /// Bundled wrapper version. Bumping this number forces a re-install on the
 /// remote on next call so wrapper drift is self-healing.
-const SSH_STATUSLINE_WRAPPER_VERSION: u32 = 1;
+const SSH_STATUSLINE_WRAPPER_VERSION: u32 = 2;
 
 /// Install the EzyDev statusline wrapper on a remote SSH host. Idempotent:
 /// if `~/.ezydev/statusline-wrapper.version` already matches the bundled
@@ -6025,7 +6032,14 @@ case "$_chain" in *statusline-wrapper*) _chain="" ;; esac
 if [ -n "$_chain" ] && [ -x "$_chain" ]; then
   echo "$input" | "$_chain"
 else
-  echo "$input"
+  # No user statusline configured — emit a minimal one-liner instead of the
+  # raw JSON (echoing $input would leak the session_id/cwd payload into the
+  # Claude prompt area).
+  cwd=$(printf '%s' "$input" | sed -n 's/.*"cwd":"\([^"]*\)".*/\1/p')
+  base="${cwd##*/}"
+  if [ -n "$base" ]; then
+    printf '%s' "$base"
+  fi
 fi
 "#;
     use base64::Engine;
