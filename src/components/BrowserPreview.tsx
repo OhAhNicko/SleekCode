@@ -214,8 +214,6 @@ export default function BrowserPreview({
   const linkedLiveUrl = linkedReady
     ? `http://localhost:${linkedDevServer!.port}`
     : null;
-  // Show waiting state only when the pane is linked and not yet ready.
-  const showWaiting = !!linkedTabId && !linkedReady;
 
   /* ---- URL & History ---- */
   // For linked panes, prefer the live URL once known; otherwise fall back to
@@ -225,6 +223,21 @@ export default function BrowserPreview({
   const [inputUrl, setInputUrl] = useState(initialResolvedUrl);
   const [history, setHistory] = useState<string[]>([initialResolvedUrl]);
   const [historyIndex, setHistoryIndex] = useState(0);
+
+  // Only block the iframe with the "waiting for dev server" overlay when:
+  //  1. The pane is linked to a tab, AND
+  //  2. EzyDev actually tracks a dev server for that tab (not external), AND
+  //  3. That dev server isn't reporting a real port yet, AND
+  //  4. We don't already have a concrete URL to try.
+  // If any of these is false, render the iframe — let the user view a saved
+  // URL, an externally-managed server, or whatever they typed in the address
+  // bar. Otherwise we lock them out of working pages.
+  const hasUsableUrl = !!url && url !== "about:blank" && url.trim() !== "";
+  const showWaiting =
+    !!linkedTabId &&
+    !!linkedDevServer &&
+    !linkedReady &&
+    !hasUsableUrl;
 
   // When the linked dev server transitions to ready, navigate the pane to its
   // live URL. Re-runs only when liveUrl actually changes (rare port change on

@@ -25,7 +25,6 @@ import { resolveWslCliPaths } from "./lib/wsl-cache";
 import { resolveWindowsCliPaths } from "./lib/windows-cli-cache";
 import { resolveNativeCliPaths } from "./lib/macos-cli-cache";
 import { installStatuslineWrapper } from "./lib/statusline-setup";
-import { generateTerminalId } from "./lib/layout-utils";
 import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
 import { useFileDrop } from "./hooks/useFileDrop";
 import { useAiTimeTracker } from "./hooks/useAiTimeTracker";
@@ -367,40 +366,32 @@ export default function App() {
     invoke("cleanup_clipboard_images", { maxAgeSecs: 86400 }).catch(() => {});
   }, []);
 
-  // Restore dev servers from persisted tabs on app startup
+  // Restore dev servers from persisted tabs on app startup. Delegates to
+  // spawnDevServer (the same helper used by quick-open) so the SSH path is
+  // identical between "open project from recent" and "app restart with
+  // restoreLastSession". Loud console.warn logs are intentional — set
+  // `localStorage.setItem("ezydev.silenceDevServerRestore","1")` to mute.
   useEffect(() => {
     const state = useAppStore.getState();
-    // [DIAG-SSH-RESUME] temporary: log every restored project tab + its layout's
-    // session-resume IDs so we can verify persistence. Remove once verified.
-    try {
-      const projectTabs = state.tabs.filter(
-        (t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab && t.workingDir
-      );
-      const findSessionIds = (layout: import("./types").PaneLayout | null | undefined): Array<{ terminalId: string; terminalType?: string; sessionResumeId?: string }> => {
-        if (!layout) return [];
-        if (layout.type === "terminal") {
-          return [{ terminalId: layout.terminalId, terminalType: layout.terminalType, sessionResumeId: layout.sessionResumeId }];
-        }
-        if (layout.type === "split") {
-          return [...findSessionIds(layout.children[0]), ...findSessionIds(layout.children[1])];
-        }
-        return [];
-      };
-      console.log("[DIAG-SSH-RESUME] App.tsx restore — project tabs:", projectTabs.map((t) => ({
-        tabId: t.id,
-        name: t.name,
-        workingDir: t.workingDir,
-        serverId: t.serverId,
-        serverCommand: t.serverCommand,
-        leaves: findSessionIds(t.layout),
-      })));
-    } catch (e) {
-      console.warn("[DIAG-SSH-RESUME] failed to log tabs", e);
-    }
+    const verbose = localStorage.getItem("ezydev.silenceDevServerRestore") !== "1";
+    const log = (msg: string, data?: unknown) =>
+      verbose && (data === undefined ? console.warn(`[DEV-SERVER-RESTORE] ${msg}`) : console.warn(`[DEV-SERVER-RESTORE] ${msg}`, data));
 
-    if (!state.autoStartServerCommand) return;
-    // Skip if dev servers already exist (not a fresh restore)
-    if (state.devServers.length > 0) return;
+    log("effect fired", {
+      autoStartServerCommand: state.autoStartServerCommand,
+      tabsCount: state.tabs.length,
+      devServersCount: state.devServers.length,
+      recentProjectsCount: state.recentProjects.length,
+    });
+
+    if (!state.autoStartServerCommand) {
+      log("aborting — autoStartServerCommand is OFF (toggle it in Settings)");
+      return;
+    }
+    if (state.devServers.length > 0) {
+      log("aborting — devServers already populated", state.devServers.map((d) => ({ id: d.id, tabId: d.tabId, serverId: d.serverId })));
+      return;
+    }
 
     // Key by (path + serverId) so a project at the same path on local vs SSH
     // host doesn't collide (mirrors flushTabLayoutsToRecent's key shape).
@@ -419,16 +410,30 @@ export default function App() {
       (t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab && t.workingDir
     );
 
+    log("project tabs eligible:", projectTabs.map((t) => ({
+      id: t.id,
+      name: t.name,
+      workingDir: t.workingDir,
+      serverId: t.serverId ?? "(local)",
+      serverCommand: t.serverCommand ?? "(none — will check recentProjects)",
+    })));
+
     const seenKeys = new Set<string>();
+    let spawned = 0;
     for (const tab of projectTabs) {
       const command =
         tab.serverCommand ||
         recentByKey.get(projectKey(tab.workingDir, tab.serverId));
-      if (!command) continue;
+      if (!command) {
+        log(`SKIP ${tab.name} — no serverCommand on tab and no match in recentProjects (key=${projectKey(tab.workingDir, tab.serverId)})`);
+        continue;
+      }
 
-      // Skip duplicate projects (same workingDir + serverId already spawned)
       const tabKey = projectKey(tab.workingDir, tab.serverId);
-      if (seenKeys.has(tabKey)) continue;
+      if (seenKeys.has(tabKey)) {
+        log(`SKIP ${tab.name} — duplicate of an already-spawned tab (key=${tabKey})`);
+        continue;
+      }
       seenKeys.add(tabKey);
 
       // Backfill serverCommand on the tab if it was only in recentProjects
@@ -440,20 +445,19 @@ export default function App() {
         }));
       }
 
-      const terminalId = generateTerminalId();
-      state.addTerminal(terminalId, "devserver", tab.workingDir, tab.serverId);
-      state.addDevServer({
-        id: `ds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        terminalId,
-        tabId: tab.id,
-        projectName: tab.name,
-        command,
-        workingDir: tab.workingDir,
-        port: 0,
-        status: "starting",
-        serverId: tab.serverId,
-      });
+      log(`SPAWN ${tab.name} → command="${command}" serverId=${tab.serverId ?? "(local)"} cwd=${tab.workingDir}`);
+      try {
+        // Delegate to the proven helper used by TabBar's quick-open path.
+        // It handles addTerminal+addDevServer with serverId correctly and
+        // dedupes via (workingDir + serverId).
+        spawnDevServer(tab.id, tab.name, tab.workingDir, command, tab.serverId);
+        spawned++;
+      } catch (err) {
+        log(`FAILED to spawn for ${tab.name}`, err);
+      }
     }
+
+    log(`done — spawned ${spawned} of ${projectTabs.length} project tabs`);
   }, []);
 
   // Intercept OS-level window close (Alt+F4, taskbar X). Always flush session state

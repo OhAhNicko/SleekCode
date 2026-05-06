@@ -47,16 +47,26 @@ mod win32_border {
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
     const DWMWCP_DONOTROUND: u32 = 1;
     const DWMWCP_ROUND: u32 = 2;
     const DWMWA_BORDER_COLOR: u32 = 34;
-    const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
+    /// Border color #0D0D0D as Windows COLORREF (0x00BBGGRR). Matches the app's
+    /// dark background — DWM still draws a 1px border but it's visually invisible.
+    /// We use this everywhere instead of DWMWA_COLOR_NONE because COLOR_NONE
+    /// (0xFFFFFFFE) is unreliable: DWM falls back to the system accent color
+    /// during drag-resize, maximize, snap, and activate transitions, causing
+    /// a visible flash. The dark COLORREF is honored by DWM on all builds.
+    const BORDER_COLOR_DARK: u32 = 0x000D0D0D;
     const WM_NCCALCSIZE: u32 = 0x0083;
     const WM_SIZE: u32 = 0x0005;
     const WM_ACTIVATE: u32 = 0x0006;
+    const WM_NCACTIVATE: u32 = 0x0086;
     const WM_SHOWWINDOW: u32 = 0x0018;
     const WM_WINDOWPOSCHANGED: u32 = 0x0047;
+    const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
+    const WM_DWMCOLORIZATIONCOLORCHANGED: u32 = 0x0320;
     const WM_NCPAINT: u32 = 0x0085;
     const WM_USER: u32 = 0x0400;
     const WM_WEBVIEW_REPAINT: u32 = WM_USER + 100;
@@ -97,12 +107,25 @@ mod win32_border {
         lppos: *mut c_void,
     }
 
+    #[repr(C)]
+    struct MARGINS {
+        cx_left_width: i32,
+        cx_right_width: i32,
+        cy_top_height: i32,
+        cy_bottom_height: i32,
+    }
+
     extern "system" {
         fn DwmSetWindowAttribute(
             hwnd: *mut c_void,
             dw_attribute: u32,
             pv_attribute: *const c_void,
             cb_attribute: u32,
+        ) -> i32;
+
+        fn DwmExtendFrameIntoClientArea(
+            hwnd: *mut c_void,
+            margins: *const MARGINS,
         ) -> i32;
 
         fn SetWindowSubclass(
@@ -147,6 +170,23 @@ mod win32_border {
         }
     }
 
+    /// Apply DWM border suppression: set border color to a near-black COLORREF
+    /// that visually matches the app background. Called from `remove_border()`
+    /// at startup AND from `subclass_proc` on every window-state transition,
+    /// because DWM resets the attribute during maximize/minimize/snap/activate
+    /// and during the modal drag-resize loop, causing the system accent color
+    /// to flash through the 1px DWM border for a frame or two.
+    #[inline]
+    unsafe fn apply_border_suppression(hwnd: *mut c_void) {
+        let dark: u32 = BORDER_COLOR_DARK;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &dark as *const u32 as *const c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+
     /// Window subclass proc that intercepts WM_NCCALCSIZE to remove the
     /// 1px top non-client border Windows draws on frameless windows.
     ///
@@ -173,20 +213,25 @@ mod win32_border {
         // surface after restore. We detect restore and post a deferred
         // message that forces a 1px resize cycle, which triggers
         // WebView2's put_Bounds and repaints the content.
-        // Aggressively re-apply border suppression on every window state change.
-        // Windows resets DWMWA_BORDER_COLOR during transitions (maximize, minimize,
-        // activate, snap) causing the system accent border to flash.
-        if msg == WM_SIZE || msg == WM_ACTIVATE || msg == WM_SHOWWINDOW
-           || msg == WM_WINDOWPOSCHANGED || msg == WM_NCCALCSIZE
+        // Aggressively re-apply DWM border suppression on every window state
+        // change. Windows resets DWMWA_BORDER_COLOR during transitions
+        // (drag-resize, maximize, minimize, activate, snap, theme change),
+        // causing the system accent color to flash through the 1px DWM border.
+        // We MUST use the dark COLORREF, NOT DWMWA_COLOR_NONE — the latter is
+        // unreliable on many Windows builds and is what was causing the flash.
+        if msg == WM_SIZE || msg == WM_ACTIVATE || msg == WM_NCACTIVATE
+           || msg == WM_SHOWWINDOW || msg == WM_WINDOWPOSCHANGED
+           || msg == WM_NCCALCSIZE || msg == WM_DWMCOMPOSITIONCHANGED
+           || msg == WM_DWMCOLORIZATIONCOLORCHANGED
         {
-            // First try COLOR_NONE (hides border entirely on supported builds)
-            let color_none: u32 = DWMWA_COLOR_NONE;
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_BORDER_COLOR,
-                &color_none as *const u32 as *const c_void,
-                std::mem::size_of::<u32>() as u32,
-            );
+            apply_border_suppression(hwnd);
+        }
+
+        // WM_NCACTIVATE: pass lparam = -1 to tell DefWindowProc not to redraw
+        // the non-client area. Without this, activating/deactivating the window
+        // can briefly repaint a 1px border in the inactive/active accent color.
+        if msg == WM_NCACTIVATE {
+            return DefSubclassProc(hwnd, msg, wparam, -1);
         }
 
         if msg == WM_SIZE {
@@ -300,7 +345,18 @@ mod win32_border {
 
     pub fn remove_border(hwnd: *mut c_void) {
         unsafe {
-            // 1) Enable rounded corners (Windows 11+)
+            // 1) Tell DWM this is a dark-mode window — without this, DWM picks
+            //    light-theme border colors during transitions even when the app
+            //    background is dark, producing a visible light line during resize.
+            let dark_mode: i32 = 1;
+            DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &dark_mode as *const i32 as *const c_void,
+                std::mem::size_of::<i32>() as u32,
+            );
+
+            // 2) Enable rounded corners (Windows 11+)
             let corner_pref = DWMWCP_ROUND;
             DwmSetWindowAttribute(
                 hwnd,
@@ -309,22 +365,29 @@ mod win32_border {
                 std::mem::size_of::<u32>() as u32,
             );
 
-            // 2) Set DWM border color to near-black so it blends with the dark app background.
-            //    DWMWA_COLOR_NONE (0xFFFFFFFE) is unreliable on some Windows builds —
-            //    the accent color still flashes during resize. A dark COLORREF hides it.
-            //    COLORREF is 0x00BBGGRR — #0D0D0D → 0x000D0D0D
-            let color: u32 = 0x000D0D0D;
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_BORDER_COLOR,
-                &color as *const u32 as *const c_void,
-                std::mem::size_of::<u32>() as u32,
-            );
+            // 3) Suppress the DWM accent border with a dark COLORREF that
+            //    blends into the app background. See apply_border_suppression
+            //    for why we don't use DWMWA_COLOR_NONE.
+            apply_border_suppression(hwnd);
 
-            // 3) Subclass the window to intercept WM_NCCALCSIZE and kill the top border
+            // 4) Explicitly DON'T extend the DWM frame into the client area.
+            //    Calling DwmExtendFrameIntoClientArea with all-zero margins
+            //    cancels any default frame extension DWM might apply, removing
+            //    one more source of edge artifacts during resize.
+            let zero_margins = MARGINS {
+                cx_left_width: 0,
+                cx_right_width: 0,
+                cy_top_height: 0,
+                cy_bottom_height: 0,
+            };
+            DwmExtendFrameIntoClientArea(hwnd, &zero_margins);
+
+            // 5) Subclass the window to intercept WM_NCCALCSIZE / WM_NCPAINT /
+            //    WM_NCACTIVATE and re-apply border suppression on every state
+            //    transition (DWM resets the attribute aggressively).
             SetWindowSubclass(hwnd, Some(subclass_proc), 1, 0);
 
-            // 4) Force Windows to recalculate the frame
+            // 6) Force Windows to recalculate the frame
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
             SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME);
             SetWindowPos(
@@ -6030,6 +6093,14 @@ fn preview_proxy_set_target(
     state.set_target(&url)
 }
 
+/// Open the WebView DevTools for the calling window. Callable from the
+/// frontend right-click menu so we always have an inspector handy in both
+/// debug and release builds (gated by the `devtools` Cargo feature).
+#[tauri::command]
+fn open_devtools(window: tauri::WebviewWindow) {
+    window.open_devtools();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -6039,7 +6110,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
         .setup(|app| {
             // Registry of active `ssh -N -L` port-forward processes for remote
             // dev servers (commands: ssh_forward_port_start / _stop).
@@ -6054,6 +6125,16 @@ pub fn run() {
                     app.manage(handle);
                 }
                 Err(e) => eprintln!("[ezydev] preview proxy failed to start: {e}"),
+            }
+
+            // Auto-open DevTools in debug builds so the diagnostic logs from
+            // the dev-server restore (and any frontend errors) are visible
+            // without an extra click. Production builds are unaffected.
+            #[cfg(debug_assertions)]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    window.open_devtools();
+                }
             }
 
 

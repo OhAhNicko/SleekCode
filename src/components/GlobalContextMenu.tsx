@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 
 interface MenuItem {
@@ -89,6 +90,12 @@ const KeyboardIcon = (
   </svg>
 );
 
+const DevToolsIcon = (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M5.28 4.22a.75.75 0 010 1.06L2.56 8l2.72 2.72a.75.75 0 11-1.06 1.06L.97 8.53a.75.75 0 010-1.06l3.25-3.25a.75.75 0 011.06 0zm5.44 0a.75.75 0 011.06 0l3.25 3.25a.75.75 0 010 1.06l-3.25 3.25a.75.75 0 11-1.06-1.06L13.44 8l-2.72-2.72a.75.75 0 010-1.06z"/>
+  </svg>
+);
+
 export default function GlobalContextMenu() {
   const [menu, setMenu] = useState<{ x: number; y: number; isTerminal: boolean } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -120,6 +127,20 @@ export default function GlobalContextMenu() {
 
     window.addEventListener("contextmenu", handler);
     return () => window.removeEventListener("contextmenu", handler);
+  }, []);
+
+  // Global F12 → open DevTools. Lives on the global menu component so it
+  // matches the shortcut hint shown in the menu row and survives panel
+  // remounts. Capture phase so terminal panes can't swallow it.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "F12" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
+        e.preventDefault();
+        invoke("open_devtools").catch(() => {});
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
   }, []);
 
   // Escape to dismiss
@@ -239,6 +260,12 @@ export default function GlobalContextMenu() {
         shortcut: "Ctrl+/",
         icon: KeyboardIcon,
         action: () => { window.dispatchEvent(new Event("ezydev:open-shortcuts")); close(); },
+      },
+      {
+        label: "Open DevTools",
+        shortcut: "F12",
+        icon: DevToolsIcon,
+        action: () => { invoke("open_devtools").catch(() => {}); close(); },
       },
     ],
   });

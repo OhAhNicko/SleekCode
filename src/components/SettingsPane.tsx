@@ -1566,7 +1566,6 @@ export default function SettingsPane() {
                 ref={searchInputRef}
                 type="text"
                 value={searchQuery}
-                placeholder="Search settings"
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
