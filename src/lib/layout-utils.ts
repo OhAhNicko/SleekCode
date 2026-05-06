@@ -630,9 +630,9 @@ export function repositionKanbanPane(layout: PaneLayout, vertical: boolean): Pan
  * Add a browser pane on the far right of the layout, taking full vertical height.
  * Wraps the entire existing layout in a horizontal split with the browser on the right.
  */
-export function addBrowserPaneRight(layout: PaneLayout, url: string, sizePercent = 35): { layout: PaneLayout; paneId: string } {
+export function addBrowserPaneRight(layout: PaneLayout, url: string, sizePercent = 35, linkedTabId?: string): { layout: PaneLayout; paneId: string } {
   const paneId = generatePaneId();
-  const browserPane: PaneBrowser = { type: "browser", id: paneId, url };
+  const browserPane: PaneBrowser = { type: "browser", id: paneId, url, linkedTabId };
   const newLayout: PaneSplit = {
     type: "split",
     id: generatePaneId(),
@@ -647,9 +647,9 @@ export function addBrowserPaneRight(layout: PaneLayout, url: string, sizePercent
  * Add a browser pane on the far left of the layout, taking full vertical height.
  * Wraps the entire existing layout in a horizontal split with the browser on the left.
  */
-export function addBrowserPaneLeft(layout: PaneLayout, url: string, sizePercent = 35): { layout: PaneLayout; paneId: string } {
+export function addBrowserPaneLeft(layout: PaneLayout, url: string, sizePercent = 35, linkedTabId?: string): { layout: PaneLayout; paneId: string } {
   const paneId = generatePaneId();
-  const browserPane: PaneBrowser = { type: "browser", id: paneId, url };
+  const browserPane: PaneBrowser = { type: "browser", id: paneId, url, linkedTabId };
   const newLayout: PaneSplit = {
     type: "split",
     id: generatePaneId(),
@@ -694,7 +694,7 @@ export function cloneLayoutWithFreshIds(
           sizes: node.sizes,
         } as PaneSplit;
       case "browser":
-        return { type: "browser", id: generatePaneId(), url: node.url } as PaneBrowser;
+        return { type: "browser", id: generatePaneId(), url: node.url, linkedTabId: node.linkedTabId } as PaneBrowser;
       case "kanban":
         return { type: "kanban", id: generatePaneId(), vertical: node.vertical } as PaneKanban;
       case "codereview":

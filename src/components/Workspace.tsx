@@ -496,6 +496,19 @@ export default function Workspace({ tab }: WorkspaceProps) {
     const toSpawn = leaves.filter((leaf) => !currentTerminals[leaf.terminalId]);
     if (toSpawn.length === 0) return;
     hasAutoSpawned.current = true;
+    // [DIAG-SSH-RESUME] temporary: confirm tab.serverId + leaf.sessionResumeId
+    // both reach addTerminals on restore. Remove once SSH resume is verified.
+    console.log("[DIAG-SSH-RESUME] Workspace auto-spawn", {
+      tabId: tab.id,
+      tabServerId: tab.serverId,
+      tabName: tab.name,
+      workingDir: tab.workingDir,
+      toSpawn: toSpawn.map((l) => ({
+        terminalId: l.terminalId,
+        terminalType: l.terminalType,
+        sessionResumeId: l.sessionResumeId,
+      })),
+    });
     addTerminals(
       toSpawn.map((leaf) => ({
         id: leaf.terminalId,
@@ -633,6 +646,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
         return createPortal(
           <BrowserPreview
             initialUrl={pane.url}
+            linkedTabId={pane.linkedTabId}
             onClose={() => handlePaneClose(pane.id)}
           />,
           slotEl,

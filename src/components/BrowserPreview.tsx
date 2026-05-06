@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { useAppStore } from "../store";
 import { useBrowserConsoleStore, type ConsoleEntry } from "../store/browserConsoleStore";
 import { FaCheck, FaChevronLeft, FaChevronRight, FaGlobe, FaExternalLinkAlt, FaCrosshairs, FaTerminal, FaDesktop, FaTrash, FaLock, FaLockOpen, FaBug } from "react-icons/fa";
 import { FaArrowsRotate, FaXmark } from "react-icons/fa6";
@@ -14,6 +15,10 @@ import PaneExpandButton from "./PaneExpandButton";
 interface BrowserPreviewProps {
   initialUrl: string;
   onClose: () => void;
+  /** When set, the pane mirrors the live dev-server URL of this tab. While the
+   *  server isn't ready yet, the iframe area shows a "Waiting for dev server"
+   *  placeholder instead of attempting to load an unreachable URL. */
+  linkedTabId?: string;
 }
 
 interface NetworkEntry {
@@ -193,12 +198,48 @@ const statusColor = (status: number): string => {
 export default function BrowserPreview({
   initialUrl,
   onClose,
+  linkedTabId,
 }: BrowserPreviewProps) {
+  /* ---- Linked dev server (live URL + waiting state) ---- */
+  // Subscribe to the dev server attached to linkedTabId. The pane is "ready"
+  // when the server reports running with a real port — for SSH this is the
+  // forwarded local port set by DevServerTerminalHost after the tunnel binds.
+  const linkedDevServer = useAppStore((s) =>
+    linkedTabId ? s.devServers.find((d) => d.tabId === linkedTabId) : undefined
+  );
+  const linkedReady =
+    !!linkedDevServer &&
+    linkedDevServer.status === "running" &&
+    linkedDevServer.port > 0;
+  const linkedLiveUrl = linkedReady
+    ? `http://localhost:${linkedDevServer!.port}`
+    : null;
+  // Show waiting state only when the pane is linked and not yet ready.
+  const showWaiting = !!linkedTabId && !linkedReady;
+
   /* ---- URL & History ---- */
-  const [url, setUrl] = useState(initialUrl);
-  const [inputUrl, setInputUrl] = useState(initialUrl);
-  const [history, setHistory] = useState<string[]>([initialUrl]);
+  // For linked panes, prefer the live URL once known; otherwise fall back to
+  // initialUrl (which may be about:blank or a stored URL from a saved layout).
+  const initialResolvedUrl = linkedLiveUrl ?? initialUrl;
+  const [url, setUrl] = useState(initialResolvedUrl);
+  const [inputUrl, setInputUrl] = useState(initialResolvedUrl);
+  const [history, setHistory] = useState<string[]>([initialResolvedUrl]);
   const [historyIndex, setHistoryIndex] = useState(0);
+
+  // When the linked dev server transitions to ready, navigate the pane to its
+  // live URL. Re-runs only when liveUrl actually changes (rare port change on
+  // restart) so the user's manual in-iframe navigation isn't disrupted.
+  const lastAppliedLiveUrlRef = useRef<string | null>(linkedLiveUrl);
+  useEffect(() => {
+    if (!linkedTabId) return;
+    if (!linkedLiveUrl) return;
+    if (lastAppliedLiveUrlRef.current === linkedLiveUrl) return;
+    lastAppliedLiveUrlRef.current = linkedLiveUrl;
+    setUrl(linkedLiveUrl);
+    setInputUrl(linkedLiveUrl);
+    setHistory((h) => (h[h.length - 1] === linkedLiveUrl ? h : [...h, linkedLiveUrl]));
+    setHistoryIndex((_) => 0);
+  }, [linkedLiveUrl, linkedTabId]);
 
   /* ---- Viewport ---- */
   const [viewportMode, setViewportMode] =
@@ -860,14 +901,18 @@ export default function BrowserPreview({
               : { width: "100%", height: "100%" }
           }
         >
-          <iframe
-            key={iframeKey}
-            ref={iframeRef}
-            src={iframeSrc}
-            title="Browser Preview"
-            className="w-full h-full border-none"
-            style={{ backgroundColor: "#ffffff" }}
-          />
+          {showWaiting ? (
+            <DevServerWaitingState devServer={linkedDevServer ?? null} />
+          ) : (
+            <iframe
+              key={iframeKey}
+              ref={iframeRef}
+              src={iframeSrc}
+              title="Browser Preview"
+              className="w-full h-full border-none"
+              style={{ backgroundColor: "#ffffff" }}
+            />
+          )}
         </div>
       </div>
 
@@ -1339,6 +1384,144 @@ function StorageSection({
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  DevServerWaitingState — shown in linked browser panes while the    */
+/*  dev server hasn't reached "running" with a real port yet. Replaces */
+/*  the iframe to avoid the "can't reach page" race.                   */
+/* ------------------------------------------------------------------ */
+
+function DevServerWaitingState({
+  devServer,
+}: {
+  devServer:
+    | {
+        status: "starting" | "running" | "stopped" | "error";
+        port: number;
+        command?: string;
+        projectName?: string;
+        errorMessage?: string;
+        serverId?: string;
+      }
+    | null;
+}) {
+  // Map dev-server state to a one-line human description. Cyan/emerald/red
+  // only — CLAUDE.md bans amber/yellow/blue, and tinted soft badges.
+  const status = devServer?.status ?? "starting";
+  const port = devServer?.port ?? 0;
+  const isError = status === "error" || status === "stopped";
+
+  let statusLine: string;
+  if (isError && devServer?.errorMessage) {
+    statusLine = devServer.errorMessage;
+  } else if (status === "stopped") {
+    statusLine = "Dev server stopped.";
+  } else if (status === "error") {
+    statusLine = "Dev server failed to start.";
+  } else if (port === 0) {
+    statusLine = "Starting — detecting port…";
+  } else if (devServer?.serverId) {
+    statusLine = "Opening SSH tunnel…";
+  } else {
+    statusLine = "Connecting…";
+  }
+
+  const accent = isError ? "var(--ezy-red, #d13b3b)" : "var(--ezy-accent)";
+
+  return (
+    <div
+      className="w-full h-full flex items-center justify-center"
+      style={{
+        backgroundColor: "var(--ezy-surface)",
+        color: "var(--ezy-text)",
+        // Subtle vignette for atmosphere — keeps the area from feeling like a
+        // blank crash page when the iframe is intentionally not loaded yet.
+        backgroundImage:
+          "radial-gradient(ellipse at center, var(--ezy-surface-raised, var(--ezy-surface)) 0%, var(--ezy-surface) 60%, var(--ezy-bg) 100%)",
+      }}
+    >
+      <div
+        style={{
+          textAlign: "center",
+          maxWidth: 360,
+          padding: "0 24px",
+        }}
+      >
+        {/* Spinner / error icon. Continuous rotation only — no animate-pulse. */}
+        <div
+          style={{
+            width: 36,
+            height: 36,
+            margin: "0 auto",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: accent,
+          }}
+        >
+          {isError ? (
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+          ) : (
+            <svg className="animate-spin" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M21 12a9 9 0 1 1-6.2-8.55" />
+            </svg>
+          )}
+        </div>
+
+        <div
+          style={{
+            marginTop: 18,
+            fontSize: 14,
+            fontWeight: 600,
+            letterSpacing: "-0.01em",
+            color: "var(--ezy-text)",
+          }}
+        >
+          {isError ? "Dev server unavailable" : "Waiting for dev server"}
+        </div>
+
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 12,
+            lineHeight: 1.5,
+            color: "var(--ezy-text-muted)",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {statusLine}
+        </div>
+
+        {devServer?.command && (
+          <div
+            style={{
+              marginTop: 14,
+              padding: "6px 10px",
+              fontSize: 11,
+              color: "var(--ezy-text-secondary)",
+              backgroundColor: "var(--ezy-surface-raised, var(--ezy-bg))",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: 4,
+              display: "inline-block",
+              maxWidth: "100%",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              fontVariantNumeric: "tabular-nums",
+            }}
+            title={devServer.command}
+          >
+            {devServer.command}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

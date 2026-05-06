@@ -243,7 +243,10 @@ function openBrowserInTab(tabId: string, url: string) {
     return;
   }
 
-  const { layout } = addBrowserPaneRight(tab.layout, url, 35);
+  // Link to this tab so the browser pane mirrors the live dev-server URL
+  // (and shows the "Waiting for dev server" state if we ever open it before
+  // the port is bound).
+  const { layout } = addBrowserPaneRight(tab.layout, url, 35, tabId);
   store.updateTabLayout(tabId, layout);
   store.setActiveTab(tabId);
 }

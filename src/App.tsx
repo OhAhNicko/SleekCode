@@ -370,15 +370,48 @@ export default function App() {
   // Restore dev servers from persisted tabs on app startup
   useEffect(() => {
     const state = useAppStore.getState();
+    // [DIAG-SSH-RESUME] temporary: log every restored project tab + its layout's
+    // session-resume IDs so we can verify persistence. Remove once verified.
+    try {
+      const projectTabs = state.tabs.filter(
+        (t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab && t.workingDir
+      );
+      const findSessionIds = (layout: import("./types").PaneLayout | null | undefined): Array<{ terminalId: string; terminalType?: string; sessionResumeId?: string }> => {
+        if (!layout) return [];
+        if (layout.type === "terminal") {
+          return [{ terminalId: layout.terminalId, terminalType: layout.terminalType, sessionResumeId: layout.sessionResumeId }];
+        }
+        if (layout.type === "split") {
+          return [...findSessionIds(layout.children[0]), ...findSessionIds(layout.children[1])];
+        }
+        return [];
+      };
+      console.log("[DIAG-SSH-RESUME] App.tsx restore — project tabs:", projectTabs.map((t) => ({
+        tabId: t.id,
+        name: t.name,
+        workingDir: t.workingDir,
+        serverId: t.serverId,
+        serverCommand: t.serverCommand,
+        leaves: findSessionIds(t.layout),
+      })));
+    } catch (e) {
+      console.warn("[DIAG-SSH-RESUME] failed to log tabs", e);
+    }
+
     if (!state.autoStartServerCommand) return;
     // Skip if dev servers already exist (not a fresh restore)
     if (state.devServers.length > 0) return;
 
-    // Build a lookup from workingDir → serverCommand using recentProjects as fallback
-    const recentByPath = new Map<string, string>();
+    // Key by (path + serverId) so a project at the same path on local vs SSH
+    // host doesn't collide (mirrors flushTabLayoutsToRecent's key shape).
+    const projectKey = (path: string, serverId?: string) =>
+      `${path.replace(/\\/g, "/")}|${serverId ?? ""}`;
+
+    // Build a lookup from (workingDir+serverId) → serverCommand using recentProjects as fallback
+    const recentByKey = new Map<string, string>();
     for (const rp of state.recentProjects) {
       if (rp.serverCommand) {
-        recentByPath.set(rp.path.replace(/\\/g, "/"), rp.serverCommand);
+        recentByKey.set(projectKey(rp.path, rp.serverId), rp.serverCommand);
       }
     }
 
@@ -386,17 +419,17 @@ export default function App() {
       (t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab && t.workingDir
     );
 
-    const seenDirs = new Set<string>();
+    const seenKeys = new Set<string>();
     for (const tab of projectTabs) {
       const command =
         tab.serverCommand ||
-        recentByPath.get(tab.workingDir.replace(/\\/g, "/"));
+        recentByKey.get(projectKey(tab.workingDir, tab.serverId));
       if (!command) continue;
 
-      // Skip duplicate projects (same workingDir already spawned)
-      const normDir = tab.workingDir.replace(/\\/g, "/");
-      if (seenDirs.has(normDir)) continue;
-      seenDirs.add(normDir);
+      // Skip duplicate projects (same workingDir + serverId already spawned)
+      const tabKey = projectKey(tab.workingDir, tab.serverId);
+      if (seenKeys.has(tabKey)) continue;
+      seenKeys.add(tabKey);
 
       // Backfill serverCommand on the tab if it was only in recentProjects
       if (!tab.serverCommand) {
@@ -408,7 +441,7 @@ export default function App() {
       }
 
       const terminalId = generateTerminalId();
-      state.addTerminal(terminalId, "devserver", tab.workingDir);
+      state.addTerminal(terminalId, "devserver", tab.workingDir, tab.serverId);
       state.addDevServer({
         id: `ds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         terminalId,
@@ -418,6 +451,7 @@ export default function App() {
         workingDir: tab.workingDir,
         port: 0,
         status: "starting",
+        serverId: tab.serverId,
       });
     }
   }, []);

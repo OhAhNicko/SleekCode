@@ -81,6 +81,11 @@ export interface PaneBrowser {
   type: "browser";
   id: string;
   url: string;
+  /** When set, the browser pane displays the live dev-server URL of this tab.
+   *  While the dev server isn't running yet (port=0 or status!="running"), the
+   *  pane shows a "Waiting for dev server" placeholder and only loads the iframe
+   *  once the URL is reachable. Avoids "can't reach page" race on app boot. */
+  linkedTabId?: string;
 }
 
 export interface PaneEditor {

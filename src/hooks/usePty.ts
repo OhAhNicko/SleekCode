@@ -139,11 +139,26 @@ export function usePty({
           void installStatuslineWrapper(currentServerId);
         }
         const remoteCwd = currentWorkingDir || undefined;
+        // [DIAG-SSH-RESUME] temporary: log SSH spawn boundary. Remove once verified.
+        console.log("[DIAG-SSH-RESUME] usePty SSH spawn", {
+          terminalType,
+          currentServerId,
+          sessionResumeId: sessionResumeIdRef.current,
+          remoteCwd,
+        });
         const ssh = getSshCommand(server, terminalType, remoteCwd, sessionResumeIdRef.current);
         command = ssh.command;
         args = ssh.args;
         cwd = undefined;
       } else {
+        // [DIAG-SSH-RESUME] temporary: log local spawn for SSH-tab debugging. Remove once verified.
+        if (sessionResumeIdRef.current) {
+          console.log("[DIAG-SSH-RESUME] usePty LOCAL spawn (no serverId)", {
+            terminalType,
+            sessionResumeId: sessionResumeIdRef.current,
+            backend: backendRef.current,
+          });
+        }
         const extraArgs: string[] = [];
         const yoloFlag = getYoloFlag(terminalType);
         if (yoloFlag && (forceYoloRef.current || useAppStore.getState().cliYolo[terminalType])) {

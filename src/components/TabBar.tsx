@@ -1425,16 +1425,19 @@ export default function TabBar() {
                 return;
               }
 
-              // Otherwise open a new browser preview
+              // Otherwise open a new browser preview. Bind it to this tab so
+              // it tracks the live dev-server URL and shows a "Waiting for
+              // dev server" state if the port isn't ready yet — avoids the
+              // "can't reach page" race when the server is still starting.
               const ds = store.devServers.find((s) => s.tabId === tab.id && s.port > 0);
-              const url = ds ? `http://localhost:${ds.port}` : "http://localhost:3000";
+              const url = ds ? `http://localhost:${ds.port}` : "about:blank";
               if (store.browserFullColumn) {
                 const { layout } = store.browserSpawnLeft
-                  ? addBrowserPaneLeft(tab.layout, url, 35)
-                  : addBrowserPaneRight(tab.layout, url, 35);
+                  ? addBrowserPaneLeft(tab.layout, url, 35, tab.id)
+                  : addBrowserPaneRight(tab.layout, url, 35, tab.id);
                 store.updateTabLayout(tab.id, layout);
               } else {
-                const newPane = { type: "browser" as const, id: generatePaneId(), url };
+                const newPane = { type: "browser" as const, id: generatePaneId(), url, linkedTabId: tab.id };
                 const newLayout = addPaneAsGrid(tab.layout, newPane, store.wideGridLayout);
                 store.updateTabLayout(tab.id, newLayout);
               }
