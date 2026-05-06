@@ -10,8 +10,6 @@ export interface RenderLeafCallbacks {
   onKanbanReposition?: (vertical: boolean) => void;
   /** Returns the persistent slot element for a terminal (managed by Workspace). */
   getTerminalSlot: (terminalId: string) => HTMLDivElement;
-  /** Returns the persistent slot element for a browser preview (managed by Workspace). */
-  getBrowserSlot: (paneId: string) => HTMLDivElement;
 }
 
 /**
@@ -32,21 +30,10 @@ export function mountTerminalSlot(container: HTMLElement, slot: HTMLDivElement) 
 }
 
 /**
- * Generic slot mount used by browser-preview panes. Reparents the slot DOM
- * into `container` without unmounting it — the iframe inside survives.
- */
-export function mountSlot(container: HTMLElement, slot: HTMLDivElement) {
-  if (slot.parentElement === container) return;
-  while (container.firstChild) container.removeChild(container.firstChild);
-  container.appendChild(slot);
-}
-
-/**
- * Hidden "park" div under document.body. Slots live here while no placeholder
- * is mounted (between layout reshuffles, tab switches, etc.). Keeping the slot
- * permanently attached to the document is what stops iframes from reloading
- * when the React tree restructures — per the HTML spec, an iframe disconnected
- * from a Document closes its navigation context.
+ * Hidden "park" div under document.body. Browser-preview slots live here
+ * permanently and overlay their pane placeholders via `position: fixed` driven
+ * by getBoundingClientRect — the iframe DOM never moves, so it never
+ * disconnects from the document and never reloads.
  */
 const SLOT_PARK_ID = "ezydev-slot-park";
 
@@ -89,15 +76,11 @@ export function renderLeafPane(
   }
 
   if (node.type === "browser") {
-    return (
-      <div
-        key={node.id}
-        className="h-full w-full"
-        ref={(el) => {
-          if (el) mountSlot(el, cb.getBrowserSlot(node.id));
-        }}
-      />
-    );
+    // Anchor for the fixed-position browser slot owned by Workspace. The
+    // iframe DOM lives outside this subtree (in a slot under document.body)
+    // and overlays this placeholder via getBoundingClientRect, which is what
+    // prevents the iframe from reloading when the layout restructures.
+    return <div key={node.id} data-browser-pane-id={node.id} className="h-full w-full" />;
   }
 
   if (node.type === "editor") {

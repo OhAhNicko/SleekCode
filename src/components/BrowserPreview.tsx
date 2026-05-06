@@ -204,6 +204,8 @@ export default function BrowserPreview({
   // Subscribe to the dev server attached to linkedTabId. The pane is "ready"
   // when the server reports running with a real port — for SSH this is the
   // forwarded local port set by DevServerTerminalHost after the tunnel binds.
+  // (See note in DevServerTerminalHost: for SSH we no longer set port until
+  // the tunnel is bound, so port > 0 always means "URL is reachable".)
   const linkedDevServer = useAppStore((s) =>
     linkedTabId ? s.devServers.find((d) => d.tabId === linkedTabId) : undefined
   );
@@ -224,20 +226,25 @@ export default function BrowserPreview({
   const [history, setHistory] = useState<string[]>([initialResolvedUrl]);
   const [historyIndex, setHistoryIndex] = useState(0);
 
-  // Only block the iframe with the "waiting for dev server" overlay when:
-  //  1. The pane is linked to a tab, AND
-  //  2. EzyDev actually tracks a dev server for that tab (not external), AND
-  //  3. That dev server isn't reporting a real port yet, AND
-  //  4. We don't already have a concrete URL to try.
-  // If any of these is false, render the iframe — let the user view a saved
-  // URL, an externally-managed server, or whatever they typed in the address
-  // bar. Otherwise we lock them out of working pages.
-  const hasUsableUrl = !!url && url !== "about:blank" && url.trim() !== "";
+  // One-shot waiting gate: show the "Waiting for dev server" overlay UNTIL
+  // the dev server has been ready at least once. After that, never block —
+  // even if the dev server later restarts/drops, we trust the user's URL.
+  // This avoids two failure modes:
+  //   1. Saved layouts with a stored URL load too early (iframe shows a
+  //      stale "can't reach page" before the dev server has a chance to
+  //      start). The waiting state must "win" over saved URLs.
+  //   2. Once the page loads successfully, brief drops in port (e.g. SSH
+  //      tunnel re-bind) shouldn't blank the page.
+  const [hasEverBeenReady, setHasEverBeenReady] = useState(linkedReady);
+  useEffect(() => {
+    if (linkedReady && !hasEverBeenReady) setHasEverBeenReady(true);
+  }, [linkedReady, hasEverBeenReady]);
+
   const showWaiting =
     !!linkedTabId &&
     !!linkedDevServer &&
     !linkedReady &&
-    !hasUsableUrl;
+    !hasEverBeenReady;
 
   // When the linked dev server transitions to ready, navigate the pane to its
   // live URL. Re-runs only when liveUrl actually changes (rare port change on

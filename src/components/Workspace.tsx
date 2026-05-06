@@ -40,6 +40,11 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const setActiveTerminal = useAppStore((s) => s.setActiveTerminal);
   const terminals = useAppStore((s) => s.terminals);
   const redistributeOnClose = useAppStore((s) => s.redistributeOnClose);
+  // Subscribed for the browser-slot position-sync effect — when a pane
+  // expands/floats/closes its placeholder div moves between PaneGrid and
+  // FloatingPaneWindow and the slot needs to re-observe the new element.
+  const paneModes = useAppStore((s) => s.paneModes);
+  const closingPanes = useAppStore((s) => s.closingPanes);
   const [activeTerminalId, setLocalActiveTerminal] = useState<string | null>(
     null
   );
@@ -126,10 +131,17 @@ export default function Workspace({ tab }: WorkspaceProps) {
     let el = browserSlotMapRef.current.get(paneId);
     if (!el) {
       el = document.createElement("div");
-      el.style.width = "100%";
-      el.style.height = "100%";
-      // Park immediately so the slot is attached to the document from creation.
-      // Once the placeholder ref fires, it'll be moved into the placeholder.
+      // Slot is fixed-positioned and lives permanently in the park (under
+      // document.body). It overlays the placeholder via getBoundingClientRect
+      // — we never move the iframe DOM, which is what stops it from reloading
+      // when the layout restructures.
+      el.style.position = "fixed";
+      el.style.left = "0px";
+      el.style.top = "0px";
+      el.style.width = "0px";
+      el.style.height = "0px";
+      el.style.display = "none";
+      el.style.zIndex = "10";
       parkSlot(el);
       browserSlotMapRef.current.set(paneId, el);
     }
@@ -152,6 +164,79 @@ export default function Workspace({ tab }: WorkspaceProps) {
       }
     }
   }, [allBrowserPanes]);
+
+  // Sync each browser slot's fixed-position rect to its placeholder div on
+  // every layout change, plus on window resize and pane drag-resize. We use
+  // ResizeObserver on each placeholder for drag-resize and an rAF loop while
+  // the user is resizing (PanelResizeHandle dragging only fires resize events
+  // on the panel children).
+  useEffect(() => {
+    const syncOne = (paneId: string, slot: HTMLDivElement) => {
+      const placeholder = document.querySelector(
+        `[data-browser-pane-id="${paneId}"]`
+      ) as HTMLElement | null;
+      if (!placeholder) {
+        slot.style.display = "none";
+        return;
+      }
+      const rect = placeholder.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) {
+        slot.style.display = "none";
+        return;
+      }
+      slot.style.display = "block";
+      slot.style.left = `${rect.left}px`;
+      slot.style.top = `${rect.top}px`;
+      slot.style.width = `${rect.width}px`;
+      slot.style.height = `${rect.height}px`;
+      // If the placeholder is inside a floating pane window, the slot must
+      // sit above that wrapper's z-index (which is 350+). Otherwise default
+      // to a low z-index so modals stay on top.
+      const floatingAncestor = placeholder.closest(
+        "[data-floating-zindex]"
+      ) as HTMLElement | null;
+      if (floatingAncestor) {
+        const z = Number(floatingAncestor.dataset.floatingZindex ?? 350);
+        slot.style.zIndex = String(z + 1);
+      } else {
+        slot.style.zIndex = "10";
+      }
+    };
+
+    const syncAll = () => {
+      for (const [id, slot] of browserSlotMapRef.current) {
+        syncOne(id, slot);
+      }
+    };
+
+    syncAll();
+
+    // ResizeObserver fires when placeholders resize (window resize, pane drag,
+    // sidebar collapse, etc.) and also fires once on observe — so it covers
+    // the initial measurement after layout changes mount new placeholders.
+    const ro = new ResizeObserver(syncAll);
+    document
+      .querySelectorAll("[data-browser-pane-id]")
+      .forEach((el) => ro.observe(el));
+
+    // Continuous rAF keeps the slot following FLIP animations on
+    // expand/float/close (those use Web Animations API transforms which don't
+    // trigger ResizeObserver). Cheap — fixed-position writes don't reflow.
+    let rafId = requestAnimationFrame(function tick() {
+      syncAll();
+      rafId = requestAnimationFrame(tick);
+    });
+
+    window.addEventListener("resize", syncAll);
+    window.addEventListener("scroll", syncAll, true);
+
+    return () => {
+      ro.disconnect();
+      cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", syncAll);
+      window.removeEventListener("scroll", syncAll, true);
+    };
+  }, [allBrowserPanes, tab.layout, paneModes, closingPanes]);
 
   const handleLayoutChange = useCallback(
     (layout: PaneLayout | null) => {
@@ -265,8 +350,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
     onClose: handlePaneClose,
     onKanbanReposition: handleKanbanReposition,
     getTerminalSlot: getSlotEl,
-    getBrowserSlot: getBrowserSlotEl,
-  }), [handlePaneClose, handleKanbanReposition, getSlotEl, getBrowserSlotEl]);
+  }), [handlePaneClose, handleKanbanReposition, getSlotEl]);
 
 
 
@@ -592,7 +676,6 @@ export default function Workspace({ tab }: WorkspaceProps) {
         tabId={tab.id}
         onLayoutChange={handleLayoutChange}
         getTerminalSlot={getSlotEl}
-        getBrowserSlot={getBrowserSlotEl}
       />
       <FloatingPanesLayer
         layout={tab.layout}

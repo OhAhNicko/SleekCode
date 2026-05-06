@@ -47,6 +47,8 @@ mod win32_border {
     use std::ffi::c_void;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    const DWMWA_NCRENDERING_POLICY: u32 = 2;
+    const DWMNCRP_DISABLED: u32 = 1;
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
     const DWMWCP_DONOTROUND: u32 = 1;
@@ -62,7 +64,6 @@ mod win32_border {
     const WM_NCCALCSIZE: u32 = 0x0083;
     const WM_SIZE: u32 = 0x0005;
     const WM_ACTIVATE: u32 = 0x0006;
-    const WM_NCACTIVATE: u32 = 0x0086;
     const WM_SHOWWINDOW: u32 = 0x0018;
     const WM_WINDOWPOSCHANGED: u32 = 0x0047;
     const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
@@ -107,25 +108,12 @@ mod win32_border {
         lppos: *mut c_void,
     }
 
-    #[repr(C)]
-    struct MARGINS {
-        cx_left_width: i32,
-        cx_right_width: i32,
-        cy_top_height: i32,
-        cy_bottom_height: i32,
-    }
-
     extern "system" {
         fn DwmSetWindowAttribute(
             hwnd: *mut c_void,
             dw_attribute: u32,
             pv_attribute: *const c_void,
             cb_attribute: u32,
-        ) -> i32;
-
-        fn DwmExtendFrameIntoClientArea(
-            hwnd: *mut c_void,
-            margins: *const MARGINS,
         ) -> i32;
 
         fn SetWindowSubclass(
@@ -170,14 +158,39 @@ mod win32_border {
         }
     }
 
-    /// Apply DWM border suppression: set border color to a near-black COLORREF
-    /// that visually matches the app background. Called from `remove_border()`
-    /// at startup AND from `subclass_proc` on every window-state transition,
-    /// because DWM resets the attribute during maximize/minimize/snap/activate
-    /// and during the modal drag-resize loop, causing the system accent color
-    /// to flash through the 1px DWM border for a frame or two.
+    /// Apply DWM border suppression. Three independent attributes have to be
+    /// set together because DWM uses any of them as a fallback:
+    /// 1. `DWMWA_NCRENDERING_POLICY = DISABLED` — tell DWM to not render the
+    ///    non-client area at all. This is the primary kill switch for the
+    ///    accent border. DWM may reset this between window-state transitions,
+    ///    so it has to be re-applied on every WM_SIZE / WM_ACTIVATE / etc.
+    /// 2. `DWMWA_USE_IMMERSIVE_DARK_MODE = TRUE` — without this, DWM picks
+    ///    light-theme border colors when it does decide to render, leaving
+    ///    a bright 1px line on a dark window.
+    /// 3. `DWMWA_BORDER_COLOR = #0D0D0D` — fallback if NC rendering is
+    ///    actually drawn anyway: the COLORREF matches the app background so
+    ///    even a drawn border is visually invisible. We use a dark COLORREF
+    ///    instead of `DWMWA_COLOR_NONE` because COLOR_NONE is unreliable on
+    ///    many builds — DWM falls back to the system accent during drag-
+    ///    resize, maximize, snap, and activate transitions.
     #[inline]
     unsafe fn apply_border_suppression(hwnd: *mut c_void) {
+        let nc_disabled: u32 = DWMNCRP_DISABLED;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_NCRENDERING_POLICY,
+            &nc_disabled as *const u32 as *const c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        let dark_mode: i32 = 1;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark_mode as *const i32 as *const c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+
         let dark: u32 = BORDER_COLOR_DARK;
         DwmSetWindowAttribute(
             hwnd,
@@ -219,7 +232,7 @@ mod win32_border {
         // causing the system accent color to flash through the 1px DWM border.
         // We MUST use the dark COLORREF, NOT DWMWA_COLOR_NONE — the latter is
         // unreliable on many Windows builds and is what was causing the flash.
-        if msg == WM_SIZE || msg == WM_ACTIVATE || msg == WM_NCACTIVATE
+        if msg == WM_SIZE || msg == WM_ACTIVATE
            || msg == WM_SHOWWINDOW || msg == WM_WINDOWPOSCHANGED
            || msg == WM_NCCALCSIZE || msg == WM_DWMCOMPOSITIONCHANGED
            || msg == WM_DWMCOLORIZATIONCOLORCHANGED
@@ -227,18 +240,22 @@ mod win32_border {
             apply_border_suppression(hwnd);
         }
 
-        // WM_NCACTIVATE: pass lparam = -1 to tell DefWindowProc not to redraw
-        // the non-client area. Without this, activating/deactivating the window
-        // can briefly repaint a 1px border in the inactive/active accent color.
-        if msg == WM_NCACTIVATE {
-            return DefSubclassProc(hwnd, msg, wparam, -1);
-        }
-
         if msg == WM_SIZE {
             if wparam == SIZE_MINIMIZED {
                 WAS_MINIMIZED.store(true, Ordering::SeqCst);
             } else {
-                if WAS_MINIMIZED.swap(false, Ordering::SeqCst) {
+                // Force WebView2 to relayout on ANY restore-to-non-minimized
+                // transition (minimize→restore AND maximize→restore). Without
+                // this, WebView2 can get stuck at the previous size — the
+                // parent window resizes correctly but the WebView2 controller
+                // surface keeps painting at the old bounds, leaving a black
+                // half-window where the controller didn't reach. Posting (not
+                // sending) lets the current message complete first; the
+                // deferred handler does a +1/-1 size cycle that triggers
+                // WebView2's `put_Bounds` callback.
+                let was_minimized = WAS_MINIMIZED.swap(false, Ordering::SeqCst);
+                let needs_relayout = was_minimized || wparam == SIZE_RESTORED;
+                if needs_relayout {
                     PostMessageW(hwnd, WM_WEBVIEW_REPAINT, 0, 0);
                 }
                 if wparam == SIZE_MAXIMIZED {
@@ -295,31 +312,29 @@ mod win32_border {
                 dw_flags: 0,
             };
             if GetMonitorInfoW(monitor, &mut mi) != 0 {
-                let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-                if (style & WS_MAXIMIZE) != 0 {
-                    // Maximized: client rect = work area exactly.
-                    // WS_THICKFRAME extends the window rect beyond screen edges;
-                    // using the work area prevents corner clipping and taskbar overlap.
-                    params.rgrc[0] = mi.rc_work;
-                } else {
-                    // Normal or snapped: clamp to work area if overshooting.
-                    // During snap (Win+Left/Right), WS_THICKFRAME causes the
-                    // proposed rect to extend a few pixels beyond the work area.
-                    // For normal floating windows the proposed rect is already
-                    // within bounds, so the clamps are no-ops.
-                    let r = &mut params.rgrc[0];
-                    if r.top < mi.rc_work.top {
-                        r.top = mi.rc_work.top;
-                    }
-                    if r.bottom > mi.rc_work.bottom {
-                        r.bottom = mi.rc_work.bottom;
-                    }
-                    if r.left < mi.rc_work.left {
-                        r.left = mi.rc_work.left;
-                    }
-                    if r.right > mi.rc_work.right {
-                        r.right = mi.rc_work.right;
-                    }
+                // Always clamp to work area — same result as the previous
+                // "if WS_MAXIMIZE { = work_area } else { clamp }" branch
+                // because clamping a maximized window's overshooting rect
+                // produces the work area, but WITHOUT depending on the
+                // GWL_STYLE WS_MAXIMIZE flag. That flag is unreliable during
+                // maximize↔restore transitions: WM_NCCALCSIZE can fire with
+                // the new (restored) proposed rect while WS_MAXIMIZE is still
+                // set, causing the old code to set client = work_area while
+                // the actual window rect was already shrinking, leaving
+                // WebView2 with a stale "huge" client size and the rendered
+                // surface stuck at the old bounds.
+                let r = &mut params.rgrc[0];
+                if r.top < mi.rc_work.top {
+                    r.top = mi.rc_work.top;
+                }
+                if r.bottom > mi.rc_work.bottom {
+                    r.bottom = mi.rc_work.bottom;
+                }
+                if r.left < mi.rc_work.left {
+                    r.left = mi.rc_work.left;
+                }
+                if r.right > mi.rc_work.right {
+                    r.right = mi.rc_work.right;
                 }
             }
             return 0;
@@ -345,18 +360,14 @@ mod win32_border {
 
     pub fn remove_border(hwnd: *mut c_void) {
         unsafe {
-            // 1) Tell DWM this is a dark-mode window — without this, DWM picks
-            //    light-theme border colors during transitions even when the app
-            //    background is dark, producing a visible light line during resize.
-            let dark_mode: i32 = 1;
-            DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_USE_IMMERSIVE_DARK_MODE,
-                &dark_mode as *const i32 as *const c_void,
-                std::mem::size_of::<i32>() as u32,
-            );
+            // 1) Apply DWM border suppression: NC rendering disabled, dark
+            //    immersive theming, dark border color. See the helper for the
+            //    full rationale on why all three are needed.
+            apply_border_suppression(hwnd);
 
-            // 2) Enable rounded corners (Windows 11+)
+            // 2) Enable rounded corners (Windows 11+). Done AFTER NC rendering
+            //    is disabled so this attribute is set after the policy and
+            //    DWM still honors the corner preference.
             let corner_pref = DWMWCP_ROUND;
             DwmSetWindowAttribute(
                 hwnd,
@@ -365,29 +376,13 @@ mod win32_border {
                 std::mem::size_of::<u32>() as u32,
             );
 
-            // 3) Suppress the DWM accent border with a dark COLORREF that
-            //    blends into the app background. See apply_border_suppression
-            //    for why we don't use DWMWA_COLOR_NONE.
-            apply_border_suppression(hwnd);
-
-            // 4) Explicitly DON'T extend the DWM frame into the client area.
-            //    Calling DwmExtendFrameIntoClientArea with all-zero margins
-            //    cancels any default frame extension DWM might apply, removing
-            //    one more source of edge artifacts during resize.
-            let zero_margins = MARGINS {
-                cx_left_width: 0,
-                cx_right_width: 0,
-                cy_top_height: 0,
-                cy_bottom_height: 0,
-            };
-            DwmExtendFrameIntoClientArea(hwnd, &zero_margins);
-
-            // 5) Subclass the window to intercept WM_NCCALCSIZE / WM_NCPAINT /
-            //    WM_NCACTIVATE and re-apply border suppression on every state
-            //    transition (DWM resets the attribute aggressively).
+            // 3) Subclass the window to intercept WM_NCCALCSIZE / WM_NCPAINT
+            //    and re-apply border suppression on every state transition
+            //    (DWM resets the attributes aggressively during resize/snap/
+            //    activate/maximize).
             SetWindowSubclass(hwnd, Some(subclass_proc), 1, 0);
 
-            // 6) Force Windows to recalculate the frame
+            // 4) Force Windows to recalculate the frame
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
             SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME);
             SetWindowPos(

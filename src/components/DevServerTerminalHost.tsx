@@ -358,11 +358,20 @@ export default function DevServerTerminalHost() {
               setDevServerNetworkUrls(ds.id, extractAddresses(cleanBuffer).networkUrls);
 
               if (ds.serverId) {
-                setPort(port); // optimistic; replaced once tunnel is up
+                // SSH dev servers: do NOT set `port` to the remote port even
+                // optimistically — `http://localhost:<remotePort>` doesn't
+                // resolve locally and would briefly flash "can't reach page"
+                // in the browser pane before the tunnel binds. Only publish
+                // the port once we have the *local* forwarded port, so any
+                // observer (BrowserPreview, dev-server panel URL link) sees
+                // a port that's actually reachable.
                 startSshForward(ds.serverId, port).then((res) => {
-                  if (!res) return;
-                  // If the dev server was stopped/removed while the tunnel was
-                  // starting, kill it right away instead of orphaning it.
+                  if (!res) {
+                    // Tunnel failed — surface it so the dev-server panel and
+                    // BrowserPreview show an error instead of spinning forever.
+                    updateDevServerError(ds.id, "SSH tunnel failed to start");
+                    return;
+                  }
                   const cur = useAppStore.getState().devServers.find((s) => s.id === ds.id);
                   if (!cur || cur.status === "stopped" || cur.status === "error") {
                     stopSshForward(res.handleId);

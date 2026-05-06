@@ -9,7 +9,6 @@ import {
 } from "../lib/layout-utils";
 import { useAppStore } from "../store";
 import { snapshotPane } from "../store/undoCloseStore";
-import { parkSlot } from "../lib/render-pane";
 import EditorPane from "./EditorPane";
 import KanbanBoard from "./KanbanBoard";
 import CodeReviewPane from "./CodeReviewPane";
@@ -59,7 +58,6 @@ interface PaneGridProps {
   tabId: string;
   onLayoutChange: (layout: PaneLayout) => void;
   getTerminalSlot: (terminalId: string) => HTMLDivElement;
-  getBrowserSlot: (paneId: string) => HTMLDivElement;
 }
 
 export default function PaneGrid({
@@ -67,7 +65,6 @@ export default function PaneGrid({
   tabId,
   onLayoutChange,
   getTerminalSlot,
-  getBrowserSlot,
 }: PaneGridProps) {
   const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
   const redistributeOnClose = useAppStore((s) => s.redistributeOnClose);
@@ -340,29 +337,16 @@ export default function PaneGrid({
     }
 
     if (node.type === "browser") {
-      // Placeholder div — the persistent slot (containing the iframe) lives
-      // in document.body's "slot park" and is moved in/out of this div via
-      // ref. The slot is never disconnected from the document, so the iframe
-      // does not reload when the layout restructures.
-      const paneId = node.id;
+      // Pure positioning anchor — the iframe lives in a fixed-position slot
+      // owned by Workspace and overlays this placeholder via getBoundingClientRect.
+      // Because the iframe DOM never moves, it never disconnects from the
+      // document and never reloads.
       return (
         <div
-          key={paneId}
-          data-pane-id={paneId}
+          key={node.id}
+          data-pane-id={node.id}
+          data-browser-pane-id={node.id}
           className="h-full w-full"
-          ref={(el) => {
-            const slot = getBrowserSlot(paneId);
-            if (el) {
-              if (slot.parentElement !== el) {
-                while (el.firstChild) el.removeChild(el.firstChild);
-                el.appendChild(slot);
-              }
-            } else {
-              // ref(null) fires before React removes the placeholder from the
-              // DOM — park the slot here so it stays document-attached.
-              parkSlot(slot);
-            }
-          }}
         />
       );
     }

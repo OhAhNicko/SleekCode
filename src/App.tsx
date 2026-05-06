@@ -35,6 +35,7 @@ import UndoClearToast from "./components/UndoClearToast";
 import KeyboardShortcutsModal from "./components/KeyboardShortcutsModal";
 import PromptHistorySearch from "./components/PromptHistorySearch";
 import DevServerTerminalHost from "./components/DevServerTerminalHost";
+import DevServerRestoreToast from "./components/DevServerRestoreToast";
 import SettingsPane from "./components/SettingsPane";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
@@ -377,8 +378,15 @@ export default function App() {
     const log = (msg: string, data?: unknown) =>
       verbose && (data === undefined ? console.warn(`[DEV-SERVER-RESTORE] ${msg}`) : console.warn(`[DEV-SERVER-RESTORE] ${msg}`, data));
 
+    // Toast helper — surfaces the restore result in the UI so users without
+    // DevTools can see why their dev server didn't start.
+    const toast = (status: "ok" | "skipped" | "error" | "info", title: string, detail?: string) => {
+      window.dispatchEvent(new CustomEvent("ezydev:dev-server-restore", { detail: { status, title, detail } }));
+    };
+
     log("effect fired", {
       autoStartServerCommand: state.autoStartServerCommand,
+      restoreLastSession: state.restoreLastSession,
       tabsCount: state.tabs.length,
       devServersCount: state.devServers.length,
       recentProjectsCount: state.recentProjects.length,
@@ -386,6 +394,11 @@ export default function App() {
 
     if (!state.autoStartServerCommand) {
       log("aborting — autoStartServerCommand is OFF (toggle it in Settings)");
+      toast(
+        "skipped",
+        "Dev-server auto-start is OFF",
+        'Settings → "Auto-start server command" must be ON for SSH/remote dev servers to start on app boot.',
+      );
       return;
     }
     if (state.devServers.length > 0) {
@@ -418,14 +431,31 @@ export default function App() {
       serverCommand: t.serverCommand ?? "(none — will check recentProjects)",
     })));
 
+    if (projectTabs.length === 0) {
+      log("no project tabs to restore — likely restoreLastSession is OFF");
+      toast(
+        "skipped",
+        "No project tabs to restore",
+        state.restoreLastSession
+          ? "Open a project tab first, then restart."
+          : 'Settings → "Restore last session" is OFF, so project tabs (and their dev servers) are dropped between launches.',
+      );
+      return;
+    }
+
     const seenKeys = new Set<string>();
     let spawned = 0;
+    const spawnDetails: string[] = [];
+    const skipReasons: string[] = [];
+    const failures: string[] = [];
+
     for (const tab of projectTabs) {
       const command =
         tab.serverCommand ||
         recentByKey.get(projectKey(tab.workingDir, tab.serverId));
       if (!command) {
         log(`SKIP ${tab.name} — no serverCommand on tab and no match in recentProjects (key=${projectKey(tab.workingDir, tab.serverId)})`);
+        skipReasons.push(`${tab.name}: no server command set (configure it in the dev-server panel)`);
         continue;
       }
 
@@ -447,17 +477,26 @@ export default function App() {
 
       log(`SPAWN ${tab.name} → command="${command}" serverId=${tab.serverId ?? "(local)"} cwd=${tab.workingDir}`);
       try {
-        // Delegate to the proven helper used by TabBar's quick-open path.
-        // It handles addTerminal+addDevServer with serverId correctly and
-        // dedupes via (workingDir + serverId).
         spawnDevServer(tab.id, tab.name, tab.workingDir, command, tab.serverId);
         spawned++;
+        spawnDetails.push(`${tab.name} ${tab.serverId ? "(SSH)" : "(local)"} → ${command}`);
       } catch (err) {
         log(`FAILED to spawn for ${tab.name}`, err);
+        failures.push(`${tab.name}: ${String(err)}`);
       }
     }
 
     log(`done — spawned ${spawned} of ${projectTabs.length} project tabs`);
+
+    // Single toast with the full restore summary.
+    if (failures.length > 0) {
+      toast("error", `Dev-server restore failed (${failures.length} error${failures.length > 1 ? "s" : ""})`, failures.join("\n"));
+    } else if (spawned > 0) {
+      const skipNote = skipReasons.length > 0 ? `\nSkipped: ${skipReasons.length}` : "";
+      toast("ok", `Dev-server restore: ${spawned} spawned`, `${spawnDetails.join("\n")}${skipNote}`);
+    } else if (skipReasons.length > 0) {
+      toast("skipped", `Dev-server restore: nothing to spawn`, skipReasons.join("\n"));
+    }
   }, []);
 
   // Intercept OS-level window close (Alt+F4, taskbar X). Always flush session state
@@ -1001,6 +1040,7 @@ export default function App() {
       {VOICE_ENABLED && <VoiceController />}
       <GlobalContextMenu />
       <DevServerTerminalHost />
+      <DevServerRestoreToast />
       {!onboardingCompleted && (
         <WelcomeModal
           onComplete={() => setOnboardingCompleted(true)}
