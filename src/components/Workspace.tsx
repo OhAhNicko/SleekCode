@@ -167,9 +167,16 @@ export default function Workspace({ tab }: WorkspaceProps) {
 
   // Sync each browser slot's fixed-position rect to its placeholder div on
   // every layout change, plus on window resize and pane drag-resize. We use
-  // ResizeObserver on each placeholder for drag-resize and an rAF loop while
-  // the user is resizing (PanelResizeHandle dragging only fires resize events
-  // on the panel children).
+  // ResizeObserver on each placeholder for drag-resize and a self-gating rAF
+  // loop while a FLIP animation is in flight (PanelResizeHandle dragging only
+  // fires resize events on the panel children).
+  //
+  // The expensive work (syncAll) runs only when needed: ResizeObserver covers
+  // layout-change frames, the resize/scroll listeners cover window-level
+  // changes, and the rAF loop gates its work on document.getAnimations() so it
+  // stays quiet when nothing is animating — eliminating the 60Hz forced-reflow
+  // baseline that previously pegged a core during startup churn and resize.
+  const syncAllRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     const syncOne = (paneId: string, slot: HTMLDivElement) => {
       const placeholder = document.querySelector(
@@ -208,6 +215,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
         syncOne(id, slot);
       }
     };
+    syncAllRef.current = syncAll;
 
     syncAll();
 
@@ -219,11 +227,16 @@ export default function Workspace({ tab }: WorkspaceProps) {
       .querySelectorAll("[data-browser-pane-id]")
       .forEach((el) => ro.observe(el));
 
-    // Continuous rAF keeps the slot following FLIP animations on
-    // expand/float/close (those use Web Animations API transforms which don't
-    // trigger ResizeObserver). Cheap — fixed-position writes don't reflow.
+    // rAF loop runs continuously but only does work while a WAAPI animation
+    // is in flight (FLIP open/close/expand/float). Idle ticks are near-free;
+    // active ticks track the animated transform from grid-rect to final-rect.
     let rafId = requestAnimationFrame(function tick() {
-      syncAll();
+      const anims = document.getAnimations();
+      let anyRunning = false;
+      for (let i = 0; i < anims.length; i++) {
+        if (anims[i].playState === "running") { anyRunning = true; break; }
+      }
+      if (anyRunning) syncAll();
       rafId = requestAnimationFrame(tick);
     });
 
@@ -235,8 +248,18 @@ export default function Workspace({ tab }: WorkspaceProps) {
       cancelAnimationFrame(rafId);
       window.removeEventListener("resize", syncAll);
       window.removeEventListener("scroll", syncAll, true);
+      syncAllRef.current = null;
     };
-  }, [allBrowserPanes, tab.layout, paneModes, closingPanes]);
+  }, [allBrowserPanes, tab.layout]);
+
+  // Pane-mode transitions (float/expand/close) re-parent the browser
+  // placeholder between PaneGrid and FloatingPaneWindow. Trigger a one-shot
+  // resync without tearing down the rAF/ResizeObserver infrastructure — that
+  // teardown-recreate cycle on every store mutation was the primary cause of
+  // the resize/startup freeze (forced-reflow storm).
+  useEffect(() => {
+    syncAllRef.current?.();
+  }, [paneModes, closingPanes]);
 
   const handleLayoutChange = useCallback(
     (layout: PaneLayout | null) => {

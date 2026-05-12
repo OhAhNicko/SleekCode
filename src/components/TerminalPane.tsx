@@ -1130,8 +1130,6 @@ export default function TerminalPane({
     // 100ms debounce: fit() fires once after resize stops. Zero work during drag.
     let fitTimer: ReturnType<typeof setTimeout> | undefined;
     let currentFontSize = baseFontSize;
-    let lastWidth = el.clientWidth;
-    let lastHeight = el.clientHeight;
     // Persistent scroll state across a resize sequence — when doFit() is called
     // multiple times in quick succession (ResizeObserver fires multiple times during
     // layout changes), the viewport position captured by the FIRST call is the only
@@ -1236,26 +1234,23 @@ export default function TerminalPane({
             resizeLocked = false;
           });
         });
-        lastWidth = el.clientWidth;
-        lastHeight = el.clientHeight;
       } catch {
         // Container may be detached
       }
     }
     const observer = new ResizeObserver(() => {
       clearTimeout(fitTimer);
-      // Large jump (pane added/removed) → fit immediately to prevent scroll drift.
-      // Small incremental changes (window drag) → debounce.
-      // Exception: Gemini CLI clears and redraws the entire screen on SIGWINCH
-      // (resize signal), causing a jarring "reload" flash. Always debounce Gemini
-      // so it gets exactly ONE resize after the layout settles.
-      const dw = Math.abs(el.clientWidth - lastWidth);
-      const dh = Math.abs(el.clientHeight - lastHeight);
-      if (dw > 50 || dh > 50) {
-        doFit();
-      } else {
-        fitTimer = setTimeout(doFit, 100);
-      }
+      // Always debounce. The previous code had an "immediate fit on dw>50"
+      // branch for scroll-drift protection on big layout changes, but during a
+      // fast window-resize drag that branch fired per-pane per-frame, doing
+      // N × 60/sec WebGL buffer reallocations and freezing the system. The
+      // unified debounce coalesces all in-flight resizes into one fit() after
+      // the layout settles; a ~150ms visible drift on big jumps is the
+      // accepted trade-off for eliminating the freeze.
+      // Exception note: Gemini CLI clears and redraws on SIGWINCH causing a
+      // "reload" flash — always debouncing means exactly one resize after
+      // layout settles, which is what Gemini wants anyway.
+      fitTimer = setTimeout(doFit, 150);
     });
     observer.observe(el);
 

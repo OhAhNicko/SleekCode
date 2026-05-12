@@ -497,17 +497,19 @@ export default function DevServerTerminalHost() {
     }
   }, [devServers]);
 
-  // Trigger xterm refit when panel opens + ESC to close
+  // ESC to close. Previously this effect also fired a synthetic window resize
+  // event to trigger an xterm refit when the panel opened, but TerminalPane
+  // refits via its own ResizeObserver on the container element — the synthetic
+  // window event was a no-op for refit (TerminalPane has no window.resize
+  // listener) and only caused Workspace's browser-slot syncer to do extra
+  // forced-reflow work. Removed to keep the resize storm bounded.
   useEffect(() => {
     if (expandedDevServerId) {
-      const timer = setTimeout(() => {
-        window.dispatchEvent(new Event("resize"));
-      }, 50);
       const handleKey = (e: KeyboardEvent) => {
         if (e.key === "Escape") setExpandedDevServerId(null);
       };
       window.addEventListener("keydown", handleKey);
-      return () => { clearTimeout(timer); window.removeEventListener("keydown", handleKey); };
+      return () => { window.removeEventListener("keydown", handleKey); };
     }
   }, [expandedDevServerId, setExpandedDevServerId]);
 
