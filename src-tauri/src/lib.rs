@@ -84,6 +84,7 @@ mod win32_border {
     const MONITOR_DEFAULTTONEAREST: u32 = 2;
 
     static WAS_MINIMIZED: AtomicBool = AtomicBool::new(false);
+    static WAS_MAXIMIZED: AtomicBool = AtomicBool::new(false);
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -244,21 +245,24 @@ mod win32_border {
             if wparam == SIZE_MINIMIZED {
                 WAS_MINIMIZED.store(true, Ordering::SeqCst);
             } else {
-                // Force WebView2 to relayout on ANY restore-to-non-minimized
-                // transition (minimize→restore AND maximize→restore). Without
-                // this, WebView2 can get stuck at the previous size — the
-                // parent window resizes correctly but the WebView2 controller
-                // surface keeps painting at the old bounds, leaving a black
-                // half-window where the controller didn't reach. Posting (not
-                // sending) lets the current message complete first; the
-                // deferred handler does a +1/-1 size cycle that triggers
-                // WebView2's `put_Bounds` callback.
+                // Force WebView2 to relayout ONLY on actual restore-from-
+                // minimize/maximize transitions. Earlier code triggered on
+                // every SIZE_RESTORED, but per MSDN that wparam fires on
+                // every normal resize (including drag-resize and our own
+                // SetWindowPos calls below). The result was an exponential
+                // message-loop cascade: WM_SIZE → post WM_WEBVIEW_REPAINT →
+                // SetWindowPos +1/-1 → 2× WM_SIZE → 2× WM_WEBVIEW_REPAINT,
+                // visible as the window shaking 1px during drag and pegging
+                // CPU on startup. Tracking transitions explicitly keeps the
+                // relayout one-shot per real state change.
                 let was_minimized = WAS_MINIMIZED.swap(false, Ordering::SeqCst);
-                let needs_relayout = was_minimized || wparam == SIZE_RESTORED;
+                let was_maximized = WAS_MAXIMIZED.swap(false, Ordering::SeqCst);
+                let needs_relayout = was_minimized || was_maximized;
                 if needs_relayout {
                     PostMessageW(hwnd, WM_WEBVIEW_REPAINT, 0, 0);
                 }
                 if wparam == SIZE_MAXIMIZED {
+                    WAS_MAXIMIZED.store(true, Ordering::SeqCst);
                     let corner_pref = DWMWCP_DONOTROUND;
                     DwmSetWindowAttribute(
                         hwnd,
@@ -266,7 +270,9 @@ mod win32_border {
                         &corner_pref as *const u32 as *const c_void,
                         std::mem::size_of::<u32>() as u32,
                     );
-                } else if wparam == SIZE_RESTORED {
+                } else if wparam == SIZE_RESTORED && was_maximized {
+                    // Only re-apply rounded corners + frame recalc on the
+                    // actual maximize→restore edge — not on every drag tick.
                     let corner_pref = DWMWCP_ROUND;
                     DwmSetWindowAttribute(
                         hwnd,
