@@ -125,15 +125,33 @@ function SettingsSection({ id, title, description, children }: {
   );
 }
 
-function SettingsRow({ label, description, children }: {
+function SettingsRow({ label, description, children, vertical }: {
   label: string;
   description?: string;
   children: React.ReactNode;
+  vertical?: boolean;
 }) {
   const { query } = useContext(SettingsSearchContext);
   if (query) {
     const haystack = `${label} ${description ?? ""}`.toLowerCase();
     if (!haystack.includes(query.toLowerCase())) return null;
+  }
+  if (vertical) {
+    return (
+      <div data-settings-row style={{
+        display: "flex",
+        flexDirection: "column",
+        padding: "10px 0",
+        gap: 8,
+        borderBottom: "1px solid var(--ezy-border-subtle)",
+      }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>{label}</div>
+          {description && <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>{description}</div>}
+        </div>
+        <div>{children}</div>
+      </div>
+    );
   }
   return (
     <div data-settings-row style={{
@@ -997,6 +1015,14 @@ export default function SettingsPane() {
   const setDefaultClaudeMdPath = useAppStore((s) => s.setDefaultClaudeMdPath);
   const defaultAgentsMdPath = useAppStore((s) => s.defaultAgentsMdPath);
   const setDefaultAgentsMdPath = useAppStore((s) => s.setDefaultAgentsMdPath);
+  const defaultGeminiMdPath = useAppStore((s) => s.defaultGeminiMdPath);
+  const setDefaultGeminiMdPath = useAppStore((s) => s.setDefaultGeminiMdPath);
+  const defaultUseSingleSourcePointers = useAppStore((s) => s.defaultUseSingleSourcePointers);
+  const setDefaultUseSingleSourcePointers = useAppStore((s) => s.setDefaultUseSingleSourcePointers);
+  const customScaffolds = useAppStore((s) => s.customScaffolds);
+  const addCustomScaffold = useAppStore((s) => s.addCustomScaffold);
+  const updateCustomScaffold = useAppStore((s) => s.updateCustomScaffold);
+  const removeCustomScaffold = useAppStore((s) => s.removeCustomScaffold);
   const commitMsgMode = useAppStore((s) => s.commitMsgMode ?? "simple");
   const setCommitMsgMode = useAppStore((s) => s.setCommitMsgMode);
   const shadowAiCli = useAppStore((s) => s.shadowAiCli ?? "claude");
@@ -1358,8 +1384,122 @@ export default function SettingsPane() {
             <SettingsRow label="Default CLAUDE.md" description="Template file copied to new projects as CLAUDE.md (Claude Code).">
               <PathPicker value={defaultClaudeMdPath} onChange={setDefaultClaudeMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
             </SettingsRow>
-            <SettingsRow label="Default AGENTS.md" description="Template file copied to new projects as AGENTS.md (Codex / Gemini).">
+            <SettingsRow label="Default AGENTS.md" description="Template file copied to new projects as AGENTS.md (Codex, cross-agent standard).">
               <PathPicker value={defaultAgentsMdPath} onChange={setDefaultAgentsMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
+            </SettingsRow>
+            <SettingsRow label="Default GEMINI.md" description="Template file copied to new projects as GEMINI.md (Gemini CLI).">
+              <PathPicker value={defaultGeminiMdPath} onChange={setDefaultGeminiMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
+            </SettingsRow>
+            <SettingsRow label="Single source + pointers by default" description="When enabled, new projects keep canonical instructions in AGENTS.md and write CLAUDE.md / GEMINI.md as small pointer files that reference it. You can override per project.">
+              <ToggleSwitch checked={defaultUseSingleSourcePointers} onChange={setDefaultUseSingleSourcePointers} />
+            </SettingsRow>
+            <SettingsRow
+              label="Custom scaffolds"
+              description="Extra .md templates to optionally include when creating a new project (e.g. STYLE.md, OPERATIONS.md). Filenames must not contain path characters."
+              vertical
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
+                {customScaffolds.map((scaffold) => {
+                  const filenameInvalid =
+                    scaffold.filename.length > 0 && /[/\\:*?"<>|]/.test(scaffold.filename);
+                  return (
+                    <div
+                      key={scaffold.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "6px 8px",
+                        border: "1px solid var(--ezy-border)",
+                        borderRadius: 6,
+                        backgroundColor: "var(--ezy-surface)",
+                      }}
+                    >
+                      <input
+                        type="text"
+                        value={scaffold.filename}
+                        onChange={(e) =>
+                          updateCustomScaffold(scaffold.id, { filename: e.target.value })
+                        }
+                        placeholder="STYLE.md"
+                        style={{
+                          flex: "0 0 140px",
+                          padding: "4px 8px",
+                          fontSize: 12,
+                          color: "var(--ezy-text)",
+                          backgroundColor: "var(--ezy-surface-raised)",
+                          border: `1px solid ${filenameInvalid ? "#e55" : "var(--ezy-border)"}`,
+                          borderRadius: 5,
+                          outline: "none",
+                          fontFamily: "inherit",
+                        }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <PathPicker
+                          value={scaffold.templatePath}
+                          onChange={(v) => updateCustomScaffold(scaffold.id, { templatePath: v })}
+                          filters={[{ name: "Markdown", extensions: ["md"] }]}
+                        />
+                      </div>
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontSize: 11,
+                          color: "var(--ezy-text-secondary)",
+                          cursor: "pointer",
+                          userSelect: "none",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={scaffold.enabledByDefault}
+                          onChange={(e) =>
+                            updateCustomScaffold(scaffold.id, {
+                              enabledByDefault: e.target.checked,
+                            })
+                          }
+                        />
+                        Default
+                      </label>
+                      <button
+                        onClick={() => removeCustomScaffold(scaffold.id)}
+                        title="Remove"
+                        style={{
+                          padding: "2px 8px",
+                          fontSize: 14,
+                          color: "var(--ezy-text-muted)",
+                          backgroundColor: "transparent",
+                          border: "none",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                          lineHeight: 1,
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={addCustomScaffold}
+                  style={{
+                    alignSelf: "flex-start",
+                    padding: "5px 12px",
+                    fontSize: 11,
+                    fontWeight: 500,
+                    color: "var(--ezy-text-secondary)",
+                    backgroundColor: "var(--ezy-surface)",
+                    border: "1px solid var(--ezy-border)",
+                    borderRadius: 5,
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  + Add custom scaffold
+                </button>
+              </div>
             </SettingsRow>
           </SettingsSection>
         );

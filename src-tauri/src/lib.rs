@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::collections::HashMap;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{Manager, State};
 
 /// Registry of active `ssh -N -L` port-forward processes, one per remote dev
@@ -952,27 +952,91 @@ async fn write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, &content).map_err(|e| format!("Failed to write file: {}", e))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ScaffoldRole {
+    Claude,
+    Agents,
+    Gemini,
+    Custom,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScaffoldSpec {
+    filename: String,
+    source: Option<String>,
+    role: ScaffoldRole,
+}
+
+fn pointer_stub(filename: &str) -> String {
+    format!(
+        "# {filename}\n\nThis project uses a single source of truth for AI agent instructions.\n\nSee [AGENTS.md](./AGENTS.md) for the canonical instructions.\n"
+    )
+}
+
+fn is_safe_filename(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains(':')
+        && !name.contains('*')
+        && !name.contains('?')
+        && !name.contains('"')
+        && !name.contains('<')
+        && !name.contains('>')
+        && !name.contains('|')
+        && name != "."
+        && name != ".."
+}
+
 #[tauri::command]
 async fn create_project(
     project_dir: String,
-    claude_md_source: Option<String>,
-    agents_md_source: Option<String>,
+    scaffolds: Vec<ScaffoldSpec>,
+    single_source_pointers: bool,
 ) -> Result<(), String> {
     std::fs::create_dir_all(&project_dir)
         .map_err(|e| format!("Failed to create directory: {}", e))?;
 
-    if let Some(source) = claude_md_source {
-        if !source.is_empty() {
-            let dest = std::path::Path::new(&project_dir).join("CLAUDE.md");
-            std::fs::copy(&source, &dest)
-                .map_err(|e| format!("Failed to copy CLAUDE.md: {}", e))?;
+    let project_path = std::path::Path::new(&project_dir);
+
+    let has_agents_with_source = scaffolds
+        .iter()
+        .any(|s| matches!(s.role, ScaffoldRole::Agents) && s.source.as_deref().map(|p| !p.is_empty()).unwrap_or(false));
+
+    for scaffold in &scaffolds {
+        if !is_safe_filename(&scaffold.filename) {
+            return Err(format!("Invalid scaffold filename: {}", scaffold.filename));
         }
-    }
-    if let Some(source) = agents_md_source {
-        if !source.is_empty() {
-            let dest = std::path::Path::new(&project_dir).join("AGENTS.md");
-            std::fs::copy(&source, &dest)
-                .map_err(|e| format!("Failed to copy AGENTS.md: {}", e))?;
+        let dest = project_path.join(&scaffold.filename);
+
+        let is_agent = matches!(
+            scaffold.role,
+            ScaffoldRole::Claude | ScaffoldRole::Agents | ScaffoldRole::Gemini
+        );
+
+        // Pointer mode: write a stub for non-AGENTS agent files when AGENTS.md is canonical.
+        if single_source_pointers
+            && is_agent
+            && !matches!(scaffold.role, ScaffoldRole::Agents)
+            && has_agents_with_source
+        {
+            std::fs::write(&dest, pointer_stub(&scaffold.filename))
+                .map_err(|e| format!("Failed to write pointer file {}: {}", scaffold.filename, e))?;
+            continue;
+        }
+
+        // Normal path: copy template if source provided, else create empty file.
+        match &scaffold.source {
+            Some(src) if !src.is_empty() => {
+                std::fs::copy(src, &dest)
+                    .map_err(|e| format!("Failed to copy {}: {}", scaffold.filename, e))?;
+            }
+            _ => {
+                std::fs::write(&dest, "")
+                    .map_err(|e| format!("Failed to create {}: {}", scaffold.filename, e))?;
+            }
         }
     }
     Ok(())

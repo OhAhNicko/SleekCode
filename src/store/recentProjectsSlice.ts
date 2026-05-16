@@ -84,6 +84,17 @@ export function autoAssignColor(existing: Record<string, ProjectColorId>): Proje
 
 export const DEFAULT_CLI_FONT_SIZE = 15;
 
+/** User-registered .md scaffold template (besides built-in CLAUDE/AGENTS/GEMINI). */
+export interface CustomScaffold {
+  id: string;
+  /** Destination filename inside the new project, e.g. "STYLE.md" */
+  filename: string;
+  /** Absolute path to a template file. Empty string → create empty destination file. */
+  templatePath: string;
+  /** Pre-check this scaffold in the new-project dialog. */
+  enabledByDefault: boolean;
+}
+
 export interface RecentProjectsSlice {
   recentProjects: RecentProject[];
   /** Path of last-focused project tab — survives when restoreLastSession is off so we know where to refocus. */
@@ -133,9 +144,17 @@ export interface RecentProjectsSlice {
   projectsDir: string;
   defaultClaudeMdPath: string;
   defaultAgentsMdPath: string;
+  defaultGeminiMdPath: string;
+  defaultUseSingleSourcePointers: boolean;
+  customScaffolds: CustomScaffold[];
   setProjectsDir: (value: string) => void;
   setDefaultClaudeMdPath: (value: string) => void;
   setDefaultAgentsMdPath: (value: string) => void;
+  setDefaultGeminiMdPath: (value: string) => void;
+  setDefaultUseSingleSourcePointers: (value: boolean) => void;
+  addCustomScaffold: () => void;
+  updateCustomScaffold: (id: string, patch: Partial<Omit<CustomScaffold, "id">>) => void;
+  removeCustomScaffold: (id: string) => void;
   terminalBackend: TerminalBackend;
   commitMsgMode: CommitMsgMode;
   shadowAiCli: ShadowAiCli;
@@ -237,9 +256,36 @@ export const createRecentProjectsSlice: StateCreator<
   projectsDir: "",
   defaultClaudeMdPath: "",
   defaultAgentsMdPath: "",
+  defaultGeminiMdPath: "",
+  defaultUseSingleSourcePointers: false,
+  customScaffolds: [],
   setProjectsDir: (value) => set({ projectsDir: value }),
   setDefaultClaudeMdPath: (value) => set({ defaultClaudeMdPath: value }),
   setDefaultAgentsMdPath: (value) => set({ defaultAgentsMdPath: value }),
+  setDefaultGeminiMdPath: (value) => set({ defaultGeminiMdPath: value }),
+  setDefaultUseSingleSourcePointers: (value) => set({ defaultUseSingleSourcePointers: value }),
+  addCustomScaffold: () =>
+    set((state) => ({
+      customScaffolds: [
+        ...state.customScaffolds,
+        {
+          id: `cs-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          filename: "",
+          templatePath: "",
+          enabledByDefault: false,
+        },
+      ],
+    })),
+  updateCustomScaffold: (id, patch) =>
+    set((state) => ({
+      customScaffolds: state.customScaffolds.map((s) =>
+        s.id === id ? { ...s, ...patch } : s,
+      ),
+    })),
+  removeCustomScaffold: (id) =>
+    set((state) => ({
+      customScaffolds: state.customScaffolds.filter((s) => s.id !== id),
+    })),
   terminalBackend: getDefaultBackend(),
   commitMsgMode: "simple",
   shadowAiCli: "claude",
