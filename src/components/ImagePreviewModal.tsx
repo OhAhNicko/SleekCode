@@ -1,3 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
+
 interface ImagePreviewModalProps {
   dataUri: string;
   winPath: string;
@@ -84,6 +86,29 @@ export default function ImagePreviewModal({
                 Insert path
               </button>
             )}
+            <button
+              onClick={() => { void invoke("copy_image_to_clipboard", { path: winPath }).catch(() => {}); }}
+              title="Copy image to clipboard"
+              aria-label="Copy image"
+              style={{
+                width: 26,
+                height: 26,
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "var(--ezy-surface)",
+                color: "var(--ezy-text)",
+                border: "1px solid var(--ezy-border)",
+                borderRadius: 4,
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                <rect x="3" y="3" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none" />
+                <path d="M4.5 3 V2 H10 V8 H8.5" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
             {onDelete && (
               <button
                 onClick={() => { onDelete(); onClose(); }}

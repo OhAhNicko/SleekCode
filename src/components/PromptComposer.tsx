@@ -1,5 +1,6 @@
 import { useRef, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import type { Terminal } from "@xterm/xterm";
 import { promptify } from "../lib/promptify";
 import { useAppStore } from "../store";
@@ -2071,7 +2072,6 @@ export default function PromptComposer({
                 e.stopPropagation();
                 setPreviewImage({ dataUri: img.dataUri, winPath: img.winPath });
               }}
-              title="View full image"
               style={{
                 position: "absolute",
                 top: 0,
@@ -2316,10 +2316,7 @@ export default function PromptComposer({
         {
           label: "Copy",
           action: () => {
-            fetch(ctxImg.dataUri)
-              .then((r) => r.blob())
-              .then((blob) => navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]))
-              .catch(() => {});
+            void invoke("copy_image_to_clipboard", { path: ctxImg.winPath }).catch(() => {});
             setImgCtxMenu(null);
           },
         },
