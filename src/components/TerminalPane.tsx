@@ -1749,7 +1749,9 @@ export default function TerminalPane({
         if (!entry || !terminalRef.current) return;
         if (entry.isIntersecting) {
           recordTerminalResize(terminalId);
-          terminalRef.current.refresh(0, terminalRef.current.rows - 1);
+          // No explicit refresh: Chromium preserves the WebGL canvas across
+          // display:none → block, so a manual refresh just causes a visible
+          // flash on every pane in the newly-shown tab simultaneously.
           // Restore scroll position from onScroll-tracked ref.
           const savedY = savedViewportYRef.current;
           if (savedY !== null) {
@@ -1787,39 +1789,14 @@ export default function TerminalPane({
     return () => observer.disconnect();
   }, [terminalId]);
 
-  // Repaint after window minimize → restore (or alt-tab back).
-  // WebGL renderer loses its context while the document is hidden;
-  // neither ResizeObserver nor IntersectionObserver fire on restore
-  // because the element size and intersection haven't changed.
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState !== "visible") return;
-      const term = terminalRef.current;
-      const fit = fitAddonRef.current;
-      if (!term) return;
-      term.refresh(0, term.rows - 1);
-      if (fit) {
-        try {
-          // Preserve scroll position across fit — same pattern as ResizeObserver
-          const buf = term.buffer.active;
-          const wasAtBottom = buf.baseY - buf.viewportY <= 3;
-          const savedViewport = buf.viewportY;
-          // Skip fit when the container measures too narrow. ResizeObserver
-          // will re-fire once layout settles to a sane size.
-          const proposed = fit.proposeDimensions();
-          if (proposed && proposed.cols < 20) return;
-          fit.fit();
-          if (wasAtBottom) {
-            term.scrollToBottom();
-          } else {
-            term.scrollToLine(Math.min(savedViewport, buf.baseY));
-          }
-        } catch { /* container may be detached */ }
-      }
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
-  }, []);
+  // Intentionally no document.visibilitychange handler: every TerminalPane
+  // installs the same listener, so any minimize/restore/alt-tab/screen-dim
+  // event fired refresh() + fit() on every pane in the same frame, which the
+  // user perceives as a synchronized flicker across all terminals.
+  // Chromium normally preserves the WebGL canvas across hidden→visible, and
+  // ResizeObserver still fires if the window size actually changed. If true
+  // WebGL context loss ever shows up in the wild, handle it via the
+  // 'webglcontextlost' event on the specific canvas instead.
 
   // Auto-open composer when "always visible" is enabled.
   useEffect(() => {
