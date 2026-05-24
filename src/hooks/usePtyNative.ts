@@ -94,7 +94,12 @@ export function usePtyNative({
     const want = attachTo ?? null;
     if (want != null && ptyId != null && attachedTermIdRef.current !== want) {
       attachedTermIdRef.current = want;
-      void invoke("native_term_attach_pty", { id: want, ptyId }).catch(() => {});
+      void invoke("native_term_attach_pty", {
+        id: want,
+        ptyId,
+        cols: Math.max(colsRef.current, 2),
+        rows: Math.max(rowsRef.current, 2),
+      }).catch((e) => console.error("[usePtyNative] attach_pty late-wire failed:", e));
     }
   }, [attachTo]);
 
@@ -241,7 +246,12 @@ export function usePtyNative({
         const wantAttach = attachToRef.current;
         if (wantAttach != null) {
           attachedTermIdRef.current = wantAttach;
-          void invoke("native_term_attach_pty", { id: wantAttach, ptyId: id }).catch(() => {});
+          void invoke("native_term_attach_pty", {
+            id: wantAttach,
+            ptyId: id,
+            cols: Math.max(cols, 2),
+            rows: Math.max(rows, 2),
+          }).catch((e) => console.error("[usePtyNative] attach_pty failed:", e));
         }
 
         if (pendingResizeRef.current) {

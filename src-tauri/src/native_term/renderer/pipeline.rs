@@ -14,11 +14,13 @@
 
 use std::sync::{Arc, Mutex};
 
+use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Term;
 use glyphon::{Attrs, Buffer, Family, Shaping, TextArea, TextBounds};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use super::super::parser_bridge::TermListener;
+use super::cursor::CursorPipeline;
 use super::glyph_atlas::GlyphStack;
 use super::grid::CellGrid;
 
@@ -33,6 +35,7 @@ pub struct Renderer {
     /// show during R1.b before R1.c wires `attach_term`.
     grid: Option<CellGrid>,
     term: Option<Arc<Mutex<Term<TermListener>>>>,
+    cursor: CursorPipeline,
     /// Placeholder Buffer used in the no-Term path. Pre-built once in `new`
     /// so render() doesn't re-shape every frame.
     placeholder_buffer: Buffer,
@@ -152,6 +155,8 @@ impl Renderer {
             Shaping::Advanced,
         );
 
+        let cursor = CursorPipeline::new(&device, format);
+
         Ok(Self {
             surface,
             device,
@@ -160,6 +165,7 @@ impl Renderer {
             glyph,
             grid: None,
             term: None,
+            cursor,
             placeholder_buffer,
             bg_clear: wgpu::Color { r: 0.05, g: 0.05, b: 0.07, a: 1.0 },
         })
@@ -217,10 +223,13 @@ impl Renderer {
             grid.sync_from_term(&mut self.glyph, term);
         }
 
-        // Collect TextAreas. Two paths:
-        //   - Attached: per-row Buffers from CellGrid.
-        //   - Detached (R1.b spike): single placeholder Buffer.
+        // Snapshot font metrics before glyphon takes &mut self.glyph.
+        // Cell width is an approximation for Hack mono; R1.d-δ will pull
+        // real advance metrics from cosmic-text.
         let line_h = self.glyph.line_height_px;
+        let cell_w = self.glyph.font_size_px * 0.6;
+        let surface_w = self.config.width as f32;
+        let surface_h = self.config.height as f32;
         let text_areas: Vec<TextArea> = if let Some(grid) = self.grid.as_ref() {
             grid.text_areas(line_h)
         } else {
@@ -256,6 +265,37 @@ impl Renderer {
                 &text_areas,
                 &mut pass,
             )?;
+
+            // R1.d-γ cursor bar — drawn AFTER glyphon so it sits visually
+            // on top of the cell text. Position read from the live Term
+            // grid under one short lock.
+            if let Some(term) = self.term.as_ref() {
+                let (col, line_idx, visible_rows, visible_cols) = {
+                    let t = term.lock().expect("renderer term lock poisoned");
+                    let grid = t.grid();
+                    let pt = grid.cursor.point;
+                    (
+                        pt.column.0,
+                        pt.line.0.max(0) as usize,
+                        grid.screen_lines(),
+                        grid.columns(),
+                    )
+                };
+                if line_idx < visible_rows && col < visible_cols {
+                    self.cursor.draw(
+                        &self.queue,
+                        surface_w,
+                        surface_h,
+                        col as f32 * cell_w,
+                        line_idx as f32 * line_h,
+                        2.0,
+                        line_h,
+                        // Soft white, ~80% alpha for non-jarring visual.
+                        [0.86, 0.84, 0.81, 0.80],
+                        &mut pass,
+                    );
+                }
+            }
         }
 
         self.queue.submit(Some(enc.finish()));

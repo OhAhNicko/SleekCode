@@ -31,6 +31,10 @@ interface UsePtyOptions {
   forceYolo?: boolean;
   /** Per-tab backend override (wsl/windows). Falls back to global setting if omitted. */
   backend?: TerminalBackend;
+  /** When set, signals usePty that the resulting PTY will be routed through
+   *  the native renderer at this id. In native mode the JS-side `term.write`
+   *  consumer is skipped — the parser bridge in Rust owns byte routing. */
+  attachTo?: number | null;
 }
 
 export function usePty({

@@ -1,3 +1,4 @@
+pub mod cursor;
 pub mod damage;
 pub mod glyph_atlas;
 pub mod grid;

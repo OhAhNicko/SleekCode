@@ -16,9 +16,12 @@ import { createAiTimeSlice, type AiTimeSlice } from "./aiTimeSlice";
 import { createFloatingPanesSlice, type FloatingPanesSlice } from "./floatingPanesSlice";
 import { createLayoutSlice, type LayoutSlice } from "./layoutSlice";
 import { createVoiceSlice, type VoiceSlice } from "./voiceSlice";
+import { createNativeRendererSlice, type NativeRendererSlice } from "./nativeRendererSlice";
+import { createModalCoordinationSlice, type ModalCoordinationSlice } from "./modalCoordinationSlice";
+import { createOverlayRegionSlice, type OverlayRegionSlice } from "./overlayRegionSlice";
 import type { Tab } from "../types";
 
-export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice & VoiceSlice;
+export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice & VoiceSlice & NativeRendererSlice & ModalCoordinationSlice & OverlayRegionSlice;
 
 function isSystemTab(tab: Tab): boolean {
   return !!(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab);
@@ -43,6 +46,9 @@ export const useAppStore = create<AppStore>()(
       ...createFloatingPanesSlice(...a),
       ...createLayoutSlice(...a),
       ...createVoiceSlice(...a),
+      ...createNativeRendererSlice(...a),
+      ...createModalCoordinationSlice(...a),
+      ...createOverlayRegionSlice(...a),
     }),
     {
       name: "made-storage",
@@ -126,6 +132,7 @@ export const useAppStore = create<AppStore>()(
         voiceActivationMode: state.voiceActivationMode,
         pttHotkey: state.pttHotkey,
         voiceConfirmDestructive: state.voiceConfirmDestructive,
+        useNativeTerminalRenderer: state.useNativeTerminalRenderer,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;

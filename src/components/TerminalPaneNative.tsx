@@ -254,6 +254,14 @@ export default function TerminalPaneNative({
         minWidth: 0,
       }}
     >
+      {/* TerminalHeader intentionally NOT rendered here. The xterm version
+          (TerminalPaneXterm) renders it with contextInfo/isYolo/onRestart/
+          getPromptEntries/onScrollToPromptLine/onRefreshContext props that
+          derive from xterm's buffer + parser state. Native mode doesn't
+          read the buffer the same way yet — Phase 2 OSC 133 + buffer-read
+          APIs are how those values become available. Rendering the header
+          without them collapses the layout (X button moves, context badge
+          missing). Defer until Phase 2 J2 wires those data sources. */}
       {/* Terminal anchor — R's HWND positions itself over this div's bounding rect. */}
       <div
         ref={terminalDivRef}
@@ -267,11 +275,11 @@ export default function TerminalPaneNative({
           background: "transparent",
         }}
       />
-      {/* Overlay slot: Phase 2 plugs TerminalHeader, PromptComposer,
-          PaneSearchBar, CommandBlockOverlay, ClipboardImagePreview,
-          jump-to-bottom button here — all read termId + paneDivRef to
-          publish their rect into overlayRegionSlice (O's territory) which
-          drives the hole-cut. */}
+      {/* Overlay slot: Phase 2 plugs PromptComposer, PaneSearchBar,
+          CommandBlockOverlay, ClipboardImagePreview, jump-to-bottom
+          button here — all read termId + paneDivRef to publish their
+          rect into overlayRegionSlice (O's territory) which drives the
+          hole-cut. */}
     </div>
   );
 }
