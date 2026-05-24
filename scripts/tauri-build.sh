@@ -8,8 +8,8 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   # WSL → delegate to Windows PowerShell
   WIN_DIR=$(wslpath -w "$(pwd)")
 
-  echo "[EzyDev] Building Tauri production binary via Windows PowerShell..."
-  echo "[EzyDev] Project: $WIN_DIR"
+  echo "[MADE] Building Tauri production binary via Windows PowerShell..."
+  echo "[MADE] Project: $WIN_DIR"
   echo ""
 
   # Forward signing env vars if set (for update bundle signing)
@@ -28,8 +28,8 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   "
 else
   # macOS / Linux → build directly
-  echo "[EzyDev] Building Tauri production binary..."
-  echo "[EzyDev] Project: $(pwd)"
+  echo "[MADE] Building Tauri production binary..."
+  echo "[MADE] Project: $(pwd)"
   echo ""
 
   npm install

@@ -82,7 +82,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
                 marginBottom: 2,
               }}
             >
-              EzyDev updated
+              MADE updated
             </div>
             <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ezy-text)" }}>
               What's new in v{version}

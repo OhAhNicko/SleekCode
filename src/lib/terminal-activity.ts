@@ -96,8 +96,8 @@ export function clearTerminalActivity(terminalId: string): void {
 function dispatchBurstEvents(terminalId: string, s: ActivityState): void {
   const durationMs = s.lastOutput - s.burstStart;
   const detail = { terminalId, terminalType: s.terminalType, durationMs };
-  window.dispatchEvent(new CustomEvent("ezydev:git-refresh", { detail }));
-  window.dispatchEvent(new CustomEvent("ezydev:ai-done", { detail }));
+  window.dispatchEvent(new CustomEvent("made:git-refresh", { detail }));
+  window.dispatchEvent(new CustomEvent("made:ai-done", { detail }));
 }
 
 /**

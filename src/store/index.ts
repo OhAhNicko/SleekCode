@@ -45,7 +45,7 @@ export const useAppStore = create<AppStore>()(
       ...createVoiceSlice(...a),
     }),
     {
-      name: "ezydev-storage",
+      name: "made-storage",
       partialize: (state) => ({
         tabs: state.tabs,
         activeTabId: state.activeTabId,

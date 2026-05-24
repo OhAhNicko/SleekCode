@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 
-const PERSIST_KEY = "ezydev-storage";
+const PERSIST_KEY = "made-storage";
 
 interface Category {
   id: string;
@@ -63,7 +63,7 @@ const CATEGORIES: Category[] = [
       "defaultClaudeMdPath",
       "defaultAgentsMdPath",
     ],
-    rawKeys: ["ezydev-devtools-pinned"],
+    rawKeys: ["made-devtools-pinned"],
   },
   {
     id: "history",
@@ -82,7 +82,7 @@ const CATEGORIES: Category[] = [
     label: "Games & highscores",
     description: "Highscores, timed leaderboards, game stats, crossword progress.",
     stateKeys: ["highscores", "timedHighscores", "gameStats", "completedCrosswordIds", "customCrosswords"],
-    rawPrefixes: ["ezydev-wordle-"],
+    rawPrefixes: ["made-wordle-"],
   },
   {
     id: "configs",
@@ -96,9 +96,9 @@ const CATEGORIES: Category[] = [
     description: "Cached Claude/Codex/Gemini binary paths. Safe to clear \u2014 will re-detect on next use.",
     stateKeys: [],
     rawKeys: [
-      "ezydev-wsl-cli-cache",
-      "ezydev-windows-cli-cache",
-      "ezydev-native-cli-cache",
+      "made-wsl-cli-cache",
+      "made-windows-cli-cache",
+      "made-native-cli-cache",
     ],
   },
 ];
@@ -287,7 +287,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
           }}
         >
           This action cannot be undone. The app will reload after clearing.
-          Your files on disk are not touched &mdash; only EzyDev's local storage.
+          Your files on disk are not touched &mdash; only MADE's local storage.
         </div>
 
         {/* Body */}

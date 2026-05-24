@@ -18,14 +18,14 @@ export function getImageLabel(winPath: string): string {
 }
 
 /**
- * Build a stable POSIX remote path for a Windows file under /tmp/ezydev/.
+ * Build a stable POSIX remote path for a Windows file under /tmp/made/.
  * Uses the basename plus a millisecond timestamp to avoid collisions across
  * rapid pastes. Caller decides the prefix (e.g. "clipboard" vs "drop").
  */
 export function buildRemotePath(localPath: string, prefix: string): string {
   const basename = localPath.split(/[\\/]/).pop() || `${prefix}.bin`;
   const ts = Date.now();
-  return `/tmp/ezydev/${prefix}-${ts}-${basename}`;
+  return `/tmp/made/${prefix}-${ts}-${basename}`;
 }
 
 /**
@@ -33,7 +33,7 @@ export function buildRemotePath(localPath: string, prefix: string): string {
  * be inserted into the active terminal.
  *
  * - If the active terminal is bound to a remote SSH server, the local file
- *   is uploaded to /tmp/ezydev/<prefix>-<ts>-<basename> on the remote and
+ *   is uploaded to /tmp/made/<prefix>-<ts>-<basename> on the remote and
  *   the remote path is returned.
  * - Otherwise, the path is converted to the right local format (Windows or
  *   WSL) for the configured terminal backend.

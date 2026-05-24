@@ -11,29 +11,29 @@
  */
 
 const SHELL_INTEGRATION_SCRIPT = `
-# EzyDev shell integration — OSC 133 markers
-__ezydev_last_exit=0
-__ezydev_preexec_fired=0
+# MADE shell integration — OSC 133 markers
+__made_last_exit=0
+__made_preexec_fired=0
 
-__ezydev_prompt_cmd() {
-  __ezydev_last_exit=$?
-  __ezydev_preexec_fired=0
-  printf '\\033]133;D;%s\\007' "$__ezydev_last_exit"
+__made_prompt_cmd() {
+  __made_last_exit=$?
+  __made_preexec_fired=0
+  printf '\\033]133;D;%s\\007' "$__made_last_exit"
   printf '\\033]133;A\\007'
 }
 
-__ezydev_preexec() {
-  [[ "$BASH_COMMAND" == __ezydev_* ]] && return
+__made_preexec() {
+  [[ "$BASH_COMMAND" == __made_* ]] && return
   [[ "$BASH_COMMAND" == "printf"* ]] && return
-  if [[ "$__ezydev_preexec_fired" == "0" ]]; then
-    __ezydev_preexec_fired=1
+  if [[ "$__made_preexec_fired" == "0" ]]; then
+    __made_preexec_fired=1
     printf '\\033]133;C\\007'
   fi
 }
 
-PROMPT_COMMAND="__ezydev_prompt_cmd\${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+PROMPT_COMMAND="__made_prompt_cmd\${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
 PS1="\${PS1}\\[\\033]133;B\\007\\]"
-trap '__ezydev_preexec' DEBUG
+trap '__made_preexec' DEBUG
 `.trim();
 
 /**

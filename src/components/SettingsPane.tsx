@@ -523,7 +523,7 @@ function UpdatesSection() {
   const isUpdating = checkStatus === "downloading" || checkStatus === "installing";
 
   return (
-    <SettingsSection id="updates" title="Updates" description="Check for new versions of EzyDev.">
+    <SettingsSection id="updates" title="Updates" description="Check for new versions of MADE.">
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {appVersion && (
           <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>
@@ -1144,7 +1144,7 @@ export default function SettingsPane() {
                 <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
               </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="danger-zone" title="Danger Zone" description="Clear EzyDev's local storage. Your files on disk are not affected.">
+            <SettingsSection id="danger-zone" title="Danger Zone" description="Clear MADE's local storage. Your files on disk are not affected.">
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
                 <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
                   <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Clear local data</div>
@@ -1507,8 +1507,8 @@ export default function SettingsPane() {
       case "editor":
         return (
           <>
-            <SettingsSection id="composer" title="EzyComposer" description="Configure the prompt composer overlay (Ctrl+I).">
-              <SettingsRow label="Enable EzyComposer">
+            <SettingsSection id="composer" title="MadeComposer" description="Configure the prompt composer overlay (Ctrl+I).">
+              <SettingsRow label="Enable MadeComposer">
                 <ToggleSwitch checked={promptComposerEnabled} onChange={setPromptComposerEnabled} />
               </SettingsRow>
               {promptComposerEnabled && (
@@ -1561,7 +1561,7 @@ export default function SettingsPane() {
             </SettingsSection>
             <SettingsSection id="links" title="Snippets & Shortcuts">
               <div
-                onClick={() => window.dispatchEvent(new Event("ezydev:open-snippets"))}
+                onClick={() => window.dispatchEvent(new Event("made:open-snippets"))}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1582,7 +1582,7 @@ export default function SettingsPane() {
                 </svg>
               </div>
               <div
-                onClick={() => window.dispatchEvent(new Event("ezydev:open-shortcuts"))}
+                onClick={() => window.dispatchEvent(new Event("made:open-shortcuts"))}
                 style={{
                   display: "flex",
                   alignItems: "center",

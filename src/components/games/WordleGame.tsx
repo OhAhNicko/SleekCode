@@ -96,14 +96,14 @@ interface DayState {
 
 function loadDayState(mode: Mode, dayNum: number): DayState | null {
   try {
-    const raw = localStorage.getItem(`ezydev-wordle-${mode}-${dayNum}`);
+    const raw = localStorage.getItem(`made-wordle-${mode}-${dayNum}`);
     if (raw) return JSON.parse(raw);
   } catch { /* ignore */ }
   return null;
 }
 
 function saveDayState(mode: Mode, dayNum: number, state: DayState) {
-  localStorage.setItem(`ezydev-wordle-${mode}-${dayNum}`, JSON.stringify(state));
+  localStorage.setItem(`made-wordle-${mode}-${dayNum}`, JSON.stringify(state));
 }
 
 export default function WordleGame({ onUpdateStats, paused = false }: WordleGameProps) {

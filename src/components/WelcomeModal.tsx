@@ -164,7 +164,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
             margin: 0,
             letterSpacing: "-0.02em",
           }}>
-            Welcome to EzyDev
+            Welcome to MADE
           </h1>
           <p style={{
             fontSize: 13,
@@ -237,7 +237,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
           </div>
         </div>
 
-        {/* ── Section: EzyComposer ───────────────────────── */}
+        {/* ── Section: MadeComposer ───────────────────────── */}
         <div style={{
           marginBottom: 16,
           padding: "14px 16px",
@@ -258,7 +258,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
                 color: "var(--ezy-text)",
                 marginBottom: 4,
               }}>
-                EzyComposer
+                MadeComposer
               </div>
               <div style={{
                 fontSize: 12,

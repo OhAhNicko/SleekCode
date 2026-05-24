@@ -201,7 +201,7 @@ export default function ConnectToGitHubModal({
                 GitHub CLI is not installed
               </div>
               <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>
-                EzyDev uses the <code style={inlineCodeStyle}>gh</code> CLI to create a repository and push your code
+                MADE uses the <code style={inlineCodeStyle}>gh</code> CLI to create a repository and push your code
                 without storing any GitHub credentials inside the app.
               </div>
               <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 4, fontWeight: 500 }}>

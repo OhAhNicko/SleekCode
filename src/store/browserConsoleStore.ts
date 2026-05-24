@@ -13,7 +13,7 @@ interface BrowserConsoleStore {
   active: boolean;
   selectMode: boolean;
   selectedIds: Set<number>;
-  /** One-shot flag: EzyComposer sets true, BrowserPreview consumes and opens console tab */
+  /** One-shot flag: MadeComposer sets true, BrowserPreview consumes and opens console tab */
   requestOpenConsole: boolean;
   /** Auto-debug: show red error-debug button in composer when errors exist */
   autoDebug: boolean;

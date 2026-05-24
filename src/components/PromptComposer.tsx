@@ -156,7 +156,7 @@ export default function PromptComposer({
   const debugLog = (msg: string, extra?: Record<string, unknown>) => {
     if (typeof window === "undefined" || !(window as any).__ezyComposerDebug) return;
     // eslint-disable-next-line no-console
-    console.debug(`[EzyComposer ${terminalId}] ${msg}`, extra ?? {});
+    console.debug(`[MadeComposer ${terminalId}] ${msg}`, extra ?? {});
   };
   const debugTransition = (next: boolean, path: string, extra?: Record<string, unknown>) => {
     debugLog(`${next ? "HIDE" : "SHOW"} via ${path}`, extra);
@@ -208,8 +208,8 @@ export default function PromptComposer({
       const insertion = paths.join(" ");
       setValue((prev) => (prev ? prev + " " + insertion : insertion));
     };
-    el.addEventListener("ezydev:file-drop", handler);
-    return () => el.removeEventListener("ezydev:file-drop", handler);
+    el.addEventListener("made:file-drop", handler);
+    return () => el.removeEventListener("made:file-drop", handler);
   }, []);
 
   // Listen for global prompt insert (from Ctrl+R search modal)
@@ -224,8 +224,8 @@ export default function PromptComposer({
         setTimeout(() => textareaRef.current?.focus(), 30);
       }
     };
-    window.addEventListener("ezydev:insert-prompt", handler);
-    return () => window.removeEventListener("ezydev:insert-prompt", handler);
+    window.addEventListener("made:insert-prompt", handler);
+    return () => window.removeEventListener("made:insert-prompt", handler);
   }, []);
 
   // Listen for undo-clear-composer events (from UndoClearToast Ctrl+Z / Undo button)
@@ -240,8 +240,8 @@ export default function PromptComposer({
         setTimeout(() => textareaRef.current?.focus(), 30);
       }
     };
-    window.addEventListener("ezydev:undo-clear-composer", handler);
-    return () => window.removeEventListener("ezydev:undo-clear-composer", handler);
+    window.addEventListener("made:undo-clear-composer", handler);
+    return () => window.removeEventListener("made:undo-clear-composer", handler);
   }, []);
 
   // Detect dim/ghost cell: SGR dim, palette grays, or RGB grays.
@@ -1174,7 +1174,7 @@ export default function PromptComposer({
     // Resolve attached images: replace [Img N] labels with actual file paths
     // so CLIs (Claude, Codex, Gemini) can read the image files. For remote
     // SSH terminals, resolveImagePath uploads the bytes and returns a remote
-    // /tmp/ezydev/... path; null means upload failed and the image is dropped
+    // /tmp/made/... path; null means upload failed and the image is dropped
     // from the prompt (an error toast is shown by resolveImagePath).
     if (localImages.length > 0) {
       const storeImages = useClipboardImageStore.getState().images;

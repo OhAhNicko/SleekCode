@@ -49,7 +49,7 @@ const PANE_OPTIONS: PaneOption[] = [
 
 export default function EmptyTabLauncher() {
   const open = (type: TerminalType) => {
-    window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type } }));
+    window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type } }));
   };
 
   return (

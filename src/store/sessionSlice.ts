@@ -29,7 +29,7 @@ export const createSessionSlice: StateCreator<
       const existing = state.projectSessions[key] ?? [];
       const idx = existing.findIndex((s) => s.id === session.id);
       if (idx >= 0) {
-        // Upsert: only preserve old name if user explicitly renamed in EzyDev.
+        // Upsert: only preserve old name if user explicitly renamed in MADE.
         // Auto-names from old sessions must NOT carry over to new panes.
         const prev = existing[idx];
         if (prev.isRenamed) return state;

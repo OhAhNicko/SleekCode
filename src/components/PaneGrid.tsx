@@ -100,11 +100,11 @@ export default function PaneGrid({
       if (!detail?.filePath) return;
       // Route to the file viewer (creates one or adds to existing)
       window.dispatchEvent(
-        new CustomEvent("ezydev:open-fileviewer", { detail: { filePath: detail.filePath, lineNumber: detail.lineNumber } })
+        new CustomEvent("made:open-fileviewer", { detail: { filePath: detail.filePath, lineNumber: detail.lineNumber } })
       );
     };
-    window.addEventListener("ezydev:open-file", handler);
-    return () => window.removeEventListener("ezydev:open-file", handler);
+    window.addEventListener("made:open-file", handler);
+    return () => window.removeEventListener("made:open-file", handler);
   }, [layout, onLayoutChange]);
 
   // Toggle code review pane (open on right / close if already open)
@@ -138,8 +138,8 @@ export default function PaneGrid({
       };
       onLayoutChange(newLayout);
     };
-    window.addEventListener("ezydev:open-codereview", handler);
-    return () => window.removeEventListener("ezydev:open-codereview", handler);
+    window.addEventListener("made:open-codereview", handler);
+    return () => window.removeEventListener("made:open-codereview", handler);
   }, [layout, onLayoutChange]);
 
   // Toggle game pane (open on right / close if already open)
@@ -185,11 +185,11 @@ export default function PaneGrid({
       else lastActiveGame = undefined;
     };
 
-    window.addEventListener("ezydev:open-game", handler);
-    window.addEventListener("ezydev:game-active", gameActiveHandler);
+    window.addEventListener("made:open-game", handler);
+    window.addEventListener("made:game-active", gameActiveHandler);
     return () => {
-      window.removeEventListener("ezydev:open-game", handler);
-      window.removeEventListener("ezydev:game-active", gameActiveHandler);
+      window.removeEventListener("made:open-game", handler);
+      window.removeEventListener("made:game-active", gameActiveHandler);
     };
   }, [layout, onLayoutChange]);
 
@@ -212,8 +212,8 @@ export default function PaneGrid({
       const newLayout = removePane(layout, existing.id);
       if (newLayout) onLayoutChange(newLayout);
     };
-    window.addEventListener("ezydev:ai-done", handler);
-    return () => window.removeEventListener("ezydev:ai-done", handler);
+    window.addEventListener("made:ai-done", handler);
+    return () => window.removeEventListener("made:ai-done", handler);
   }, [layout, onLayoutChange, autoMinimizeGameOnAiDone]);
 
   // Listen for file viewer open events
@@ -236,7 +236,7 @@ export default function PaneGrid({
       if (existingId) {
         // Dispatch add-file event to existing viewer
         window.dispatchEvent(
-          new CustomEvent("ezydev:fileviewer-add", {
+          new CustomEvent("made:fileviewer-add", {
             detail: { filePath, viewerId: existingId },
           })
         );
@@ -259,8 +259,8 @@ export default function PaneGrid({
       };
       onLayoutChange(newLayout);
     };
-    window.addEventListener("ezydev:open-fileviewer", handler);
-    return () => window.removeEventListener("ezydev:open-fileviewer", handler);
+    window.addEventListener("made:open-fileviewer", handler);
+    return () => window.removeEventListener("made:open-fileviewer", handler);
   }, [layout, onLayoutChange]);
 
   // Remote editor: open an EditorPane with serverId so file I/O routes over SSH.
@@ -296,8 +296,8 @@ export default function PaneGrid({
       };
       onLayoutChange(newLayout);
     };
-    window.addEventListener("ezydev:open-remote-editor", handler);
-    return () => window.removeEventListener("ezydev:open-remote-editor", handler);
+    window.addEventListener("made:open-remote-editor", handler);
+    return () => window.removeEventListener("made:open-remote-editor", handler);
   }, [layout, onLayoutChange]);
 
   const renderPane = (node: PaneLayout): React.ReactNode => {

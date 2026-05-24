@@ -2,7 +2,7 @@
 //
 // Runs a local HTTP/1.1 server (hyper + tokio) that forwards iframe requests
 // to a configured target origin. For HTML responses, strips framing/CSP
-// headers and injects the EzyDev DevTools script so console + network capture
+// headers and injects the MADE DevTools script so console + network capture
 // works inside the BrowserPreview pane. For WebSocket upgrades (e.g. Vite
 // HMR), the proxy speaks the WS handshake on both sides and bridges frames
 // transparently — without WS proxying, HMR can't reach the dev server through
@@ -101,7 +101,7 @@ pub fn start() -> Result<ProxyHandle, String> {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(2)
-            .thread_name("ezydev-proxy")
+            .thread_name("made-proxy")
             .build()
         {
             Ok(r) => r,

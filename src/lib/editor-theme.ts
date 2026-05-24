@@ -1,6 +1,6 @@
 import { EditorView } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
-import type { EzyDevTheme } from "./themes";
+import type { MadeTheme } from "./themes";
 
 function hexToRgba(hex: string, alpha: number): string {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -10,9 +10,9 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 /**
- * Build a CodeMirror 6 theme from an EzyDevTheme.
+ * Build a CodeMirror 6 theme from an MadeTheme.
  */
-export function buildEditorTheme(theme: EzyDevTheme): Extension {
+export function buildEditorTheme(theme: MadeTheme): Extension {
   const s = theme.surface;
   const t = theme.terminal;
   const editorHighlight = hexToRgba(s.accent, 0.15);

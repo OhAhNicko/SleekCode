@@ -39,9 +39,9 @@ interface ClipboardImageStore {
   lastInsertion: LastInsertion | null;
   /** Last upload failure — drives a transient toast, cleared after ~6 seconds */
   uploadError: UploadError | null;
-  /** Pending image for a specific EzyComposer to pick up (set by TabBar/auto-paste, consumed by composer) */
+  /** Pending image for a specific MadeComposer to pick up (set by TabBar/auto-paste, consumed by composer) */
   pendingComposerImage: { image: ClipboardImage; terminalId: string } | null;
-  /** Terminal ID of the last focused EzyComposer (set by composer on focus) */
+  /** Terminal ID of the last focused MadeComposer (set by composer on focus) */
   activeComposerTerminalId: string | null;
   addImage: (image: Omit<ClipboardImage, "id" | "timestamp">, seq: number) => void;
   removeImage: (id: string) => void;

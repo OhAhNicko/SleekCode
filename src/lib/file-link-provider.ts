@@ -76,7 +76,7 @@ function getLineText(buffer: Terminal["buffer"]["active"], lineNumber: number): 
 
 /**
  * Creates an ILinkProvider that detects file paths in terminal output
- * and opens them in the EzyDev file viewer on Ctrl+Click.
+ * and opens them in the MADE file viewer on Ctrl+Click.
  */
 export function createFilePathLinkProvider(
   term: Terminal,
@@ -128,7 +128,7 @@ export function createFilePathLinkProvider(
 
           const resolved = resolvePath(match.filePath);
           window.dispatchEvent(
-            new CustomEvent("ezydev:open-file", {
+            new CustomEvent("made:open-file", {
               detail: { filePath: resolved, lineNumber: match.line },
             })
           );
@@ -140,7 +140,7 @@ export function createFilePathLinkProvider(
           tooltip.className = "xterm-hover ezy-file-link-tooltip";
           const label = document.createElement("span");
           label.className = "ezy-flt-label";
-          label.textContent = "Open in EzyDev";
+          label.textContent = "Open in MADE";
           const kbd = document.createElement("kbd");
           kbd.className = "ezy-flt-kbd";
           kbd.textContent = `${navigator.platform.includes("Mac") ? "Cmd" : "Ctrl"}+Click`;

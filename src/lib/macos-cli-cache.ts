@@ -5,7 +5,7 @@ interface NativeCliCache {
   timestamp: number;
 }
 
-const CACHE_KEY = "ezydev-native-cli-cache";
+const CACHE_KEY = "made-native-cli-cache";
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 let cache: NativeCliCache | null = null;

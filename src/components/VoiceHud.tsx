@@ -59,7 +59,7 @@ export default function VoiceHud() {
   if (state === "idle" && !pendingConfirm && !pendingClarify) return null;
   if (dismissed) return null;
 
-  // Position bottom-left so it doesn't collide with the EzyComposer (bottom-right area).
+  // Position bottom-left so it doesn't collide with the MadeComposer (bottom-right area).
   const containerStyle: React.CSSProperties = {
     position: "fixed",
     bottom: 16,

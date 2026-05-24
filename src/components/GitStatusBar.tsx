@@ -85,11 +85,11 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
       // Reset poll timer so we don't double-fetch right after an event
       if (mountedRef.current) schedulePoll();
     };
-    window.addEventListener("ezydev:git-refresh", handler);
+    window.addEventListener("made:git-refresh", handler);
     return () => {
       mountedRef.current = false;
       if (timerRef.current) clearTimeout(timerRef.current);
-      window.removeEventListener("ezydev:git-refresh", handler);
+      window.removeEventListener("made:git-refresh", handler);
     };
   }, [fetchAll, schedulePoll]);
 
@@ -157,7 +157,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
       } else {
         setPullToast({ kind: "err", msg: result.message || "Pull failed" });
       }
-      window.dispatchEvent(new Event("ezydev:git-refresh"));
+      window.dispatchEvent(new Event("made:git-refresh"));
       setTimeout(() => setPullToast(null), 4000);
     } catch (err) {
       const msg = typeof err === "string" ? err : (err as Error).message || "Pull failed";
@@ -299,7 +299,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
 
       {/* View changes — file count + bullet + diff stats as one clickable unit (Warp-style) */}
       <div
-        onClick={() => window.dispatchEvent(new Event("ezydev:open-codereview"))}
+        onClick={() => window.dispatchEvent(new Event("made:open-codereview"))}
         style={{
           display: "flex",
           alignItems: "center",

@@ -6,7 +6,7 @@ import { warmLlm } from "../lib/voice/llmClient";
 
 /**
  * Invisible controller — owns the MediaRecorder lifecycle and reacts to
- * "ezydev:voice-{start,stop,toggle}" events. Mount once globally (App.tsx).
+ * "made:voice-{start,stop,toggle}" events. Mount once globally (App.tsx).
  *
  * The visible <VoiceMicButton /> in the sidebar just dispatches these events.
  * The push-to-talk hotkey in App.tsx also dispatches them.
@@ -76,13 +76,13 @@ export default function VoiceController() {
       else if (cur === "idle" || cur === "error") await start();
     }
 
-    window.addEventListener("ezydev:voice-start", start);
-    window.addEventListener("ezydev:voice-stop", stop);
-    window.addEventListener("ezydev:voice-toggle", toggle);
+    window.addEventListener("made:voice-start", start);
+    window.addEventListener("made:voice-stop", stop);
+    window.addEventListener("made:voice-toggle", toggle);
     return () => {
-      window.removeEventListener("ezydev:voice-start", start);
-      window.removeEventListener("ezydev:voice-stop", stop);
-      window.removeEventListener("ezydev:voice-toggle", toggle);
+      window.removeEventListener("made:voice-start", start);
+      window.removeEventListener("made:voice-stop", stop);
+      window.removeEventListener("made:voice-toggle", toggle);
     };
   }, []);
 

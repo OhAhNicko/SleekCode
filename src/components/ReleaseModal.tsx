@@ -185,7 +185,7 @@ export default function ReleaseModal({
         manifestPaths: Array.from(selected),
       });
       setSteps(result);
-      window.dispatchEvent(new Event("ezydev:git-refresh"));
+      window.dispatchEvent(new Event("made:git-refresh"));
 
       // Seed the editable notes textarea from the release_bump output.
       const notesStep = result.find((s) => s.step === "generate notes" && s.ok);

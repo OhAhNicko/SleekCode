@@ -27,8 +27,8 @@ Bump the app version, trigger a CI release build, and populate the GitHub releas
    - If the commit list is empty after filtering, fall back to `- Maintenance release.` so the body is never empty.
 8. `git tag v<version> && git push --tags` — this triggers CI (`.github/workflows/release.yml`), which creates/updates a draft release via `tauri-apps/tauri-action@v0.6`.
 9. Populate the draft release with the generated notes:
-   - First attempt: `gh release create v<version> --title "EzyDev v<version>" --notes "$body" --draft`.
-   - If that fails because CI already created the release, fall back to: `gh release edit v<version> --title "EzyDev v<version>" --notes "$body"`.
+   - First attempt: `gh release create v<version> --title "MADE v<version>" --notes "$body" --draft`.
+   - If that fails because CI already created the release, fall back to: `gh release edit v<version> --title "MADE v<version>" --notes "$body"`.
    - Pass `--notes` via a HEREDOC file (`--notes-file`) if the body contains special shell characters.
 10. Report: "Release v<version> triggered. Monitor CI: https://github.com/OhAhNicko/SleekCode/actions"
 11. Remind: "Once CI finishes uploading artifacts, review and publish the draft release at https://github.com/OhAhNicko/SleekCode/releases — the notes will appear in the in-app changelog popup after the next auto-update."

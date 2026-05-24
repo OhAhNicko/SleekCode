@@ -37,6 +37,14 @@ fn start_reader_thread(
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
+                    // Native-terminal side-channel: when a native_term is
+                    // attached to this pty_id, mirror the byte slice into the
+                    // parser bridge's crossbeam channel. Bounded(64) + try_send
+                    // means a stalled consumer is dropped, not back-pressured.
+                    // The JS branch below stays authoritative during rollout.
+                    if let Some(tx) = crate::native_term::pty_route::sender_for(id) {
+                        let _ = tx.try_send(buf[..n].to_vec());
+                    }
                     if on_data.send(buf[..n].to_vec()).is_err() {
                         break;
                     }
@@ -283,6 +291,21 @@ pub async fn pty_write(pty_id: u32, data: String) -> Result<(), String> {
         .writer
         .write_all(data.as_bytes())
         .map_err(|e| e.to_string())
+}
+
+/// Synchronous byte-level write to a PTY. Used by native_term's win32 wnd_proc
+/// to forward keyboard input directly without an async round-trip. Returns
+/// true on success, false if the PTY doesn't exist or the write failed —
+/// silent failure is the right policy from a window message handler.
+pub fn write_to_pty_sync(pty_id: u32, data: &[u8]) -> bool {
+    let mut map = match sessions().lock() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    match map.get_mut(&pty_id) {
+        Some(s) => s.writer.write_all(data).is_ok(),
+        None => false,
+    }
 }
 
 #[tauri::command]

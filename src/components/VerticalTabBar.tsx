@@ -85,7 +85,7 @@ export default function VerticalTabBar() {
 
   const handleClose = () => {
     if (confirmQuit) {
-      const ok = window.confirm("Quit EzyDev?");
+      const ok = window.confirm("Quit MADE?");
       if (!ok) return;
     }
     getCurrentWindow().close();
@@ -281,7 +281,7 @@ export default function VerticalTabBar() {
 
           {/* New tab (far right of controls row) */}
           <div
-            onClick={() => window.dispatchEvent(new Event("ezydev:new-tab"))}
+            onClick={() => window.dispatchEvent(new Event("made:new-tab"))}
             title="New tab"
             style={{
               width: compact ? 20 : 32,
@@ -697,7 +697,7 @@ export default function VerticalTabBar() {
 
             {showMiniGamesButton && (
               <div
-                onClick={() => window.dispatchEvent(new CustomEvent("ezydev:open-game"))}
+                onClick={() => window.dispatchEvent(new CustomEvent("made:open-game"))}
                 title="Mini Games"
                 style={{
                   display: "flex",

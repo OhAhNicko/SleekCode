@@ -443,7 +443,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
 
   // Broadcast active game to PaneGrid for pause/resume tracking
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent("ezydev:game-active", { detail: { game: activeGame } }));
+    window.dispatchEvent(new CustomEvent("made:game-active", { detail: { game: activeGame } }));
   }, [activeGame]);
 
   // Get all available crossword puzzles

@@ -10,7 +10,7 @@ import { buildRemotePath } from "../lib/clipboard-insert";
 /**
  * Resolve a list of dropped local paths into the strings that should be
  * inserted into the terminal. For remote SSH terminals, each file is
- * uploaded to /tmp/ezydev/ on the remote and the remote path is returned.
+ * uploaded to /tmp/made/ on the remote and the remote path is returned.
  * Failed uploads (e.g. file too large) are skipped and surface a toast.
  */
 async function resolveDroppedPaths(
@@ -60,7 +60,7 @@ async function resolveDroppedPaths(
 
 /**
  * Global hook: listens for Tauri file-drop events.
- * When files are dropped onto a terminal pane or EzyComposer,
+ * When files are dropped onto a terminal pane or MadeComposer,
  * inserts the file path(s) into the appropriate target.
  */
 export function useFileDrop() {
@@ -103,12 +103,12 @@ export function useFileDrop() {
 
         const pathText = resolved.join(" ");
 
-        // Check if drop landed on the EzyComposer
+        // Check if drop landed on the MadeComposer
         const composer = (el as HTMLElement).closest("[data-composer]");
         if (composer) {
           // Dispatch custom event for PromptComposer to pick up
           composer.dispatchEvent(
-            new CustomEvent("ezydev:file-drop", {
+            new CustomEvent("made:file-drop", {
               detail: { paths: resolved },
               bubbles: false,
             })

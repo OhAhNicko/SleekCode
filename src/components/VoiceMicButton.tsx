@@ -2,7 +2,7 @@ import { useAppStore } from "../store";
 
 /**
  * Visible mic button. Click toggles recording (delegated to <VoiceController />
- * via "ezydev:voice-toggle"). Right-click opens the Settings panel so the user
+ * via "made:voice-toggle"). Right-click opens the Settings panel so the user
  * can configure endpoints.
  *
  * `size="topbar"` matches the horizontal-mode action button grammar
@@ -34,16 +34,16 @@ export default function VoiceMicButton({ size = "topbar" }: { size?: "topbar" | 
         onPointerDown: (e: React.PointerEvent) => {
           if (e.button !== 0) return;
           e.currentTarget.setPointerCapture(e.pointerId);
-          window.dispatchEvent(new Event("ezydev:voice-start"));
+          window.dispatchEvent(new Event("made:voice-start"));
         },
         onPointerUp: (e: React.PointerEvent) => {
           try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-          window.dispatchEvent(new Event("ezydev:voice-stop"));
+          window.dispatchEvent(new Event("made:voice-stop"));
         },
-        onPointerCancel: () => window.dispatchEvent(new Event("ezydev:voice-stop")),
+        onPointerCancel: () => window.dispatchEvent(new Event("made:voice-stop")),
       }
     : {
-        onClick: () => window.dispatchEvent(new Event("ezydev:voice-toggle")),
+        onClick: () => window.dispatchEvent(new Event("made:voice-toggle")),
       };
 
   const title = isHold

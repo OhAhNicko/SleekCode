@@ -270,14 +270,14 @@ export default function BrowserPreview({
 
   /* ---- DevTools panel ---- */
   const [devtoolsPinned, setDevtoolsPinned] = useState(
-    () => localStorage.getItem("ezydev-devtools-pinned") === "true"
+    () => localStorage.getItem("made-devtools-pinned") === "true"
   );
   const [devtoolsTab, setDevtoolsTab] = useState<DevtoolsTab | null>(
-    () => localStorage.getItem("ezydev-devtools-pinned") === "true" ? "console" : null
+    () => localStorage.getItem("made-devtools-pinned") === "true" ? "console" : null
   );
   const lastTabRef = useRef<DevtoolsTab>("console");
   const [devtoolsHeight, setDevtoolsHeight] = useState<number>(() => {
-    const saved = Number(localStorage.getItem("ezydev-devtools-height"));
+    const saved = Number(localStorage.getItem("made-devtools-height"));
     return Number.isFinite(saved) && saved >= 80 ? saved : 220;
   });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -292,7 +292,7 @@ export default function BrowserPreview({
   const toggleConsoleSelected = useBrowserConsoleStore((s) => s.toggleSelected);
   const autoDebug = useBrowserConsoleStore((s) => s.autoDebug);
 
-  // Mirror console entries to standalone store for EzyComposer access
+  // Mirror console entries to standalone store for MadeComposer access
   useEffect(() => {
     useBrowserConsoleStore.getState().setEntries(consoleEntries);
   }, [consoleEntries]);
@@ -305,7 +305,7 @@ export default function BrowserPreview({
       s.setEntries([]);
     };
   }, []);
-  // Listen for EzyComposer requesting console tab to open
+  // Listen for MadeComposer requesting console tab to open
   const requestOpenConsole = useBrowserConsoleStore((s) => s.requestOpenConsole);
   useEffect(() => {
     if (requestOpenConsole) {
@@ -388,7 +388,7 @@ export default function BrowserPreview({
   const hardReload = useCallback(() => {
     try {
       iframeRef.current?.contentWindow?.postMessage(
-        { type: "ezydev-clear-storage" },
+        { type: "made-clear-storage" },
         "*",
       );
     } catch {
@@ -417,7 +417,7 @@ export default function BrowserPreview({
     const newVal = !inspectModeRef.current;
     setInspectMode(newVal);
     inspectModeRef.current = newVal;
-    const msg = newVal ? "ezydev-inspect-start" : "ezydev-inspect-stop";
+    const msg = newVal ? "made-inspect-start" : "made-inspect-stop";
     iframeRef.current?.contentWindow?.postMessage({ type: msg }, "*");
   }, []);
 
@@ -483,7 +483,7 @@ export default function BrowserPreview({
     const handler = (e: MessageEvent) => {
       if (!e.data?.type) return;
 
-      if (e.data.type === "ezydev-console") {
+      if (e.data.type === "made-console") {
         setConsoleEntries((prev) => {
           const next = [
             ...prev,
@@ -498,7 +498,7 @@ export default function BrowserPreview({
         });
       }
 
-      if (e.data.type === "ezydev-network") {
+      if (e.data.type === "made-network") {
         if (e.data.phase === "start") {
           setNetworkEntries((prev) => {
             const next = [
@@ -538,14 +538,14 @@ export default function BrowserPreview({
         }
       }
 
-      if (e.data.type === "ezydev-inspect-result") {
+      if (e.data.type === "made-inspect-result") {
         const el = e.data.element as InspectedElement;
         setInspectedElement(el);
         setDevtoolsTab("elements");
         lastTabRef.current = "elements";
       }
 
-      if (e.data.type === "ezydev-storage") {
+      if (e.data.type === "made-storage") {
         setStorageData({
           localStorage: e.data.localStorage as Record<string, string>,
           sessionStorage: e.data.sessionStorage as Record<string, string>,
@@ -554,7 +554,7 @@ export default function BrowserPreview({
         });
       }
 
-      if (e.data.type === "ezydev-url") {
+      if (e.data.type === "made-url") {
         try {
           const proxyUrl = new URL(e.data.url as string);
           const parsed = new URL(url);
@@ -565,18 +565,18 @@ export default function BrowserPreview({
         }
       }
 
-      if (e.data.type === "ezydev-ready") {
+      if (e.data.type === "made-ready") {
         // Re-enable inspect mode on new page loads
         if (inspectModeRef.current) {
           iframeRef.current?.contentWindow?.postMessage(
-            { type: "ezydev-inspect-start" },
+            { type: "made-inspect-start" },
             "*",
           );
         }
         // Auto-fetch storage if Storage tab is active
         if (devtoolsTabRef.current === "storage") {
           iframeRef.current?.contentWindow?.postMessage(
-            { type: "ezydev-read-storage" },
+            { type: "made-read-storage" },
             "*",
           );
         }
@@ -591,7 +591,7 @@ export default function BrowserPreview({
   useEffect(() => {
     if (devtoolsTab === "storage" && proxyActive) {
       iframeRef.current?.contentWindow?.postMessage(
-        { type: "ezydev-read-storage" },
+        { type: "made-read-storage" },
         "*",
       );
     }
@@ -622,7 +622,7 @@ export default function BrowserPreview({
   /* ---- Persist DevTools pin ---- */
 
   useEffect(() => {
-    localStorage.setItem("ezydev-devtools-pinned", String(devtoolsPinned));
+    localStorage.setItem("made-devtools-pinned", String(devtoolsPinned));
   }, [devtoolsPinned]);
 
   const togglePin = useCallback(() => setDevtoolsPinned((v) => !v), []);
@@ -654,7 +654,7 @@ export default function BrowserPreview({
       window.removeEventListener("mouseup", onUp);
       // Persist final height
       setDevtoolsHeight((h) => {
-        localStorage.setItem("ezydev-devtools-height", String(h));
+        localStorage.setItem("made-devtools-height", String(h));
         return h;
       });
     };
@@ -687,7 +687,7 @@ export default function BrowserPreview({
 
   const refreshStorage = useCallback(() => {
     iframeRef.current?.contentWindow?.postMessage(
-      { type: "ezydev-read-storage" },
+      { type: "made-read-storage" },
       "*",
     );
   }, []);

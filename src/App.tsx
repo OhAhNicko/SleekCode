@@ -138,8 +138,8 @@ export default function App() {
 
   useEffect(() => {
     const handler = () => handleNewLocalTab();
-    window.addEventListener("ezydev:new-tab", handler);
-    return () => window.removeEventListener("ezydev:new-tab", handler);
+    window.addEventListener("made:new-tab", handler);
+    return () => window.removeEventListener("made:new-tab", handler);
   }, [handleNewLocalTab]);
 
   const handleTemplateSelected = useCallback(
@@ -316,7 +316,7 @@ export default function App() {
       label: "Open Code Review",
       category: "action",
       keywords: "git diff code review changes uncommitted",
-      execute: () => window.dispatchEvent(new Event("ezydev:open-codereview")),
+      execute: () => window.dispatchEvent(new Event("made:open-codereview")),
     });
 
     // Voice agent: speak a command (only when enabled)
@@ -326,7 +326,7 @@ export default function App() {
         label: "Voice: speak a command…",
         category: "action",
         keywords: "voice agent speak microphone whisper say",
-        execute: () => window.dispatchEvent(new Event("ezydev:voice-toggle")),
+        execute: () => window.dispatchEvent(new Event("made:voice-toggle")),
       });
     }
 
@@ -371,17 +371,17 @@ export default function App() {
   // spawnDevServer (the same helper used by quick-open) so the SSH path is
   // identical between "open project from recent" and "app restart with
   // restoreLastSession". Loud console.warn logs are intentional — set
-  // `localStorage.setItem("ezydev.silenceDevServerRestore","1")` to mute.
+  // `localStorage.setItem("made.silenceDevServerRestore","1")` to mute.
   useEffect(() => {
     const state = useAppStore.getState();
-    const verbose = localStorage.getItem("ezydev.silenceDevServerRestore") !== "1";
+    const verbose = localStorage.getItem("made.silenceDevServerRestore") !== "1";
     const log = (msg: string, data?: unknown) =>
       verbose && (data === undefined ? console.warn(`[DEV-SERVER-RESTORE] ${msg}`) : console.warn(`[DEV-SERVER-RESTORE] ${msg}`, data));
 
     // Toast helper — surfaces the restore result in the UI so users without
     // DevTools can see why their dev server didn't start.
     const toast = (status: "ok" | "skipped" | "error" | "info", title: string, detail?: string) => {
-      window.dispatchEvent(new CustomEvent("ezydev:dev-server-restore", { detail: { status, title, detail } }));
+      window.dispatchEvent(new CustomEvent("made:dev-server-restore", { detail: { status, title, detail } }));
     };
 
     log("effect fired", {
@@ -513,7 +513,7 @@ export default function App() {
 
       if (s.confirmQuit) {
         event.preventDefault();
-        window.dispatchEvent(new Event("ezydev:quit-requested"));
+        window.dispatchEvent(new Event("made:quit-requested"));
       }
     }).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
@@ -534,7 +534,7 @@ export default function App() {
   // Watch Windows clipboard for new images (adds to TabBar strip automatically)
   useClipboardWatcher();
 
-  // Handle file drops from OS onto terminal panes / EzyComposer
+  // Handle file drops from OS onto terminal panes / MadeComposer
   useFileDrop();
 
   // Track AI working time from burst events
@@ -567,29 +567,29 @@ export default function App() {
   // Listen for snippet panel open events from TerminalHeader
   useEffect(() => {
     const handler = () => setShowSnippets(true);
-    window.addEventListener("ezydev:open-snippets", handler);
-    return () => window.removeEventListener("ezydev:open-snippets", handler);
+    window.addEventListener("made:open-snippets", handler);
+    return () => window.removeEventListener("made:open-snippets", handler);
   }, []);
 
   // Listen for keyboard shortcuts modal open events from TabBar settings menu
   useEffect(() => {
     const handler = () => setShowShortcuts(true);
-    window.addEventListener("ezydev:open-shortcuts", handler);
-    return () => window.removeEventListener("ezydev:open-shortcuts", handler);
+    window.addEventListener("made:open-shortcuts", handler);
+    return () => window.removeEventListener("made:open-shortcuts", handler);
   }, []);
 
   // Listen for command palette open events from GlobalContextMenu
   useEffect(() => {
     const handler = () => setShowPalette(true);
-    window.addEventListener("ezydev:open-palette", handler);
-    return () => window.removeEventListener("ezydev:open-palette", handler);
+    window.addEventListener("made:open-palette", handler);
+    return () => window.removeEventListener("made:open-palette", handler);
   }, []);
 
   // Listen for prompt search open events from GlobalContextMenu
   useEffect(() => {
     const handler = () => setShowPromptSearch(true);
-    window.addEventListener("ezydev:open-prompt-search", handler);
-    return () => window.removeEventListener("ezydev:open-prompt-search", handler);
+    window.addEventListener("made:open-prompt-search", handler);
+    return () => window.removeEventListener("made:open-prompt-search", handler);
   }, []);
 
 
@@ -614,9 +614,9 @@ export default function App() {
         }
         consume();
         if (voiceState.voiceActivationMode === "hold") {
-          window.dispatchEvent(new Event("ezydev:voice-start"));
+          window.dispatchEvent(new Event("made:voice-start"));
         } else {
-          window.dispatchEvent(new Event("ezydev:voice-toggle"));
+          window.dispatchEvent(new Event("made:voice-toggle"));
         }
         return;
       }
@@ -706,43 +706,43 @@ export default function App() {
           case "1":
             // Ctrl+1 → new Claude pane (vertical / grid)
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "claude" } }));
+            window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "claude" } }));
             return;
           case "2":
             // Ctrl+2 → new Codex pane
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "codex" } }));
+            window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "codex" } }));
             return;
           case "3":
             // Ctrl+3 → new Gemini pane
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "gemini" } }));
+            window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "gemini" } }));
             return;
           case "d":
             // Ctrl+D → Split pane vertically (new pane right)
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "shell" } }));
+            window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "shell" } }));
             return;
           case "w":
             // Ctrl+W → Close current pane
             consume();
-            window.dispatchEvent(new Event("ezydev:close-pane"));
+            window.dispatchEvent(new Event("made:close-pane"));
             return;
           case "l":
             // Ctrl+L → Clear terminal
             consume();
-            window.dispatchEvent(new Event("ezydev:clear-terminal"));
+            window.dispatchEvent(new Event("made:clear-terminal"));
             return;
           case "=":
           case "+":
             // Ctrl+= / Ctrl++ → Zoom in (increase font size)
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:font-zoom", { detail: { delta: 1 } }));
+            window.dispatchEvent(new CustomEvent("made:font-zoom", { detail: { delta: 1 } }));
             return;
           case "-":
             // Ctrl+- → Zoom out (decrease font size)
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:font-zoom", { detail: { delta: -1 } }));
+            window.dispatchEvent(new CustomEvent("made:font-zoom", { detail: { delta: -1 } }));
             return;
           case "Tab":
             // Ctrl+Tab → next project tab, wrapping at the end. Excludes ALL
@@ -771,17 +771,17 @@ export default function App() {
           case "T":
             // Ctrl+Shift+T → New tab
             consume();
-            window.dispatchEvent(new Event("ezydev:new-tab"));
+            window.dispatchEvent(new Event("made:new-tab"));
             return;
           case "N":
             // Ctrl+Shift+N → New project/tab
             consume();
-            window.dispatchEvent(new Event("ezydev:new-tab"));
+            window.dispatchEvent(new Event("made:new-tab"));
             return;
           case "F":
             // Ctrl+Shift+F → Open Code Review
             consume();
-            window.dispatchEvent(new Event("ezydev:open-codereview"));
+            window.dispatchEvent(new Event("made:open-codereview"));
             return;
           case "W":
             // Ctrl+Shift+W → Close current tab
@@ -794,7 +794,7 @@ export default function App() {
           case "D":
             // Ctrl+Shift+D → Split pane horizontally (new pane below)
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "shell", direction: "vertical" } }));
+            window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "shell", direction: "vertical" } }));
             return;
           case "P":
             // Ctrl+Shift+P → Command palette (alias)
@@ -823,33 +823,33 @@ export default function App() {
             // Ctrl+Shift+V → Paste (explicit)
             consume();
             navigator.clipboard.readText().then((text) => {
-              window.dispatchEvent(new CustomEvent("ezydev:paste-text", { detail: { text } }));
+              window.dispatchEvent(new CustomEvent("made:paste-text", { detail: { text } }));
             }).catch(() => {});
             return;
           case "]":
             // Ctrl+Shift+] → Focus next pane
             consume();
-            window.dispatchEvent(new Event("ezydev:focus-next-pane"));
+            window.dispatchEvent(new Event("made:focus-next-pane"));
             return;
           case "[":
             // Ctrl+Shift+[ → Focus previous pane
             consume();
-            window.dispatchEvent(new Event("ezydev:focus-prev-pane"));
+            window.dispatchEvent(new Event("made:focus-prev-pane"));
             return;
           case "!":
             // Ctrl+Shift+1 → New Claude pane (horizontal split)
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "claude", direction: "vertical" } }));
+            window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "claude", direction: "vertical" } }));
             return;
           case "@":
             // Ctrl+Shift+2 → New Codex pane (horizontal split)
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "codex", direction: "vertical" } }));
+            window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "codex", direction: "vertical" } }));
             return;
           case "#":
             // Ctrl+Shift+3 → New Gemini pane (horizontal split)
             consume();
-            window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "gemini", direction: "vertical" } }));
+            window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "gemini", direction: "vertical" } }));
             return;
           case "G":
             // Ctrl+Shift+G → Toggle Mini Games button visibility
@@ -885,7 +885,7 @@ export default function App() {
       if (matchesHotkeyRelease(e, v.pttHotkey)) {
         e.preventDefault();
         e.stopPropagation();
-        window.dispatchEvent(new Event("ezydev:voice-stop"));
+        window.dispatchEvent(new Event("made:voice-stop"));
       }
     };
 
@@ -901,7 +901,7 @@ export default function App() {
 
   const handleOpenFile = useCallback((filePath: string, lineNumber?: number) => {
     window.dispatchEvent(
-      new CustomEvent("ezydev:open-file", { detail: { filePath, lineNumber } })
+      new CustomEvent("made:open-file", { detail: { filePath, lineNumber } })
     );
   }, []);
 
@@ -942,7 +942,7 @@ export default function App() {
                 <h1 style={{
                   fontSize: 28, fontWeight: 700, color: "var(--ezy-text)",
                   letterSpacing: "-0.02em", margin: 0,
-                }}>EzyDev</h1>
+                }}>MADE</h1>
                 <p style={{ fontSize: 13, color: "var(--ezy-text-muted)", margin: "6px 0 0" }}>
                   Open a project to get started
                 </p>
@@ -957,7 +957,7 @@ export default function App() {
                     {recentProjects.slice(0, 8).map((project) => (
                       <button
                         key={project.id}
-                        onClick={() => window.dispatchEvent(new CustomEvent("ezydev:open-recent", { detail: { path: project.path, name: project.name } }))}
+                        onClick={() => window.dispatchEvent(new CustomEvent("made:open-recent", { detail: { path: project.path, name: project.name } }))}
                         style={{
                           display: "flex", alignItems: "center", gap: 10,
                           padding: "8px 12px", borderRadius: 6, border: "none",
@@ -983,7 +983,7 @@ export default function App() {
                 </div>
               )}
               <button
-                onClick={() => window.dispatchEvent(new Event("ezydev:new-tab"))}
+                onClick={() => window.dispatchEvent(new Event("made:new-tab"))}
                 style={{
                   padding: "8px 20px", borderRadius: 6,
                   border: "1px solid var(--ezy-border)",
@@ -1028,7 +1028,7 @@ export default function App() {
         <PromptHistorySearch
           onClose={() => setShowPromptSearch(false)}
           onSelect={(text) => {
-            window.dispatchEvent(new CustomEvent("ezydev:insert-prompt", { detail: text }));
+            window.dispatchEvent(new CustomEvent("made:insert-prompt", { detail: text }));
           }}
         />
       )}

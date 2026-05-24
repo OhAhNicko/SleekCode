@@ -1,6 +1,6 @@
 import type { ITheme } from "@xterm/xterm";
 
-export interface EzyDevSurface {
+export interface MadeSurface {
   bg: string;
   surface: string;
   surfaceRaised: string;
@@ -18,16 +18,16 @@ export interface EzyDevSurface {
   cyan: string;
 }
 
-export interface EzyDevTheme {
+export interface MadeTheme {
   id: string;
   name: string;
   terminal: ITheme;
-  surface: EzyDevSurface;
+  surface: MadeSurface;
 }
 
 // ─── Default (GitHub Dark) ───────────────────────────────────────────
 
-const defaultTheme: EzyDevTheme = {
+const defaultTheme: MadeTheme = {
   id: "default",
   name: "Default",
   terminal: {
@@ -76,7 +76,7 @@ const defaultTheme: EzyDevTheme = {
 
 // ─── Nord ────────────────────────────────────────────────────────────
 
-const nordTheme: EzyDevTheme = {
+const nordTheme: MadeTheme = {
   id: "nord",
   name: "Nord",
   terminal: {
@@ -125,7 +125,7 @@ const nordTheme: EzyDevTheme = {
 
 // ─── Dracula ─────────────────────────────────────────────────────────
 
-const draculaTheme: EzyDevTheme = {
+const draculaTheme: MadeTheme = {
   id: "dracula",
   name: "Dracula",
   terminal: {
@@ -174,7 +174,7 @@ const draculaTheme: EzyDevTheme = {
 
 // ─── Cyberpunk ───────────────────────────────────────────────────────
 
-const cyberpunkTheme: EzyDevTheme = {
+const cyberpunkTheme: MadeTheme = {
   id: "cyberpunk",
   name: "Cyberpunk",
   terminal: {
@@ -223,7 +223,7 @@ const cyberpunkTheme: EzyDevTheme = {
 
 // ─── Ocean ───────────────────────────────────────────────────────────
 
-const oceanTheme: EzyDevTheme = {
+const oceanTheme: MadeTheme = {
   id: "ocean",
   name: "Ocean",
   terminal: {
@@ -272,7 +272,7 @@ const oceanTheme: EzyDevTheme = {
 
 // ─── Aurora ──────────────────────────────────────────────────────────
 
-const auroraTheme: EzyDevTheme = {
+const auroraTheme: MadeTheme = {
   id: "aurora",
   name: "Aurora",
   terminal: {
@@ -321,7 +321,7 @@ const auroraTheme: EzyDevTheme = {
 
 // ─── Monokai ─────────────────────────────────────────────────────────
 
-const monokaiTheme: EzyDevTheme = {
+const monokaiTheme: MadeTheme = {
   id: "monokai",
   name: "Monokai",
   terminal: {
@@ -370,7 +370,7 @@ const monokaiTheme: EzyDevTheme = {
 
 // ─── Gruvbox Dark ───────────────────────────────────────────────────
 
-const gruvboxDarkTheme: EzyDevTheme = {
+const gruvboxDarkTheme: MadeTheme = {
   id: "gruvbox-dark",
   name: "Gruvbox Dark",
   terminal: {
@@ -419,7 +419,7 @@ const gruvboxDarkTheme: EzyDevTheme = {
 
 // ─── Solarized Dark ────────────────────────────────────────────────
 
-const solarizedDarkTheme: EzyDevTheme = {
+const solarizedDarkTheme: MadeTheme = {
   id: "solarized-dark",
   name: "Solarized Dark",
   terminal: {
@@ -468,7 +468,7 @@ const solarizedDarkTheme: EzyDevTheme = {
 
 // ─── Black Steel (Dr. Disrespect) ───────────────────────────────────
 
-const blackSteelTheme: EzyDevTheme = {
+const blackSteelTheme: MadeTheme = {
   id: "black-steel",
   name: "Black Steel",
   terminal: {
@@ -628,7 +628,7 @@ export function getEffectiveTerminalTheme(
 
 // ─── Exports ─────────────────────────────────────────────────────────
 
-export const THEMES: EzyDevTheme[] = [
+export const THEMES: MadeTheme[] = [
   defaultTheme,
   nordTheme,
   draculaTheme,
@@ -641,12 +641,12 @@ export const THEMES: EzyDevTheme[] = [
   blackSteelTheme,
 ];
 
-export const THEMES_MAP: Record<string, EzyDevTheme> = Object.fromEntries(
+export const THEMES_MAP: Record<string, MadeTheme> = Object.fromEntries(
   THEMES.map((t) => [t.id, t])
 );
 
 export const DEFAULT_THEME_ID = "default";
 
-export function getTheme(id: string): EzyDevTheme {
+export function getTheme(id: string): MadeTheme {
   return THEMES_MAP[id] ?? defaultTheme;
 }

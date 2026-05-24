@@ -5,7 +5,7 @@ interface WindowsCliCache {
   timestamp: number;
 }
 
-const CACHE_KEY = "ezydev-windows-cli-cache";
+const CACHE_KEY = "made-windows-cli-cache";
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 let cache: WindowsCliCache | null = null;

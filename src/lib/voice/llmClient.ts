@@ -31,7 +31,7 @@ function buildSystemPrompt(): string {
     return `  • ${t.name} — ${t.description}\n${params || "    (no arguments)"}`;
   }).join("\n");
 
-  return `You are EzyDev's voice agent. The user speaks to you in English or Swedish; reply in the same language they used.
+  return `You are MADE's voice agent. The user speaks to you in English or Swedish; reply in the same language they used.
 
 Your only job: turn each utterance into JSON tool calls that operate the app.
 
@@ -81,7 +81,7 @@ SPEECH-RECOGNITION DISAMBIGUATION (the user's audio was transcribed by Whisper, 
 - "cloud", "clod", "Claud", "claud", "klot", "klod", "kloud" → Claude (CLI). When the user says any of these in the context of code/terminal/pane/CLI, treat it as 'claude'.
 - "kodex", "codecs", "codeax" → Codex.
 - "Jeminai", "jemini", "jiminy" → Gemini.
-- "izy dev", "easy dev", "easydev" → EzyDev (the app itself).
+- "izy dev", "easy dev", "easydev" → MADE (the app itself).
 - "pain", "pen" near "open"/"close"/"new" → pane.
 - "tab", "tabb", "flik" → tab.
 - Swedish: "öppna" = open, "stäng" = close, "byt" = switch, "ny" = new, "till" = to, "flik" = tab, "fönster" = window/pane.

@@ -354,7 +354,7 @@ function executeOne(call: ToolCall): { ok: boolean; message: string } {
     }
 
     case "open_command_palette": {
-      window.dispatchEvent(new Event("ezydev:open-palette"));
+      window.dispatchEvent(new Event("made:open-palette"));
       return { ok: true, message: "Opened command palette." };
     }
 

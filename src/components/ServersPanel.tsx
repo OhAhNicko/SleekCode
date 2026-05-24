@@ -23,7 +23,7 @@ interface SshKeyInfo {
 function getKeyPath(serverName: string, serverId: string): string {
   const sanitized = serverName.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
   const suffix = serverId.replace("srv-", "").slice(-6);
-  return `~/.ssh/ezydev_${sanitized}_${suffix}_ed25519`;
+  return `~/.ssh/made_${sanitized}_${suffix}_ed25519`;
 }
 
 type KeySetupStatus = "idle" | "checking" | "generating" | "installing" | "testing" | "done" | "error";
@@ -1280,7 +1280,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
               No remote servers configured
             </p>
             <p style={{ fontSize: 12, color: "var(--ezy-border-light)" }}>
-              Add a server to SSH into remote machines from EzyDev
+              Add a server to SSH into remote machines from MADE
             </p>
           </div>
         ) : servers.length > 0 && (

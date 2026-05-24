@@ -1,5 +1,6 @@
 mod preview_proxy;
 mod pty;
+mod native_term;
 
 use std::process::{Child, Command};
 use std::sync::Mutex;
@@ -1527,7 +1528,7 @@ async fn git_revert_hunk(directory: String, patch: String) -> Result<(), String>
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let temp_path = temp_dir.join(format!("ezydev-patch-{}-{}.patch", std::process::id(), nanos));
+    let temp_path = temp_dir.join(format!("made-patch-{}-{}.patch", std::process::id(), nanos));
 
     std::fs::write(&temp_path, &patch)
         .map_err(|e| format!("Failed to write temp patch: {}", e))?;
@@ -3006,7 +3007,7 @@ async fn reveal_in_explorer(path: String) -> Result<(), String> {
 /// Returns the file path and a data URI for thumbnail preview.
 #[tauri::command]
 async fn save_clipboard_image() -> Result<ClipboardImageResult, String> {
-    let dir = std::env::temp_dir().join("ezydev");
+    let dir = std::env::temp_dir().join("made");
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create temp dir: {}", e))?;
 
@@ -3103,11 +3104,11 @@ async fn save_clipboard_image() -> Result<ClipboardImageResult, String> {
     })
 }
 
-/// Clean up old clipboard images from the ezydev temp directory.
+/// Clean up old clipboard images from the made temp directory.
 #[tauri::command]
 async fn cleanup_clipboard_images(max_age_secs: Option<u64>) -> Result<(), String> {
     let max_age = std::time::Duration::from_secs(max_age_secs.unwrap_or(86400));
-    let dir = std::env::temp_dir().join("ezydev");
+    let dir = std::env::temp_dir().join("made");
 
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
@@ -3800,7 +3801,7 @@ async fn read_session_context_windows(
     match terminal_type.as_str() {
         "claude" => {
             // Read statusline JSON if available
-            let sl_path = std::path::Path::new(&home).join(".ezydev").join("claude-statusline.json");
+            let sl_path = std::path::Path::new(&home).join(".made").join("claude-statusline.json");
             let mut sl_window: Option<u64> = None;
             let mut sl_model: Option<String> = None;
             let mut sl_used_pct: Option<u64> = None;
@@ -3819,7 +3820,7 @@ async fn read_session_context_windows(
                     sl_session_id = v.pointer("/session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
                     // Cache per-session cost from statusline
                     if let (Some(ref sid), Some(cost)) = (&sl_session_id, sl_cost) {
-                        let cache_path = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", sid));
+                        let cache_path = std::env::temp_dir().join(format!("made-claude-cost-{}.txt", sid));
                         let dur_str = sl_duration.map(|d| d.to_string()).unwrap_or_default();
                         let _ = std::fs::write(&cache_path, format!("{:.6}|{}", cost, dur_str));
                     }
@@ -3937,7 +3938,7 @@ async fn read_session_context_windows(
                 if sl_session_id.as_deref() == Some(&session_id) {
                     (sl_cost, sl_duration)
                 } else {
-                    let cache_path = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", session_id));
+                    let cache_path = std::env::temp_dir().join(format!("made-claude-cost-{}.txt", session_id));
                     if let Ok(cached) = std::fs::read_to_string(&cache_path) {
                         let parts: Vec<&str> = cached.trim().split('|').collect();
                         let c = parts.first().and_then(|s| s.parse::<f64>().ok());
@@ -3962,7 +3963,7 @@ async fn read_session_context_windows(
                             let sc = if sl_session_id.as_deref() == Some(&sid) {
                                 sl_cost
                             } else {
-                                let cp = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", sid));
+                                let cp = std::env::temp_dir().join(format!("made-claude-cost-{}.txt", sid));
                                 std::fs::read_to_string(&cp).ok()
                                     .and_then(|c| c.trim().split('|').next().and_then(|s| s.parse::<f64>().ok()))
                             };
@@ -4215,18 +4216,18 @@ fn set_window_corners(window: tauri::WebviewWindow, rounded: bool) -> Result<(),
     Ok(())
 }
 
-/// Install the EzyDev statusline wrapper in WSL.
-/// Creates ~/.ezydev/statusline-wrapper.sh that saves the raw statusline JSON
-/// to /tmp/ezydev-claude-statusline.json and chains to the user's existing
+/// Install the MADE statusline wrapper in WSL.
+/// Creates ~/.made/statusline-wrapper.sh that saves the raw statusline JSON
+/// to /tmp/made-claude-statusline.json and chains to the user's existing
 /// statusline command (e.g. cc-statusline) so it keeps working.
 #[tauri::command]
 async fn install_statusline_wrapper(distro: Option<String>) -> Result<String, String> {
     let wrapper_script = r#"#!/bin/bash
 input=$(cat)
-# Save raw statusline JSON for EzyDev to read
-echo "$input" > /tmp/ezydev-claude-statusline.json 2>/dev/null
+# Save raw statusline JSON for MADE to read
+echo "$input" > /tmp/made-claude-statusline.json 2>/dev/null
 # Chain to original statusline command (e.g. cc-statusline)
-_chain="$(cat "$HOME/.ezydev/statusline-chain" 2>/dev/null)"
+_chain="$(cat "$HOME/.made/statusline-chain" 2>/dev/null)"
 # Guard: never chain to ourselves (prevents infinite recursion / fork bomb)
 case "$_chain" in *statusline-wrapper*) _chain="" ;; esac
 if [ -n "$_chain" ] && [ -x "$_chain" ]; then
@@ -4250,8 +4251,8 @@ fi
     // Single bash script: check if installed, create dir, write wrapper, save chain, update settings
     let script = format!(
         r#"
-WRAPPER="$HOME/.ezydev/statusline-wrapper.sh"
-CHAIN_FILE="$HOME/.ezydev/statusline-chain"
+WRAPPER="$HOME/.made/statusline-wrapper.sh"
+CHAIN_FILE="$HOME/.made/statusline-chain"
 SETTINGS="$HOME/.claude/settings.json"
 
 # Read current statusline command from settings
@@ -4260,7 +4261,7 @@ if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
   CURRENT=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || true)
 fi
 
-mkdir -p "$HOME/.ezydev" 2>/dev/null
+mkdir -p "$HOME/.made" 2>/dev/null
 
 # Always (re)write wrapper script (base64-encoded to avoid heredoc expansion issues)
 echo "{b64}" | base64 -d > "$WRAPPER"
@@ -4287,7 +4288,7 @@ esac
 
 if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
   TMP=$(mktemp)
-  if jq '.statusLine = {{"type": "command", "command": "~/.ezydev/statusline-wrapper.sh"}}' "$SETTINGS" > "$TMP" 2>/dev/null; then
+  if jq '.statusLine = {{"type": "command", "command": "~/.made/statusline-wrapper.sh"}}' "$SETTINGS" > "$TMP" 2>/dev/null; then
     mv "$TMP" "$SETTINGS"
   else
     rm -f "$TMP"
@@ -4356,7 +4357,7 @@ echo "INSTALLED"
 /// Supports Claude (usage per message) and Codex (token_count events).
 /// Returns the percentage remaining as a string ("0"-"100"), or empty string if not available.
 ///
-/// Uses a temp-file cache (/tmp/ezydev-sessionpath-{session_id}) to avoid repeated `find` calls.
+/// Uses a temp-file cache (/tmp/made-sessionpath-{session_id}) to avoid repeated `find` calls.
 #[tauri::command]
 async fn read_session_context(
     terminal_type: String,
@@ -4386,7 +4387,7 @@ if [ -f "$SETTINGS" ]; then
 fi
 
 # Read statusline JSON (if available)
-SL="/tmp/ezydev-claude-statusline.json"
+SL="/tmp/made-claude-statusline.json"
 sl_window=""
 sl_model=""
 sl_used_pct=""
@@ -4404,7 +4405,7 @@ if [ -f "$SL" ]; then
   sl_session_id=$(jq -r '.session_id // empty' "$SL" 2>/dev/null)
   # Cache per-session cost from statusline
   if [ -n "$sl_session_id" ] && [ -n "$sl_cost" ]; then
-    echo "$sl_cost|$sl_duration" > "/tmp/ezydev-claude-cost-$sl_session_id.txt"
+    echo "$sl_cost|$sl_duration" > "/tmp/made-claude-cost-$sl_session_id.txt"
   fi
 fi
 
@@ -4417,7 +4418,7 @@ if [ "$SID" = "__latest__" ]; then
   fi
   exit 0
 else
-  CACHE="/tmp/ezydev-sessionpath-$SID"
+  CACHE="/tmp/made-sessionpath-$SID"
   if [ -f "$CACHE" ]; then
     f=$(cat "$CACHE")
     [ ! -f "$f" ] && rm -f "$CACHE" && f=""
@@ -4435,8 +4436,8 @@ sess_duration=""
 if [ -n "$sl_session_id" ] && [ "$sl_session_id" = "$SID" ]; then
   sess_cost="$sl_cost"
   sess_duration="$sl_duration"
-elif [ -f "/tmp/ezydev-claude-cost-$SID.txt" ]; then
-  IFS='|' read sess_cost sess_duration < "/tmp/ezydev-claude-cost-$SID.txt"
+elif [ -f "/tmp/made-claude-cost-$SID.txt" ]; then
+  IFS='|' read sess_cost sess_duration < "/tmp/made-claude-cost-$SID.txt"
 fi
 
 # Project cost: sum all cached session costs in the project directory
@@ -4450,8 +4451,8 @@ if [ -d "$proj_dir" ]; then
     sc=""
     if [ -n "$sl_session_id" ] && [ "$sid" = "$sl_session_id" ] && [ -n "$sl_cost" ]; then
       sc="$sl_cost"
-    elif [ -f "/tmp/ezydev-claude-cost-$sid.txt" ]; then
-      sc=$(cut -d'|' -f1 "/tmp/ezydev-claude-cost-$sid.txt")
+    elif [ -f "/tmp/made-claude-cost-$sid.txt" ]; then
+      sc=$(cut -d'|' -f1 "/tmp/made-claude-cost-$sid.txt")
     fi
     [ -n "$sc" ] && proj_cost=$(awk "BEGIN{{printf \"%.6f\", $proj_cost + $sc}}")
   done
@@ -4494,7 +4495,7 @@ if [ "$SID" = "__latest__" ]; then
   # No specific session — use the most recent session file
   f=$(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -1)
 else
-  CACHE="/tmp/ezydev-sessionpath-$SID"
+  CACHE="/tmp/made-sessionpath-$SID"
   if [ -f "$CACHE" ]; then
     f=$(cat "$CACHE")
     [ ! -f "$f" ] && rm -f "$CACHE" && f=""
@@ -4578,7 +4579,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 # --- Gemini quota (requests per day) via cached API call ---
 gemini_quota_used() {{
   local model_name="$1"
-  local QC="/tmp/ezydev-gemini-quota.json"
+  local QC="/tmp/made-gemini-quota.json"
   command -v curl >/dev/null 2>&1 || return
   # Refresh cache if stale (> 60 seconds)
   local now=$(date +%s)
@@ -4640,7 +4641,7 @@ if [ "$SID" = "__latest__" ]; then
   rpd=""
   reset_time=""
   [ -n "$model" ] && rpd=$(gemini_quota_used "$model")
-  QC="/tmp/ezydev-gemini-quota.json"
+  QC="/tmp/made-gemini-quota.json"
   if [ -f "$QC" ] && [ -n "$model" ]; then
     base=$(echo "$model" | sed 's/-preview$//' | sed 's/-[0-9]*$//')
     reset_time=$(jq -r --arg m "$base" '[.buckets[] | select(.modelId == $m or (.modelId | startswith($m))) | .resetTime] | first // empty' "$QC" 2>/dev/null)
@@ -4648,7 +4649,7 @@ if [ "$SID" = "__latest__" ]; then
   echo "0|1000000|$model|$rpd|||$reset_time"
   exit 0
 fi
-CACHE="/tmp/ezydev-sessionpath-$SID"
+CACHE="/tmp/made-sessionpath-$SID"
 if [ -f "$CACHE" ]; then
   f=$(cat "$CACHE")
   [ ! -f "$f" ] && rm -f "$CACHE" && f=""
@@ -4674,7 +4675,7 @@ rpd=""
 summary=$(jq -r '.summary // empty' "$f" 2>/dev/null)
 thoughts=$(jq '[.messages[] | select(.tokens.thoughts) | .tokens.thoughts] | last // 0' "$f" 2>/dev/null)
 [ "$thoughts" = "null" ] && thoughts=0
-QC="/tmp/ezydev-gemini-quota.json"
+QC="/tmp/made-gemini-quota.json"
 reset_time=""
 if [ -f "$QC" ] && [ -n "$model" ]; then
   base=$(echo "$model" | sed 's/-preview$//' | sed 's/-[0-9]*$//')
@@ -4990,7 +4991,7 @@ async fn read_session_context_native(
     match terminal_type.as_str() {
         "claude" => {
             // Read statusline JSON if available
-            let sl_path = std::path::Path::new(&home).join(".ezydev").join("claude-statusline.json");
+            let sl_path = std::path::Path::new(&home).join(".made").join("claude-statusline.json");
             let mut sl_window: Option<u64> = None;
             let mut sl_model: Option<String> = None;
             let mut sl_used_pct: Option<u64> = None;
@@ -5008,7 +5009,7 @@ async fn read_session_context_native(
                     sl_version = v.pointer("/version").and_then(|v| v.as_str()).map(|s| s.to_string());
                     sl_session_id = v.pointer("/session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
                     if let (Some(ref sid), Some(cost)) = (&sl_session_id, sl_cost) {
-                        let cache_path = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", sid));
+                        let cache_path = std::env::temp_dir().join(format!("made-claude-cost-{}.txt", sid));
                         let dur_str = sl_duration.map(|d| d.to_string()).unwrap_or_default();
                         let _ = std::fs::write(&cache_path, format!("{:.6}|{}", cost, dur_str));
                     }
@@ -5123,7 +5124,7 @@ async fn read_session_context_native(
                 if sl_session_id.as_deref() == Some(&session_id) {
                     (sl_cost, sl_duration)
                 } else {
-                    let cache_path = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", session_id));
+                    let cache_path = std::env::temp_dir().join(format!("made-claude-cost-{}.txt", session_id));
                     if let Ok(cached) = std::fs::read_to_string(&cache_path) {
                         let parts: Vec<&str> = cached.trim().split('|').collect();
                         let c = parts.first().and_then(|s| s.parse::<f64>().ok());
@@ -5147,7 +5148,7 @@ async fn read_session_context_native(
                             let sc = if sl_session_id.as_deref() == Some(&sid) {
                                 sl_cost
                             } else {
-                                let cp = std::env::temp_dir().join(format!("ezydev-claude-cost-{}.txt", sid));
+                                let cp = std::env::temp_dir().join(format!("made-claude-cost-{}.txt", sid));
                                 std::fs::read_to_string(&cp).ok()
                                     .and_then(|c| c.trim().split('|').next().and_then(|s| s.parse::<f64>().ok()))
                             };
@@ -5798,7 +5799,7 @@ async fn read_session_context_ssh(
             // are both pre-validated against an allowlist so direct
             // interpolation is safe (no shell metachars possible).
             let cmd = format!(
-                r#"set -e; ( cat /tmp/ezydev-claude-statusline.json 2>/dev/null || cat $HOME/.ezydev/claude-statusline.json 2>/dev/null || true ); printf '{sep}'; ( cat $HOME/.claude/settings.json 2>/dev/null || true ); printf '{sep}'; {tail_or_empty}"#,
+                r#"set -e; ( cat /tmp/made-claude-statusline.json 2>/dev/null || cat $HOME/.made/claude-statusline.json 2>/dev/null || true ); printf '{sep}'; ( cat $HOME/.claude/settings.json 2>/dev/null || true ); printf '{sep}'; {tail_or_empty}"#,
                 sep = SSH_SEP,
                 tail_or_empty = if is_latest {
                     "true".to_string()
@@ -6184,8 +6185,8 @@ async fn get_gemini_session_id_ssh(
 /// remote on next call so wrapper drift is self-healing.
 const SSH_STATUSLINE_WRAPPER_VERSION: u32 = 2;
 
-/// Install the EzyDev statusline wrapper on a remote SSH host. Idempotent:
-/// if `~/.ezydev/statusline-wrapper.version` already matches the bundled
+/// Install the MADE statusline wrapper on a remote SSH host. Idempotent:
+/// if `~/.made/statusline-wrapper.version` already matches the bundled
 /// version, returns "ALREADY_INSTALLED" without touching anything.
 #[tauri::command]
 async fn install_statusline_wrapper_ssh(
@@ -6197,8 +6198,8 @@ async fn install_statusline_wrapper_ssh(
     // identical so SSH and local context-parser code paths stay symmetrical.
     let wrapper_script = r#"#!/bin/bash
 input=$(cat)
-echo "$input" > /tmp/ezydev-claude-statusline.json 2>/dev/null
-_chain="$(cat "$HOME/.ezydev/statusline-chain" 2>/dev/null)"
+echo "$input" > /tmp/made-claude-statusline.json 2>/dev/null
+_chain="$(cat "$HOME/.made/statusline-chain" 2>/dev/null)"
 case "$_chain" in *statusline-wrapper*) _chain="" ;; esac
 if [ -n "$_chain" ] && [ -x "$_chain" ]; then
   echo "$input" | "$_chain"
@@ -6217,15 +6218,15 @@ fi
     let b64 = base64::engine::general_purpose::STANDARD.encode(wrapper_script.trim());
     let version = SSH_STATUSLINE_WRAPPER_VERSION;
     let script = format!(
-        r#"WRAPPER="$HOME/.ezydev/statusline-wrapper.sh"
-VERSION_FILE="$HOME/.ezydev/statusline-wrapper.version"
-CHAIN_FILE="$HOME/.ezydev/statusline-chain"
+        r#"WRAPPER="$HOME/.made/statusline-wrapper.sh"
+VERSION_FILE="$HOME/.made/statusline-wrapper.version"
+CHAIN_FILE="$HOME/.made/statusline-chain"
 SETTINGS="$HOME/.claude/settings.json"
 if [ -f "$VERSION_FILE" ] && [ "$(cat "$VERSION_FILE" 2>/dev/null)" = "{ver}" ] && [ -x "$WRAPPER" ]; then
   echo "ALREADY_INSTALLED"
   exit 0
 fi
-mkdir -p "$HOME/.ezydev" 2>/dev/null
+mkdir -p "$HOME/.made" 2>/dev/null
 CURRENT=""
 if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
   CURRENT=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || true)
@@ -6250,7 +6251,7 @@ case "$CURRENT" in
 esac
 if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
   TMP=$(mktemp)
-  if jq '.statusLine = {{"type": "command", "command": "~/.ezydev/statusline-wrapper.sh"}}' "$SETTINGS" > "$TMP" 2>/dev/null; then
+  if jq '.statusLine = {{"type": "command", "command": "~/.made/statusline-wrapper.sh"}}' "$SETTINGS" > "$TMP" 2>/dev/null; then
     mv "$TMP" "$SETTINGS"
   else
     rm -f "$TMP"
@@ -6295,7 +6296,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_debug_inject_bytes, native_term::native_term_spike_create, native_term::native_term_spike_resize, native_term::native_term_spike_destroy, native_term::native_term_spike_show, native_term::native_term_spike_hide, native_term::native_term_spike_set_region])
         .setup(|app| {
             // Registry of active `ssh -N -L` port-forward processes for remote
             // dev servers (commands: ssh_forward_port_start / _stop).
@@ -6306,10 +6307,10 @@ pub fn run() {
             // strip framing/CSP headers — works in dev AND prod.
             match preview_proxy::start() {
                 Ok(handle) => {
-                    eprintln!("[ezydev] preview proxy listening on 127.0.0.1:{}", handle.port());
+                    eprintln!("[made] preview proxy listening on 127.0.0.1:{}", handle.port());
                     app.manage(handle);
                 }
-                Err(e) => eprintln!("[ezydev] preview proxy failed to start: {e}"),
+                Err(e) => eprintln!("[made] preview proxy failed to start: {e}"),
             }
 
             // Auto-open DevTools in debug builds so the diagnostic logs from
@@ -6347,6 +6348,7 @@ pub fn run() {
 
                 let window = app.get_webview_window("main").expect("main window not found");
                 let hwnd = window.hwnd().expect("failed to get HWND");
+                native_term::registry::set_parent_hwnd(hwnd.0 as isize);
                 win32_border::remove_border(hwnd.0);
 
                 // Keep a persistent WSL process alive — boots the WSL VM and

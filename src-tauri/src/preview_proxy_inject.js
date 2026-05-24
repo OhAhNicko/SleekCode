@@ -1,6 +1,6 @@
 (function(){
-if(window.__ezydevInjected)return;
-window.__ezydevInjected=true;
+if(window.__madeInjected)return;
+window.__madeInjected=true;
 var P=window.parent;
 
 /* ---- Console capture ---- */
@@ -15,16 +15,16 @@ var O={};
         try{a.push(typeof arguments[i]==='object'?JSON.stringify(arguments[i]):String(arguments[i]))}
         catch(e){a.push(String(arguments[i]))}
       }
-      P.postMessage({type:'ezydev-console',method:m,text:a.join(' '),timestamp:Date.now()},'*');
+      P.postMessage({type:'made-console',method:m,text:a.join(' '),timestamp:Date.now()},'*');
     }catch(e){}
   };
 });
 window.addEventListener('error',function(e){
-  P.postMessage({type:'ezydev-console',method:'error',
+  P.postMessage({type:'made-console',method:'error',
     text:e.message+(e.filename?' at '+e.filename+':'+e.lineno:''),timestamp:Date.now()},'*');
 });
 window.addEventListener('unhandledrejection',function(e){
-  P.postMessage({type:'ezydev-console',method:'error',
+  P.postMessage({type:'made-console',method:'error',
     text:'Unhandled Promise: '+(e.reason&&e.reason.message?e.reason.message:String(e.reason)),timestamp:Date.now()},'*');
 });
 
@@ -43,14 +43,14 @@ if(_fetch){
       else if(input&&typeof input==='object'&&input.url)url=input.url;
       else url=String(input);
     }catch(e){url=String(input)}
-    P.postMessage({type:'ezydev-network',phase:'start',id:id,method:method,url:url,timestamp:start},'*');
+    P.postMessage({type:'made-network',phase:'start',id:id,method:method,url:url,timestamp:start},'*');
     return _fetch.apply(this,arguments).then(function(res){
       var sz=0;
       try{var cl=res.headers.get('content-length');if(cl)sz=parseInt(cl,10)}catch(x){}
-      P.postMessage({type:'ezydev-network',phase:'end',id:id,status:res.status,statusText:res.statusText||'',duration:Date.now()-start,size:sz,timestamp:Date.now()},'*');
+      P.postMessage({type:'made-network',phase:'end',id:id,status:res.status,statusText:res.statusText||'',duration:Date.now()-start,size:sz,timestamp:Date.now()},'*');
       return res;
     }).catch(function(err){
-      P.postMessage({type:'ezydev-network',phase:'end',id:id,status:0,statusText:'',duration:Date.now()-start,size:0,error:err.message||'Network error',timestamp:Date.now()},'*');
+      P.postMessage({type:'made-network',phase:'end',id:id,status:0,statusText:'',duration:Date.now()-start,size:0,error:err.message||'Network error',timestamp:Date.now()},'*');
       throw err;
     });
   };
@@ -64,12 +64,12 @@ XMLHttpRequest.prototype.send=function(){
   var xhr=this;
   if(xhr.__ezy){
     var e=xhr.__ezy;e.start=Date.now();
-    P.postMessage({type:'ezydev-network',phase:'start',id:e.id,method:e.method,url:e.url,timestamp:e.start},'*');
+    P.postMessage({type:'made-network',phase:'start',id:e.id,method:e.method,url:e.url,timestamp:e.start},'*');
     xhr.addEventListener('loadend',function(){
       var sz=0;
       try{var cl=xhr.getResponseHeader('content-length');if(cl)sz=parseInt(cl,10)}catch(x){}
       if(!sz){try{if(xhr.responseText)sz=xhr.responseText.length}catch(x){}}
-      P.postMessage({type:'ezydev-network',phase:'end',id:e.id,status:xhr.status,statusText:xhr.statusText||'',duration:Date.now()-e.start,size:sz,timestamp:Date.now()},'*');
+      P.postMessage({type:'made-network',phase:'end',id:e.id,status:xhr.status,statusText:xhr.statusText||'',duration:Date.now()-e.start,size:sz,timestamp:Date.now()},'*');
     });
   }
   return _xhrS.apply(this,arguments);
@@ -109,7 +109,7 @@ function _iclk(ev){
    'fontSize','fontFamily','border','borderRadius','opacity','overflow','zIndex',
    'flexDirection','justifyContent','alignItems','gap','gridTemplateColumns'
   ].forEach(function(p){s[p]=cs[p]});
-  P.postMessage({type:'ezydev-inspect-result',element:{tag:el.tagName.toLowerCase(),
+  P.postMessage({type:'made-inspect-result',element:{tag:el.tagName.toLowerCase(),
     id:el.id||'',classes:el.className&&typeof el.className==='string'?el.className.trim():'',
     rect:{width:Math.round(r.width),height:Math.round(r.height),top:Math.round(r.top),left:Math.round(r.left)},
     styles:s}},'*');
@@ -123,20 +123,20 @@ function _readSt(){
   try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k)ls[k]=(localStorage.getItem(k)||'').substring(0,1000)}}catch(x){}
   try{for(var i=0;i<sessionStorage.length;i++){var k=sessionStorage.key(i);if(k)ss[k]=(sessionStorage.getItem(k)||'').substring(0,1000)}}catch(x){}
   try{var raw=document.cookie;if(raw)raw.split(';').forEach(function(c){var p=c.trim().split('=');if(p[0])ck[p[0].trim()]=decodeURIComponent(p.slice(1).join('=').trim())})}catch(x){}
-  P.postMessage({type:'ezydev-storage',localStorage:ls,sessionStorage:ss,cookies:ck,timestamp:Date.now()},'*');
+  P.postMessage({type:'made-storage',localStorage:ls,sessionStorage:ss,cookies:ck,timestamp:Date.now()},'*');
 }
 
 /* ---- Message listener (parent -> iframe) ---- */
 window.addEventListener('message',function(e){
   if(!e.data||!e.data.type)return;
-  if(e.data.type==='ezydev-clear-storage'){try{localStorage.clear()}catch(x){}try{sessionStorage.clear()}catch(x){}location.reload();}
-  if(e.data.type==='ezydev-inspect-start')_istart();
-  if(e.data.type==='ezydev-inspect-stop')_istop();
-  if(e.data.type==='ezydev-read-storage')_readSt();
+  if(e.data.type==='made-clear-storage'){try{localStorage.clear()}catch(x){}try{sessionStorage.clear()}catch(x){}location.reload();}
+  if(e.data.type==='made-inspect-start')_istart();
+  if(e.data.type==='made-inspect-stop')_istop();
+  if(e.data.type==='made-read-storage')_readSt();
 });
 
 /* ---- URL reporting ---- */
-function reportUrl(){try{P.postMessage({type:'ezydev-url',url:location.href},'*')}catch(e){}}
+function reportUrl(){try{P.postMessage({type:'made-url',url:location.href},'*')}catch(e){}}
 reportUrl();
 window.addEventListener('popstate',reportUrl);
 var _push=history.pushState,_repl=history.replaceState;
@@ -144,6 +144,6 @@ history.pushState=function(){_push.apply(this,arguments);reportUrl()};
 history.replaceState=function(){_repl.apply(this,arguments);reportUrl()};
 
 /* ---- Ready signal ---- */
-P.postMessage({type:'ezydev-ready'},'*');
-console.info('[EzyDev] DevTools connected');
+P.postMessage({type:'made-ready'},'*');
+console.info('[MADE] DevTools connected');
 })();

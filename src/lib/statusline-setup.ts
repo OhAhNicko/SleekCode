@@ -8,16 +8,16 @@ const installedServers = new Set<string>();
 let localInstalled = false;
 
 /**
- * Install the EzyDev statusline wrapper.
+ * Install the MADE statusline wrapper.
  *
- * - Local (no serverId): installs into the current host's ~/.ezydev/.
+ * - Local (no serverId): installs into the current host's ~/.made/.
  *   On Windows/WSL: installs via wsl.exe with optional distro.
  *   On macOS/Linux: installs directly via bash.
  *
- * - SSH (serverId set): installs onto the remote host's ~/.ezydev/ via SSH.
+ * - SSH (serverId set): installs onto the remote host's ~/.made/ via SSH.
  *   Required before context % can be read for SSH Claude tabs.
  *
- * Creates ~/.ezydev/statusline-wrapper.sh and updates ~/.claude/settings.json
+ * Creates ~/.made/statusline-wrapper.sh and updates ~/.claude/settings.json
  * to chain through our wrapper before the user's original statusline script.
  *
  * Safe to call multiple times — dedups per session both locally and per server.

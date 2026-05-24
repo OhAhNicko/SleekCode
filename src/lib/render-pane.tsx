@@ -35,7 +35,7 @@ export function mountTerminalSlot(container: HTMLElement, slot: HTMLDivElement) 
  * by getBoundingClientRect — the iframe DOM never moves, so it never
  * disconnects from the document and never reloads.
  */
-const SLOT_PARK_ID = "ezydev-slot-park";
+const SLOT_PARK_ID = "made-slot-park";
 
 export function getSlotPark(): HTMLDivElement {
   let park = document.getElementById(SLOT_PARK_ID) as HTMLDivElement | null;

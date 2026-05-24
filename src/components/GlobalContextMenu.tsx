@@ -176,7 +176,7 @@ export default function GlobalContextMenu() {
         icon: PasteIcon,
         action: () => {
           navigator.clipboard.readText().then((text) => {
-            window.dispatchEvent(new CustomEvent("ezydev:paste-text", { detail: { text } }));
+            window.dispatchEvent(new CustomEvent("made:paste-text", { detail: { text } }));
           }).catch(() => {});
           close();
         },
@@ -192,25 +192,25 @@ export default function GlobalContextMenu() {
           label: "Clear Terminal",
           shortcut: "Ctrl+L",
           icon: ClearIcon,
-          action: () => { window.dispatchEvent(new Event("ezydev:clear-terminal")); close(); },
+          action: () => { window.dispatchEvent(new Event("made:clear-terminal")); close(); },
         },
         {
           label: "Split Right",
           shortcut: "Ctrl+D",
           icon: SplitRightIcon,
-          action: () => { window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "shell" } })); close(); },
+          action: () => { window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "shell" } })); close(); },
         },
         {
           label: "Split Down",
           shortcut: "Ctrl+Shift+D",
           icon: SplitDownIcon,
-          action: () => { window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type: "shell", direction: "vertical" } })); close(); },
+          action: () => { window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type: "shell", direction: "vertical" } })); close(); },
         },
         {
           label: "Close Pane",
           shortcut: "Ctrl+W",
           icon: ClosePaneIcon,
-          action: () => { window.dispatchEvent(new Event("ezydev:close-pane")); close(); },
+          action: () => { window.dispatchEvent(new Event("made:close-pane")); close(); },
         },
       ],
     });
@@ -223,13 +223,13 @@ export default function GlobalContextMenu() {
         label: "New Tab",
         shortcut: "Ctrl+Shift+T",
         icon: NewTabIcon,
-        action: () => { window.dispatchEvent(new Event("ezydev:new-tab")); close(); },
+        action: () => { window.dispatchEvent(new Event("made:new-tab")); close(); },
       },
       {
         label: "Command Palette",
         shortcut: "Ctrl+K",
         icon: PaletteIcon,
-        action: () => { window.dispatchEvent(new Event("ezydev:open-palette")); close(); },
+        action: () => { window.dispatchEvent(new Event("made:open-palette")); close(); },
       },
       {
         label: "Toggle Sidebar",
@@ -253,13 +253,13 @@ export default function GlobalContextMenu() {
         label: "Search Prompt History",
         shortcut: "Ctrl+R",
         icon: SearchIcon,
-        action: () => { window.dispatchEvent(new Event("ezydev:open-prompt-search")); close(); },
+        action: () => { window.dispatchEvent(new Event("made:open-prompt-search")); close(); },
       },
       {
         label: "Keyboard Shortcuts",
         shortcut: "Ctrl+/",
         icon: KeyboardIcon,
-        action: () => { window.dispatchEvent(new Event("ezydev:open-shortcuts")); close(); },
+        action: () => { window.dispatchEvent(new Event("made:open-shortcuts")); close(); },
       },
       {
         label: "Open DevTools",

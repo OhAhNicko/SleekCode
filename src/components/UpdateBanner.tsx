@@ -66,7 +66,7 @@ export default function UpdateBanner({
           </svg>
           <span style={{ flex: 1, minWidth: 0 }}>
             <span style={{ color: "var(--ezy-text)", fontWeight: 500 }}>
-              EzyDev v{version}
+              MADE v{version}
             </span>{" "}
             is available
           </span>

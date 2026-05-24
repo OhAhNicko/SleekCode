@@ -83,7 +83,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
   );
 
   // Auto-activate the first terminal on mount so at least one pane starts
-  // as "active" and its EzyComposer initializes properly via Case 1.
+  // as "active" and its MadeComposer initializes properly via Case 1.
   useEffect(() => {
     if (activeTerminalId === null && allTerminalIds.length > 0) {
       const firstId = allTerminalIds[0];
@@ -483,8 +483,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
       if (focusNewPane) handleTerminalFocus(newTerminalId);
       else refocusPrevious();
     };
-    window.addEventListener("ezydev:split-terminal", handler);
-    return () => window.removeEventListener("ezydev:split-terminal", handler);
+    window.addEventListener("made:split-terminal", handler);
+    return () => window.removeEventListener("made:split-terminal", handler);
   }, [tab.id, tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal, handleTerminalFocus, refocusPrevious]);
 
   // Listen for close-pane events (Ctrl+W)
@@ -494,8 +494,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
       if (!activeTerminalId) return;
       handleTerminalClose(activeTerminalId);
     };
-    window.addEventListener("ezydev:close-pane", handler);
-    return () => window.removeEventListener("ezydev:close-pane", handler);
+    window.addEventListener("made:close-pane", handler);
+    return () => window.removeEventListener("made:close-pane", handler);
   }, [tab.id, activeTerminalId, handleTerminalClose]);
 
   // Listen for focus-next/prev pane events (Ctrl+Shift+]/[)
@@ -527,11 +527,11 @@ export default function Workspace({ tab }: WorkspaceProps) {
       const focusTarget = paneEl?.querySelector("textarea") ?? paneEl?.querySelector("canvas");
       (focusTarget as HTMLElement)?.focus();
     };
-    window.addEventListener("ezydev:focus-next-pane", nextHandler);
-    window.addEventListener("ezydev:focus-prev-pane", prevHandler);
+    window.addEventListener("made:focus-next-pane", nextHandler);
+    window.addEventListener("made:focus-prev-pane", prevHandler);
     return () => {
-      window.removeEventListener("ezydev:focus-next-pane", nextHandler);
-      window.removeEventListener("ezydev:focus-prev-pane", prevHandler);
+      window.removeEventListener("made:focus-next-pane", nextHandler);
+      window.removeEventListener("made:focus-prev-pane", prevHandler);
     };
   }, [tab.id, tab.layout, activeTerminalId, handleTerminalFocus]);
 
@@ -571,8 +571,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
       const writeFn = getPtyWrite(activeTerminalId);
       if (writeFn) writeFn("\x0c"); // Send form-feed (Ctrl+L) to PTY
     };
-    window.addEventListener("ezydev:clear-terminal", handler);
-    return () => window.removeEventListener("ezydev:clear-terminal", handler);
+    window.addEventListener("made:clear-terminal", handler);
+    return () => window.removeEventListener("made:clear-terminal", handler);
   }, [tab.id, activeTerminalId]);
 
   // Listen for font-zoom events (Ctrl++/Ctrl+-)
@@ -589,8 +589,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
       const newSize = Math.min(30, Math.max(8, currentSize + delta));
       store.setCliFontSize(terminal.type, newSize);
     };
-    window.addEventListener("ezydev:font-zoom", handler);
-    return () => window.removeEventListener("ezydev:font-zoom", handler);
+    window.addEventListener("made:font-zoom", handler);
+    return () => window.removeEventListener("made:font-zoom", handler);
   }, [tab.id, activeTerminalId]);
 
   // Auto-spawn terminals for restored tabs (session restore)

@@ -1,7 +1,7 @@
 /**
- * Generate NSIS installer branding bitmaps from the EzyDev logo.
+ * Generate NSIS installer branding bitmaps from the MADE logo.
  *
- * Sidebar: 164x314 BMP — dark bg, centered logo, "EzyDev" text, subtitle
+ * Sidebar: 164x314 BMP — dark bg, centered logo, "MADE" text, subtitle
  * Header:  150x57 BMP  — dark bg, small logo right-aligned, accent line
  *
  * Usage: node src-tauri/installer-assets/generate-bitmaps.mjs
@@ -13,7 +13,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 // Load sharp from temp workspace (ESM can't use NODE_PATH)
-const SHARP_DIR = process.env.SHARP_DIR || "/tmp/ezydev-sharp-tmp";
+const SHARP_DIR = process.env.SHARP_DIR || "/tmp/made-sharp-tmp";
 const require = createRequire(join(SHARP_DIR, "node_modules", "sharp", "package.json"));
 const sharp = require("sharp");
 
@@ -73,14 +73,14 @@ async function generateSidebar() {
   }).png().toBuffer();
 
   const logoSize = 100;
-  const logo = await sharp(join(iconsDir, "ezydev-1024.png"))
+  const logo = await sharp(join(iconsDir, "made-1024.png"))
     .resize(logoSize, logoSize, { fit: "contain", background: { ...BG, alpha: 0 } })
     .png().toBuffer();
 
   const textPng = await svgToPng(`<svg width="120" height="28" xmlns="http://www.w3.org/2000/svg">
     <text x="60" y="22" text-anchor="middle"
           font-family="Segoe UI, Helvetica, Arial, sans-serif"
-          font-size="22" font-weight="700" fill="#39d353">EzyDev</text>
+          font-size="22" font-weight="700" fill="#39d353">MADE</text>
   </svg>`);
 
   const subtitlePng = await svgToPng(`<svg width="140" height="18" xmlns="http://www.w3.org/2000/svg">
@@ -129,7 +129,7 @@ async function generateHeader() {
   }).png().toBuffer();
 
   const logoSize = 44;
-  const logo = await sharp(join(iconsDir, "ezydev-1024.png"))
+  const logo = await sharp(join(iconsDir, "made-1024.png"))
     .resize(logoSize, logoSize, { fit: "contain", background: { ...WHITE, alpha: 0 } })
     .png().toBuffer();
 

@@ -45,7 +45,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: "EzyDev v__VERSION__"
+          releaseName: "MADE v__VERSION__"
           releaseBody: "See the assets below to download and install."
           releaseDraft: true
           prerelease: false

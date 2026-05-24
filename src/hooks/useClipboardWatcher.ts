@@ -46,7 +46,7 @@ export function useClipboardWatcher() {
           // Auto-insert if setting is enabled
           if (useAppStore.getState().autoInsertClipboardImage) {
             if (useAppStore.getState().promptComposerEnabled) {
-              // Attach to active EzyComposer instead of writing to terminal
+              // Attach to active MadeComposer instead of writing to terminal
               const cs = useClipboardImageStore.getState();
               const newImg = cs.images[0];
               const activeId = cs.activeComposerTerminalId;

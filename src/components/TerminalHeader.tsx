@@ -409,7 +409,7 @@ function PromptHistoryDropdown({
 interface MergedSession {
   id: string;
   name: string;
-  isFromStore: boolean;  // true = opened in current EzyDev session
+  isFromStore: boolean;  // true = opened in current MADE session
   isCurrent: boolean;
   isRenamed: boolean;
   modified?: string;     // ISO datetime for historical entries
@@ -507,7 +507,7 @@ function SessionPicker({
     const storeIds = new Set(sessions.map((s) => s.id));
     const merged: MergedSession[] = [];
 
-    // Store sessions first (current EzyDev session)
+    // Store sessions first (current MADE session)
     for (const s of sessions) {
       const indexEntry = indexEntries.find((e) => e.sessionId === s.id);
       const autoName = indexEntry ? resolveSessionName(indexEntry) : undefined;

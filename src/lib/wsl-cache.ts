@@ -7,7 +7,7 @@ interface WslCliCache {
   timestamp: number;
 }
 
-const CACHE_KEY = "ezydev-wsl-cli-cache";
+const CACHE_KEY = "made-wsl-cli-cache";
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 let cache: WslCliCache | null = null;

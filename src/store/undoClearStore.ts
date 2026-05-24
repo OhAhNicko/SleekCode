@@ -16,6 +16,6 @@ export const useUndoClearStore = create<UndoClearStore>((set) => ({
 export function undoClearComposer(): void {
   const { clearedText } = useUndoClearStore.getState();
   if (!clearedText) return;
-  window.dispatchEvent(new CustomEvent("ezydev:undo-clear-composer", { detail: clearedText }));
+  window.dispatchEvent(new CustomEvent("made:undo-clear-composer", { detail: clearedText }));
   useUndoClearStore.getState().clear();
 }

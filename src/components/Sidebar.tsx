@@ -25,7 +25,7 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
   const handleRemoteOpen = (filePath: string) => {
     if (!activeTab?.serverId) return;
     window.dispatchEvent(
-      new CustomEvent("ezydev:open-remote-editor", {
+      new CustomEvent("made:open-remote-editor", {
         detail: { filePath, serverId: activeTab.serverId },
       })
     );

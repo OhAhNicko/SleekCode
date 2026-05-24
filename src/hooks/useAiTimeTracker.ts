@@ -3,7 +3,7 @@ import { useAppStore } from "../store";
 import { flushStaleBursts } from "../lib/terminal-activity";
 
 /**
- * Listens for `ezydev:ai-done` CustomEvents and records each burst
+ * Listens for `made:ai-done` CustomEvents and records each burst
  * into the aiTimeBursts persistence layer.
  *
  * Also runs a periodic sweep to flush stale bursts from idle terminals.
@@ -43,7 +43,7 @@ export function useAiTimeTracker(): void {
       });
     };
 
-    window.addEventListener("ezydev:ai-done", handler);
+    window.addEventListener("made:ai-done", handler);
 
     // Periodic sweep to flush stale bursts (terminals that went idle)
     const interval = setInterval(() => {
@@ -51,7 +51,7 @@ export function useAiTimeTracker(): void {
     }, 5000);
 
     return () => {
-      window.removeEventListener("ezydev:ai-done", handler);
+      window.removeEventListener("made:ai-done", handler);
       clearInterval(interval);
     };
   }, []);

@@ -156,8 +156,8 @@ export default function FileViewerPane({
         return next;
       });
     };
-    window.addEventListener("ezydev:fileviewer-add", handler);
-    return () => window.removeEventListener("ezydev:fileviewer-add", handler);
+    window.addEventListener("made:fileviewer-add", handler);
+    return () => window.removeEventListener("made:fileviewer-add", handler);
   }, []);
 
   const handleSave = useCallback(async () => {

@@ -247,7 +247,7 @@ export default function TerminalPane({
   const cliFontSizeRef = useRef(cliFontSize);
   cliFontSizeRef.current = cliFontSize;
   const useShellIntegration = shouldInjectShellIntegration(terminalType);
-  // EzyComposer is only for AI CLI terminals — not plain shell or devserver
+  // MadeComposer is only for AI CLI terminals — not plain shell or devserver
   const composerSupported = terminalType !== "shell" && terminalType !== "devserver";
   const composerSupportedRef = useRef(composerSupported);
   composerSupportedRef.current = composerSupported;
@@ -1545,7 +1545,7 @@ export default function TerminalPane({
         }));
         // Auto-update session name in registry from CLI output.
         // Claude: CUSTOM_TITLE only appears from /rename → authoritative (always overrides).
-        // Codex/Gemini: auto-generated titles → soft update (won't override EzyDev renames).
+        // Codex/Gemini: auto-generated titles → soft update (won't override MADE renames).
         // Late session detection: if we still don't have a sessionResumeId,
         // try precise (spawn-based) lookup first, then mtime-based as fallback.
         if (!sessionResumeId && supportsSessionResume(terminalType)) {
@@ -1630,12 +1630,12 @@ export default function TerminalPane({
             });
           } else if (autoName) {
             if (terminalType === "claude") {
-              // Claude /rename is intentional — always override, even EzyDev user renames
+              // Claude /rename is intentional — always override, even MADE user renames
               if (existing.name !== autoName) {
                 store.renameProjectSession(workingDir, sessionResumeId, autoName);
               }
             } else {
-              // Codex/Gemini auto-titles — only update if user hasn't renamed in EzyDev
+              // Codex/Gemini auto-titles — only update if user hasn't renamed in MADE
               store.updateProjectSessionAutoName(workingDir, sessionResumeId, autoName);
             }
           }
@@ -1714,7 +1714,7 @@ export default function TerminalPane({
   const composerGlobalEnabled = useAppStore((s) => s.promptComposerEnabled);
   const composerDismissedRef = useRef(false);
 
-  // Close any open composer immediately when the global "Enable EzyComposer"
+  // Close any open composer immediately when the global "Enable MadeComposer"
   // setting is turned off (otherwise stale composers linger until per-pane Ctrl+I).
   useEffect(() => {
     if (!composerGlobalEnabled && composerOpen) {

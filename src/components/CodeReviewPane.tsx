@@ -156,11 +156,11 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
       clearTimeout(timer);
       fetchData().then(() => { if (mountedRef.current) schedule(); });
     };
-    window.addEventListener("ezydev:git-refresh", handler);
+    window.addEventListener("made:git-refresh", handler);
     return () => {
       mountedRef.current = false;
       clearTimeout(timer);
-      window.removeEventListener("ezydev:git-refresh", handler);
+      window.removeEventListener("made:git-refresh", handler);
     };
   }, [fetchData]);
 
@@ -211,7 +211,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
       ? `${workingDir}/${filePath}`
       : filePath;
     window.dispatchEvent(
-      new CustomEvent("ezydev:open-file", { detail: { filePath: fullPath } })
+      new CustomEvent("made:open-file", { detail: { filePath: fullPath } })
     );
   }, [workingDir]);
 
@@ -225,7 +225,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
 
   const handleCommitSuccess = useCallback(() => {
     setShowCommitPopover(false);
-    window.dispatchEvent(new Event("ezydev:git-refresh"));
+    window.dispatchEvent(new Event("made:git-refresh"));
   }, []);
 
   const defaultRepoName = (() => {
@@ -237,13 +237,13 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
   const handleConnected = useCallback((url: string) => {
     setShowConnectModal(false);
     setConnectedToast(url || "Connected to GitHub");
-    window.dispatchEvent(new Event("ezydev:git-refresh"));
+    window.dispatchEvent(new Event("made:git-refresh"));
     setTimeout(() => setConnectedToast(null), 4500);
   }, []);
 
   const handleCommitAndPush = useCallback(async () => {
     setShowCommitPopover(false);
-    window.dispatchEvent(new Event("ezydev:git-refresh"));
+    window.dispatchEvent(new Event("made:git-refresh"));
     setPushing(true);
     setPushError(null);
     setPushResult(null);
@@ -254,7 +254,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
         setUpstream: !aheadBehind?.hasRemote,
       });
       setPushResult({ ok: true, msg, branch: prePushBranch, count: 1 });
-      window.dispatchEvent(new Event("ezydev:git-refresh"));
+      window.dispatchEvent(new Event("made:git-refresh"));
       setTimeout(() => setPushResult(null), 3000);
     } catch (err) {
       setPushError(String(err));
@@ -277,7 +277,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
         setUpstream: !aheadBehind?.hasRemote,
       });
       setPushResult({ ok: true, msg, branch: prePushBranch, count: prePushCount });
-      window.dispatchEvent(new Event("ezydev:git-refresh"));
+      window.dispatchEvent(new Event("made:git-refresh"));
       setTimeout(() => setPushResult(null), 3000);
     } catch (err) {
       setPushError(String(err));
@@ -934,7 +934,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
           onClose={() => setShowReleaseModal(false)}
           onReleased={() => {
             setReleasedToast(true);
-            window.dispatchEvent(new Event("ezydev:git-refresh"));
+            window.dispatchEvent(new Event("made:git-refresh"));
             setTimeout(() => setReleasedToast(false), 4500);
           }}
         />

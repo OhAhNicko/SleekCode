@@ -156,7 +156,7 @@ export default function TabBar() {
 
   const handleNewLocalTab = useCallback(() => {
     setShowNewTabMenu(false);
-    window.dispatchEvent(new Event("ezydev:new-tab"));
+    window.dispatchEvent(new Event("made:new-tab"));
   }, []);
 
   const handleRemotePathSelected = useCallback((remotePath: string) => {
@@ -233,8 +233,8 @@ export default function TabBar() {
         setPendingDir({ name, dir: path });
       }
     };
-    window.addEventListener("ezydev:open-recent", handler);
-    return () => window.removeEventListener("ezydev:open-recent", handler);
+    window.addEventListener("made:open-recent", handler);
+    return () => window.removeEventListener("made:open-recent", handler);
   }, [recentProjects, quickOpenProject]);
 
   // Listen for OS-level quit request (Alt+F4 etc.) intercepted in App.tsx
@@ -243,8 +243,8 @@ export default function TabBar() {
       setQuitDontShow(false);
       setShowQuitConfirm(true);
     };
-    window.addEventListener("ezydev:quit-requested", handler);
-    return () => window.removeEventListener("ezydev:quit-requested", handler);
+    window.addEventListener("made:quit-requested", handler);
+    return () => window.removeEventListener("made:quit-requested", handler);
   }, []);
 
   // Helper: truncate long paths for display
@@ -1286,7 +1286,7 @@ export default function TabBar() {
                     }}
                     onClick={() => {
                       setShowNewTabMenu(false);
-                      window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type } }));
+                      window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type } }));
                     }}
                   >
                     {icon}
@@ -1328,7 +1328,7 @@ export default function TabBar() {
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowNewTabMenu(false);
-                      window.dispatchEvent(new CustomEvent("ezydev:split-terminal", { detail: { type, direction: "vertical" } }));
+                      window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type, direction: "vertical" } }));
                     }}
                   >
                     <BiExpandVertical size={12} color="var(--ezy-text-muted)" />
@@ -1475,7 +1475,7 @@ export default function TabBar() {
         })() && (
           <div
             onClick={() => {
-              window.dispatchEvent(new CustomEvent("ezydev:open-game"));
+              window.dispatchEvent(new CustomEvent("made:open-game"));
             }}
             title="Mini Games"
             style={{
@@ -1711,7 +1711,7 @@ export default function TabBar() {
             }}
           >
             <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ezy-text)" }}>
-              Quit EzyDev?
+              Quit MADE?
             </div>
             <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)", lineHeight: 1.5 }}>
               All running terminals will be closed.

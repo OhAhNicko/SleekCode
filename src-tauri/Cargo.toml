@@ -1,12 +1,12 @@
 [package]
-name = "ezydev"
+name = "made"
 version = "0.1.55"
 description = "AI Terminal Workspace"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "ezydev_lib"
+name = "made_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -32,3 +32,18 @@ bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+
+# native_term (Phase 0 spike — child HWND + wgpu)
+wgpu = "22"
+raw-window-handle = "0.6"
+crossbeam-channel = "0.5"
+windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader"] }
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+
+# native_term R1: terminal parser + glyph rendering. Versions chosen for
+# wgpu 22 lockstep — glyphon 0.6 pins wgpu 22 exactly. Bumping wgpu later
+# requires bumping glyphon in tandem (see plan risk #2).
+glyphon = "0.6"
+alacritty_terminal = "0.24"
+unicode-width = "0.2"

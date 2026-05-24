@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 /**
  * Bottom-right toast that surfaces the result of the App.tsx dev-server
- * restore on app boot. Listens for the `ezydev:dev-server-restore` event
+ * restore on app boot. Listens for the `made:dev-server-restore` event
  * dispatched once by the restore useEffect. Visible for 12 seconds — long
  * enough to read but not nagging. Lets users diagnose "why didn't my SSH
  * dev server restart?" without opening DevTools.
@@ -27,8 +27,8 @@ export default function DevServerRestoreToast() {
       const timer = setTimeout(() => setToast(null), 12_000);
       return () => clearTimeout(timer);
     };
-    window.addEventListener("ezydev:dev-server-restore", handler as EventListener);
-    return () => window.removeEventListener("ezydev:dev-server-restore", handler as EventListener);
+    window.addEventListener("made:dev-server-restore", handler as EventListener);
+    return () => window.removeEventListener("made:dev-server-restore", handler as EventListener);
   }, []);
 
   if (!toast) return null;

@@ -9,8 +9,8 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   # WSL → delegate to Windows PowerShell
   WIN_DIR=$(wslpath -w "$(pwd)")
 
-  echo "[EzyDev] Launching Tauri dev via Windows PowerShell..."
-  echo "[EzyDev] Project: $WIN_DIR"
+  echo "[MADE] Launching Tauri dev via Windows PowerShell..."
+  echo "[MADE] Project: $WIN_DIR"
   echo ""
 
   powershell.exe -NoProfile -Command "
@@ -23,7 +23,7 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
       Where-Object { \$_.OwningProcess -ne 0 } |
       ForEach-Object {
         try { Stop-Process -Id \$_.OwningProcess -Force -ErrorAction Stop }
-        catch { Write-Host \"[EzyDev] Could not kill PID \$(\$_.OwningProcess) - may need admin rights\" }
+        catch { Write-Host \"[MADE] Could not kill PID \$(\$_.OwningProcess) - may need admin rights\" }
       }
 
     npm install --prefer-offline
@@ -31,8 +31,8 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   "
 else
   # macOS / Linux → run directly
-  echo "[EzyDev] Launching Tauri dev..."
-  echo "[EzyDev] Project: $(pwd)"
+  echo "[MADE] Launching Tauri dev..."
+  echo "[MADE] Project: $(pwd)"
   echo ""
 
   # Kill any stale node on our dev port

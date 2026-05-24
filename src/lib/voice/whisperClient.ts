@@ -15,13 +15,13 @@ export interface TranscribeOpts {
 
 /**
  * Vocabulary hint passed to Whisper as `initial_prompt` so it biases toward
- * EzyDev terminology instead of phonetic neighbours ("cloud" → "Claude" etc.).
+ * MADE terminology instead of phonetic neighbours ("cloud" → "Claude" etc.).
  *
  * Whisper uses this only as a soft prior — it doesn't constrain output.
  * Mixed English/Swedish on purpose, since the user toggles between languages.
  */
 export const EZYDEV_VOCABULARY =
-  "EzyDev, Claude, Claude Code, Codex, Gemini, " +
+  "MADE, Claude, Claude Code, Codex, Gemini, " +
   "pane, browser, terminal, tab, kanban, " +
   "öppna, stäng, byt flik, terminal, fönster, ny pane, sidopanelen.";
 
