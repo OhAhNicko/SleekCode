@@ -1,11 +1,37 @@
 // R1.d-γ: minimal wgpu pipeline for drawing the cursor bar.
 //
-// A single solid-color quad positioned at the cursor's pixel rect. Same
-// infrastructure will serve background quads in R1.d (per-cell bg colors)
-// once we extend the uniform to a buffer-of-rects + instance draw.
+// A single solid-color quad positioned at the cursor's pixel rect. Per-cell
+// background and decoration quads are handled by the sibling
+// `quad_pipeline.rs` (instanced); we keep the cursor on its simpler
+// single-uniform path because it only ever draws one quad per frame.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
+
+/// Cursor visual style. Mirrors the xterm.js `cursorStyle` option set:
+///   - `Bar`       — 2px-wide vertical line at the cursor x. Default.
+///   - `Block`     — full cell-rect tinted quad. Drawn AFTER the glyph pass at
+///                   reduced alpha so the cell character remains visible
+///                   underneath (true xterm "inverse" requires re-rendering
+///                   the glyph in the bg color, which would require an extra
+///                   glyphon pass — deferred to a future slice).
+///   - `Underline` — full cell-width horizontal bar at the cell bottom.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorStyle {
+    Bar,
+    Block,
+    Underline,
+}
+
+impl CursorStyle {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "block" => CursorStyle::Block,
+            "underline" => CursorStyle::Underline,
+            _ => CursorStyle::Bar,
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]

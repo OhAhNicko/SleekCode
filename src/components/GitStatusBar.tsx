@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitBranchInfo, GitDiffStats, GitAheadBehind } from "../types";
 import { useAppStore } from "../store";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 interface Props {
   workingDir: string;
@@ -36,6 +37,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
   const [createBranchError, setCreateBranchError] = useState("");
   const newBranchInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('git-status-bar-dropdown', dropdownRef);
   const triggerRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const errorTimer = useRef<ReturnType<typeof setTimeout>>(undefined);

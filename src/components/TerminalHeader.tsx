@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import type { TerminalType, TerminalBackend, ProjectSession, SessionIndexEntry } from "../types";
 import type { ContextInfo } from "../lib/context-parser";
 import { TERMINAL_CONFIGS, toWslPath } from "../lib/terminal-config";
@@ -161,6 +162,8 @@ function CliPicker({
   onClose: () => void;
   currentType?: TerminalType;
 }) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('terminal-header-type-picker', overlayRef);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -177,6 +180,7 @@ function CliPicker({
         onMouseDown={onClose}
       />
       <div
+        ref={overlayRef}
         className="dropdown-enter"
         style={{
           position: "absolute",
@@ -270,6 +274,8 @@ function PromptHistoryDropdown({
   onClose: () => void;
 }) {
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('terminal-header-prompt-history', overlayRef);
 
   useEffect(() => {
     if (anchorRef?.current) {
@@ -296,6 +302,7 @@ function PromptHistoryDropdown({
         onMouseDown={onClose}
       />
       <div
+        ref={overlayRef}
         className="dropdown-enter"
         style={{
           position: "fixed",
@@ -585,6 +592,9 @@ function SessionPicker({
     setEditingId(null);
   };
 
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('terminal-header-session-picker', overlayRef);
+
   if (!pos) return null;
 
   return (
@@ -594,6 +604,7 @@ function SessionPicker({
         onMouseDown={onClose}
       />
       <div
+        ref={overlayRef}
         className="dropdown-enter"
         style={{
           position: "fixed",

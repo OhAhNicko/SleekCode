@@ -98,6 +98,8 @@ export const useAppStore = create<AppStore>()(
         projectColors: state.projectColors,
         statuslineToggles: state.statuslineToggles,
         vibrantColors: state.vibrantColors,
+        nativeCursorStyle: state.nativeCursorStyle,
+        nativeCursorBlink: state.nativeCursorBlink,
         highscores: state.highscores,
         timedHighscores: state.timedHighscores,
         gameStats: state.gameStats,

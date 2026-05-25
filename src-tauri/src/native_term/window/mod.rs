@@ -1,6 +1,13 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+use std::sync::{Arc, Mutex};
+
+use alacritty_terminal::term::Term;
+
+use super::parser_bridge::TermListener;
+
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -79,6 +86,30 @@ pub trait NativeTermWindow: Send {
     fn set_theme(&mut self, theme: &TerminalTheme) -> Result<(), String>;
     fn set_font(&mut self, family: &str, size_px: f32) -> Result<(), String>;
     fn set_cursor_style(&mut self, style: &str, blink: bool) -> Result<(), String>;
+
+    /// Phase 3 search-highlight overlay. Replace the pane's current set of
+    /// highlight rects (coord space: pane-local pixels matching the
+    /// `native_term_search` result). Pass an empty slice — or call
+    /// `clear_search_highlights` — to remove all highlights. Default impl
+    /// is a no-op so non-Windows platform stubs compile.
+    fn set_search_highlights(&mut self, _rects: Vec<Rect>) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Clear the pane's search-highlight overlay. Called by
+    /// `native_term_search_clear` so JS doesn't need to send an empty rects
+    /// list separately.
+    fn clear_search_highlights(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// R3: accessor for the underlying alacritty Term, used by the
+    /// buffer-read / scroll / search command handlers. Returns None when no
+    /// PTY is attached. Default impl returns None for platform stubs
+    /// (macOS/Linux) that don't have a parser bridge yet — Win32 overrides.
+    fn term(&self) -> Option<Arc<Mutex<Term<TermListener>>>> {
+        None
+    }
 }
 
 #[cfg(target_os = "windows")]

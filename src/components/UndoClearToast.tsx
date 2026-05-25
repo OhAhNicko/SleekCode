@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useUndoClearStore, undoClearComposer } from "../store/undoClearStore";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 const TOAST_DURATION_MS = 5000;
 
@@ -7,6 +8,8 @@ export default function UndoClearToast() {
   const clearedText = useUndoClearStore((s) => s.clearedText);
   const clear = useUndoClearStore((s) => s.clear);
   const [visible, setVisible] = useState(false);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('undo-clear-toast', overlayRef);
 
   useEffect(() => {
     if (!clearedText) {
@@ -38,10 +41,13 @@ export default function UndoClearToast() {
     return () => window.removeEventListener("keydown", handler, true);
   }, [visible, clearedText]);
 
-  if (!visible || !clearedText) return null;
+  const active = visible && !!clearedText;
+
+  if (!active) return null;
 
   return (
     <div
+      ref={overlayRef}
       style={{
         position: "fixed",
         bottom: 16,

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { Terminal } from "@xterm/xterm";
 import { promptify } from "../lib/promptify";
 import { useAppStore } from "../store";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import { useClipboardImageStore, type ClipboardImage } from "../store/clipboardImageStore";
 import { useBrowserConsoleStore } from "../store/browserConsoleStore";
 import { getImageLabel, resolveImagePath } from "../lib/clipboard-insert";
@@ -186,6 +187,8 @@ export default function PromptComposer({
   const [localImages, setLocalImages] = useState<ClipboardImage[]>([]);
   const [previewImage, setPreviewImage] = useState<{ dataUri: string; winPath: string } | null>(null);
   const [imgCtxMenu, setImgCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
+  const imgCtxMenuRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('prompt-composer-image-menu', imgCtxMenuRef);
   const [consoleSnippet, setConsoleSnippet] = useState<{ tag: string; formatted: string } | null>(null);
   const consoleTagRef = useRef<string | null>(null); // current tag text in textarea
   const browserPreviewOpen = useBrowserConsoleStore((s) => s.active);
@@ -2350,6 +2353,7 @@ export default function PromptComposer({
           onContextMenu={(e) => { e.preventDefault(); setImgCtxMenu(null); }}
         >
           <div
+            ref={imgCtxMenuRef}
             style={{
               position: "absolute",
               top: Math.min(imgCtxMenu.y, window.innerHeight - 200),

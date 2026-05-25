@@ -7,6 +7,7 @@ import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { isWindows, detectBackendForPath } from "../lib/platform";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import type { RemoteServer, TerminalType, TerminalBackend } from "../types";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import CreateProjectModal from "./CreateProjectModal";
@@ -75,7 +76,20 @@ export default function TabBar() {
   const [colorPickerTab, setColorPickerTab] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const recentMenuRef = useRef<HTMLDivElement>(null);
+  const colorPickerRef = useRef<HTMLDivElement>(null);
+  const quitConfirmRef = useRef<HTMLDivElement>(null);
+  const pathTooltipRef = useRef<HTMLDivElement>(null);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
+
+  // Hole-cut publishers: each floating overlay publishes its viewport rect so
+  // the native HWND underneath cuts a hole. Refs are conditionally attached
+  // (only when the overlay is rendered); useOverlayPublisher's rAF loop
+  // tolerates null refs and re-reads each frame.
+  useOverlayPublisher("tabbar-new-tab-menu", menuRef);
+  useOverlayPublisher("tabbar-recent-menu", recentMenuRef);
+  useOverlayPublisher("tabbar-color-picker", colorPickerRef);
+  useOverlayPublisher("tabbar-quit-confirm", quitConfirmRef);
+  useOverlayPublisher("tabbar-path-tooltip", pathTooltipRef);
   const dragStartRef = useRef<{ tabId: string; offsetX: number; startX: number; startY: number; tabWidth: number; tabTop: number } | null>(null);
   const didDragRef = useRef(false);
   const [dragState, setDragState] = useState<{
@@ -1625,6 +1639,7 @@ export default function TabBar() {
           <>
             <div style={{ position: "fixed", inset: 0, zIndex: 299 }} onMouseDown={() => setColorPickerTab(null)} />
             <div
+              ref={colorPickerRef}
               className="dropdown-enter"
               style={{
                 position: "fixed",
@@ -1686,6 +1701,7 @@ export default function TabBar() {
       {/* Quit confirmation dialog */}
       {showQuitConfirm && (
         <div
+          ref={quitConfirmRef}
           style={{
             position: "fixed",
             inset: 0,
@@ -1805,6 +1821,7 @@ export default function TabBar() {
         if (!tt?.workingDir) return null;
         return (
           <div
+            ref={pathTooltipRef}
             style={{
               position: "fixed",
               left: pathTooltip.x,

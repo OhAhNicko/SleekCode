@@ -12,7 +12,8 @@
 //   - R1.c: `attach_term` wires from the new `native_term_attach_pty` cmd.
 //   - R1.d: per-cell SGR colors, background quads, cursor pass.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::Term;
@@ -20,9 +21,16 @@ use glyphon::{Attrs, Buffer, Family, Shaping, TextArea, TextBounds};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use super::super::parser_bridge::TermListener;
-use super::cursor::CursorPipeline;
+use super::super::window::Rect;
+use super::cursor::{CursorPipeline, CursorStyle};
 use super::glyph_atlas::GlyphStack;
 use super::grid::CellGrid;
+use super::quad_pipeline::{QuadInstance, QuadPipeline};
+use super::ThemeColors;
+
+/// Cursor blink half-period (ms). xterm uses ~530ms on/off; matched here so
+/// the blink cadence feels native.
+const BLINK_HALF_PERIOD_MS: u128 = 530;
 
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
@@ -36,12 +44,46 @@ pub struct Renderer {
     grid: Option<CellGrid>,
     term: Option<Arc<Mutex<Term<TermListener>>>>,
     cursor: CursorPipeline,
+    /// Shared instanced-quad pipeline used for per-cell backgrounds (drawn
+    /// BEFORE glyphon) and decorations like underline / strikeout (drawn
+    /// AFTER glyphon). The single struct holds two GPU draws per frame —
+    /// one bg pass, one decor pass — by re-uploading the instance buffer
+    /// between them.
+    bg_quads: QuadPipeline,
+    decor_quads: QuadPipeline,
     /// Placeholder Buffer used in the no-Term path. Pre-built once in `new`
     /// so render() doesn't re-shape every frame.
     placeholder_buffer: Buffer,
-    /// Background color from CreateOpts.theme.background. R1.b uses a single
-    /// uniform background via the clear pass; per-cell bg quads land in R1.d.
+    /// Surface clear color used as the default background. Cells whose bg
+    /// matches this color skip emitting a quad (saves overdraw on blank
+    /// regions); cells with a non-default bg are filled by `bg_quads`.
+    /// Recomputed from `theme.background` on every `set_theme` call.
     bg_clear: wgpu::Color,
+    /// Shared per-renderer palette. Wrapped in `Arc<RwLock>` so the
+    /// `CellGrid`'s snapshot loop can read the current colors without us
+    /// re-passing them through `attach_term` on every theme swap. The
+    /// CellGrid clones the Arc on construction.
+    theme: Arc<RwLock<ThemeColors>>,
+    /// Active cursor visual style. Mutated by `set_cursor_style`.
+    cursor_style: CursorStyle,
+    /// True when the cursor should be blinking. When false, the cursor is
+    /// drawn every frame (no toggle).
+    cursor_blink: bool,
+    /// Current blink phase (true = visible). Toggled in `render` once the
+    /// configured half-period has elapsed since `blink_phase_started_at`.
+    cursor_visible: bool,
+    /// When the current blink phase began. Reset on `set_cursor_style` so a
+    /// style change starts the cursor in the visible state.
+    blink_phase_started_at: Instant,
+    /// Pane-local search highlight rects (overlay marks drawn between the bg
+    /// quads and the glyph pass). Set by `set_search_highlights`, cleared by
+    /// `clear_search_highlights`. Coordinates are pane-local pixels in the
+    /// same space the search command emits (CELL_W × CELL_H derived).
+    search_highlights: Vec<Rect>,
+    /// Dedicated quad pipeline for search highlight overlays. We keep it
+    /// separate from `bg_quads`/`decor_quads` so each pipeline owns its own
+    /// uploaded instance buffer — sharing would force ordering hacks.
+    search_quads: QuadPipeline,
 }
 
 impl Renderer {
@@ -156,6 +198,13 @@ impl Renderer {
         );
 
         let cursor = CursorPipeline::new(&device, format);
+        let bg_quads = QuadPipeline::new(&device, format);
+        let decor_quads = QuadPipeline::new(&device, format);
+        let search_quads = QuadPipeline::new(&device, format);
+
+        let theme_init = ThemeColors::default_tango();
+        let bg_clear = color_to_wgpu(theme_init.background);
+        let theme = Arc::new(RwLock::new(theme_init));
 
         Ok(Self {
             surface,
@@ -166,9 +215,85 @@ impl Renderer {
             grid: None,
             term: None,
             cursor,
+            bg_quads,
+            decor_quads,
             placeholder_buffer,
-            bg_clear: wgpu::Color { r: 0.05, g: 0.05, b: 0.07, a: 1.0 },
+            bg_clear,
+            theme,
+            cursor_style: CursorStyle::Bar,
+            cursor_blink: false,
+            cursor_visible: true,
+            blink_phase_started_at: Instant::now(),
+            search_highlights: Vec::new(),
+            search_quads,
         })
+    }
+
+    /// Hot-swap the active font family + size. Updates the GlyphStack's
+    /// Metrics (so future Buffer constructions pick up the new size) and
+    /// rebuilds every existing row Buffer in the CellGrid — old Buffers were
+    /// constructed with the previous Metrics and would render at the wrong
+    /// size otherwise. Caller must follow up with an `InvalidateRect` (or
+    /// equivalent) so the next paint picks the new metrics up.
+    pub fn set_font(&mut self, family: String, size_px: f32) {
+        self.glyph.set_font(family, size_px);
+        if let Some(grid) = self.grid.as_mut() {
+            grid.rebuild_buffers(&mut self.glyph);
+        }
+    }
+
+    /// Read the current per-cell metrics (horizontal advance, line height) in
+    /// pixels. Used by the win32 wrapper so the wnd_proc's cell-coord math
+    /// stays in sync with the renderer after a font hot-swap.
+    pub fn cell_metrics(&self) -> (f32, f32) {
+        (self.glyph.cell_advance_px, self.glyph.line_height_px)
+    }
+
+    /// Hot-swap the cursor visual style + blink behaviour. Parses the wire
+    /// string ("bar" | "block" | "underline" — anything else falls back to
+    /// "bar") and resets the blink phase so the cursor starts visible
+    /// immediately after the swap.
+    pub fn set_cursor_style(&mut self, style: &str, blink: bool) {
+        self.cursor_style = CursorStyle::parse(style);
+        self.cursor_blink = blink;
+        self.cursor_visible = true;
+        self.blink_phase_started_at = Instant::now();
+    }
+
+    /// Set the pane-local search highlight rects. The pipeline draws them
+    /// each frame between the bg quad pass and the glyph pass. An empty
+    /// slice clears the overlay.
+    pub fn set_search_highlights(&mut self, rects: Vec<Rect>) {
+        self.search_highlights = rects;
+    }
+
+    /// Drop all search highlight rects. Called from `native_term_search_clear`.
+    pub fn clear_search_highlights(&mut self) {
+        self.search_highlights.clear();
+    }
+
+    /// Hot-swap the renderer's color palette. Called from
+    /// `PlatformWindow::set_theme` after the wire-format `TerminalTheme`
+    /// hex strings have been parsed. Updates:
+    ///   - `bg_clear` (the wgpu clear color used as the default background)
+    ///   - the shared `theme` Arc (visible to CellGrid::snapshot_rows on the
+    ///     next sync, including ansi indices, fg, bg, selection)
+    ///   - cursor color is read from `theme.cursor` directly in `render`.
+    /// Forces every row's cached run snapshot to invalidate so the next
+    /// `sync_from_term` re-shapes with the new colors — without this, rows
+    /// whose underlying glyph text hasn't changed would short-circuit and
+    /// keep rendering with stale colors.
+    pub fn set_theme(&mut self, colors: ThemeColors) {
+        self.bg_clear = color_to_wgpu(colors.background);
+        // Swap atomically under a short write lock. CellGrid::snapshot_rows
+        // takes a read lock per call; both are uncontended in practice.
+        {
+            let mut guard = self.theme.write().expect("theme lock poisoned");
+            *guard = colors;
+        }
+        if let Some(grid) = self.grid.as_mut() {
+            grid.invalidate_for_theme_swap();
+        }
     }
 
     /// Re-configure the surface and the glyphon viewport. Called from the
@@ -188,7 +313,7 @@ impl Renderer {
     /// `cols`/`rows` are the terminal-cell dimensions (NOT pixels).
     #[allow(dead_code)] // R1.c consumer
     pub fn attach_term(&mut self, term: Arc<Mutex<Term<TermListener>>>, cols: usize, rows: usize) {
-        let grid = CellGrid::new(&mut self.glyph, cols, rows, [255, 255, 255, 255]);
+        let grid = CellGrid::new(&mut self.glyph, cols, rows, Arc::clone(&self.theme));
         self.term = Some(term);
         self.grid = Some(grid);
     }
@@ -223,13 +348,57 @@ impl Renderer {
             grid.sync_from_term(&mut self.glyph, term);
         }
 
-        // Snapshot font metrics before glyphon takes &mut self.glyph.
-        // Cell width is an approximation for Hack mono; R1.d-δ will pull
-        // real advance metrics from cosmic-text.
+        // Snapshot font metrics before glyphon takes &mut self.glyph. The
+        // cell advance is the real shaped-glyph width measured by cosmic-text
+        // in `GlyphStack::new` / `set_font` (replaces the old `size * 0.6`
+        // heuristic so non-mono fallbacks and DPI scaling line up).
         let line_h = self.glyph.line_height_px;
-        let cell_w = self.glyph.font_size_px * 0.6;
+        let cell_w = self.glyph.cell_advance_px;
         let surface_w = self.config.width as f32;
         let surface_h = self.config.height as f32;
+
+        // Build bg + decoration quad instances for the current frame. Both
+        // are cheap allocations (Vec<QuadInstance>) over the grid's cached
+        // per-row segment lists; the grid only re-snapshots rows that
+        // actually changed.
+        let (bg_instances, decor_instances) = if let Some(grid) = self.grid.as_ref() {
+            (grid.build_bg_quads(cell_w, line_h), grid.build_decor_quads(cell_w, line_h))
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        self.bg_quads
+            .upload(&self.device, &self.queue, surface_w, surface_h, &bg_instances);
+        self.decor_quads
+            .upload(&self.device, &self.queue, surface_w, surface_h, &decor_instances);
+
+        // Search highlight instances. Translucent overlay drawn AFTER bg
+        // quads but BEFORE the glyph pass so the underlying text stays
+        // crisp on top. CLAUDE.md bans amber/yellow palette colors even in
+        // native code (project-wide rule applies); we use a semi-transparent
+        // neutral white that reads as "highlighted" against any theme bg.
+        let search_color = [0.9_f32, 0.9, 0.9, 0.40];
+        let search_instances: Vec<QuadInstance> = self
+            .search_highlights
+            .iter()
+            .map(|r| QuadInstance {
+                rect: [r.x, r.y, r.width.max(0.0), r.height.max(0.0)],
+                color: search_color,
+            })
+            .collect();
+        self.search_quads
+            .upload(&self.device, &self.queue, surface_w, surface_h, &search_instances);
+
+        // Blink-phase advance. Toggle visibility once per half-period; if
+        // blink is disabled, force visible so a paused cursor never strands
+        // off-screen after a config flip.
+        if self.cursor_blink {
+            if self.blink_phase_started_at.elapsed().as_millis() > BLINK_HALF_PERIOD_MS {
+                self.cursor_visible = !self.cursor_visible;
+                self.blink_phase_started_at = Instant::now();
+            }
+        } else {
+            self.cursor_visible = true;
+        }
         let text_areas: Vec<TextArea> = if let Some(grid) = self.grid.as_ref() {
             grid.text_areas(line_h)
         } else {
@@ -259,6 +428,14 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            // Per-cell backgrounds first so glyphs and decorations layer
+            // on top of them.
+            self.bg_quads.draw(&mut pass);
+
+            // Search highlights sit between bg and glyphs — alpha-blended so
+            // the matching text underneath stays legible.
+            self.search_quads.draw(&mut pass);
+
             self.glyph.prepare_and_render(
                 &self.device,
                 &self.queue,
@@ -266,34 +443,75 @@ impl Renderer {
                 &mut pass,
             )?;
 
-            // R1.d-γ cursor bar — drawn AFTER glyphon so it sits visually
-            // on top of the cell text. Position read from the live Term
-            // grid under one short lock.
-            if let Some(term) = self.term.as_ref() {
-                let (col, line_idx, visible_rows, visible_cols) = {
-                    let t = term.lock().expect("renderer term lock poisoned");
-                    let grid = t.grid();
-                    let pt = grid.cursor.point;
-                    (
-                        pt.column.0,
-                        pt.line.0.max(0) as usize,
-                        grid.screen_lines(),
-                        grid.columns(),
-                    )
-                };
-                if line_idx < visible_rows && col < visible_cols {
-                    self.cursor.draw(
-                        &self.queue,
-                        surface_w,
-                        surface_h,
-                        col as f32 * cell_w,
-                        line_idx as f32 * line_h,
-                        2.0,
-                        line_h,
-                        // Soft white, ~80% alpha for non-jarring visual.
-                        [0.86, 0.84, 0.81, 0.80],
-                        &mut pass,
-                    );
+            // Underline / strikeout bars sit on top of the glyph pass.
+            self.decor_quads.draw(&mut pass);
+
+            // Cursor pass — drawn AFTER glyphon so it sits visually on top
+            // of the cell text. Position read from the live Term grid under
+            // one short lock. Style + blink-phase honoured per Phase 3.
+            if self.cursor_visible {
+                if let Some(term) = self.term.as_ref() {
+                    let (col, line_idx, visible_rows, visible_cols) = {
+                        let t = term.lock().expect("renderer term lock poisoned");
+                        let grid = t.grid();
+                        let pt = grid.cursor.point;
+                        (
+                            pt.column.0,
+                            pt.line.0.max(0) as usize,
+                            grid.screen_lines(),
+                            grid.columns(),
+                        )
+                    };
+                    if line_idx < visible_rows && col < visible_cols {
+                        // Cursor color comes from the live theme — read once per
+                        // frame under a short shared lock and convert byte RGBA
+                        // to wgpu's 0..1 floats. The default Tango theme keeps
+                        // the previous soft-white look.
+                        let c = self.theme.read().expect("theme poisoned").cursor;
+                        let cursor_rgba = [
+                            c[0] as f32 / 255.0,
+                            c[1] as f32 / 255.0,
+                            c[2] as f32 / 255.0,
+                            c[3] as f32 / 255.0,
+                        ];
+                        let cell_x = col as f32 * cell_w;
+                        let cell_y = line_idx as f32 * line_h;
+                        // Style-specific quad geometry + alpha.
+                        // Block: full cell rect at reduced alpha. True xterm
+                        // "inverse" block would re-render the glyph in the bg
+                        // color on top; that requires a second glyphon pass
+                        // and is deferred. Tinted-block is the simplest
+                        // legible variant.
+                        // Underline: 2-3px tall bar at cell bottom.
+                        // Bar: 2px wide vertical strip at cell x.
+                        let underline_h = (line_h * 0.12).max(2.0).round();
+                        let (qx, qy, qw, qh, qa) = match self.cursor_style {
+                            CursorStyle::Bar => (cell_x, cell_y, 2.0, line_h, cursor_rgba[3]),
+                            CursorStyle::Underline => (
+                                cell_x,
+                                cell_y + line_h - underline_h,
+                                cell_w,
+                                underline_h,
+                                cursor_rgba[3],
+                            ),
+                            CursorStyle::Block => {
+                                // 0.3 alpha keeps the underlying glyph visible.
+                                (cell_x, cell_y, cell_w, line_h, cursor_rgba[3] * 0.30)
+                            }
+                        };
+                        let rgba = [cursor_rgba[0], cursor_rgba[1], cursor_rgba[2], qa];
+                        self.cursor.draw(
+                            &self.queue,
+                            surface_w,
+                            surface_h,
+                            qx,
+                            qy,
+                            qw,
+                            qh,
+                            rgba,
+                            &mut pass,
+                        );
+                    }
                 }
             }
         }
@@ -301,5 +519,16 @@ impl Renderer {
         self.queue.submit(Some(enc.finish()));
         frame.present();
         Ok(())
+    }
+}
+
+/// Convert a `[u8; 4]` byte-RGBA color (matching `ThemeColors` fields) into a
+/// `wgpu::Color` in 0..1 floats. Used for `bg_clear`.
+fn color_to_wgpu(rgba: [u8; 4]) -> wgpu::Color {
+    wgpu::Color {
+        r: rgba[0] as f64 / 255.0,
+        g: rgba[1] as f64 / 255.0,
+        b: rgba[2] as f64 / 255.0,
+        a: rgba[3] as f64 / 255.0,
     }
 }

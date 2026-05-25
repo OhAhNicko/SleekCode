@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useRef, useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { BiScreenshot } from "react-icons/bi";
@@ -6,6 +6,7 @@ import { FaExpand } from "react-icons/fa";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import { insertImagePath, resolveImagePath } from "../lib/clipboard-insert";
 import { useAppStore } from "../store";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import ImagePreviewModal from "./ImagePreviewModal";
 
 interface ClipboardImageStripProps {
@@ -30,6 +31,15 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
   const [showGallery, setShowGallery] = useState(false);
   const [galleryCtxMenu, setGalleryCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
   const [previewFromGallery, setPreviewFromGallery] = useState(false);
+
+  const ctxMenuRef = useRef<HTMLDivElement>(null);
+  const snipCtxMenuRef = useRef<HTMLDivElement>(null);
+  const galleryRef = useRef<HTMLDivElement>(null);
+  const galleryCtxMenuRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('clipboard-image-strip-ctx-menu', ctxMenuRef);
+  useOverlayPublisher('clipboard-image-strip-snip-ctx-menu', snipCtxMenuRef);
+  useOverlayPublisher('clipboard-image-strip-gallery', galleryRef);
+  useOverlayPublisher('clipboard-image-strip-gallery-ctx-menu', galleryCtxMenuRef);
 
   const latestThumbnails = images.slice(0, isVertical ? 4 : 5);
 
@@ -288,6 +298,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
             onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }}
           >
             <div
+              ref={ctxMenuRef}
               style={{
                 position: "absolute",
                 top: Math.min(ctxMenu.y, window.innerHeight - 200),
@@ -332,6 +343,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
           onContextMenu={(e) => { e.preventDefault(); setSnipCtxMenu(null); }}
         >
           <div
+            ref={snipCtxMenuRef}
             className="dropdown-enter"
             style={{
               position: "absolute",
@@ -382,6 +394,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
           onClick={() => { setShowGallery(false); setGalleryCtxMenu(null); }}
         >
           <div
+            ref={galleryRef}
             className="dropdown-enter"
             style={{
               backgroundColor: "var(--ezy-surface-raised)",
@@ -607,6 +620,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
             onContextMenu={(e) => { e.preventDefault(); setGalleryCtxMenu(null); }}
           >
             <div
+              ref={galleryCtxMenuRef}
               className="dropdown-enter"
               style={{
                 position: "absolute",

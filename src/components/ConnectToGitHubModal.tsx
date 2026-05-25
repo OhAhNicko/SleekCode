@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 interface GhStatus {
   installed: boolean;
@@ -38,6 +39,8 @@ export default function ConnectToGitHubModal({
   onClose,
   onConnected,
 }: ConnectToGitHubModalProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('connect-github', overlayRef);
   const [phase, setPhase] = useState<Phase>("checking");
   const [status, setStatus] = useState<GhStatus | null>(null);
   const [fatalError, setFatalError] = useState("");
@@ -126,6 +129,7 @@ export default function ConnectToGitHubModal({
       onClick={onClose}
     >
       <div
+        ref={overlayRef}
         style={{
           maxWidth: 480,
           width: "100%",

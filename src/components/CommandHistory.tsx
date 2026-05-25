@@ -1,5 +1,6 @@
-import { useState, useMemo } from "react";
+import { useRef, useState, useMemo } from "react";
 import { useAppStore } from "../store";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import { getPtyWrite, getAllPtyWriteTerminalIds } from "../store/terminalSlice";
 
 interface CommandHistoryProps {
@@ -25,6 +26,8 @@ function formatDuration(start: number, end: number | null): string | null {
 }
 
 export default function CommandHistory({ onClose }: CommandHistoryProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('command-history', overlayRef);
   const history = useAppStore((s) => s.commandHistory);
   const clearHistory = useAppStore((s) => s.clearHistory);
   const [searchQuery, setSearchQuery] = useState("");
@@ -68,6 +71,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
       onClick={onClose}
     >
       <div
+        ref={overlayRef}
         style={{
           width: 560,
           maxHeight: "70vh",

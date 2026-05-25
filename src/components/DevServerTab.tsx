@@ -6,6 +6,7 @@ import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand, FaServer } from "rea
 import { FaXmark, FaPlus, FaPencil } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
 import { useAppStore } from "../store";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import ServersPanel from "./ServersPanel";
 import { getPtyWrite } from "../store/terminalSlice";
 import { openOrUpdateBrowserPane, generateTerminalId } from "../lib/layout-utils";
@@ -110,6 +111,7 @@ function UrlPopover({
   onMouseLeave: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('dev-server-tab-urls', ref);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
   // After mount, measure ourselves and place above the anchor (or below if no room).

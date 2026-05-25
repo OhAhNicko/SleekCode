@@ -22,9 +22,11 @@ type Params = ParamsPropDrilled | ParamsSliceSourced;
 type StoreWithOverlaySlice = ReturnType<typeof useAppStore.getState> &
   OverlayRegionSlice;
 
-// Phase 0 spike command (deleted at Phase 0 retirement); Phase 1 native command.
-function commandFor(isPhase0Spike: boolean): string {
-  return isPhase0Spike ? "native_term_spike_set_region" : "native_term_set_region";
+// Both `native_term_set_region` and `native_term_spike_set_region` operate on
+// any registry id — the spike form just delegates. We use the production name
+// so the call survives Phase 0 spike removal.
+function commandFor(_isPhase0Spike: boolean): string {
+  return "native_term_set_region";
 }
 
 export function useNativePaneRegion(params: Params): void {
@@ -52,15 +54,17 @@ export function useNativePaneRegion(params: Params): void {
       const rects: Rect[] = [];
 
       if (overlayRefs !== undefined) {
+        // Prop-drilled mode (spike): convert each overlayRef directly.
         for (const ref of overlayRefs) {
           const r = getOverlayRectInPane(ref.current, pane);
           if (r) rects.push(r);
         }
       } else {
-        const inner = (useAppStore.getState() as StoreWithOverlaySlice)
-          .overlayRectsByTerm.get(termId);
-        if (inner) {
-          for (const viewportRect of inner.values()) {
+        // Slice-sourced mode: read global publishers, intersect with pane.
+        const globalMap = (useAppStore.getState() as StoreWithOverlaySlice)
+          .overlayRects;
+        if (globalMap.size > 0) {
+          for (const viewportRect of globalMap.values()) {
             const ix1 = Math.max(viewportRect.x, paneRect.left);
             const iy1 = Math.max(viewportRect.y, paneRect.top);
             const ix2 = Math.min(

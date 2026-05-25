@@ -311,6 +311,7 @@ export type NativeTermCmd =
   | "native_term_reset"
   | "native_term_search"
   | "native_term_search_clear"
+  | "native_term_set_search_highlights"
   | "native_term_key_event_forward"
   | "native_term_ime_commit"
   | "native_term_ime_preedit";
@@ -469,6 +470,18 @@ export function nativeTermSearch(
 
 export function nativeTermSearchClear(id: NativeTermId): Promise<void> {
   return invoke<void>("native_term_search_clear", { id });
+}
+
+// Phase 3: push the rects from a SearchResult to the renderer so it can draw
+// the highlight overlay. Decoupled from `nativeTermSearch` so callers can opt
+// out of the overlay (e.g. when previewing a live-typed regex). Best-effort —
+// errors are surfaced to the caller but typical use sites `.catch(() => {})`
+// them since a missing/destroyed pane is a benign race.
+export function nativeTermSetSearchHighlights(
+  id: NativeTermId,
+  rects: Rect[],
+): Promise<void> {
+  return invoke<void>("native_term_set_search_highlights", { id, rects });
 }
 
 // --- Input ---

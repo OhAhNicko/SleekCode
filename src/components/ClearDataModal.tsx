@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 const PERSIST_KEY = "made-storage";
 
@@ -147,6 +148,8 @@ interface ClearDataModalProps {
 }
 
 export default function ClearDataModal({ onClose }: ClearDataModalProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('clear-data', overlayRef);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [wiping, setWiping] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -214,7 +217,10 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
       onClick={() => { if (!wiping) onClose(); }}
     >
       <div
-        ref={bodyRef}
+        ref={(el) => {
+          bodyRef.current = el;
+          overlayRef.current = el;
+        }}
         tabIndex={-1}
         style={{
           maxWidth: 520,

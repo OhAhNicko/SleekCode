@@ -1,4 +1,6 @@
+import { useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 interface ImagePreviewModalProps {
   dataUri: string;
@@ -15,6 +17,8 @@ export default function ImagePreviewModal({
   onClose,
   onDelete,
 }: ImagePreviewModalProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('image-preview', overlayRef);
   const fileName = winPath.split(/[\\/]/).pop() ?? winPath;
 
   return (
@@ -32,6 +36,7 @@ export default function ImagePreviewModal({
       onClick={onClose}
     >
       <div
+        ref={overlayRef}
         style={{
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",

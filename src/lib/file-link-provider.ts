@@ -25,7 +25,7 @@ const FILE_PATH_RE = new RegExp(
   "gi"
 );
 
-interface FileLinkMatch {
+export interface FileLinkMatch {
   text: string;
   filePath: string;
   line: number | undefined;
@@ -34,7 +34,7 @@ interface FileLinkMatch {
   endIndex: number;
 }
 
-function findFilePathsInLine(lineText: string): FileLinkMatch[] {
+export function findFilePathsInLine(lineText: string): FileLinkMatch[] {
   const matches: FileLinkMatch[] = [];
   FILE_PATH_RE.lastIndex = 0;
   let m: RegExpExecArray | null;

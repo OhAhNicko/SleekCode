@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 const TOAST_DURATION_MS = 6000;
 
@@ -7,6 +8,8 @@ const TOAST_DURATION_MS = 6000;
 export default function UploadErrorToast() {
   const uploadError = useClipboardImageStore((s) => s.uploadError);
   const [visible, setVisible] = useState(false);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('upload-error-toast', overlayRef);
 
   useEffect(() => {
     if (!uploadError) {
@@ -23,10 +26,13 @@ export default function UploadErrorToast() {
     return () => clearTimeout(timer);
   }, [uploadError]);
 
-  if (!visible || !uploadError) return null;
+  const active = visible && !!uploadError;
+
+  if (!active) return null;
 
   return (
     <div
+      ref={overlayRef}
       style={{
         position: "fixed",
         bottom: 16,

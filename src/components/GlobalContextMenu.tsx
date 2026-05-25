@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 interface MenuItem {
   label: string;
@@ -99,6 +100,7 @@ const DevToolsIcon = (
 export default function GlobalContextMenu() {
   const [menu, setMenu] = useState<{ x: number; y: number; isTerminal: boolean } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('global-context-menu', menuRef);
   const [menuHeight, setMenuHeight] = useState(0);
 
   const close = useCallback(() => setMenu(null), []);

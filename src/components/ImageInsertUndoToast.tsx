@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import { undoLastInsertion } from "../lib/clipboard-insert";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 const TOAST_DURATION_MS = 5000;
 
@@ -8,6 +9,8 @@ const TOAST_DURATION_MS = 5000;
 export default function ImageInsertUndoToast() {
   const lastInsertion = useClipboardImageStore((s) => s.lastInsertion);
   const [visible, setVisible] = useState(false);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('image-insert-undo-toast', overlayRef);
 
   useEffect(() => {
     if (!lastInsertion) {
@@ -24,12 +27,15 @@ export default function ImageInsertUndoToast() {
     return () => clearTimeout(timer);
   }, [lastInsertion]);
 
-  if (!visible || !lastInsertion) return null;
+  const active = visible && !!lastInsertion;
+
+  if (!active) return null;
 
   const fileName = lastInsertion.text.split(/[\\/]/).pop() ?? lastInsertion.text;
 
   return (
     <div
+      ref={overlayRef}
       style={{
         position: "fixed",
         bottom: 16,

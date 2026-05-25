@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import type { TerminalType } from "../types";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { useAppStore } from "../store";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 interface ToolSelectorProps {
   onSelect: (type: TerminalType, serverId?: string) => void;
@@ -92,6 +93,7 @@ export default function ToolSelector({
   const servers = useAppStore((s) => s.servers);
   const [hoveredIndex, setHoveredIndex] = useState(0);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('tool-selector', dropdownRef);
 
   // Build flat menu items list: Local tools, then per-server tools
   const menuItems: MenuItem[] = [];

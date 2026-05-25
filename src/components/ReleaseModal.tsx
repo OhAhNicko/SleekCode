@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitFileStatus, GitBranchInfo, GitAheadBehind } from "../types";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 type BumpLevel = "patch" | "minor" | "major";
 
@@ -83,6 +84,8 @@ export default function ReleaseModal({
   const [ghAuthed, setGhAuthed] = useState<boolean | null>(null);
 
   const modalRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('release', overlayRef);
 
   // Probe git + manifests in parallel.
   const probe = useCallback(async () => {
@@ -256,7 +259,10 @@ export default function ReleaseModal({
       onClick={() => { if (!releasing) onClose(); }}
     >
       <div
-        ref={modalRef}
+        ref={(el) => {
+          modalRef.current = el;
+          overlayRef.current = el;
+        }}
         style={{
           maxWidth: 520,
           width: "100%",

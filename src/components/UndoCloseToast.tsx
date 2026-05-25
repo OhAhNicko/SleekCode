@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useUndoCloseStore, undoClose } from "../store/undoCloseStore";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 const TOAST_DURATION_MS = 5000;
 
@@ -7,6 +8,8 @@ export default function UndoCloseToast() {
   const lastClosed = useUndoCloseStore((s) => s.lastClosed);
   const clear = useUndoCloseStore((s) => s.clear);
   const [visible, setVisible] = useState(false);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('undo-close-toast', overlayRef);
 
   useEffect(() => {
     if (!lastClosed) {
@@ -37,7 +40,9 @@ export default function UndoCloseToast() {
     return () => window.removeEventListener("keydown", handler);
   }, [visible, lastClosed]);
 
-  if (!visible || !lastClosed) return null;
+  const active = visible && !!lastClosed;
+
+  if (!active) return null;
 
   const label =
     lastClosed.type === "tab"
@@ -46,6 +51,7 @@ export default function UndoCloseToast() {
 
   return (
     <div
+      ref={overlayRef}
       style={{
         position: "fixed",
         bottom: 16,

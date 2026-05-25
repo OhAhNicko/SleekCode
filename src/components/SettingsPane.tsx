@@ -1037,6 +1037,10 @@ export default function SettingsPane() {
   const setTheme = useAppStore((s) => s.setTheme);
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const setVibrantColors = useAppStore((s) => s.setVibrantColors);
+  const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
+  const setNativeCursorStyle = useAppStore((s) => s.setNativeCursorStyle);
+  const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
+  const setNativeCursorBlink = useAppStore((s) => s.setNativeCursorBlink);
   const aiTimeBursts = useAppStore((s) => s.aiTimeBursts);
   const clearAiTimeStats = useAppStore((s) => s.clearAiTimeStats);
   const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
@@ -1142,6 +1146,20 @@ export default function SettingsPane() {
               </div>
               <SettingsRow label="Vibrant colors" description="Use brighter, more saturated accent colors throughout the UI.">
                 <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
+              </SettingsRow>
+              <SettingsRow label="Native terminal cursor style" description="Applies to native terminal renderer only.">
+                <SegmentedControl<"bar" | "block" | "underline">
+                  options={[
+                    { value: "bar", label: "Bar" },
+                    { value: "block", label: "Block" },
+                    { value: "underline", label: "Underline" },
+                  ]}
+                  value={nativeCursorStyle}
+                  onChange={setNativeCursorStyle}
+                />
+              </SettingsRow>
+              <SettingsRow label="Native terminal cursor blink" description="Applies to native terminal renderer only.">
+                <ToggleSwitch checked={nativeCursorBlink} onChange={setNativeCursorBlink} />
               </SettingsRow>
             </SettingsSection>
             <SettingsSection id="danger-zone" title="Danger Zone" description="Clear MADE's local storage. Your files on disk are not affected.">

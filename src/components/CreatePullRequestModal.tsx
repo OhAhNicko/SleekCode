@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FaXmark } from "react-icons/fa6";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 interface CreatePullRequestModalProps {
   workingDir: string;
@@ -36,6 +37,8 @@ export default function CreatePullRequestModal({
   onClose,
   onCreated,
 }: CreatePullRequestModalProps) {
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('create-pull-request', overlayRef);
   const [base, setBase] = useState(() => pickDefaultBase(branches, currentBranch));
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
@@ -130,6 +133,7 @@ export default function CreatePullRequestModal({
       }}
     >
       <div
+        ref={overlayRef}
         style={{
           maxWidth: 560,
           width: "calc(100% - 48px)",

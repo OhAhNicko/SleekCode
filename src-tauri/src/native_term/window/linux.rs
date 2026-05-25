@@ -11,6 +11,12 @@ impl PlatformWindow {
     pub fn new(_parent_hwnd: isize, _rect: Rect, _dpr: f32) -> Result<Self, String> {
         Err("native_term: Linux support not implemented (Phase 4)".to_string())
     }
+
+    /// O2-B no-op stub for parity with the Win32 implementation.
+    pub fn set_app_handle(&mut self, _app: tauri::AppHandle) {}
+
+    /// O2-B no-op stub for parity with the Win32 implementation.
+    pub fn set_term_id(&mut self, _id: u32) {}
 }
 
 impl NativeTermWindow for PlatformWindow {

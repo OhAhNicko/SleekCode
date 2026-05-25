@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "../store";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import { runConfirmedCalls } from "../lib/voice/runner";
 import type { ToolCall } from "../lib/voice/llmClient";
 
@@ -55,9 +56,14 @@ export default function VoiceHud() {
     }
   }, [state, setHudState, setError]);
 
-  if (!enabled) return null;
-  if (state === "idle" && !pendingConfirm && !pendingClarify) return null;
-  if (dismissed) return null;
+  const visible =
+    enabled &&
+    !dismissed &&
+    !(state === "idle" && !pendingConfirm && !pendingClarify);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('voice-hud', overlayRef);
+
+  if (!visible) return null;
 
   // Position bottom-left so it doesn't collide with the MadeComposer (bottom-right area).
   const containerStyle: React.CSSProperties = {
@@ -80,7 +86,7 @@ export default function VoiceHud() {
   };
 
   return (
-    <div style={containerStyle} role="status" aria-live="polite">
+    <div ref={overlayRef} style={containerStyle} role="status" aria-live="polite">
       {/* Header row */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <StateDot active={state !== "idle" && state !== "error"} />

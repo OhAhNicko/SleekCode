@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
 /**
  * Bottom-right toast that surfaces the result of the App.tsx dev-server
@@ -18,6 +19,8 @@ interface RestoreToast {
 
 export default function DevServerRestoreToast() {
   const [toast, setToast] = useState<RestoreToast | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher('dev-server-restore-toast', overlayRef);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -46,6 +49,7 @@ export default function DevServerRestoreToast() {
 
   return (
     <div
+      ref={overlayRef}
       style={{
         position: "fixed",
         bottom: 16,
