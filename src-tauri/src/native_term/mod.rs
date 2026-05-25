@@ -33,8 +33,8 @@ pub struct ProposedDimensions {
 
 #[tauri::command]
 pub fn native_term_create(app: tauri::AppHandle, opts: CreateOpts) -> Result<u32, String> {
-    let parent = registry::parent_hwnd()
-        .ok_or_else(|| "native_term: parent HWND not captured yet".to_string())?;
+    let parent = registry::parent_handle()
+        .ok_or_else(|| "native_term: parent handle not captured yet".to_string())?;
     // R1.c keeps PlatformWindow::new minimal (rect+dpr only). theme/font/cursor
     // are no-op stubs in win32 set_theme/set_font/set_cursor_style — R1.d wires
     // them into the renderer. Apply them now so the values are recorded for
@@ -531,8 +531,8 @@ pub fn native_term_spike_create(
     rect: Rect,
     dpr: f32,
 ) -> Result<u32, String> {
-    let parent = registry::parent_hwnd()
-        .ok_or_else(|| "native_term: parent HWND not captured yet".to_string())?;
+    let parent = registry::parent_handle()
+        .ok_or_else(|| "native_term: parent handle not captured yet".to_string())?;
     let mut win = PlatformWindow::new(parent, rect, dpr)?;
     win.set_app_handle(app);
     let id = registry::alloc_id();

@@ -48,3 +48,17 @@ glyphon = "0.6"
 alacritty_terminal = "0.24"
 unicode-width = "0.2"
 regex = "1"
+
+# native_term Phase 4 macOS spike: NSView sibling of WKWebView + Metal surface.
+# wgpu reuses its existing 22 pin (already Metal-capable). We use objc2 for
+# NSView/NSWindow/CALayer FFI — modern successor to the `cocoa`/`objc` crates.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+objc2-quartz-core = "0.3"
+# dispatch2 = libdispatch (GCD) bindings. Used to bounce NSView lifecycle ops
+# (addSubview, frame, isHidden, removeFromSuperview) onto the main thread,
+# since AppKit requires main-thread access and Tauri command handlers run
+# off-main on the tokio runtime.
+dispatch2 = "0.3"

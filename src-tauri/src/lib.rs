@@ -6348,7 +6348,7 @@ pub fn run() {
 
                 let window = app.get_webview_window("main").expect("main window not found");
                 let hwnd = window.hwnd().expect("failed to get HWND");
-                native_term::registry::set_parent_hwnd(hwnd.0 as isize);
+                native_term::registry::set_parent_handle(hwnd.0 as isize);
                 win32_border::remove_border(hwnd.0);
 
                 // Keep a persistent WSL process alive — boots the WSL VM and
@@ -6365,11 +6365,28 @@ pub fn run() {
                 });
             }
 
-            // macOS: no special window setup needed — using native decorations
-            // via tauri.macos.conf.json overlay. No WSL VM to warm.
+            // macOS: native decorations via tauri.macos.conf.json overlay; no WSL
+            // VM to warm. Phase 4 spike: capture the main NSWindow's contentView
+            // pointer so native_term can add its child NSView as a sibling of
+            // the WKWebView (NOT inside it — both live as subviews of the same
+            // contentView, z-ordered above the webview).
             #[cfg(target_os = "macos")]
             {
-                let _ = app; // suppress unused warning
+                use objc2::msg_send;
+                use objc2::runtime::AnyObject;
+
+                let window = app.get_webview_window("main").expect("main window not found");
+                let ns_window = window
+                    .ns_window()
+                    .expect("failed to get NSWindow") as *mut AnyObject;
+                // [ns_window contentView] — NSWindow owns its contentView, so
+                // we treat the pointer as a non-owning reference for the
+                // lifetime of the app. No retain/release.
+                let content_view: *mut AnyObject = unsafe { msg_send![ns_window, contentView] };
+                if content_view.is_null() {
+                    panic!("native_term: NSWindow contentView is nil at setup");
+                }
+                native_term::registry::set_parent_handle(content_view as isize);
             }
 
             Ok(())
