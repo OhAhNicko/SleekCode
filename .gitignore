@@ -36,3 +36,4 @@ src-tauri/WixTools/
 # Project docs & tasks (local only)
 docs/
 tasks/
+.claude/
