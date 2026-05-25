@@ -48,7 +48,7 @@ use objc2::runtime::{AnyObject, Sel};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSEvent, NSEventModifierFlags, NSPasteboard, NSPasteboardTypeString, NSResponder,
-    NSTextInputClient, NSView, NSWindowOrderingMode,
+    NSTextInputClient, NSTrackingArea, NSTrackingAreaOptions, NSView, NSWindowOrderingMode,
     NSDeleteFunctionKey, NSDownArrowFunctionKey, NSEndFunctionKey, NSF10FunctionKey,
     NSF11FunctionKey, NSF12FunctionKey, NSF1FunctionKey, NSF2FunctionKey, NSF3FunctionKey,
     NSF4FunctionKey, NSF5FunctionKey, NSF6FunctionKey, NSF7FunctionKey, NSF8FunctionKey,
@@ -71,8 +71,10 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::{Term, TermMode};
 
 use super::super::events::{
-    emit_ime_composition, emit_key_down_preview, emit_r_button, emit_selection, ImeComposition,
-    KeyDownPreview, KeyEventDto, RButton, Selection as SelectionEvent,
+    emit_cell_hover, emit_cell_hover_end, emit_ime_composition, emit_key_down_preview,
+    emit_link_click, emit_link_hover, emit_r_button, emit_selection, CellHover, ImeComposition,
+    KeyDownPreview, KeyEventDto, KeyModifiers, LinkClick, LinkHover, RButton,
+    Selection as SelectionEvent,
 };
 
 use super::{NativeTermWindow, Rect, TerminalTheme};
@@ -129,6 +131,23 @@ pub(super) struct MtvState {
     /// `setMarkedText:selectedRange:replacementRange:` from the IME's
     /// selectedRange.location (clamped to marked_text.len()).
     pub(super) marked_cursor: u32,
+    /// R4-γ-3: last (line, col) emitted via `cell_hover`. Cleared on
+    /// `mouseExited:` so re-entry is guaranteed to emit. Mirrors win32's
+    /// `last_cell_hover`.
+    pub(super) last_cell_hover: Option<(i64, u32)>,
+    /// R4-γ-3: OSC 8 link-hover coalescing key — (line, col, uri). Cleared
+    /// on `mouseExited:` and whenever the hovered cell has no hyperlink.
+    pub(super) last_link_hover: Option<(i64, u32, String)>,
+    /// R4-γ-3: last (col, row) 1-based cell forwarded to the PTY as an
+    /// xterm motion event. Coalesces 1002/1003 traffic — we only emit when
+    /// the cursor crosses a cell boundary.
+    pub(super) last_motion_cell: Option<(u32, u32)>,
+    /// R4-γ-3: raw retained NSTrackingArea pointer (or 0 when none yet).
+    /// Stored as usize because `Retained<NSTrackingArea>` is !Send and
+    /// MtvState lives behind an Arc<Mutex<>> we share across threads (the
+    /// AppKit-side reads/writes are always main-thread, so the raw cast is
+    /// safe). Released via `Retained::from_raw` in `_remove_tracking_area`.
+    pub(super) tracking_area_ptr: usize,
 }
 
 impl MtvState {
@@ -143,6 +162,10 @@ impl MtvState {
             cell_h_px: INITIAL_CELL_H_LOGICAL,
             marked_text: String::new(),
             marked_cursor: 0,
+            last_cell_hover: None,
+            last_link_hover: None,
+            last_motion_cell: None,
+            tracking_area_ptr: 0,
         }
     }
 }
@@ -207,14 +230,78 @@ define_class!(
 
             // Snapshot the bits we need without holding the state lock across
             // the term mutex acquisition below.
-            let (pty_id, term_arc, cell_w, cell_h) = {
+            let (pty_id, term_arc, app, term_id, cell_w, cell_h) = {
                 let mut s = match self.ivars().state.lock() {
                     Ok(g) => g,
                     Err(_) => return,
                 };
                 s.lbutton_down = true;
-                (s.pty_id, s.term.clone(), s.cell_w_px, s.cell_h_px)
+                (
+                    s.pty_id,
+                    s.term.clone(),
+                    s.app.clone(),
+                    s.term_id,
+                    s.cell_w_px,
+                    s.cell_h_px,
+                )
             };
+
+            // R4-γ-3: Ctrl+click on a hyperlinked cell → emit `link_click`
+            // and SKIP the selection-start path. Mirrors win32's WM_LBUTTONDOWN
+            // ctrl branch. We do not also forward an xterm mouse-event in this
+            // case — the click is being consumed as navigation, not input.
+            if ctrl {
+                let click_link = if let Some(term) = term_arc.as_ref() {
+                    let t = match term.lock() {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    let grid = t.grid();
+                    let cols = grid.columns();
+                    let rows = grid.screen_lines();
+                    let display_offset_i = grid.display_offset() as i32;
+                    let cell_w_safe = cell_w.max(0.001);
+                    let line_h_safe = cell_h.max(0.001);
+                    let row_visible = (y_px / line_h_safe).floor() as i32;
+                    let col_raw = (x_px / cell_w_safe).floor() as i32;
+                    if cols > 0
+                        && rows > 0
+                        && row_visible >= 0
+                        && (row_visible as usize) < rows
+                        && col_raw >= 0
+                        && (col_raw as usize) < cols
+                    {
+                        let line_i32 = row_visible - display_offset_i;
+                        let cell = &grid[Line(line_i32)][Column(col_raw as usize)];
+                        cell.hyperlink()
+                            .map(|h| (h.uri().to_owned(), line_i32 as i64, col_raw as u32))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some((uri, line, col)) = click_link {
+                    if let (Some(app), Some(tid)) = (app.as_ref(), term_id) {
+                        emit_link_click(
+                            app,
+                            tid,
+                            LinkClick {
+                                uri,
+                                line,
+                                col,
+                                modifiers: KeyModifiers {
+                                    ctrl,
+                                    shift,
+                                    alt,
+                                    meta: false,
+                                },
+                            },
+                        );
+                    }
+                    return;
+                }
+            }
 
             // xterm mouse-mode forwarding takes precedence (unless Shift).
             if !shift {
@@ -247,9 +334,15 @@ define_class!(
             }
         }
 
-        /// Extend the active selection during a drag. Mouse-mode 1002/1003
-        /// drag forwarding lands in γ-3 when we add an NSTrackingArea +
-        /// motion reporting; for now drag only does text-selection.
+        /// Drag handling — three branches:
+        ///   1. xterm 1002 drag-while-down mode active (and !Shift) → encode
+        ///      the move as an xterm motion event with the LMB code and the
+        ///      motion bit set, forward to PTY. Selection updates are SKIPPED
+        ///      so the TUI gets clean drag input.
+        ///   2. Selection drag (Shift bypass, or no 1002/1003 mode active) →
+        ///      extend the active selection. Same as γ-2 behaviour.
+        /// Note: 1003 (any-motion) is handled in `_mouse_moved` since it
+        /// reports unconditionally — drag-specific code only matters for 1002.
         #[unsafe(method(mouseDragged:))]
         fn _mouse_dragged(&self, event: &NSEvent) {
             let down = match self.ivars().state.lock() {
@@ -260,15 +353,60 @@ define_class!(
                 return;
             }
             let Some((x_px, y_px)) = self.view_local_event_px(event) else { return };
+            let flags = event.modifierFlags();
+            let shift = flags.contains(NSEventModifierFlags::Shift);
+            let ctrl = flags.contains(NSEventModifierFlags::Control);
+            let alt = flags.contains(NSEventModifierFlags::Option);
 
-            let (term_arc, cell_w, cell_h) = {
+            let (pty_id, term_arc, cell_w, cell_h) = {
                 let s = match self.ivars().state.lock() {
                     Ok(g) => g,
                     Err(_) => return,
                 };
-                (s.term.clone(), s.cell_w_px, s.cell_h_px)
+                (s.pty_id, s.term.clone(), s.cell_w_px, s.cell_h_px)
             };
             let Some(term_arc) = term_arc else { return };
+
+            // R4-γ-3: xterm 1002/1003 motion forwarding while LMB is down.
+            // 1003 fires from _mouse_moved AND _mouse_dragged (it reports
+            // unconditionally); 1002 fires only here (motion-while-down).
+            // Coalesce by 1-based cell so we don't flood the PTY with
+            // sub-cell jitter.
+            if !shift {
+                let modes = read_mouse_modes_from_term(&term_arc);
+                let any_motion_mode = modes.drag_enabled || modes.motion_enabled;
+                if any_motion_mode {
+                    let (x_cell, y_cell) = px_to_cell_1based(x_px, y_px, cell_w, cell_h);
+                    let cell_key = (x_cell, y_cell);
+                    let should_emit = {
+                        let mut s = match self.ivars().state.lock() {
+                            Ok(g) => g,
+                            Err(_) => return,
+                        };
+                        if s.last_motion_cell == Some(cell_key) {
+                            false
+                        } else {
+                            s.last_motion_cell = Some(cell_key);
+                            true
+                        }
+                    };
+                    if should_emit {
+                        let fmt = mouse_format(modes);
+                        // Button 0 (LMB) | motion bit (32). LMB is held.
+                        if let Some(bytes) = encode_mouse_event(
+                            0, x_cell, y_cell, ctrl, shift, alt, true, true, fmt,
+                        ) {
+                            if let Some(pid) = pty_id {
+                                let _ = crate::pty::write_to_pty_sync(pid, &bytes);
+                            }
+                        }
+                    }
+                    // SKIP selection update — the TUI is consuming raw input.
+                    return;
+                }
+            }
+
+            // Selection extend (default + Shift escape hatch).
             if let Some(point) =
                 mouse_to_point(&term_arc, x_px, y_px, cell_w, cell_h)
             {
@@ -471,6 +609,217 @@ define_class!(
             if let Ok(mut t) = term_arc.lock() {
                 t.scroll_display(Scroll::Delta(lines));
             }
+        }
+
+        /// R4-γ-3: mouseMoved fires only when NSTrackingArea is installed
+        /// (we install one in PlatformWindow::new and rebuild on resize via
+        /// updateTrackingAreas below). Three concurrent jobs per move:
+        ///   1. xterm 1003 (any-motion) → forward to PTY as motion event
+        ///      with button code 3 + motion bit. Coalesced by 1-based cell.
+        ///      We DO NOT forward when 1002 (drag-only) is the mode and
+        ///      no button is held — that's the point of 1002 vs 1003.
+        ///   2. `cell_hover` → emit when the (line, col) in alacritty signed
+        ///      space changes. Coalesced by `last_cell_hover`.
+        ///   3. `link_hover` → emit when the hovered OSC 8 URI changes.
+        ///      Coalesced by `last_link_hover`. No clearing event when
+        ///      leaving a link (matches win32 — JS keys off cell_hover).
+        ///
+        /// When xterm motion forwarding fires we SKIP cell_hover / link_hover
+        /// emission — the TUI is consuming raw input and React hover effects
+        /// would clutter without the TUI ever knowing.
+        #[unsafe(method(mouseMoved:))]
+        fn _mouse_moved(&self, event: &NSEvent) {
+            let Some((x_px, y_px)) = self.view_local_event_px(event) else { return };
+            let flags = event.modifierFlags();
+            let shift = flags.contains(NSEventModifierFlags::Shift);
+            let ctrl = flags.contains(NSEventModifierFlags::Control);
+            let alt = flags.contains(NSEventModifierFlags::Option);
+
+            let (pty_id, term_arc, app, term_id, cell_w, cell_h) = {
+                let s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                (
+                    s.pty_id,
+                    s.term.clone(),
+                    s.app.clone(),
+                    s.term_id,
+                    s.cell_w_px,
+                    s.cell_h_px,
+                )
+            };
+            let Some(term_arc) = term_arc else { return };
+
+            // R4-γ-3 (1): xterm 1003 motion forwarding. No-button moves only
+            // (drag-with-button is handled in _mouse_dragged). Shift is the
+            // standard escape hatch so cell_hover still works inside a
+            // mouse-aware TUI when the user wants link UI etc.
+            if !shift {
+                let modes = read_mouse_modes_from_term(&term_arc);
+                if modes.motion_enabled {
+                    let (x_cell, y_cell) = px_to_cell_1based(x_px, y_px, cell_w, cell_h);
+                    let cell_key = (x_cell, y_cell);
+                    let should_emit = {
+                        let mut s = match self.ivars().state.lock() {
+                            Ok(g) => g,
+                            Err(_) => return,
+                        };
+                        if s.last_motion_cell == Some(cell_key) {
+                            false
+                        } else {
+                            s.last_motion_cell = Some(cell_key);
+                            true
+                        }
+                    };
+                    if should_emit {
+                        let fmt = mouse_format(modes);
+                        // Button 3 (no button) | motion bit (32).
+                        if let Some(bytes) = encode_mouse_event(
+                            3, x_cell, y_cell, ctrl, shift, alt, true, true, fmt,
+                        ) {
+                            if let Some(pid) = pty_id {
+                                let _ = crate::pty::write_to_pty_sync(pid, &bytes);
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+
+            // R4-γ-3 (2)+(3): cell_hover + link_hover. Single brief lock to
+            // read display_offset AND the hyperlink at the hovered cell so
+            // we only cross the term mutex once per move.
+            let cell_w_safe = cell_w.max(0.001);
+            let line_h_safe = cell_h.max(0.001);
+            let row_visible = (y_px / line_h_safe).floor() as i32;
+            let col_raw = (x_px / cell_w_safe).floor() as i32;
+
+            let (display_offset, hover_uri) = {
+                let t = match term_arc.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let grid = t.grid();
+                let cols = grid.columns();
+                let rows = grid.screen_lines();
+                let display_offset_i = grid.display_offset() as i32;
+                let uri = if cols > 0
+                    && rows > 0
+                    && row_visible >= 0
+                    && (row_visible as usize) < rows
+                    && col_raw >= 0
+                    && (col_raw as usize) < cols
+                {
+                    let line = Line(row_visible - display_offset_i);
+                    let cell = &grid[line][Column(col_raw as usize)];
+                    cell.hyperlink().map(|h| h.uri().to_owned())
+                } else {
+                    None
+                };
+                (display_offset_i, uri)
+            };
+
+            // Visible row 0 = top of screen; line = row - display_offset.
+            let line_signed = row_visible as i64 - display_offset as i64;
+            let col = col_raw.max(0) as u32;
+            let key = (line_signed, col);
+
+            // Coalesced emit of cell_hover.
+            let cell_changed = {
+                let mut s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                if s.last_cell_hover == Some(key) {
+                    false
+                } else {
+                    s.last_cell_hover = Some(key);
+                    true
+                }
+            };
+            if cell_changed {
+                if let (Some(app), Some(tid)) = (app.as_ref(), term_id) {
+                    emit_cell_hover(app, tid, CellHover { line: line_signed, col });
+                }
+            }
+
+            // Coalesced emit of link_hover. When the hovered cell has no
+            // hyperlink we reset the dedup key (matches win32) but emit
+            // nothing — JS keys link UI off the absence of link_hover.
+            match hover_uri {
+                Some(uri) => {
+                    let link_key = (line_signed, col, uri.clone());
+                    let link_changed = {
+                        let mut s = match self.ivars().state.lock() {
+                            Ok(g) => g,
+                            Err(_) => return,
+                        };
+                        if s.last_link_hover.as_ref() == Some(&link_key) {
+                            false
+                        } else {
+                            s.last_link_hover = Some(link_key);
+                            true
+                        }
+                    };
+                    if link_changed {
+                        if let (Some(app), Some(tid)) = (app.as_ref(), term_id) {
+                            // Rect uses the same coords as the renderer's
+                            // grid — already in logical px since cell_*_px
+                            // are themselves logical.
+                            let rect = Rect {
+                                x: col as f32 * cell_w_safe,
+                                y: row_visible.max(0) as f32 * line_h_safe,
+                                width: cell_w_safe,
+                                height: line_h_safe,
+                            };
+                            emit_link_hover(app, tid, LinkHover { uri, rect });
+                        }
+                    }
+                }
+                None => {
+                    if let Ok(mut s) = self.ivars().state.lock() {
+                        s.last_link_hover = None;
+                    }
+                }
+            }
+        }
+
+        /// R4-γ-3: cursor left the tracking area. Reset hover coalescing
+        /// state so re-entry is guaranteed to emit, and ship a
+        /// `cell_hover_end` so the React side can tear down hover UI. Note
+        /// we deliberately do NOT clear `last_motion_cell` here — xterm
+        /// motion is button-state driven, not entry/exit driven, so leaving
+        /// the pane mid-drag would otherwise emit a duplicate first move on
+        /// re-entry that the TUI doesn't expect.
+        #[unsafe(method(mouseExited:))]
+        fn _mouse_exited(&self, _event: &NSEvent) {
+            let (app, term_id) = {
+                let mut s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                s.last_cell_hover = None;
+                s.last_link_hover = None;
+                (s.app.clone(), s.term_id)
+            };
+            if let (Some(app), Some(tid)) = (app, term_id) {
+                emit_cell_hover_end(&app, tid);
+            }
+        }
+
+        /// R4-γ-3: AppKit calls this whenever the view's geometry changes
+        /// (setFrame, autoresizing, window resize, etc). The default impl
+        /// is a no-op for our subclass since NSView has no tracking areas
+        /// of its own. We rebuild ours so it always matches `bounds()` —
+        /// `NSTrackingInVisibleRect` would also work, but we explicitly
+        /// rebuild for symmetry with win32's "re-arm per leave" pattern.
+        #[unsafe(method(updateTrackingAreas))]
+        fn _update_tracking_areas(&self) {
+            unsafe {
+                let _: () = msg_send![super(self), updateTrackingAreas];
+            }
+            self.install_tracking_area();
         }
     }
 
@@ -738,6 +1087,67 @@ impl MadeTerminalView {
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
+    /// R4-γ-3: (re)build the NSTrackingArea so `mouseMoved:` /
+    /// `mouseExited:` fire across the view's full bounds. AppKit doesn't
+    /// auto-resize tracking areas, so we tear down the previous one before
+    /// installing a new one with the current bounds. Stored as a raw
+    /// pointer in `MtvState::tracking_area_ptr` because Retained is !Send.
+    ///
+    /// Must run on the main thread — AppKit view mutations.
+    pub(super) fn install_tracking_area(&self) {
+        // 1. Tear down the previous tracking area (if any).
+        let prev_ptr = {
+            let mut s = match self.ivars().state.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            std::mem::replace(&mut s.tracking_area_ptr, 0)
+        };
+        if prev_ptr != 0 {
+            // SAFETY: prev_ptr came from a Retained::into_raw below — it's
+            // a +1 strong ref on an NSTrackingArea. Reclaim + drop.
+            let prev: Retained<NSTrackingArea> =
+                unsafe { Retained::from_raw(prev_ptr as *mut NSTrackingArea) }
+                    .expect("tracking_area_ptr nonzero but null on reclaim");
+            self.removeTrackingArea(&prev);
+            drop(prev);
+        }
+
+        // 2. Build a fresh tracking area covering the current bounds.
+        let bounds = self.bounds();
+        let opts = NSTrackingAreaOptions::MouseEnteredAndExited
+            | NSTrackingAreaOptions::MouseMoved
+            | NSTrackingAreaOptions::ActiveInKeyWindow
+            | NSTrackingAreaOptions::InVisibleRect;
+        let alloc = NSTrackingArea::alloc();
+        // The owner is `self`. NSTrackingArea weak-refs its owner — the
+        // view must outlive the area, which we enforce by removing+dropping
+        // the area in destroy() BEFORE dropping the view's +1 retain.
+        // The cast through raw pointer is the simplest way to express
+        // "this NSObject subclass, viewed as an AnyObject" without depending
+        // on chained Deref coercion across the full class hierarchy.
+        // SAFETY: every objc2-defined class is repr(C) with AnyObject as
+        // the transitive first field, so a pointer reinterpret is valid.
+        let owner_obj: &objc2::runtime::AnyObject = unsafe {
+            &*(self as *const Self as *const objc2::runtime::AnyObject)
+        };
+        let area: Retained<NSTrackingArea> = unsafe {
+            NSTrackingArea::initWithRect_options_owner_userInfo(
+                alloc,
+                bounds,
+                opts,
+                Some(owner_obj),
+                None,
+            )
+        };
+        self.addTrackingArea(&area);
+        // Stash the +1 strong ref for the next call to tear down.
+        let raw = Retained::into_raw(area) as usize;
+        if let Ok(mut s) = self.ivars().state.lock() {
+            s.tracking_area_ptr = raw;
+        }
+    }
+
     /// Convert an NSEvent into view-local logical pixels with origin in the
     /// TOP-LEFT (matching the grid coordinate system the terminal renderer
     /// uses). AppKit's native view coords are bottom-left, so we flip y
@@ -978,6 +1388,11 @@ impl PlatformWindow {
                 None,
             );
 
+            // R4-γ-3: install the initial NSTrackingArea so mouseMoved /
+            // mouseExited fire. Subsequent resizes refresh it via the
+            // `updateTrackingAreas` override (called by AppKit on setFrame).
+            view.install_tracking_area();
+
             // Hand the +1 strong ref out as a raw pointer for destroy() to
             // reclaim. addSubview retains independently, so the view stays
             // alive in the hierarchy until removeFromSuperview drops that
@@ -1213,8 +1628,17 @@ impl NativeTermWindow for PlatformWindow {
             s.term = None;
         }
 
-        // 5. removeFromSuperview + release our +1 strong ref on the view.
+        // 5. removeFromSuperview + release our +1 strong refs (view +
+        //    tracking area). The tracking area must be released BEFORE
+        //    the view drops or we'd leak it; it weak-references the view
+        //    as owner.
         let view_ptr = this.ns_view_ptr;
+        let tracking_ptr = this
+            .mtv_state
+            .lock()
+            .ok()
+            .map(|mut s| std::mem::replace(&mut s.tracking_area_ptr, 0))
+            .unwrap_or(0);
         main_sync(move || {
             // SAFETY: view_ptr is the +1 strong reference we took in new().
             // Retained::from_raw reclaims it; drop releases.
@@ -1222,6 +1646,16 @@ impl NativeTermWindow for PlatformWindow {
                 Retained::from_raw(view_ptr as *mut MadeTerminalView)
                     .expect("native_term/macos: view ptr nil at destroy")
             };
+            if tracking_ptr != 0 {
+                // SAFETY: tracking_ptr came from Retained::into_raw in
+                // install_tracking_area. Reclaim, remove, drop.
+                let area: Retained<NSTrackingArea> = unsafe {
+                    Retained::from_raw(tracking_ptr as *mut NSTrackingArea)
+                        .expect("tracking_area_ptr nonzero but null at destroy")
+                };
+                view.removeTrackingArea(&area);
+                drop(area);
+            }
             view.removeFromSuperview();
             drop(view);
         })?;
@@ -1484,11 +1918,11 @@ fn key_to_ui_shortcut(
 #[derive(Clone, Copy, Debug, Default)]
 struct MouseModes {
     clicks_enabled: bool,
-    /// Reserved for γ-3 motion-while-down forwarding (1002).
-    #[allow(dead_code)]
+    /// xterm 1002 — motion-while-down (drag) forwarding. Consumed by
+    /// `_mouse_dragged` (R4-γ-3).
     drag_enabled: bool,
-    /// Reserved for γ-3 motion forwarding (1003).
-    #[allow(dead_code)]
+    /// xterm 1003 — any-motion forwarding. Consumed by both `_mouse_moved`
+    /// (no button) and `_mouse_dragged` (button held) (R4-γ-3).
     motion_enabled: bool,
     sgr: bool,
     /// alacritty_terminal 0.24.2 does not define URXVT_MOUSE — pinned false
