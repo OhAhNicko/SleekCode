@@ -67,7 +67,8 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::{Term, TermMode};
 
 use super::super::events::{
-    emit_r_button, emit_selection, RButton, Selection as SelectionEvent,
+    emit_key_down_preview, emit_r_button, emit_selection, KeyDownPreview, KeyEventDto, RButton,
+    Selection as SelectionEvent,
 };
 
 use super::{NativeTermWindow, Rect, TerminalTheme};
@@ -350,20 +351,73 @@ define_class!(
             }
         }
 
-        /// Forward keystrokes to the PTY. Most printable text passes through
-        /// as UTF-8; the small set of navigation / function keys gets
-        /// translated to xterm-style escape sequences.
+        /// Forward keystrokes to the PTY, with two escape hatches:
+        ///   1. Cmd-held keystrokes (Cmd+T new tab, Cmd+W close, AppKit menu
+        ///      shortcuts) → forward to NSView's keyDown via super so the
+        ///      responder chain handles them normally. We DO NOT emit
+        ///      key_down_preview for these — MADE's App.tsx shortcut handler
+        ///      keys off ctrlKey, not metaKey.
+        ///   2. Ctrl/Alt UI shortcuts (Ctrl+K palette, Ctrl+B sidebar, Alt+1..9
+        ///      tab switch, etc.) → emit key_down_preview so the React side
+        ///      can synthesize a window-level KeyboardEvent that App.tsx's
+        ///      capture handler picks up. Skip PTY forwarding.
+        ///   3. Everything else → translate NSEvent characters to PTY bytes
+        ///      (xterm escape sequences for navigation/function keys, UTF-8
+        ///      pass-through for printable text).
         #[unsafe(method(keyDown:))]
         fn _key_down(&self, event: &NSEvent) {
-            // Cmd+key reserved for app shortcuts (Cmd+K palette, Cmd+T new tab,
-            // etc.). γ-4 will add a whitelist that emits key_down_preview for
-            // these; for now just swallow so they don't accidentally write
-            // garbage to the PTY.
             let flags = event.modifierFlags();
-            if flags.contains(NSEventModifierFlags::Command) {
+            let cmd = flags.contains(NSEventModifierFlags::Command);
+            let ctrl = flags.contains(NSEventModifierFlags::Control);
+            let alt = flags.contains(NSEventModifierFlags::Option);
+            let shift = flags.contains(NSEventModifierFlags::Shift);
+
+            // (1) Cmd-held: defer to AppKit. We must call super.keyDown
+            // explicitly — overriding without calling super is what AppKit
+            // takes as "I handled it", which would swallow Cmd+T etc.
+            if cmd {
+                unsafe {
+                    let _: () = msg_send![super(self), keyDown: event];
+                }
                 return;
             }
 
+            // (2) UI-shortcut whitelist. Use charactersIgnoringModifiers so
+            // Ctrl+K gives "k" (not "\v"), Alt+1 gives "1", etc.
+            if let Some(unmod_ns) = event.charactersIgnoringModifiers() {
+                let unmod = unmod_ns.to_string();
+                if let Some((js_key, js_code)) =
+                    key_to_ui_shortcut(&unmod, ctrl, alt, shift)
+                {
+                    let (app, term_id) = {
+                        let s = match self.ivars().state.lock() {
+                            Ok(g) => g,
+                            Err(_) => return,
+                        };
+                        (s.app.clone(), s.term_id)
+                    };
+                    if let (Some(app), Some(tid)) = (app, term_id) {
+                        emit_key_down_preview(
+                            &app,
+                            tid,
+                            KeyDownPreview {
+                                ev: KeyEventDto {
+                                    code: js_code.to_string(),
+                                    key: js_key.to_string(),
+                                    ctrl,
+                                    shift,
+                                    alt,
+                                    meta: false,
+                                    repeat: event.isARepeat(),
+                                },
+                            },
+                        );
+                    }
+                    return;
+                }
+            }
+
+            // (3) Forward to PTY.
             let pty_id_opt = match self.ivars().state.lock() {
                 Ok(g) => g.pty_id,
                 Err(_) => return,
@@ -371,8 +425,7 @@ define_class!(
             let Some(pty_id) = pty_id_opt else { return };
 
             let Some(ns_chars) = event.characters() else { return };
-            let s = ns_chars.to_string();
-            let bytes = translate_keys_to_pty(&s);
+            let bytes = translate_keys_to_pty(&ns_chars.to_string());
             if bytes.is_empty() {
                 return;
             }
@@ -1053,6 +1106,48 @@ where
         *slot_ref = Some(f());
     });
     Ok(slot.expect("dispatch_sync ran without populating result slot"))
+}
+
+/// If the keystroke matches a React-side UI shortcut, return the
+/// `(KeyboardEvent.key, KeyboardEvent.code)` pair to synthesize on JS. Keep
+/// this list aligned with `src/App.tsx`'s global keydown handler and with
+/// `vk_to_ui_shortcut` in `window/win32.rs` — same shortcuts, different key
+/// representation (macOS gives us a string from NSEvent.characters; win32
+/// gives a VK code).
+fn key_to_ui_shortcut(
+    unmod_chars: &str,
+    ctrl: bool,
+    alt: bool,
+    _shift: bool,
+) -> Option<(&'static str, &'static str)> {
+    // Ctrl combos
+    if ctrl && !alt {
+        match unmod_chars {
+            "k" | "K" => return Some(("k", "KeyK")), // Ctrl+K → palette
+            "b" | "B" => return Some(("b", "KeyB")), // Ctrl+B → sidebar
+            "f" | "F" => return Some(("f", "KeyF")), // Ctrl+F → search
+            "/" => return Some(("/", "Slash")),       // Ctrl+/ → shortcuts
+            "," => return Some((",", "Comma")),       // Ctrl+, → settings
+            _ => {}
+        }
+    }
+    // Alt+digit (without Ctrl). NSEvent.charactersIgnoringModifiers for
+    // Alt+1..9 gives "1".."9" on a US layout.
+    if alt && !ctrl {
+        match unmod_chars {
+            "1" => return Some(("1", "Digit1")),
+            "2" => return Some(("2", "Digit2")),
+            "3" => return Some(("3", "Digit3")),
+            "4" => return Some(("4", "Digit4")),
+            "5" => return Some(("5", "Digit5")),
+            "6" => return Some(("6", "Digit6")),
+            "7" => return Some(("7", "Digit7")),
+            "8" => return Some(("8", "Digit8")),
+            "9" => return Some(("9", "Digit9")),
+            _ => {}
+        }
+    }
+    None
 }
 
 // ─── Mouse helpers (γ-2) ──────────────────────────────────────────────
