@@ -44,7 +44,8 @@ use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{NSView, NSWindowOrderingMode};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
-use objc2_quartz_core::CAMetalLayer;
+use objc2_core_graphics::{CGColorCreateSRGB, CGMutablePath, CGPath};
+use objc2_quartz_core::{kCAFillRuleEvenOdd, CALayer, CAMetalLayer, CAShapeLayer};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
@@ -281,10 +282,72 @@ impl NativeTermWindow for PlatformWindow {
         })
     }
 
-    fn set_region(&mut self, _holes: &[Rect], _dpr: f32) -> Result<(), String> {
-        // R4-δ deferred: CAShapeLayer mask. For now we accept the call as
-        // a no-op so the JS region driver doesn't error.
-        Ok(())
+    fn set_region(&mut self, holes: &[Rect], _dpr: f32) -> Result<(), String> {
+        // R4-δ hole-cut. Build a CAShapeLayer whose path covers the whole
+        // pane MINUS the hole rects (even-odd fill), and install it as the
+        // NSView layer's mask. CoreAnimation will composite our Metal output
+        // through the mask, so popups z-above the pane appear through the
+        // hole regions cleanly. Unlike Win32's SetWindowRgn (1-bit aliased
+        // edges), CAShapeLayer supports antialiased + alpha-correct masking.
+        let view_ptr = self.ns_view_ptr;
+        let holes_vec: Vec<Rect> = holes.to_vec();
+        main_sync(move || {
+            // SAFETY: view_ptr is live (+1 ref held by PlatformWindow).
+            let view: &NSView = unsafe { &*(view_ptr as *const NSView) };
+            let bounds = view.bounds();
+            let pane_w = bounds.size.width;
+            let pane_h = bounds.size.height;
+
+            let Some(layer) = view.layer() else {
+                // wantsLayer was false at construction — nothing to mask.
+                return;
+            };
+
+            if holes_vec.is_empty() {
+                // Clear any previously-installed mask.
+                unsafe { layer.setMask(None) };
+                return;
+            }
+
+            // Build the CGPath: outer rect + each hole. Even-odd fill rule
+            // subtracts the hole sub-paths from the outer fill area.
+            // (NSRect/NSPoint/NSSize are type aliases for CGRect/CGPoint/CGSize
+            // on Apple platforms, so CGPath functions accept them directly.)
+            let path = CGMutablePath::new();
+            let outer = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(pane_w, pane_h));
+            unsafe { CGMutablePath::add_rect(Some(&path), std::ptr::null(), outer) };
+            for h in &holes_vec {
+                // AppKit origin is bottom-left of the layer; JS rects are
+                // top-left. Flip y per-hole.
+                let y_flipped = pane_h - h.y as f64 - h.height as f64;
+                let r = NSRect::new(
+                    NSPoint::new(h.x as f64, y_flipped),
+                    NSSize::new(h.width as f64, h.height as f64),
+                );
+                unsafe { CGMutablePath::add_rect(Some(&path), std::ptr::null(), r) };
+            }
+
+            // CAShapeLayer with the path. Only the mask's alpha matters when
+            // used via setMask; opaque black gives full visibility inside the
+            // filled (even-odd) area and transparent outside.
+            let shape: Retained<CAShapeLayer> = CAShapeLayer::new();
+            let path_ref: &CGPath = &path;
+            shape.setPath(Some(path_ref));
+            unsafe { shape.setFillRule(kCAFillRuleEvenOdd) };
+            let opaque = CGColorCreateSRGB(0.0, 0.0, 0.0, 1.0);
+            // Explicit deref: opaque is CFRetained<CGColor>, setFillColor
+            // wants Option<&CGColor>. Skipping the deref lets Option<>'s
+            // monomorphisation hide the coercion and produces a confusing
+            // type-mismatch error if anything changes.
+            shape.setFillColor(Some(&*opaque));
+            // Mask layers don't auto-track their target's bounds; we set them
+            // explicitly so the path's coordinate system matches the layer it
+            // masks.
+            let shape_as_layer: &CALayer = &shape;
+            shape_as_layer.setFrame(bounds);
+
+            unsafe { layer.setMask(Some(shape_as_layer)) };
+        })
     }
 
     fn destroy(self: Box<Self>) -> Result<(), String> {

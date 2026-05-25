@@ -57,6 +57,11 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 objc2-app-kit = "0.3"
 objc2-quartz-core = "0.3"
+# CoreGraphics — only the bits we touch (CGPath for the hole-cut mask path,
+# CGColor for the mask's opaque fill, CGAffineTransform so we can pass null
+# transforms to CGPath::add_rect). objc2-core-graphics features are tight to
+# keep compile time down.
+objc2-core-graphics = { version = "0.3", features = ["CGPath", "CGColor", "CGColorSpace", "CGAffineTransform"] }
 # dispatch2 = libdispatch (GCD) bindings. Used to bounce NSView lifecycle ops
 # (addSubview, frame, isHidden, removeFromSuperview) onto the main thread,
 # since AppKit requires main-thread access and Tauri command handlers run
