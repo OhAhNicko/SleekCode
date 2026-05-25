@@ -7,12 +7,15 @@
 // `[NSWindow contentView]`, z-ordered with the native pane above the webview.
 //
 // Phasing of this file:
-//   R4-α (committed in 5322fce): NSView + CAMetalLayer + solid-color spike.
-//   R4-β (this revision): drop the spike's inline wgpu and use the production
+//   R4-α (commit 5322fce): NSView + CAMetalLayer + solid-color spike.
+//   R4-β (commit 1595656): drop the spike's inline wgpu and use the production
 //        Renderer; wire ParserBridge + pty_route so a real shell runs through
 //        the native pane.
-//   R4-γ (next): mouse + keyboard + IME via NSTextInputClient.
-//   R4-δ: hole-cut via CAShapeLayer mask.
+//   R4-δ (commit 08d97e0): CAShapeLayer hole-cut for popups.
+//   R4-γ (this revision): NSView subclass (MadeTerminalView) overriding
+//        keyDown / scrollWheel / mouseDown so the pane accepts keyboard typing
+//        and scroll-wheel scrollback. Mouse selection + xterm mouse modes +
+//        NSTextInputClient IME deferred to follow-up commits.
 //
 // Threading model
 // ─────────────────
@@ -40,16 +43,24 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use dispatch2::Queue;
-use objc2::rc::Retained;
-use objc2::MainThreadMarker;
-use objc2_app_kit::{NSView, NSWindowOrderingMode};
-use objc2_foundation::{NSPoint, NSRect, NSSize};
+use objc2::rc::{Allocated, Retained};
+use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2_app_kit::{
+    NSEvent, NSEventModifierFlags, NSResponder, NSView, NSWindowOrderingMode,
+    NSDeleteFunctionKey, NSDownArrowFunctionKey, NSEndFunctionKey, NSF10FunctionKey,
+    NSF11FunctionKey, NSF12FunctionKey, NSF1FunctionKey, NSF2FunctionKey, NSF3FunctionKey,
+    NSF4FunctionKey, NSF5FunctionKey, NSF6FunctionKey, NSF7FunctionKey, NSF8FunctionKey,
+    NSF9FunctionKey, NSHomeFunctionKey, NSLeftArrowFunctionKey, NSPageDownFunctionKey,
+    NSPageUpFunctionKey, NSRightArrowFunctionKey, NSUpArrowFunctionKey,
+};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
 use objc2_core_graphics::{CGColorCreateSRGB, CGMutablePath, CGPath};
 use objc2_quartz_core::{kCAFillRuleEvenOdd, CALayer, CAMetalLayer, CAShapeLayer};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
 
+use alacritty_terminal::grid::Scroll;
 use alacritty_terminal::term::Term;
 
 use super::{NativeTermWindow, Rect, TerminalTheme};
@@ -68,9 +79,215 @@ const RENDER_INTERVAL: Duration = Duration::from_millis(16);
 const INITIAL_CELL_W_LOGICAL: f32 = 8.4;
 const INITIAL_CELL_H_LOGICAL: f32 = 17.0;
 
+/// Number of lines per scroll-wheel notch — mirrors win32.rs's WM_MOUSEWHEEL.
+const SCROLL_LINES_PER_NOTCH: i32 = 3;
+
+// ─── MadeTerminalView (NSView subclass for input) ──────────────────────
+//
+// R4-γ-1: per-pane subclass of NSView with overrides for keyDown, scrollWheel,
+// mouseDown, acceptsFirstResponder. Without it, the pane renders fine but
+// receives no keyboard or scroll input from AppKit.
+//
+// State the subclass touches lives in MtvState behind an Arc<Mutex<>>. The
+// PlatformWindow holds a sibling Arc, so attach_pty / detach_pty / set_app_handle
+// can update the view's state without the view having to call back into Rust
+// owner objects.
+
+/// Shared mutable state between PlatformWindow and the MadeTerminalView's
+/// event-handler overrides. All fields Option<...> so a fresh view (no PTY
+/// yet) can still receive events safely.
+pub(super) struct MtvState {
+    pub(super) pty_id: Option<u32>,
+    pub(super) term: Option<Arc<Mutex<Term<TermListener>>>>,
+    pub(super) app: Option<tauri::AppHandle>,
+    pub(super) term_id: Option<u32>,
+}
+
+impl MtvState {
+    fn new() -> Self {
+        Self {
+            pty_id: None,
+            term: None,
+            app: None,
+            term_id: None,
+        }
+    }
+}
+
+/// Instance variables on the NSView subclass. Cloned-Arc lets the view read
+/// the same MtvState that PlatformWindow writes to.
+pub(super) struct MtvIvars {
+    pub(super) state: Arc<Mutex<MtvState>>,
+}
+
+define_class!(
+    /// MADE's NSView subclass — owns terminal-pane input handling. Subclassing
+    /// is required because AppKit dispatches keyDown / scrollWheel / mouseDown
+    /// to the firstResponder, and only an NSResponder subclass can override
+    /// those selectors. (NSEvent.addLocalMonitor would work app-wide but loses
+    /// per-pane dispatch.)
+    ///
+    /// SAFETY:
+    /// - NSView has no subclassing restrictions for the methods we override.
+    /// - We don't implement Drop on the ivars beyond the implicit Arc-drop.
+    #[unsafe(super(NSView, NSResponder))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "MadeTerminalView"]
+    #[ivars = MtvIvars]
+    pub(super) struct MadeTerminalView;
+
+    impl MadeTerminalView {
+        /// Required for the view to receive keyboard events when clicked.
+        /// NSView's default returns false.
+        #[unsafe(method(acceptsFirstResponder))]
+        fn _accepts_first_responder(&self) -> bool {
+            true
+        }
+
+        /// Take keyboard focus on click. After this, AppKit dispatches keyDown
+        /// to us instead of the webview. Clicking the webview elsewhere takes
+        /// focus back automatically.
+        #[unsafe(method(mouseDown:))]
+        fn _mouse_down(&self, _event: &NSEvent) {
+            // self derefs through NSView → NSResponder.
+            if let Some(window) = self.window() {
+                let responder: &NSResponder = self;
+                let _ = window.makeFirstResponder(Some(responder));
+            }
+        }
+
+        /// Forward keystrokes to the PTY. Most printable text passes through
+        /// as UTF-8; the small set of navigation / function keys gets
+        /// translated to xterm-style escape sequences.
+        #[unsafe(method(keyDown:))]
+        fn _key_down(&self, event: &NSEvent) {
+            // Cmd+key reserved for app shortcuts (Cmd+K palette, Cmd+T new tab,
+            // etc.). γ-4 will add a whitelist that emits key_down_preview for
+            // these; for now just swallow so they don't accidentally write
+            // garbage to the PTY.
+            let flags = event.modifierFlags();
+            if flags.contains(NSEventModifierFlags::Command) {
+                return;
+            }
+
+            let pty_id_opt = match self.ivars().state.lock() {
+                Ok(g) => g.pty_id,
+                Err(_) => return,
+            };
+            let Some(pty_id) = pty_id_opt else { return };
+
+            let Some(ns_chars) = event.characters() else { return };
+            let s = ns_chars.to_string();
+            let bytes = translate_keys_to_pty(&s);
+            if bytes.is_empty() {
+                return;
+            }
+            let _ = crate::pty::write_to_pty_sync(pty_id, &bytes);
+        }
+
+        /// Forward vertical scroll to the alacritty Term's scrollback. Direction
+        /// matches xterm convention: deltaY > 0 means scroll content down (older
+        /// lines come into view, terminal scrollback offset increases).
+        #[unsafe(method(scrollWheel:))]
+        fn _scroll_wheel(&self, event: &NSEvent) {
+            let term_opt = match self.ivars().state.lock() {
+                Ok(g) => g.term.clone(),
+                Err(_) => return,
+            };
+            let Some(term_arc) = term_opt else { return };
+
+            let dy = event.scrollingDeltaY();
+            let lines = if dy > 0.5 {
+                SCROLL_LINES_PER_NOTCH
+            } else if dy < -0.5 {
+                -SCROLL_LINES_PER_NOTCH
+            } else {
+                0
+            };
+            if lines == 0 {
+                return;
+            }
+            if let Ok(mut t) = term_arc.lock() {
+                t.scroll_display(Scroll::Delta(lines));
+            }
+        }
+    }
+
+    unsafe impl NSObjectProtocol for MadeTerminalView {}
+);
+
+impl MadeTerminalView {
+    /// Construct a view, install ivars, and chain to NSView's initWithFrame:.
+    /// Must run on the main thread (MainThreadOnly classes require an MTM
+    /// to alloc).
+    pub(super) fn new(
+        state: Arc<Mutex<MtvState>>,
+        frame: NSRect,
+        mtm: MainThreadMarker,
+    ) -> Retained<Self> {
+        let allocated: Allocated<Self> = Self::alloc(mtm);
+        let this = allocated.set_ivars(MtvIvars { state });
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
+/// Translate the NSEvent `characters` string into bytes for the PTY. Most
+/// printable text passes through; macOS sends function / navigation keys as
+/// private-use Unicode codepoints (0xF700..) which we map to xterm escape
+/// sequences. Control characters that the OS hasn't already collapsed
+/// (`Ctrl+letter` is handled by macOS pre-keyDown via charactersIgnoringModifiers,
+/// so `characters()` typically yields the control byte directly) pass through.
+fn translate_keys_to_pty(input: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    for c in input.chars() {
+        let cp = c as u32;
+        match cp {
+            v if v == NSUpArrowFunctionKey => out.extend_from_slice(b"\x1b[A"),
+            v if v == NSDownArrowFunctionKey => out.extend_from_slice(b"\x1b[B"),
+            v if v == NSLeftArrowFunctionKey => out.extend_from_slice(b"\x1b[D"),
+            v if v == NSRightArrowFunctionKey => out.extend_from_slice(b"\x1b[C"),
+            v if v == NSHomeFunctionKey => out.extend_from_slice(b"\x1b[H"),
+            v if v == NSEndFunctionKey => out.extend_from_slice(b"\x1b[F"),
+            v if v == NSPageUpFunctionKey => out.extend_from_slice(b"\x1b[5~"),
+            v if v == NSPageDownFunctionKey => out.extend_from_slice(b"\x1b[6~"),
+            v if v == NSDeleteFunctionKey => out.extend_from_slice(b"\x1b[3~"),
+            v if v == NSF1FunctionKey => out.extend_from_slice(b"\x1bOP"),
+            v if v == NSF2FunctionKey => out.extend_from_slice(b"\x1bOQ"),
+            v if v == NSF3FunctionKey => out.extend_from_slice(b"\x1bOR"),
+            v if v == NSF4FunctionKey => out.extend_from_slice(b"\x1bOS"),
+            v if v == NSF5FunctionKey => out.extend_from_slice(b"\x1b[15~"),
+            v if v == NSF6FunctionKey => out.extend_from_slice(b"\x1b[17~"),
+            v if v == NSF7FunctionKey => out.extend_from_slice(b"\x1b[18~"),
+            v if v == NSF8FunctionKey => out.extend_from_slice(b"\x1b[19~"),
+            v if v == NSF9FunctionKey => out.extend_from_slice(b"\x1b[20~"),
+            v if v == NSF10FunctionKey => out.extend_from_slice(b"\x1b[21~"),
+            v if v == NSF11FunctionKey => out.extend_from_slice(b"\x1b[23~"),
+            v if v == NSF12FunctionKey => out.extend_from_slice(b"\x1b[24~"),
+            // macOS Backspace sends 0x7F via NSEvent characters; xterm wants 0x7F.
+            // Some keyboards send 0x08 (BS); also remap to 0x7F so editors like
+            // bash readline see the expected DEL byte.
+            0x7F => out.push(0x7F),
+            0x08 => out.push(0x7F),
+            // Enter / Return: NSCarriageReturnCharacter (0x0D) is canonical; some
+            // contexts also send NSEnterCharacter (0x03 — the OS-level Enter key
+            // semantic). Both map to CR for PTY input.
+            0x0D | 0x03 => out.push(b'\r'),
+            0x09 => out.push(b'\t'),
+            0x1B => out.push(0x1B),
+            // Regular Unicode: pass through as UTF-8.
+            _ => {
+                let mut buf = [0u8; 4];
+                let s = c.encode_utf8(&mut buf);
+                out.extend_from_slice(s.as_bytes());
+            }
+        }
+    }
+    out
+}
+
 pub struct PlatformWindow {
-    /// Retained NSView pointer (one strong ref taken at construction, released
-    /// in `destroy`). Stored as `usize` because Retained<NSView> is !Send.
+    /// Retained MadeTerminalView pointer (one strong ref taken at construction,
+    /// released in `destroy`). Stored as `usize` because Retained<...> is !Send.
     /// All dereferences go through main_sync.
     ns_view_ptr: usize,
     /// Non-owning pointer to the parent contentView. NSWindow retains its
@@ -103,6 +320,12 @@ pub struct PlatformWindow {
     /// AppHandle for ParserBridge cursor event emission. Set by
     /// `set_app_handle` right after `new()`.
     app: Option<tauri::AppHandle>,
+
+    /// Shared input-handler state. Cloned-Arc lives inside MadeTerminalView's
+    /// ivars so the view's keyDown / scrollWheel can read pty_id + term. We
+    /// keep our own clone so attach_pty / detach_pty / set_app_handle can
+    /// write to the same Mutex.
+    mtv_state: Arc<Mutex<MtvState>>,
 }
 
 // SAFETY: ns_view_ptr / parent_view_ptr are raw pointers we never dereference
@@ -116,9 +339,12 @@ impl PlatformWindow {
             return Err("native_term/macos: parent NSView pointer is null".into());
         }
 
-        // ── Step 1: build the NSView + CAMetalLayer on the main thread.
-        // We cast `parent_handle` (isize) to *mut NSView inside the closure
-        // because raw pointers are !Send and can't cross dispatch_sync.
+        // ── Step 1: build the MadeTerminalView + CAMetalLayer on the main
+        // thread. We carry parent_handle as plain isize across the dispatch
+        // (raw pointers are !Send) plus a clone of the shared MtvState so
+        // the view's ivars can read pty_id / term once attach_pty fires.
+        let mtv_state = Arc::new(Mutex::new(MtvState::new()));
+        let mtv_state_for_view = Arc::clone(&mtv_state);
         let rect_for_closure = rect;
         let dpr_for_closure = dpr;
         let view_ptr = main_sync(move || -> Result<usize, String> {
@@ -134,13 +360,16 @@ impl PlatformWindow {
             let parent_bounds = parent_view.bounds();
             let frame = flip_rect(rect_for_closure, parent_bounds.size.height as f32);
 
-            let view: Retained<NSView> = NSView::initWithFrame(NSView::alloc(mtm), frame);
+            let view: Retained<MadeTerminalView> =
+                MadeTerminalView::new(mtv_state_for_view, frame, mtm);
 
             // Layer-hosting setup: setWantsLayer → setLayer (in that order)
             // makes us a layer-hosting view. wgpu's Metal backend will use
             // the CAMetalLayer we attach here instead of creating its own.
             let metal_layer: Retained<CAMetalLayer> = CAMetalLayer::new();
             metal_layer.setContentsScale(dpr_for_closure as f64);
+            // MadeTerminalView derefs to NSView, so the NSView methods
+            // (setWantsLayer, setLayer) resolve through auto-deref.
             view.setWantsLayer(true);
             let layer_ref: &objc2_quartz_core::CALayer = &metal_layer;
             view.setLayer(Some(layer_ref));
@@ -171,12 +400,12 @@ impl PlatformWindow {
         let w_px = (rect.width.max(1.0) * dpr) as u32;
         let h_px = (rect.height.max(1.0) * dpr) as u32;
         let renderer = Renderer::new(rwh, rdh, w_px.max(1), h_px.max(1)).map_err(|e| {
-            // Renderer construction failed — roll back the NSView so we don't
-            // leak a view sitting in the hierarchy with nothing rendering it.
+            // Renderer construction failed — roll back the view so we don't
+            // leak one sitting in the hierarchy with nothing rendering it.
             let _ = main_sync(move || {
-                let view: Retained<NSView> = unsafe {
-                    Retained::from_raw(view_ptr as *mut NSView)
-                        .expect("ns_view ptr nil during error rollback")
+                let view: Retained<MadeTerminalView> = unsafe {
+                    Retained::from_raw(view_ptr as *mut MadeTerminalView)
+                        .expect("MadeTerminalView ptr nil during error rollback")
                 };
                 view.removeFromSuperview();
                 drop(view);
@@ -205,12 +434,18 @@ impl PlatformWindow {
             render_stop: None,
             render_thread: None,
             app: None,
+            mtv_state,
         })
     }
 
     /// Stash the AppHandle so attach_pty can pass it to ParserBridge for
-    /// per-pane cursor / OSC133 / scroll event emission.
+    /// per-pane cursor / OSC133 / scroll event emission. Also mirrors it into
+    /// the MadeTerminalView's ivars so future per-pane events (γ-4
+    /// key_down_preview) can emit without a global lookup.
     pub fn set_app_handle(&mut self, app: tauri::AppHandle) {
+        if let Ok(mut s) = self.mtv_state.lock() {
+            s.app = Some(app.clone());
+        }
         self.app = Some(app);
     }
 
@@ -219,6 +454,9 @@ impl PlatformWindow {
     /// kept for trait parity.
     pub fn set_term_id(&mut self, id: u32) {
         self.term_id = Some(id);
+        if let Ok(mut s) = self.mtv_state.lock() {
+            s.term_id = Some(id);
+        }
     }
 
     /// Stop the render pump if running. Used by detach_pty and destroy.
@@ -371,13 +609,21 @@ impl NativeTermWindow for PlatformWindow {
         //    deallocate cleanly when removeFromSuperview drops the NSView.
         this.renderer.take();
 
-        // 4. removeFromSuperview + release our +1 strong ref on the NSView.
+        // 4. Clear input-state so any in-flight event handlers can't reach a
+        //    half-torn-down PTY (the view itself is about to leave the
+        //    hierarchy, but a queued keyDown might still dispatch).
+        if let Ok(mut s) = this.mtv_state.lock() {
+            s.pty_id = None;
+            s.term = None;
+        }
+
+        // 5. removeFromSuperview + release our +1 strong ref on the view.
         let view_ptr = this.ns_view_ptr;
         main_sync(move || {
             // SAFETY: view_ptr is the +1 strong reference we took in new().
             // Retained::from_raw reclaims it; drop releases.
-            let view: Retained<NSView> = unsafe {
-                Retained::from_raw(view_ptr as *mut NSView)
+            let view: Retained<MadeTerminalView> = unsafe {
+                Retained::from_raw(view_ptr as *mut MadeTerminalView)
                     .expect("native_term/macos: view ptr nil at destroy")
             };
             view.removeFromSuperview();
@@ -422,6 +668,13 @@ impl NativeTermWindow for PlatformWindow {
                 r.attach_term(Arc::clone(&term_arc), cols, rows);
             }
         }
+        // Publish pty_id + term to the MadeTerminalView's shared state so
+        // keyDown / scrollWheel can route input.
+        if let Ok(mut s) = self.mtv_state.lock() {
+            s.pty_id = Some(pty_id);
+            s.term = Some(Arc::clone(&term_arc));
+            s.term_id = Some(term_id);
+        }
         self.parser_bridge = Some(bridge);
         self.attached_pty_id = Some(pty_id);
         self.term_id = Some(term_id);
@@ -463,6 +716,13 @@ impl NativeTermWindow for PlatformWindow {
             pty_route::close_channel(term_id);
         }
         self.parser_bridge.take();
+
+        // Clear the view's input-state mirror so a stale keyDown can't write
+        // to a dead pty_id.
+        if let Ok(mut s) = self.mtv_state.lock() {
+            s.pty_id = None;
+            s.term = None;
+        }
 
         if let Some(arc) = &self.renderer {
             if let Ok(mut r) = arc.lock() {
