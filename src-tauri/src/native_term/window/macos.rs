@@ -44,17 +44,21 @@ use std::time::Duration;
 
 use dispatch2::Queue;
 use objc2::rc::{Allocated, Retained};
+use objc2::runtime::{AnyObject, Sel};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSEvent, NSEventModifierFlags, NSPasteboard, NSPasteboardTypeString, NSResponder, NSView,
-    NSWindowOrderingMode,
+    NSEvent, NSEventModifierFlags, NSPasteboard, NSPasteboardTypeString, NSResponder,
+    NSTextInputClient, NSView, NSWindowOrderingMode,
     NSDeleteFunctionKey, NSDownArrowFunctionKey, NSEndFunctionKey, NSF10FunctionKey,
     NSF11FunctionKey, NSF12FunctionKey, NSF1FunctionKey, NSF2FunctionKey, NSF3FunctionKey,
     NSF4FunctionKey, NSF5FunctionKey, NSF6FunctionKey, NSF7FunctionKey, NSF8FunctionKey,
     NSF9FunctionKey, NSHomeFunctionKey, NSLeftArrowFunctionKey, NSPageDownFunctionKey,
     NSPageUpFunctionKey, NSRightArrowFunctionKey, NSUpArrowFunctionKey,
 };
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    NSArray, NSAttributedString, NSAttributedStringKey, NSNotFound, NSObjectProtocol, NSPoint,
+    NSRange, NSRangePointer, NSRect, NSSize, NSString, NSUInteger,
+};
 use objc2_core_graphics::{CGColorCreateSRGB, CGMutablePath, CGPath};
 use objc2_quartz_core::{kCAFillRuleEvenOdd, CALayer, CAMetalLayer, CAShapeLayer};
 use raw_window_handle::{
@@ -67,8 +71,8 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::{Term, TermMode};
 
 use super::super::events::{
-    emit_key_down_preview, emit_r_button, emit_selection, KeyDownPreview, KeyEventDto, RButton,
-    Selection as SelectionEvent,
+    emit_ime_composition, emit_key_down_preview, emit_r_button, emit_selection, ImeComposition,
+    KeyDownPreview, KeyEventDto, RButton, Selection as SelectionEvent,
 };
 
 use super::{NativeTermWindow, Rect, TerminalTheme};
@@ -117,6 +121,14 @@ pub(super) struct MtvState {
     /// and refreshed when `set_font` lands hot-swap support.
     pub(super) cell_w_px: f32,
     pub(super) cell_h_px: f32,
+    /// R4-γ-5 NSTextInputClient: current pre-edit (marked) text. Empty when
+    /// no IME composition is in progress. The view's `hasMarkedText` /
+    /// `markedRange` / `selectedRange` derive their answers from this string.
+    pub(super) marked_text: String,
+    /// R4-γ-5: cursor offset within `marked_text`. Updated by
+    /// `setMarkedText:selectedRange:replacementRange:` from the IME's
+    /// selectedRange.location (clamped to marked_text.len()).
+    pub(super) marked_cursor: u32,
 }
 
 impl MtvState {
@@ -129,6 +141,8 @@ impl MtvState {
             lbutton_down: false,
             cell_w_px: INITIAL_CELL_W_LOGICAL,
             cell_h_px: INITIAL_CELL_H_LOGICAL,
+            marked_text: String::new(),
+            marked_cursor: 0,
         }
     }
 }
@@ -461,6 +475,253 @@ define_class!(
     }
 
     unsafe impl NSObjectProtocol for MadeTerminalView {}
+
+    // R4-γ-5: NSTextInputClient — CJK / dead-key IME bridge. Symmetric with
+    // win32.rs's WM_IME_STARTCOMPOSITION / WM_IME_COMPOSITION / WM_IME_END
+    // path: pre-edit (marked) text fans out as `ime_composition` events with
+    // committed:false so the React `<ImeCompositionPopup>` can render it;
+    // commit fans out as PTY bytes + an empty committed:true event so React
+    // can clear the popup. All methods are dispatched by AppKit on the main
+    // thread.
+    unsafe impl NSTextInputClient for MadeTerminalView {
+        /// Final commit: AppKit hands us the IME's result (or, for plain
+        /// keystrokes that never went through composition, the typed text
+        /// directly). Write UTF-8 bytes to the PTY, then emit an empty
+        /// committed:true ImeComposition so the React popup closes if it was
+        /// open. `string` can arrive as either NSString or NSAttributedString.
+        #[unsafe(method(insertText:replacementRange:))]
+        fn _insert_text(&self, string: &AnyObject, _range: NSRange) {
+            let text = any_object_to_string(string);
+
+            let (pty_id, app, term_id, had_marked) = {
+                let mut s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let had = !s.marked_text.is_empty();
+                s.marked_text.clear();
+                s.marked_cursor = 0;
+                (s.pty_id, s.app.clone(), s.term_id, had)
+            };
+
+            if !text.is_empty() {
+                if let Some(pid) = pty_id {
+                    let _ = crate::pty::write_to_pty_sync(pid, text.as_bytes());
+                }
+            }
+
+            // Always emit a committed event so the popup clears, but only if
+            // there's listening JS (and only when we either committed real
+            // text or were previously composing). This mirrors win32's
+            // WM_IME_ENDCOMPOSITION → emit empty composition path.
+            if let (Some(app), Some(tid)) = (app, term_id) {
+                if had_marked || !text.is_empty() {
+                    emit_ime_composition(
+                        &app,
+                        tid,
+                        ImeComposition {
+                            text: String::new(),
+                            cursor: 0,
+                            committed: true,
+                        },
+                    );
+                }
+            }
+        }
+
+        /// Pre-edit update: the IME is showing in-progress conversion text.
+        /// Cache it in MtvState and emit an ImeComposition with committed:false.
+        /// `selected_range` is the cursor offset within `string` (in UTF-16
+        /// code units per AppKit convention — we approximate by clamping to
+        /// the UTF-8 byte length, which matches what the React popup does
+        /// with the Win32 path's cursor value).
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn _set_marked_text(
+            &self,
+            string: &AnyObject,
+            selected_range: NSRange,
+            _replacement_range: NSRange,
+        ) {
+            let text = any_object_to_string(string);
+            // selected_range.location is NSUInteger; NSNotFound (huge) means
+            // "no cursor" — we treat that as 0. For valid values, clamp to
+            // the marked text length so JS never sees out-of-bounds.
+            let raw_cursor = selected_range.location;
+            let cursor: u32 = if raw_cursor >= NSNotFound as NSUInteger {
+                0
+            } else {
+                let max = text.chars().count() as u32;
+                (raw_cursor as u32).min(max)
+            };
+
+            let (app, term_id) = {
+                let mut s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                s.marked_text = text.clone();
+                s.marked_cursor = cursor;
+                (s.app.clone(), s.term_id)
+            };
+
+            if let (Some(app), Some(tid)) = (app, term_id) {
+                emit_ime_composition(
+                    &app,
+                    tid,
+                    ImeComposition {
+                        text,
+                        cursor,
+                        committed: false,
+                    },
+                );
+            }
+        }
+
+        /// Explicit cancel — AppKit calls this when the user dismisses the
+        /// IME mid-composition (e.g. clicks elsewhere). Clear our state and
+        /// emit committed:true so React drops the popup. Mirrors win32's
+        /// WM_IME_ENDCOMPOSITION.
+        #[unsafe(method(unmarkText))]
+        fn _unmark_text(&self) {
+            let (app, term_id, had_marked) = {
+                let mut s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                let had = !s.marked_text.is_empty();
+                s.marked_text.clear();
+                s.marked_cursor = 0;
+                (s.app.clone(), s.term_id, had)
+            };
+            if !had_marked {
+                return;
+            }
+            if let (Some(app), Some(tid)) = (app, term_id) {
+                emit_ime_composition(
+                    &app,
+                    tid,
+                    ImeComposition {
+                        text: String::new(),
+                        cursor: 0,
+                        committed: true,
+                    },
+                );
+            }
+        }
+
+        /// True iff we currently have non-empty pre-edit text. AppKit polls
+        /// this to know whether to send unmarkText vs. plain key events.
+        #[unsafe(method(hasMarkedText))]
+        fn _has_marked_text(&self) -> bool {
+            match self.ivars().state.lock() {
+                Ok(g) => !g.marked_text.is_empty(),
+                Err(_) => false,
+            }
+        }
+
+        /// NSRange spanning the marked text in our virtual text storage.
+        /// We don't expose real text storage, so we report a range starting
+        /// at 0 spanning the marked text length (in UTF-16-ish units — using
+        /// UTF-8 byte length is close enough; AppKit only uses this to bound
+        /// firstRectForCharacterRange queries). Returns NSNotFound when no
+        /// composition is in progress, per Apple's convention.
+        #[unsafe(method(markedRange))]
+        fn _marked_range(&self) -> NSRange {
+            let len = match self.ivars().state.lock() {
+                Ok(g) => g.marked_text.chars().count(),
+                Err(_) => 0,
+            };
+            if len == 0 {
+                NSRange {
+                    location: NSNotFound as NSUInteger,
+                    length: 0,
+                }
+            } else {
+                NSRange {
+                    location: 0,
+                    length: len as NSUInteger,
+                }
+            }
+        }
+
+        /// Cursor offset within the marked text, expressed as an NSRange with
+        /// zero length (Apple's convention for an insertion point). Returns
+        /// NSNotFound when no composition is in progress.
+        #[unsafe(method(selectedRange))]
+        fn _selected_range(&self) -> NSRange {
+            let (len, cur) = match self.ivars().state.lock() {
+                Ok(g) => (g.marked_text.chars().count(), g.marked_cursor),
+                Err(_) => (0, 0),
+            };
+            if len == 0 {
+                NSRange {
+                    location: NSNotFound as NSUInteger,
+                    length: 0,
+                }
+            } else {
+                let loc = (cur as usize).min(len) as NSUInteger;
+                NSRange {
+                    location: loc,
+                    length: 0,
+                }
+            }
+        }
+
+        /// We don't expose styling attributes for the marked range — empty
+        /// NSArray tells AppKit to use the default underline style.
+        #[unsafe(method(validAttributesForMarkedText))]
+        fn _valid_attributes_for_marked_text(&self) -> Retained<NSArray<NSAttributedStringKey>> {
+            // Explicit slice type — without it Rust can't infer the inner
+            // element type for an empty slice and the `from_slice` generic
+            // resolves to the wrong NSArray<T>.
+            let empty: &[&NSAttributedStringKey] = &[];
+            NSArray::from_slice(empty)
+        }
+
+        /// We don't expose text storage, so return None. AppKit only uses
+        /// this for accessibility (VoiceOver reading the marked text).
+        #[unsafe(method(attributedSubstringForProposedRange:actualRange:))]
+        fn _attributed_substring_for_proposed_range(
+            &self,
+            _range: NSRange,
+            _actual_range: NSRangePointer,
+        ) -> Option<Retained<NSAttributedString>> {
+            None
+        }
+
+        /// Anchor point for the IME candidate window. AppKit calls this to
+        /// position its conversion popup; we return the cursor cell rect in
+        /// SCREEN coordinates. Falls back to a degenerate origin rect if any
+        /// of the window/term lookups fail — AppKit then anchors to the
+        /// top-left of the screen, which is ugly but not fatal.
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        fn _first_rect_for_character_range(
+            &self,
+            _range: NSRange,
+            _actual_range: NSRangePointer,
+        ) -> NSRect {
+            self.cursor_rect_in_screen()
+        }
+
+        /// We don't expose text storage; return 0. AppKit uses this only for
+        /// mouse-driven cursor placement inside the marked text, which our
+        /// pane doesn't support.
+        #[unsafe(method(characterIndexForPoint:))]
+        fn _character_index_for_point(&self, _point: NSPoint) -> NSUInteger {
+            0
+        }
+
+        /// Forward non-text commands (insertNewline:, moveLeft:, etc.) back
+        /// up the responder chain. NSResponder's default routes them through
+        /// our overridden keyDown:, which already maps them to xterm escape
+        /// sequences. Calling super here keeps that path intact.
+        #[unsafe(method(doCommandBySelector:))]
+        fn _do_command_by_selector(&self, selector: Sel) {
+            unsafe {
+                let _: () = msg_send![super(self), doCommandBySelector: selector];
+            }
+        }
+    }
 );
 
 impl MadeTerminalView {
@@ -498,6 +759,72 @@ impl MadeTerminalView {
         }
         Some((x, y))
     }
+
+    /// R4-γ-5: Compute the cursor cell rect in SCREEN coordinates, for
+    /// NSTextInputClient's `firstRectForCharacterRange:`. AppKit uses the
+    /// returned rect to position the IME conversion popup so it sits below
+    /// the current cursor cell, mirroring how all other macOS text fields
+    /// behave.
+    ///
+    /// Returns a 1×1 rect at screen origin (0,0) on any lookup failure;
+    /// AppKit treats that as "anchor to top-left" rather than crashing.
+    fn cursor_rect_in_screen(&self) -> NSRect {
+        let fallback = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
+
+        let (term_arc, cell_w, cell_h) = {
+            let s = match self.ivars().state.lock() {
+                Ok(g) => g,
+                Err(_) => return fallback,
+            };
+            (s.term.clone(), s.cell_w_px, s.cell_h_px)
+        };
+        let Some(term_arc) = term_arc else { return fallback };
+
+        // Snapshot the cursor cell under a brief lock — never hold the term
+        // mutex across AppKit calls (they can re-enter the run loop).
+        let (col, line) = {
+            let t = match term_arc.lock() {
+                Ok(g) => g,
+                Err(_) => return fallback,
+            };
+            let pt = t.grid().cursor.point;
+            (pt.column.0 as f32, pt.line.0 as f32)
+        };
+
+        let bounds = self.bounds();
+        let view_h = bounds.size.height as f32;
+
+        // Pane-local logical-px, top-left origin.
+        let x_tl = col * cell_w;
+        let y_tl = line * cell_h;
+        // Flip to AppKit's bottom-left origin for the view's coord system.
+        let y_bl = view_h - y_tl - cell_h;
+
+        let rect_in_view = NSRect::new(
+            NSPoint::new(x_tl as f64, y_bl as f64),
+            NSSize::new(cell_w as f64, cell_h as f64),
+        );
+
+        // view-local → window-local → screen.
+        let rect_in_window = self.convertRect_toView(rect_in_view, None);
+        let Some(window) = self.window() else { return fallback };
+        window.convertRectToScreen(rect_in_window)
+    }
+}
+
+/// R4-γ-5: NSTextInputClient hands us `string` as either an `NSString` or
+/// an `NSAttributedString` (Apple docs are explicit on this). Try the
+/// attributed path first, fall through to plain NSString. Returns an empty
+/// `String` on type mismatch — defensive, since AppKit's type contract is
+/// trusted by the rest of the protocol surface.
+fn any_object_to_string(obj: &AnyObject) -> String {
+    if let Some(attr) = obj.downcast_ref::<NSAttributedString>() {
+        return attr.string().to_string();
+    }
+    if let Some(s) = obj.downcast_ref::<NSString>() {
+        return s.to_string();
+    }
+    String::new()
 }
 
 /// Translate the NSEvent `characters` string into bytes for the PTY. Most
