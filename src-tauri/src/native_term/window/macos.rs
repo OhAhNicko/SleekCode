@@ -569,19 +569,50 @@ define_class!(
                 }
             }
 
-            // (3) Forward to PTY.
-            let pty_id_opt = match self.ivars().state.lock() {
-                Ok(g) => g.pty_id,
-                Err(_) => return,
-            };
-            let Some(pty_id) = pty_id_opt else { return };
+            // (3) Route through the input context so AppKit can drive IME
+            // composition (dead-keys, CJK). Special keys — function keys,
+            // arrows, Enter, Tab, Esc, Backspace — go through direct PTY
+            // translation instead; otherwise AppKit would forward them via
+            // doCommandBySelector: which we don't translate.
+            //
+            // For plain text and IME composition, insertText: /
+            // setMarkedText: are wired below in the NSTextInputClient block
+            // and handle the PTY write + ime_composition emit themselves.
+            let chars_opt = event.characters();
+            let is_special = chars_opt
+                .as_ref()
+                .map(|s| {
+                    s.to_string().chars().any(|c| {
+                        let cp = c as u32;
+                        (0xF700..=0xF8FF).contains(&cp) // function-key sentinels
+                            || cp == 0x09 // Tab
+                            || cp == 0x0D || cp == 0x03 // Return / Enter
+                            || cp == 0x1B // Escape
+                            || cp == 0x7F || cp == 0x08 // Delete / Backspace
+                    })
+                })
+                .unwrap_or(false);
 
-            let Some(ns_chars) = event.characters() else { return };
-            let bytes = translate_keys_to_pty(&ns_chars.to_string());
-            if bytes.is_empty() {
+            if is_special {
+                let pty_id_opt = match self.ivars().state.lock() {
+                    Ok(g) => g.pty_id,
+                    Err(_) => return,
+                };
+                let Some(pty_id) = pty_id_opt else { return };
+                let Some(ns_chars) = chars_opt else { return };
+                let bytes = translate_keys_to_pty(&ns_chars.to_string());
+                if !bytes.is_empty() {
+                    let _ = crate::pty::write_to_pty_sync(pty_id, &bytes);
+                }
                 return;
             }
-            let _ = crate::pty::write_to_pty_sync(pty_id, &bytes);
+
+            // IME path. interpretKeyEvents dispatches back into our
+            // NSTextInputClient methods (insertText: on commit, setMarkedText:
+            // during composition). It's an NSResponder method; reaches us via
+            // the auto-deref chain MadeTerminalView → NSView → NSResponder.
+            let array = NSArray::from_slice(&[event]);
+            self.interpretKeyEvents(&array);
         }
 
         /// Forward vertical scroll to the alacritty Term's scrollback. Direction
