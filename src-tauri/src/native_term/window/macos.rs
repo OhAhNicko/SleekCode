@@ -46,22 +46,29 @@ use dispatch2::Queue;
 use objc2::rc::{Allocated, Retained};
 use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSEvent, NSEventModifierFlags, NSResponder, NSView, NSWindowOrderingMode,
+    NSEvent, NSEventModifierFlags, NSPasteboard, NSPasteboardTypeString, NSResponder, NSView,
+    NSWindowOrderingMode,
     NSDeleteFunctionKey, NSDownArrowFunctionKey, NSEndFunctionKey, NSF10FunctionKey,
     NSF11FunctionKey, NSF12FunctionKey, NSF1FunctionKey, NSF2FunctionKey, NSF3FunctionKey,
     NSF4FunctionKey, NSF5FunctionKey, NSF6FunctionKey, NSF7FunctionKey, NSF8FunctionKey,
     NSF9FunctionKey, NSHomeFunctionKey, NSLeftArrowFunctionKey, NSPageDownFunctionKey,
     NSPageUpFunctionKey, NSRightArrowFunctionKey, NSUpArrowFunctionKey,
 };
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use objc2_core_graphics::{CGColorCreateSRGB, CGMutablePath, CGPath};
 use objc2_quartz_core::{kCAFillRuleEvenOdd, CALayer, CAMetalLayer, CAShapeLayer};
 use raw_window_handle::{
     AppKitDisplayHandle, AppKitWindowHandle, RawDisplayHandle, RawWindowHandle,
 };
 
-use alacritty_terminal::grid::Scroll;
-use alacritty_terminal::term::Term;
+use alacritty_terminal::grid::{Dimensions, Scroll};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::term::{Term, TermMode};
+
+use super::super::events::{
+    emit_r_button, emit_selection, RButton, Selection as SelectionEvent,
+};
 
 use super::{NativeTermWindow, Rect, TerminalTheme};
 use super::super::parser_bridge::{ParserBridge, TermListener};
@@ -94,13 +101,21 @@ const SCROLL_LINES_PER_NOTCH: i32 = 3;
 // owner objects.
 
 /// Shared mutable state between PlatformWindow and the MadeTerminalView's
-/// event-handler overrides. All fields Option<...> so a fresh view (no PTY
-/// yet) can still receive events safely.
+/// event-handler overrides. All Option<...> so a fresh view (no PTY yet)
+/// can still receive events safely.
 pub(super) struct MtvState {
     pub(super) pty_id: Option<u32>,
     pub(super) term: Option<Arc<Mutex<Term<TermListener>>>>,
     pub(super) app: Option<tauri::AppHandle>,
     pub(super) term_id: Option<u32>,
+    /// True between mouseDown and mouseUp/mouseExited — gates the
+    /// selection-extend branch of mouseDragged.
+    pub(super) lbutton_down: bool,
+    /// Per-cell logical-px metrics in the macOS-native (top-left flipped)
+    /// coordinate space the view uses. Seeded from `INITIAL_CELL_*_LOGICAL`
+    /// and refreshed when `set_font` lands hot-swap support.
+    pub(super) cell_w_px: f32,
+    pub(super) cell_h_px: f32,
 }
 
 impl MtvState {
@@ -110,6 +125,9 @@ impl MtvState {
             term: None,
             app: None,
             term_id: None,
+            lbutton_down: false,
+            cell_w_px: INITIAL_CELL_W_LOGICAL,
+            cell_h_px: INITIAL_CELL_H_LOGICAL,
         }
     }
 }
@@ -147,12 +165,188 @@ define_class!(
         /// Take keyboard focus on click. After this, AppKit dispatches keyDown
         /// to us instead of the webview. Clicking the webview elsewhere takes
         /// focus back automatically.
+        ///
+        /// Mouse-mode forwarding (xterm DECSET 1000/1002/1003/1006): when the
+        /// running TUI has enabled mouse reporting and Shift is NOT held,
+        /// encode the press as an xterm escape sequence and ship it to the
+        /// PTY. Shift bypasses forwarding so the user can still text-select
+        /// inside mouse-aware apps (xterm convention).
+        ///
+        /// Otherwise: begin a fresh text selection at the click cell.
         #[unsafe(method(mouseDown:))]
-        fn _mouse_down(&self, _event: &NSEvent) {
-            // self derefs through NSView → NSResponder.
+        fn _mouse_down(&self, event: &NSEvent) {
+            // Take keyboard focus first.
             if let Some(window) = self.window() {
                 let responder: &NSResponder = self;
                 let _ = window.makeFirstResponder(Some(responder));
+            }
+
+            let (x_px, y_px) = match self.view_local_event_px(event) {
+                Some(p) => p,
+                None => return,
+            };
+            let flags = event.modifierFlags();
+            let shift = flags.contains(NSEventModifierFlags::Shift);
+            let ctrl = flags.contains(NSEventModifierFlags::Control);
+            let alt = flags.contains(NSEventModifierFlags::Option);
+
+            // Snapshot the bits we need without holding the state lock across
+            // the term mutex acquisition below.
+            let (pty_id, term_arc, cell_w, cell_h) = {
+                let mut s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                s.lbutton_down = true;
+                (s.pty_id, s.term.clone(), s.cell_w_px, s.cell_h_px)
+            };
+
+            // xterm mouse-mode forwarding takes precedence (unless Shift).
+            if !shift {
+                let modes = term_arc
+                    .as_ref()
+                    .map(|t| read_mouse_modes_from_term(t))
+                    .unwrap_or_default();
+                if modes.clicks_enabled {
+                    let (x_cell, y_cell) = px_to_cell_1based(x_px, y_px, cell_w, cell_h);
+                    let fmt = mouse_format(modes);
+                    if let Some(bytes) = encode_mouse_event(
+                        0, x_cell, y_cell, ctrl, shift, alt, true, false, fmt,
+                    ) {
+                        if let Some(pid) = pty_id {
+                            let _ = crate::pty::write_to_pty_sync(pid, &bytes);
+                        }
+                    }
+                    return;
+                }
+            }
+
+            // Fall through to text-selection start.
+            let Some(term_arc) = term_arc else { return };
+            if let Some(point) =
+                mouse_to_point(&term_arc, x_px, y_px, cell_w, cell_h)
+            {
+                if let Ok(mut t) = term_arc.lock() {
+                    t.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+                }
+            }
+        }
+
+        /// Extend the active selection during a drag. Mouse-mode 1002/1003
+        /// drag forwarding lands in γ-3 when we add an NSTrackingArea +
+        /// motion reporting; for now drag only does text-selection.
+        #[unsafe(method(mouseDragged:))]
+        fn _mouse_dragged(&self, event: &NSEvent) {
+            let down = match self.ivars().state.lock() {
+                Ok(g) => g.lbutton_down,
+                Err(_) => return,
+            };
+            if !down {
+                return;
+            }
+            let Some((x_px, y_px)) = self.view_local_event_px(event) else { return };
+
+            let (term_arc, cell_w, cell_h) = {
+                let s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                (s.term.clone(), s.cell_w_px, s.cell_h_px)
+            };
+            let Some(term_arc) = term_arc else { return };
+            if let Some(point) =
+                mouse_to_point(&term_arc, x_px, y_px, cell_w, cell_h)
+            {
+                if let Ok(mut t) = term_arc.lock() {
+                    if let Some(sel) = t.selection.as_mut() {
+                        sel.update(point, Side::Right);
+                    }
+                }
+            }
+        }
+
+        /// Finalize selection (copy to NSPasteboard + emit selection event) or
+        /// forward release to PTY if xterm mouse mode is on (and no Shift).
+        #[unsafe(method(mouseUp:))]
+        fn _mouse_up(&self, event: &NSEvent) {
+            let Some((x_px, y_px)) = self.view_local_event_px(event) else { return };
+            let flags = event.modifierFlags();
+            let shift = flags.contains(NSEventModifierFlags::Shift);
+            let ctrl = flags.contains(NSEventModifierFlags::Control);
+            let alt = flags.contains(NSEventModifierFlags::Option);
+
+            let (pty_id, term_arc, app, term_id, cell_w, cell_h) = {
+                let mut s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                s.lbutton_down = false;
+                (
+                    s.pty_id,
+                    s.term.clone(),
+                    s.app.clone(),
+                    s.term_id,
+                    s.cell_w_px,
+                    s.cell_h_px,
+                )
+            };
+
+            // xterm mouse mode forward (unless Shift escape-hatched).
+            if !shift {
+                let modes = term_arc
+                    .as_ref()
+                    .map(|t| read_mouse_modes_from_term(t))
+                    .unwrap_or_default();
+                if modes.clicks_enabled {
+                    let (x_cell, y_cell) = px_to_cell_1based(x_px, y_px, cell_w, cell_h);
+                    let fmt = mouse_format(modes);
+                    // SGR distinguishes release via lowercase `m`; X10/URXVT
+                    // use button code 3.
+                    let btn = if fmt == MouseFormat::Sgr { 0 } else { 3 };
+                    if let Some(bytes) = encode_mouse_event(
+                        btn, x_cell, y_cell, ctrl, shift, alt, false, false, fmt,
+                    ) {
+                        if let Some(pid) = pty_id {
+                            let _ = crate::pty::write_to_pty_sync(pid, &bytes);
+                        }
+                    }
+                    return;
+                }
+            }
+
+            // Selection finalize: snapshot text under a brief lock, drop the
+            // lock, then emit + copy to NSPasteboard.
+            let Some(term_arc) = term_arc else { return };
+            let text = {
+                let t = match term_arc.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                t.selection_to_string().filter(|s| !s.is_empty())
+            };
+            if let Some(text) = text {
+                if let (Some(app), Some(tid)) = (app.as_ref(), term_id) {
+                    emit_selection(app, tid, SelectionEvent { text: text.clone() });
+                }
+                copy_to_clipboard_macos(&text);
+            }
+        }
+
+        /// Right-click → emit r_button so React's GlobalContextMenu opens at
+        /// the click site. Coordinates are pane-local logical px (top-left
+        /// origin), matching the win32 contract.
+        #[unsafe(method(rightMouseDown:))]
+        fn _right_mouse_down(&self, event: &NSEvent) {
+            let Some((x_px, y_px)) = self.view_local_event_px(event) else { return };
+            let (app, term_id) = {
+                let s = match self.ivars().state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                (s.app.clone(), s.term_id)
+            };
+            if let (Some(app), Some(tid)) = (app, term_id) {
+                emit_r_button(&app, tid, RButton { x: x_px, y: y_px });
             }
         }
 
@@ -228,6 +422,28 @@ impl MadeTerminalView {
         let allocated: Allocated<Self> = Self::alloc(mtm);
         let this = allocated.set_ivars(MtvIvars { state });
         unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+
+    /// Convert an NSEvent into view-local logical pixels with origin in the
+    /// TOP-LEFT (matching the grid coordinate system the terminal renderer
+    /// uses). AppKit's native view coords are bottom-left, so we flip y
+    /// against the view's bounds height after `convertPoint:fromView:nil`.
+    /// Returns None if the event has no associated window or the click was
+    /// outside the view.
+    fn view_local_event_px(&self, event: &NSEvent) -> Option<(f32, f32)> {
+        let window_pt = event.locationInWindow();
+        // None → convert from window coords.
+        let local = self.convertPoint_fromView(window_pt, None);
+        let bounds = self.bounds();
+        let w = bounds.size.width as f32;
+        let h = bounds.size.height as f32;
+        let x = local.x as f32;
+        // AppKit bottom-left → top-left: flip y.
+        let y = h - local.y as f32;
+        if x < 0.0 || x > w || y < 0.0 || y > h {
+            return None;
+        }
+        Some((x, y))
     }
 }
 
@@ -837,6 +1053,164 @@ where
         *slot_ref = Some(f());
     });
     Ok(slot.expect("dispatch_sync ran without populating result slot"))
+}
+
+// ─── Mouse helpers (γ-2) ──────────────────────────────────────────────
+// Duplicated from win32.rs to keep that file untouched per the
+// "don't regress Windows" instruction. Consolidate once macOS daily-drives.
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MouseModes {
+    clicks_enabled: bool,
+    /// Reserved for γ-3 motion-while-down forwarding (1002).
+    #[allow(dead_code)]
+    drag_enabled: bool,
+    /// Reserved for γ-3 motion forwarding (1003).
+    #[allow(dead_code)]
+    motion_enabled: bool,
+    sgr: bool,
+    /// alacritty_terminal 0.24.2 does not define URXVT_MOUSE — pinned false
+    /// until upstream adds it. Mirrors win32.rs's note.
+    urxvt: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MouseFormat {
+    Sgr,
+    Urxvt,
+    X10,
+}
+
+fn mouse_format(modes: MouseModes) -> MouseFormat {
+    if modes.sgr {
+        MouseFormat::Sgr
+    } else if modes.urxvt {
+        MouseFormat::Urxvt
+    } else {
+        MouseFormat::X10
+    }
+}
+
+/// Snapshot the mouse-mode bits from a Term under a brief lock.
+fn read_mouse_modes_from_term(term: &Arc<Mutex<Term<TermListener>>>) -> MouseModes {
+    let t = match term.lock() {
+        Ok(g) => g,
+        Err(_) => return MouseModes::default(),
+    };
+    let m = *t.mode();
+    drop(t);
+    let click = m.contains(TermMode::MOUSE_REPORT_CLICK);
+    let drag = m.contains(TermMode::MOUSE_DRAG);
+    let motion = m.contains(TermMode::MOUSE_MOTION);
+    MouseModes {
+        clicks_enabled: click || drag || motion,
+        drag_enabled: drag || motion,
+        motion_enabled: motion,
+        sgr: m.contains(TermMode::SGR_MOUSE),
+        urxvt: false,
+    }
+}
+
+/// Convert logical-px coords to 1-based cell (col, row) coords. Floors + 1
+/// so the top-left cell becomes (1, 1) — the xterm wire convention.
+fn px_to_cell_1based(x_px: f32, y_px: f32, cell_w_px: f32, line_h_px: f32) -> (u32, u32) {
+    let cell_w = cell_w_px.max(0.001);
+    let line_h = line_h_px.max(0.001);
+    let col = (x_px / cell_w).floor().max(0.0) as u32 + 1;
+    let row = (y_px / line_h).floor().max(0.0) as u32 + 1;
+    (col, row)
+}
+
+/// Translate logical-px coords into an alacritty grid Point clamped to the
+/// visible grid. Scrollback handling matches win32: the renderer maps
+/// visible_row → Line(row) regardless of display_offset, so this fn doesn't
+/// subtract it. When the renderer learns to honor display_offset, the
+/// matching subtraction must land in both files together.
+fn mouse_to_point(
+    term: &Arc<Mutex<Term<TermListener>>>,
+    x_px: f32,
+    y_px: f32,
+    cell_w_px: f32,
+    line_h_px: f32,
+) -> Option<Point> {
+    let cell_w = cell_w_px.max(0.001);
+    let line_h = line_h_px.max(0.001);
+    let (cols, rows) = {
+        let t = term.lock().ok()?;
+        let g = t.grid();
+        (g.columns(), g.screen_lines())
+    };
+    if cols == 0 || rows == 0 {
+        return None;
+    }
+    let col_raw = (x_px / cell_w).floor() as i32;
+    let row_raw = (y_px / line_h).floor() as i32;
+    let col = col_raw.clamp(0, (cols as i32).saturating_sub(1)) as usize;
+    let row = row_raw.clamp(0, (rows as i32).saturating_sub(1));
+    Some(Point::new(Line(row), Column(col)))
+}
+
+/// Encode an xterm mouse event. Identical wire format to the win32 helper
+/// — see that file's doc-comment block for the full SGR / URXVT / X10
+/// specification.
+fn encode_mouse_event(
+    button: u32,
+    x_cell: u32,
+    y_cell: u32,
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    press: bool,
+    motion: bool,
+    format: MouseFormat,
+) -> Option<Vec<u8>> {
+    let mut b = button;
+    if shift {
+        b |= 4;
+    }
+    if alt {
+        b |= 8;
+    }
+    if ctrl {
+        b |= 16;
+    }
+    if motion {
+        b |= 32;
+    }
+    match format {
+        MouseFormat::Sgr => {
+            let m = if press { 'M' } else { 'm' };
+            Some(format!("\x1b[<{};{};{}{}", b, x_cell, y_cell, m).into_bytes())
+        }
+        MouseFormat::Urxvt => Some(format!("\x1b[{};{};{}M", b + 32, x_cell, y_cell).into_bytes()),
+        MouseFormat::X10 => {
+            if x_cell > 223 || y_cell > 223 {
+                return None;
+            }
+            let b_byte = (b + 32) as u8;
+            let x_byte = (x_cell + 32) as u8;
+            let y_byte = (y_cell + 32) as u8;
+            Some(vec![0x1b, b'[', b'M', b_byte, x_byte, y_byte])
+        }
+    }
+}
+
+/// Copy a UTF-8 string to the macOS pasteboard. Best-effort; silent on
+/// failure (we have no surface to bubble errors here, matching win32's
+/// `let _ = copy_to_clipboard(...)` pattern).
+fn copy_to_clipboard_macos(text: &str) {
+    // NSPasteboard mutations must happen on the main thread.
+    let owned = text.to_string();
+    let _ = main_sync(move || {
+        let pb = NSPasteboard::generalPasteboard();
+        let _ = pb.clearContents();
+        let ns_text = NSString::from_str(&owned);
+        // SAFETY: NSPasteboardTypeString is an extern static; reading it
+        // requires unsafe in Rust 2021. The pointer is a process-lifetime
+        // CFString constant.
+        let pasteboard_type = unsafe { NSPasteboardTypeString };
+        let _ = pb.setString_forType(&ns_text, pasteboard_type);
+    });
 }
 
 /// Parse a `#RRGGBB` or `#RRGGBBAA` hex string into a 4-byte RGBA color.
