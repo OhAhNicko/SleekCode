@@ -1821,6 +1821,16 @@ impl NativeTermWindow for PlatformWindow {
         if let Some(arc) = &self.renderer {
             if let Ok(mut r) = arc.lock() {
                 r.set_font(family.to_string(), size_px);
+                // Mirror the freshly-measured cell metrics into MtvState so
+                // the input-handler overrides (mouseDown / mouseDragged /
+                // mouseMoved / mouseUp / scrollWheel) use the live px/cell
+                // ratio for cell-coord math. Matches win32's `set_font`
+                // post-render mirror.
+                let (cw, ch) = r.cell_metrics();
+                if let Ok(mut s) = self.mtv_state.lock() {
+                    s.cell_w_px = cw.max(0.001);
+                    s.cell_h_px = ch.max(0.001);
+                }
                 let _ = r.render();
             }
         }
