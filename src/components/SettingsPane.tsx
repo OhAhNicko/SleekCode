@@ -1041,6 +1041,14 @@ export default function SettingsPane() {
   const setNativeCursorStyle = useAppStore((s) => s.setNativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
   const setNativeCursorBlink = useAppStore((s) => s.setNativeCursorBlink);
+
+  // Phase 5 — native terminal renderer rollout controls.
+  const useNativeTerminalRenderer = useAppStore((s) => s.useNativeTerminalRenderer);
+  const setUseNativeTerminalRenderer = useAppStore((s) => s.setUseNativeTerminalRenderer);
+  const paneRendererOverride = useAppStore((s) => s.paneRendererOverride);
+  const setPaneRendererOverride = useAppStore((s) => s.setPaneRendererOverride);
+  const nativeRendererTelemetry = useAppStore((s) => s.nativeRendererTelemetry);
+  const liveNativeTerms = useAppStore((s) => s.liveNativeTerms);
   const aiTimeBursts = useAppStore((s) => s.aiTimeBursts);
   const clearAiTimeStats = useAppStore((s) => s.clearAiTimeStats);
   const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
@@ -1199,6 +1207,128 @@ export default function SettingsPane() {
       case "terminal":
         return (
           <>
+            <SettingsSection
+              id="native-renderer"
+              title="Native terminal renderer (experimental)"
+              description="Replaces the in-webview xterm.js terminal with a native GPU-rendered widget. Eliminates the synchronized flicker that affects multi-pane sessions. Per-platform availability: Windows ✓ verified, macOS / Linux ✓ built (not yet verified in daily use)."
+            >
+              <SettingsRow
+                label="Use native renderer for new panes"
+                description="When on, every new terminal pane uses the native widget. Existing panes keep their current renderer until reopened."
+              >
+                <ToggleSwitch
+                  checked={useNativeTerminalRenderer}
+                  onChange={setUseNativeTerminalRenderer}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Live native panes"
+                description="Native panes currently allocated in the process."
+              >
+                <span
+                  style={{
+                    fontSize: 13,
+                    color: "var(--ezy-text)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {liveNativeTerms.size}
+                </span>
+              </SettingsRow>
+              <SettingsRow
+                label="Crashes this session"
+                description={
+                  nativeRendererTelemetry.lastCrashAt
+                    ? `Last: ${new Date(nativeRendererTelemetry.lastCrashAt).toLocaleString()}`
+                    : "No crashes recorded since app start."
+                }
+              >
+                <span
+                  style={{
+                    fontSize: 13,
+                    color:
+                      nativeRendererTelemetry.crashes > 0
+                        ? "var(--ezy-red)"
+                        : "var(--ezy-text)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {nativeRendererTelemetry.crashes}
+                </span>
+              </SettingsRow>
+              {Object.keys(paneRendererOverride).length > 0 && (
+                <SettingsRow
+                  label="Per-pane overrides"
+                  description="Panes that override the global setting. Clear to fall back to the default."
+                  vertical
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 4,
+                      marginTop: 4,
+                    }}
+                  >
+                    {Object.entries(paneRendererOverride).map(
+                      ([paneId, override]) => (
+                        <div
+                          key={paneId}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
+                            padding: "6px 8px",
+                            borderRadius: 6,
+                            backgroundColor: "var(--ezy-surface-raised)",
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: 12,
+                              color: "var(--ezy-text-secondary)",
+                              fontFamily: "var(--ezy-font-mono, monospace)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                            title={paneId}
+                          >
+                            {paneId}
+                          </span>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <SegmentedControl
+                              options={[
+                                { value: "native" as const, label: "Native" },
+                                { value: "xterm" as const, label: "xterm.js" },
+                              ]}
+                              value={override}
+                              onChange={(v) => setPaneRendererOverride(paneId, v)}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setPaneRendererOverride(paneId, null)}
+                              style={{
+                                fontSize: 12,
+                                padding: "4px 10px",
+                                borderRadius: 4,
+                                backgroundColor: "#404040",
+                                color: "#fff",
+                                border: "none",
+                                cursor: "pointer",
+                              }}
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        </div>
+                      ),
+                    )}
+                  </div>
+                </SettingsRow>
+              )}
+            </SettingsSection>
             {isWindows() && (
               <SettingsSection id="terminal-backend" title="Backend" description="Fallback for projects whose path doesn't clearly indicate WSL vs Windows. Per-project preference (in Recent Projects) wins when set.">
                 <SettingsRow label="Terminal backend">
