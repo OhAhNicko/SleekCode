@@ -53,9 +53,9 @@ use tauri::AppHandle;
 
 use super::super::events::{
     emit_cell_hover, emit_cell_hover_end, emit_ime_composition, emit_key_down_preview,
-    emit_link_click, emit_link_hover, emit_mouse_passthrough, emit_r_button, emit_selection,
+    emit_link_click, emit_link_hover, emit_r_button, emit_selection,
     CellHover, ImeComposition, KeyDownPreview, KeyEventDto, KeyModifiers, LinkClick, LinkHover,
-    MousePassthrough, RButton, Selection as SelectionEvent,
+    RButton, Selection as SelectionEvent,
 };
 use super::super::parser_bridge::{ParserBridge, TermListener};
 use super::super::theme_parse::parse_theme;
@@ -75,12 +75,6 @@ const CF_UNICODETEXT: u32 = 13;
 /// and `(14*1.2).ceil() = 17`.
 const CELL_W_PX: f32 = 8.4;
 const CELL_H_PX: f32 = 17.0;
-
-/// Edge band (logical px) inside which WM_MOUSEMOVE is forwarded to JS as a
-/// `mouse_passthrough` event so the splitter handler can pick up the cursor.
-/// Below ~4px the splitter visual is too narrow; above ~8px hover noise leaks
-/// into pane content. Locked at 8 for the O2-B slice; tunable later.
-const SPLITTER_EDGE_BAND_LOGICAL_PX: f32 = 8.0;
 
 const CLASS_NAME: &[u16] = &[
     'M' as u16, 'a' as u16, 'd' as u16, 'e' as u16, '_' as u16,
@@ -123,10 +117,6 @@ struct ChildState {
     /// so edge-band detection in WM_MOUSEMOVE doesn't need GetClientRect on
     /// every move (which would be a syscall per event).
     client_px: (i32, i32),
-    /// Last emitted (x, y) for mouse_passthrough coalescing — round to integer
-    /// logical px and skip emission when unchanged. Prevents flooding the JS
-    /// side with sub-pixel jitter.
-    last_passthrough: Option<(i32, i32)>,
     /// R3-mouse: mirror of `ParserBridge::term`, set on `attach_pty` and
     /// cleared on `detach_pty`. Lets WM_MOUSEWHEEL / WM_LBUTTON* drive
     /// scrollback + selection directly without locking the outer PlatformWindow.
@@ -203,7 +193,6 @@ impl PlatformWindow {
                 term_id: None,
                 dpr,
                 client_px: (w.max(1), h.max(1)),
-                last_passthrough: None,
                 term: None,
                 lbutton_down: false,
                 last_cell_hover: None,
@@ -1166,11 +1155,12 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            // O2-B: emit `mouse_passthrough` when the cursor is within the
-            // splitter edge band. The React side uses this to surface the
-            // cursor to the splitter drag handler when the native pane "ate"
-            // the move. Coalesce by rounded logical px to keep emit volume
-            // proportional to actual cursor displacement.
+            // Drives three things in priority order: xterm mouse-mode motion
+            // forwarding (1002 / 1003), cell_hover + link_hover coalescing,
+            // and selection-extend during a left-button drag. Splitter
+            // passthrough used to live here as a fourth job (mouse_passthrough
+            // event); it was replaced by the overlay-region hole-cut that
+            // PanelResizeHandle publishes — see PaneGrid.tsx.
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
             if !state_ptr.is_null() {
                 let x_px = (lparam.0 as i16) as i32;
@@ -1351,31 +1341,6 @@ unsafe extern "system" fn wnd_proc(
                             let _ = InvalidateRect(hwnd, None, BOOL(0));
                         }
                     }
-                }
-                let (w_px, h_px) = (*state_ptr).client_px;
-                let dpr = (*state_ptr).dpr.max(0.0001);
-                let edge_px = (SPLITTER_EDGE_BAND_LOGICAL_PX * dpr).round() as i32;
-                let near_left = x_px <= edge_px;
-                let near_right = x_px >= w_px - edge_px;
-                let near_top = y_px <= edge_px;
-                let near_bottom = y_px >= h_px - edge_px;
-                if near_left || near_right || near_top || near_bottom {
-                    let x = x_px as f32 / dpr;
-                    let y = y_px as f32 / dpr;
-                    let key = (x.round() as i32, y.round() as i32);
-                    if (*state_ptr).last_passthrough != Some(key) {
-                        (*state_ptr).last_passthrough = Some(key);
-                        if let (Some(app), Some(tid)) =
-                            ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
-                        {
-                            emit_mouse_passthrough(app, tid, MousePassthrough { x, y });
-                        }
-                    }
-                } else {
-                    // Reset coalescing key once we leave the band, so the next
-                    // edge entry is guaranteed to emit even if it lands on the
-                    // same rounded coord as the previous exit.
-                    (*state_ptr).last_passthrough = None;
                 }
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)

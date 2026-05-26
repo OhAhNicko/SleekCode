@@ -448,10 +448,8 @@ export default function PaneGrid({
 /// the splitter pass through to the underlying DOM handle even when the
 /// native pane sits z-above the webview.
 ///
-/// Replaces the never-functional `mouse_passthrough` event flow (Rust side
-/// still emits, JS side still subscribes and logs in dev, but the events
-/// don't drive any behavior — they were waiting on this hole-cut approach
-/// to land).
+/// Replaced the never-functional `mouse_passthrough` event flow; that Rust
+/// emit-site + JS subscriber were removed in the same change.
 function SplitterHandle({
   nodeId,
   direction,

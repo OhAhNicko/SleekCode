@@ -215,11 +215,6 @@ export interface RButtonEvent {
   y: number;
 }
 
-export interface MousePassthroughEvent {
-  x: number;
-  y: number;
-}
-
 // Fires on every mouse move inside the pane that changes cell coords.
 // Wire format on Rust side is i64 line / u32 col — `line` can be negative
 // when scrollback rows are visible above the viewport. JS treats both as
@@ -253,7 +248,6 @@ export type NativeTermEventKind =
   | "resized"
   | "data_rate"
   | "r_button"
-  | "mouse_passthrough"
   | "cell_hover"
   | "cell_hover_end";
 
@@ -270,7 +264,6 @@ export interface NativeTermEventPayloadMap {
   resized: ResizedEvent;
   data_rate: DataRateEvent;
   r_button: RButtonEvent;
-  mouse_passthrough: MousePassthroughEvent;
   cell_hover: CellHoverEvent;
   cell_hover_end: CellHoverEndEvent;
 }
@@ -615,13 +608,6 @@ export function subscribeRButton(
   cb: (e: RButtonEvent) => void,
 ): Promise<Unlisten> {
   return subscribe(id, "r_button", cb);
-}
-
-export function subscribeMousePassthrough(
-  id: NativeTermId,
-  cb: (e: MousePassthroughEvent) => void,
-): Promise<Unlisten> {
-  return subscribe(id, "mouse_passthrough", cb);
 }
 
 export function subscribeCellHover(

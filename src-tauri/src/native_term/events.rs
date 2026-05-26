@@ -5,8 +5,8 @@
 // e.g. `native_term:42:resized`, `native_term:42:osc133`.
 //
 // R1.a ships only the `Resized` stub. Other event kinds (osc133, cursor,
-// link_hover, key_down_preview, ime_composition, data_rate, r_button,
-// mouse_passthrough) land in R2/R3 per the migration plan.
+// link_hover, key_down_preview, ime_composition, data_rate, r_button)
+// land in R2/R3 per the migration plan.
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -61,20 +61,9 @@ pub fn emit_r_button(app: &AppHandle, term_id: u32, payload: RButton) {
     let _ = app.emit(&format!("native_term:{}:r_button", term_id), payload);
 }
 
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct MousePassthrough {
-    /// Pane-local logical (CSS) px — already divided by DPR caller-side.
-    pub x: f32,
-    pub y: f32,
-}
-
-pub fn emit_mouse_passthrough(app: &AppHandle, term_id: u32, payload: MousePassthrough) {
-    let _ = app.emit(
-        &format!("native_term:{}:mouse_passthrough", term_id),
-        payload,
-    );
-}
+// `MousePassthrough` removed: the splitter-passthrough mechanism it powered
+// was replaced by overlay-region hole-cut on PanelResizeHandle (see
+// src/components/PaneGrid.tsx). The Rust emit-site went with it.
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]

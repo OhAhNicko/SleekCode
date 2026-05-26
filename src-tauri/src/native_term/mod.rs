@@ -42,7 +42,7 @@ pub fn native_term_create(app: tauri::AppHandle, opts: CreateOpts) -> Result<u32
     // the eventual hot-swap call sites.
     let mut win = PlatformWindow::new(parent, opts.rect, opts.dpr)?;
     // O2-B: hand the AppHandle to PlatformWindow so the wnd_proc can emit
-    // per-pane events (ime_composition, r_button, mouse_passthrough).
+    // per-pane events (ime_composition, r_button, cell_hover, link_hover).
     win.set_app_handle(app);
     let _ = win.set_theme(&opts.theme);
     let _ = win.set_font(&opts.font.family, opts.font.size_px);

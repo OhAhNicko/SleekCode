@@ -12,7 +12,6 @@ import {
   subscribeResized,
   subscribeExit,
   subscribeRButton,
-  subscribeMousePassthrough,
   subscribeKeyDownPreview,
   subscribeScroll,
   nativeTermScrollToBottom,
@@ -365,27 +364,11 @@ export default function TerminalPaneNative({
       });
       unlistens.push(u3);
 
-      // Splitter mouse-passthrough bridge.
-      // TODO(J-track): real wiring. This project uses
-      // `react-resizable-panels` (see src/components/PaneGrid.tsx),
-      // which attaches pointer listeners on the handle itself rather
-      // than document-level listeners during drag. Synthesizing a
-      // `mousemove` on `document` does NOT initiate a panel resize —
-      // the library only starts dragging on a real pointerdown atop
-      // the handle. Until we have a custom splitter or a library
-      // upgrade with an imperative API, we just log so we can confirm
-      // the event reaches JS in dev builds.
-      const u4 = await subscribeMousePassthrough(termId, (p) => {
-        if (cancelled) return;
-        if (import.meta.env.DEV) {
-          console.debug(
-            "[TerminalPaneNative] mouse_passthrough (stub)",
-            termId,
-            p,
-          );
-        }
-      });
-      unlistens.push(u4);
+      // (Splitter passthrough now handled by overlay-region hole-cut —
+      // PanelResizeHandle publishes its rect via useOverlayPublisher, so
+      // clicks pass directly to the splitter DOM element instead of being
+      // routed through a synthesized mouse event. The Rust mouse_passthrough
+      // path was removed in the same change. See src/components/PaneGrid.tsx.)
 
       // key_down_preview bridge: native HWND captures keyboard focus when
       // clicked, so React's window-level shortcut listener (App.tsx ~line 599)
