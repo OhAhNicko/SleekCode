@@ -15,6 +15,7 @@ pub mod pty_route;
 pub mod registry;
 pub mod region;
 pub mod renderer;
+pub mod theme_parse;
 pub mod window;
 
 use serde::{Deserialize, Serialize};

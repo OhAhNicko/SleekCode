@@ -80,7 +80,8 @@ use super::super::events::{
 use super::{NativeTermWindow, Rect, TerminalTheme};
 use super::super::parser_bridge::{ParserBridge, TermListener};
 use super::super::pty_route;
-use super::super::renderer::{Renderer, ThemeColors};
+use super::super::renderer::Renderer;
+use super::super::theme_parse::parse_theme;
 
 /// Frame interval for the render pump while a PTY is attached. Matches the
 /// Win32 WM_TIMER tick — close to 60Hz but slightly behind so we don't
@@ -2110,53 +2111,6 @@ fn copy_to_clipboard_macos(text: &str) {
     });
 }
 
-/// Parse a `#RRGGBB` or `#RRGGBBAA` hex string into a 4-byte RGBA color.
-/// Same logic as the Win32 helper; duplicated here so this file can land
-/// without touching `window/win32.rs`. Consolidate into a shared
-/// `theme_parse` module after macOS is daily-driverable.
-fn parse_hex_color(s: &str, field: &str) -> Result<[u8; 4], String> {
-    let bytes = s.strip_prefix('#').unwrap_or(s);
-    if bytes.len() != 6 && bytes.len() != 8 {
-        return Err(format!(
-            "native_term::set_theme: field `{field}` must be #RRGGBB or #RRGGBBAA (got `{s}`)"
-        ));
-    }
-    let parse = |i: usize| -> Result<u8, String> {
-        u8::from_str_radix(&bytes[i..i + 2], 16)
-            .map_err(|_| format!("native_term::set_theme: field `{field}` is not valid hex"))
-    };
-    let r = parse(0)?;
-    let g = parse(2)?;
-    let b = parse(4)?;
-    let a = if bytes.len() == 8 { parse(6)? } else { 0xFF };
-    Ok([r, g, b, a])
-}
-
-fn parse_theme(theme: &TerminalTheme) -> Result<ThemeColors, String> {
-    let ansi = [
-        parse_hex_color(&theme.ansi0, "ansi0")?,
-        parse_hex_color(&theme.ansi1, "ansi1")?,
-        parse_hex_color(&theme.ansi2, "ansi2")?,
-        parse_hex_color(&theme.ansi3, "ansi3")?,
-        parse_hex_color(&theme.ansi4, "ansi4")?,
-        parse_hex_color(&theme.ansi5, "ansi5")?,
-        parse_hex_color(&theme.ansi6, "ansi6")?,
-        parse_hex_color(&theme.ansi7, "ansi7")?,
-        parse_hex_color(&theme.ansi8, "ansi8")?,
-        parse_hex_color(&theme.ansi9, "ansi9")?,
-        parse_hex_color(&theme.ansi10, "ansi10")?,
-        parse_hex_color(&theme.ansi11, "ansi11")?,
-        parse_hex_color(&theme.ansi12, "ansi12")?,
-        parse_hex_color(&theme.ansi13, "ansi13")?,
-        parse_hex_color(&theme.ansi14, "ansi14")?,
-        parse_hex_color(&theme.ansi15, "ansi15")?,
-    ];
-    Ok(ThemeColors {
-        ansi,
-        foreground: parse_hex_color(&theme.foreground, "foreground")?,
-        background: parse_hex_color(&theme.background, "background")?,
-        cursor: parse_hex_color(&theme.cursor, "cursor")?,
-        cursor_accent: parse_hex_color(&theme.cursor_accent, "cursorAccent")?,
-        selection: parse_hex_color(&theme.selection, "selection")?,
-    })
-}
+// `parse_hex_color` / `parse_theme` consolidated into
+// `super::super::theme_parse`. Same wire-format folding all three platform
+// backends share.
