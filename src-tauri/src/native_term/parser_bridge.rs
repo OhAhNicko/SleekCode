@@ -173,28 +173,44 @@ fn worker_loop(
 
         // 1) Pre-scan for OSC 133 markers. Done BEFORE the alacritty parse so
         //    a marker spanning two batches still resolves (state machine is
-        //    persisted across batches via osc_scanner.state). Emits are
-        //    deferred until after the Term lock is released — we don't want
-        //    to block the parse on a Tauri broadcast.
-        let osc_hits: Vec<(char, Option<i32>)> = osc_scanner.feed(&bytes);
+        //    persisted across batches via osc_scanner.state). Each hit
+        //    carries its end_offset into `bytes` so we can split the parse
+        //    at that boundary and snapshot the cursor per-marker.
+        let osc_hits: Vec<Osc133Hit> = osc_scanner.feed(&bytes);
 
         // 2) Lock the Term across the whole batch — single contiguous parse,
         //    no .await inside. Other readers (get_buffer_lines etc.) wait
         //    briefly. Keep this window TIGHT: no Tauri emits while held.
+        //
+        //    We split the parse at each OSC 133 boundary so the cursor line
+        //    we snapshot for each marker reflects what was on screen WHEN
+        //    the marker landed — not the post-batch cursor. Without this,
+        //    a `prompt;output` pair in the same batch would attribute both
+        //    markers to the output's final line.
         let mut t = term.lock().expect("parser_bridge term mutex poisoned");
-        for byte in &bytes {
+        let mut marker_snapshots: Vec<(char, Option<i32>, i64)> =
+            Vec::with_capacity(osc_hits.len());
+        let mut last_offset = 0usize;
+        for hit in &osc_hits {
+            for byte in &bytes[last_offset..hit.end_offset] {
+                processor.advance(&mut *t, *byte);
+            }
+            let history_at_marker = t.grid().history_size() as i64;
+            let cursor_line_at_marker: i64 = t.grid().cursor.point.line.0 as i64;
+            marker_snapshots.push((
+                hit.kind,
+                hit.exit_code,
+                history_at_marker + cursor_line_at_marker,
+            ));
+            last_offset = hit.end_offset;
+        }
+        // Drive any remaining post-final-marker tail through the parser.
+        for byte in &bytes[last_offset..] {
             processor.advance(&mut *t, *byte);
         }
         let pt = t.grid().cursor.point;
         let snippet = capture_last_line(&t);
-        // Snapshot what the post-parse OSC 133 events should reference.
-        // `absLine` is the absolute grid line (relative to scrollback origin):
-        // base_y = -history_size(); abs_line = base_y + cursor.line + history.
-        // For prompt markers we report the line where the marker landed,
-        // which is alacritty's cursor.line at the moment of the sequence.
         let history = t.grid().history_size() as i64;
-        let cursor_line: i64 = pt.line.0 as i64;
-        let abs_line = history + cursor_line;
         let display_offset_now = t.grid().display_offset();
         drop(t); // release before any eprintln / app.emit
 
@@ -218,13 +234,12 @@ fn worker_loop(
                 emit_cursor(app, term_id, Cursor { x, y, h: line_h });
             }
 
-            // OSC 133 emit fan-out. All hits in this batch reference the same
-            // post-batch cursor line — close enough for the React prompt-block
-            // detector. If we ever care about per-marker positions, we'd need
-            // to snapshot cursor.line at the time each marker landed (which
-            // requires interleaving the scanner with the parser; not worth
-            // the complexity for v1).
-            for (kind_char, exit_code) in osc_hits {
+            // OSC 133 emit fan-out. Each marker now carries its own
+            // abs_line snapshot taken at the moment the marker terminator
+            // landed in the parser — see the marker_snapshots loop above.
+            // Mixed prompt+output batches now attribute the two markers
+            // to their actual on-screen lines.
+            for (kind_char, exit_code, abs_line_at_marker) in marker_snapshots {
                 let kind: &'static str = match kind_char {
                     'A' => "A",
                     'B' => "B",
@@ -235,7 +250,7 @@ fn worker_loop(
                 emit_osc133(
                     app,
                     term_id,
-                    Osc133 { kind, exit_code, abs_line },
+                    Osc133 { kind, exit_code, abs_line: abs_line_at_marker },
                 );
             }
 
@@ -263,10 +278,22 @@ fn worker_loop(
     eprintln!("[native_term] term {} worker exited after {} batches / {} bytes", term_id, batches, total_bytes);
 }
 
+/// One fully-parsed OSC 133 marker hit. `end_offset` is the byte index INTO
+/// the batch slice the scanner was fed where the marker's terminator ends —
+/// in other words, the start of the post-marker tail. The worker loop splits
+/// its alacritty parse at these boundaries so each marker's emitted
+/// `abs_line` reflects the cursor at the moment the marker landed (not the
+/// post-batch cursor).
+struct Osc133Hit {
+    kind: char,
+    exit_code: Option<i32>,
+    end_offset: usize,
+}
+
 /// State machine for finding OSC 133 prompt markers in the raw PTY byte
 /// stream. Persists across `feed()` calls so a sequence split across two
-/// batches still resolves. Emits one entry per fully-parsed marker:
-/// `(kind_char, exit_code_for_D)`.
+/// batches still resolves. Each `feed()` call returns one `Osc133Hit` per
+/// fully-parsed marker.
 ///
 /// Stub limitations:
 ///   - Ignores any A/B/C payload beyond the kind letter.
@@ -303,9 +330,16 @@ impl Osc133Scanner {
         }
     }
 
-    fn feed(&mut self, bytes: &[u8]) -> Vec<(char, Option<i32>)> {
-        let mut out: Vec<(char, Option<i32>)> = Vec::new();
-        for &b in bytes {
+    /// Drive the state machine across one batch of bytes. For each fully
+    /// terminated `ESC ] 133 ; X ... (BEL|ST)` sequence, append a hit
+    /// describing the marker. `end_offset` is the index INTO `bytes` of the
+    /// byte immediately AFTER the terminator — so `bytes[..end_offset]`
+    /// contains the marker. The worker_loop uses this to split the alacritty
+    /// parse at each marker boundary and snapshot the live cursor line
+    /// per-marker (mirrors what xterm-aware shells expect).
+    fn feed(&mut self, bytes: &[u8]) -> Vec<Osc133Hit> {
+        let mut out: Vec<Osc133Hit> = Vec::new();
+        for (i, &b) in bytes.iter().enumerate() {
             // Use a temporary swap to bypass the borrow checker on self.state.
             let prev = std::mem::replace(&mut self.state, ScannerState::Idle);
             self.state = match prev {
@@ -352,8 +386,14 @@ impl Osc133Scanner {
                 }
                 ScannerState::InPayload { kind } => {
                     if b == 0x07 {
-                        // BEL terminator → finalise.
-                        out.push((kind, parse_d_exit(kind, &self.payload)));
+                        // BEL terminator → finalise. end_offset is i+1: the
+                        // terminator is part of the marker, and the next
+                        // post-marker byte begins at i+1.
+                        out.push(Osc133Hit {
+                            kind,
+                            exit_code: parse_d_exit(kind, &self.payload),
+                            end_offset: i + 1,
+                        });
                         self.payload.clear();
                         ScannerState::Idle
                     } else if b == 0x1b {
@@ -370,8 +410,14 @@ impl Osc133Scanner {
                 }
                 ScannerState::PayloadSawEsc { kind } => {
                     if b == b'\\' {
-                        // ST terminator → finalise.
-                        out.push((kind, parse_d_exit(kind, &self.payload)));
+                        // ST terminator → finalise. The full terminator is
+                        // two bytes (ESC \), both of which precede position
+                        // i+1; the start of the post-marker tail is i+1.
+                        out.push(Osc133Hit {
+                            kind,
+                            exit_code: parse_d_exit(kind, &self.payload),
+                            end_offset: i + 1,
+                        });
                         self.payload.clear();
                         ScannerState::Idle
                     } else {
