@@ -24,7 +24,7 @@ use super::super::parser_bridge::TermListener;
 use super::super::window::Rect;
 use super::cursor::{CursorPipeline, CursorStyle};
 use super::glyph_atlas::GlyphStack;
-use super::grid::CellGrid;
+use super::grid::{CellGrid, CursorRenderInfo};
 use super::quad_pipeline::{QuadInstance, QuadPipeline};
 use super::ThemeColors;
 
@@ -342,10 +342,42 @@ impl Renderer {
                 label: Some("native_term R1 encoder"),
             });
 
+        // Blink-phase advance — moved BEFORE sync_from_term so the inverse
+        // block-cursor path can see the live visibility bit. (The other
+        // cursor styles read the same flag below; the move is a no-op for
+        // them.) Toggle visibility once per half-period; if blink is
+        // disabled, force visible so a paused cursor never strands off-screen
+        // after a config flip.
+        if self.cursor_blink {
+            if self.blink_phase_started_at.elapsed().as_millis() > BLINK_HALF_PERIOD_MS {
+                self.cursor_visible = !self.cursor_visible;
+                self.blink_phase_started_at = Instant::now();
+            }
+        } else {
+            self.cursor_visible = true;
+        }
+
+        // Compute cursor-render info for the cell-grid snapshot. Only Block
+        // style opts into the inverse-glyph swap; Bar / Underline keep
+        // their additive-quad render path below.
+        let inverse_block_active = matches!(self.cursor_style, CursorStyle::Block)
+            && self.cursor_visible;
+
         // If a Term is attached, refresh row buffers from its grid. Mutex
         // held briefly inside sync_from_term, released before glyph prepare.
         if let (Some(grid), Some(term)) = (self.grid.as_mut(), self.term.as_ref()) {
-            grid.sync_from_term(&mut self.glyph, term);
+            let cursor_info = if inverse_block_active {
+                let t = term.lock().expect("term poisoned");
+                let point = t.grid().cursor.point;
+                drop(t);
+                Some(CursorRenderInfo {
+                    point,
+                    inverse_block: true,
+                })
+            } else {
+                None
+            };
+            grid.sync_from_term(&mut self.glyph, term, cursor_info);
         }
 
         // Snapshot font metrics before glyphon takes &mut self.glyph. The
@@ -388,17 +420,8 @@ impl Renderer {
         self.search_quads
             .upload(&self.device, &self.queue, surface_w, surface_h, &search_instances);
 
-        // Blink-phase advance. Toggle visibility once per half-period; if
-        // blink is disabled, force visible so a paused cursor never strands
-        // off-screen after a config flip.
-        if self.cursor_blink {
-            if self.blink_phase_started_at.elapsed().as_millis() > BLINK_HALF_PERIOD_MS {
-                self.cursor_visible = !self.cursor_visible;
-                self.blink_phase_started_at = Instant::now();
-            }
-        } else {
-            self.cursor_visible = true;
-        }
+        // (Blink-phase advance has already happened before sync_from_term so
+        // the cursor-row snapshot can see this frame's visibility bit.)
         let text_areas: Vec<TextArea> = if let Some(grid) = self.grid.as_ref() {
             grid.text_areas(line_h)
         } else {
@@ -477,40 +500,37 @@ impl Renderer {
                         let cell_x = col as f32 * cell_w;
                         let cell_y = line_idx as f32 * line_h;
                         // Style-specific quad geometry + alpha.
-                        // Block: full cell rect at reduced alpha. True xterm
-                        // "inverse" block would re-render the glyph in the bg
-                        // color on top; that requires a second glyphon pass
-                        // and is deferred. Tinted-block is the simplest
-                        // legible variant.
-                        // Underline: 2-3px tall bar at cell bottom.
-                        // Bar: 2px wide vertical strip at cell x.
+                        //   Block:     handled by snapshot_rows via the
+                        //              CursorRenderInfo inverse swap above —
+                        //              cell bg becomes cursor color, glyph
+                        //              becomes theme bg. No quad drawn here.
+                        //   Underline: 2-3px tall bar at cell bottom.
+                        //   Bar:       2px wide vertical strip at cell x.
                         let underline_h = (line_h * 0.12).max(2.0).round();
-                        let (qx, qy, qw, qh, qa) = match self.cursor_style {
-                            CursorStyle::Bar => (cell_x, cell_y, 2.0, line_h, cursor_rgba[3]),
-                            CursorStyle::Underline => (
+                        let geom = match self.cursor_style {
+                            CursorStyle::Bar => Some((cell_x, cell_y, 2.0, line_h)),
+                            CursorStyle::Underline => Some((
                                 cell_x,
                                 cell_y + line_h - underline_h,
                                 cell_w,
                                 underline_h,
-                                cursor_rgba[3],
-                            ),
-                            CursorStyle::Block => {
-                                // 0.3 alpha keeps the underlying glyph visible.
-                                (cell_x, cell_y, cell_w, line_h, cursor_rgba[3] * 0.30)
-                            }
+                            )),
+                            CursorStyle::Block => None,
                         };
-                        let rgba = [cursor_rgba[0], cursor_rgba[1], cursor_rgba[2], qa];
-                        self.cursor.draw(
-                            &self.queue,
-                            surface_w,
-                            surface_h,
-                            qx,
-                            qy,
-                            qw,
-                            qh,
-                            rgba,
-                            &mut pass,
-                        );
+                        if let Some((qx, qy, qw, qh)) = geom {
+                            let rgba = cursor_rgba;
+                            self.cursor.draw(
+                                &self.queue,
+                                surface_w,
+                                surface_h,
+                                qx,
+                                qy,
+                                qw,
+                                qh,
+                                rgba,
+                                &mut pass,
+                            );
+                        }
                     }
                 }
             }

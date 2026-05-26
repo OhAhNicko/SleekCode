@@ -25,6 +25,22 @@ use super::ThemeColors;
 /// created pane (pre-set_theme) still renders the same semi-blue overlay.
 const SELECTION_BG_FALLBACK: [u8; 3] = [0x44, 0x55, 0x6B];
 
+/// What snapshot_rows needs to know to do the xterm-style "inverse" block
+/// cursor: the cursor cell's bg becomes the cursor color and its glyph
+/// renders in the theme's background color. Passed in by the renderer per
+/// frame so blink-phase flips correctly mark the cursor row dirty (the
+/// row's RowRun / BgSegment lists differ when the inverse is active vs not).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CursorRenderInfo {
+    /// Live cursor cell position as observed in alacritty's grid (viewport-relative).
+    pub point: Point,
+    /// True only when we want the inverse swap applied. Caller folds in:
+    ///   - cursor_style == Block (Bar / Underline are drawn as quads, not inverse)
+    ///   - cursor_visible (blink-off frames skip the inverse so the underlying
+    ///     glyph re-appears, matching xterm's blink behaviour).
+    pub inverse_block: bool,
+}
+
 /// 6×6×6 RGB cube component levels for xterm 256-color indices 16..=231.
 const XTERM_CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
 
@@ -251,12 +267,20 @@ impl CellGrid {
 
     /// Refresh row buffers from the alacritty grid. Reads only — does not
     /// hold the Term lock while shaping.
+    ///
+    /// `cursor` is the renderer's per-frame cursor-render state; pass
+    /// `Some(CursorRenderInfo { inverse_block: true, point })` to opt the
+    /// cursor cell into xterm-style inverse rendering. Any other case
+    /// (Bar / Underline cursors, blink-off frames, no Term attached) should
+    /// pass `None` so the cursor cell renders identically to its
+    /// non-cursor neighbours.
     pub fn sync_from_term(
         &mut self,
         glyph: &mut GlyphStack,
         term: &Arc<Mutex<Term<TermListener>>>,
+        cursor: Option<CursorRenderInfo>,
     ) {
-        let snapshot = self.snapshot_rows(term);
+        let snapshot = self.snapshot_rows(term, cursor);
 
         let len = snapshot.len().min(self.rows);
         for (y, row) in snapshot.into_iter().enumerate().take(len) {
@@ -326,7 +350,11 @@ impl CellGrid {
     /// Pull each visible row into a sequence of color-runs + bg/decoration
     /// segments under one short lock of the Term. Trailing empty cells are
     /// dropped from runs to avoid shaping blank suffixes.
-    fn snapshot_rows(&self, term: &Arc<Mutex<Term<TermListener>>>) -> Vec<RowSnapshot> {
+    fn snapshot_rows(
+        &self,
+        term: &Arc<Mutex<Term<TermListener>>>,
+        cursor: Option<CursorRenderInfo>,
+    ) -> Vec<RowSnapshot> {
         // Snapshot theme under its own (very short) read lock. We copy the
         // ~88-byte struct so the inner loop reads from the stack — avoids
         // holding both the term mutex and a theme RwLock guard at once and
@@ -381,7 +409,7 @@ impl CellGrid {
                 // (xterm semantics: swap the two final colors, not the inputs).
                 let raw_fg = ansi_color_to_rgb(cell.fg, fg_default_rgb, &theme);
                 let raw_bg = ansi_color_to_rgb_bg(cell.bg, &theme);
-                let (fg, mut bg) = if inverse { (raw_bg, raw_fg) } else { (raw_fg, raw_bg) };
+                let (mut fg, mut bg) = if inverse { (raw_bg, raw_fg) } else { (raw_fg, raw_bg) };
 
                 // R3-mouse: selection overlay. Override bg to the selection
                 // color when this cell falls inside the active selection. We
@@ -391,6 +419,22 @@ impl CellGrid {
                     let p = Point::new(line, Column(x));
                     if range.contains(p) {
                         bg = selection_rgb;
+                    }
+                }
+
+                // Block-cursor inverse: this cell becomes cursor-colored bg
+                // with theme-background-colored glyph. Last-wins over the
+                // selection overlay so the cursor stays visible mid-selection.
+                // The decorate/underline/strike segments will follow `fg`
+                // automatically — they get the inverse-color treatment too,
+                // matching xterm's whole-cell swap behaviour.
+                if let Some(ci) = cursor {
+                    if ci.inverse_block
+                        && ci.point.line == line
+                        && ci.point.column.0 == x
+                    {
+                        bg = rgb3(theme.cursor);
+                        fg = rgb3(theme.background);
                     }
                 }
 
