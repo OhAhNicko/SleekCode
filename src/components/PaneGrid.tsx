@@ -1,5 +1,6 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import type { PaneLayout, GameType } from "../types";
 import {
   removePane,
@@ -424,16 +425,7 @@ export default function PaneGrid({
         <Panel minSize={10} defaultSize={node.sizes?.[0] ?? 50}>
           {renderPane(node.children[0])}
         </Panel>
-        <PanelResizeHandle
-          style={{
-            width: direction === "horizontal" ? 4 : undefined,
-            height: direction === "vertical" ? 4 : undefined,
-            backgroundColor: "var(--ezy-surface-raised)",
-            cursor:
-              direction === "horizontal" ? "col-resize" : "row-resize",
-            position: "relative",
-          }}
-        />
+        <SplitterHandle nodeId={node.id} direction={direction} />
         <Panel minSize={10} defaultSize={node.sizes?.[1] ?? 50}>
           {renderPane(node.children[1])}
         </Panel>
@@ -445,5 +437,51 @@ export default function PaneGrid({
     <div data-grid-root className="h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
       {renderPane(layout)}
     </div>
+  );
+}
+
+/// Splitter handle with hole-cut publication. Wraps PanelResizeHandle and
+/// publishes its bounding rect (expanded by 5px on the lateral axis to
+/// match react-resizable-panels' default fine hitArea margin) to
+/// `overlayRegionSlice`. The existing region driver in TerminalPaneNative
+/// reads these rects and cuts holes through the native HWND, so clicks on
+/// the splitter pass through to the underlying DOM handle even when the
+/// native pane sits z-above the webview.
+///
+/// Replaces the never-functional `mouse_passthrough` event flow (Rust side
+/// still emits, JS side still subscribes and logs in dev, but the events
+/// don't drive any behavior — they were waiting on this hole-cut approach
+/// to land).
+function SplitterHandle({
+  nodeId,
+  direction,
+}: {
+  nodeId: string;
+  direction: "horizontal" | "vertical";
+}) {
+  const innerRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher(`splitter-${nodeId}`, innerRef);
+  return (
+    <PanelResizeHandle
+      style={{
+        width: direction === "horizontal" ? 4 : undefined,
+        height: direction === "vertical" ? 4 : undefined,
+        backgroundColor: "var(--ezy-surface-raised)",
+        cursor: direction === "horizontal" ? "col-resize" : "row-resize",
+        position: "relative",
+      }}
+    >
+      <div
+        ref={innerRef}
+        // Expand 5px on the lateral axis to match the library's default
+        // fine pointer hitArea (5px on each side, see
+        // PanelResizeHandle's `hitAreaMargins` prop).
+        style={{
+          position: "absolute",
+          inset: direction === "horizontal" ? "0 -5px" : "-5px 0",
+          pointerEvents: "none",
+        }}
+      />
+    </PanelResizeHandle>
   );
 }
