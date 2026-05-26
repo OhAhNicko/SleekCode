@@ -67,3 +67,14 @@ objc2-core-graphics = { version = "0.3", features = ["CGPath", "CGColor", "CGCol
 # since AppKit requires main-thread access and Tauri command handlers run
 # off-main on the tokio runtime.
 dispatch2 = "0.3"
+
+# native_term Phase 4 Linux spike: GTK3 DrawingArea sibling of webkit2gtk
+# WebView + wgpu surface adopting the realized GdkWindow's XID (X11) or
+# wl_surface (Wayland). gtk 0.18 / gdk 0.18 match the versions tao 0.34
+# pulls in transitively, so they share GObject types without duplicating the
+# crate tree. cairo is needed for the input-region (hole-cut) call.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", package = "gtk" }
+gdk = { version = "0.18", package = "gdk" }
+glib = "0.18"
+cairo-rs = { version = "0.18", package = "cairo-rs" }

@@ -6389,6 +6389,31 @@ pub fn run() {
                 native_term::registry::set_parent_handle(content_view as isize);
             }
 
+            // Linux: capture the main GtkApplicationWindow pointer so the
+            // native_term Linux PlatformWindow can add its DrawingArea as a
+            // sibling of the webkit2gtk WebView inside the ApplicationWindow's
+            // child container. The pointer stays valid for the app's
+            // lifetime (Tauri owns the window).
+            #[cfg(target_os = "linux")]
+            {
+                use glib::translate::ToGlibPtr;
+                let window = app
+                    .get_webview_window("main")
+                    .expect("main window not found");
+                let gtk_window = window
+                    .gtk_window()
+                    .expect("failed to get gtk::ApplicationWindow");
+                // ToGlibPtr::to_glib_none returns a Stash holding the raw
+                // GObject pointer. We immediately stash it as isize — the
+                // refcount belongs to `window`, which lives for the app
+                // lifetime, so the raw ptr stays valid.
+                let ptr: *mut gtk::ffi::GtkApplicationWindow = gtk_window.to_glib_none().0;
+                if ptr.is_null() {
+                    panic!("native_term: GtkApplicationWindow ptr is null at setup");
+                }
+                native_term::registry::set_parent_handle(ptr as isize);
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
