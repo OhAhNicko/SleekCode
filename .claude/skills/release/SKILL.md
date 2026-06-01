@@ -1,6 +1,6 @@
 ---
 name: release
-description: Bump version, commit, tag, push, and publish draft release with auto-generated changelog notes
+description: Bump version, commit, tag, push, and auto-publish a release with auto-generated changelog notes
 argument-hint: "[version]"
 ---
 
@@ -25,10 +25,10 @@ Bump the app version, trigger a CI release build, and populate the GitHub releas
    - Skip commits whose subject starts with `chore: bump version` (they are pure version bumps and add noise).
    - Prepend `## What's changed\n\n` and append `\n\n**Full changelog**: https://github.com/OhAhNicko/SleekCode/compare/${previous_tag}...v<version>`.
    - If the commit list is empty after filtering, fall back to `- Maintenance release.` so the body is never empty.
-8. `git tag v<version> && git push --tags` — this triggers CI (`.github/workflows/release.yml`), which creates/updates a draft release via `tauri-apps/tauri-action@v0.6`.
+8. `git tag v<version> && git push --tags` — this triggers CI (`.github/workflows/release.yml`), which builds/signs via `tauri-apps/tauri-action@v0.6` and then **auto-publishes** the release (the `publish` job runs `gh release edit --draft=false` after the build matrix, even if a platform build fails). No manual publish step is needed.
 9. Populate the draft release with the generated notes:
    - First attempt: `gh release create v<version> --title "MADE v<version>" --notes "$body" --draft`.
    - If that fails because CI already created the release, fall back to: `gh release edit v<version> --title "MADE v<version>" --notes "$body"`.
    - Pass `--notes` via a HEREDOC file (`--notes-file`) if the body contains special shell characters.
 10. Report: "Release v<version> triggered. Monitor CI: https://github.com/OhAhNicko/SleekCode/actions"
-11. Remind: "Once CI finishes uploading artifacts, review and publish the draft release at https://github.com/OhAhNicko/SleekCode/releases — the notes will appear in the in-app changelog popup after the next auto-update."
+11. No manual publish needed — CI auto-publishes the release once the build matrix finishes uploading artifacts (the `publish` job in `.github/workflows/release.yml`). Note for the operator: `gh run watch` can report success on a failed run — verify the real outcome with `gh run view <id> --json conclusion,jobs`, and confirm the release went live by curling `https://github.com/OhAhNicko/SleekCode/releases/latest/download/latest.json` (it should serve v<version>). The notes feed the in-app changelog popup after the next auto-update.
