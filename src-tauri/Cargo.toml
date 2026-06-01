@@ -48,3 +48,12 @@ glyphon = "0.6"
 alacritty_terminal = "0.24"
 unicode-width = "0.2"
 regex = "1"
+
+# Unix (macOS/Linux) only: alacritty_terminal 0.24 -> rustix-openpty 0.1.1 pulls
+# rustix 0.38 WITHOUT its `std` feature, so rustix falls back to its no_std
+# `OwnedFd` polyfill, which mismatches `std::os::fd::OwnedFd` in tty/unix.rs and
+# breaks the build. Depending on rustix 0.38 with `std` here turns the feature on
+# via cargo feature-unification, fixing the type mismatch. Windows is unaffected
+# (it doesn't use the unix pty backend).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "0.38", features = ["std"] }

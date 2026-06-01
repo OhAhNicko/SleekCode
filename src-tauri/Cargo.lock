@@ -2541,6 +2541,7 @@ dependencies = [
  "raw-window-handle",
  "regex",
  "reqwest",
+ "rustix 0.38.44",
  "serde",
  "serde_json",
  "tauri",
