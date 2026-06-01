@@ -941,18 +941,38 @@ export default function App() {
             <div className="h-full w-full" style={{
               display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
               backgroundColor: "var(--ezy-bg)", gap: 32, padding: "0 40px",
+              position: "relative", overflow: "hidden",
             }}>
-              <div style={{ textAlign: "center" }}>
-                <h1 style={{
-                  fontSize: 28, fontWeight: 700, color: "var(--ezy-text)",
-                  letterSpacing: "-0.02em", margin: 0,
-                }}>MADE</h1>
-                <p style={{ fontSize: 13, color: "var(--ezy-text-muted)", margin: "6px 0 0" }}>
-                  Open a project to get started
+              {/* subtle atmospheric glow behind the wordmark */}
+              <div aria-hidden="true" style={{
+                position: "absolute", inset: 0, pointerEvents: "none",
+                background: "radial-gradient(ellipse 55% 42% at 50% 40%, var(--ezy-surface-raised) 0%, transparent 70%)",
+                opacity: 0.45,
+              }} />
+              <div style={{ textAlign: "center", position: "relative" }}>
+                <h1 aria-label="MADE" style={{
+                  margin: 0, display: "flex", justifyContent: "center", gap: "0.5em",
+                  fontFamily: '"Sora Variable", system-ui, sans-serif', fontWeight: 200,
+                  fontSize: "clamp(46px, 9vw, 86px)", lineHeight: 1,
+                  textTransform: "uppercase", color: "var(--ezy-text)",
+                }}>
+                  {["M", "A", "D", "E"].map((ch, i) => (
+                    <span key={ch} className="made-splash-letter" style={{ animationDelay: `${0.12 + i * 0.1}s` }}>
+                      {ch}
+                    </span>
+                  ))}
+                </h1>
+                <p className="made-splash-sub" style={{
+                  margin: "20px 0 0", fontSize: 12.5, fontWeight: 300,
+                  color: "var(--ezy-text-muted)", textTransform: "lowercase",
+                  letterSpacing: "0.24em", paddingLeft: "0.24em",
+                  fontFamily: '"Sora Variable", system-ui, sans-serif',
+                }}>
+                  open a project to get started
                 </p>
               </div>
               {recentProjects.length > 0 && (
-                <div style={{ width: "100%", maxWidth: 480 }}>
+                <div className="made-splash-rise" style={{ width: "100%", maxWidth: 480, position: "relative" }}>
                   <div style={{
                     fontSize: 11, fontWeight: 600, color: "var(--ezy-text-muted)",
                     textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8,
@@ -987,12 +1007,15 @@ export default function App() {
                 </div>
               )}
               <button
+                className="made-splash-rise"
                 onClick={() => window.dispatchEvent(new Event("made:new-tab"))}
                 style={{
-                  padding: "8px 20px", borderRadius: 6,
+                  padding: "9px 22px", borderRadius: 8, position: "relative",
                   border: "1px solid var(--ezy-border)",
                   background: "var(--ezy-surface-raised)", color: "var(--ezy-text)",
                   fontSize: 13, fontWeight: 500, cursor: "pointer",
+                  letterSpacing: "0.02em",
+                  fontFamily: '"Sora Variable", system-ui, sans-serif',
                 }}
                 onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--ezy-accent)"}
                 onMouseLeave={(e) => e.currentTarget.style.borderColor = "var(--ezy-border)"}

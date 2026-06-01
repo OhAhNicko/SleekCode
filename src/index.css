@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
 @import "@fontsource-variable/inter";
+@import "@fontsource-variable/sora";
 
 @font-face {
   font-family: "Hack";
@@ -213,4 +214,37 @@ body,
   border-radius: 3px;
   color: var(--ezy-text-muted);
   font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* ── Startup splash (no-project screen) — single-fire entrance reveal ───── */
+@keyframes madeLetterReveal {
+  from { opacity: 0; transform: translateY(0.5em); filter: blur(10px); }
+  to   { opacity: 1; transform: translateY(0);     filter: blur(0); }
+}
+@keyframes madeRise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.made-splash-letter {
+  display: inline-block;
+  opacity: 0;
+  animation: madeLetterReveal 0.9s cubic-bezier(0.22, 0.7, 0.16, 1) both;
+}
+.made-splash-sub {
+  opacity: 0;
+  animation: madeRise 0.8s ease both;
+  animation-delay: 0.62s;
+}
+.made-splash-rise {
+  opacity: 0;
+  animation: madeRise 0.7s ease both;
+  animation-delay: 0.8s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .made-splash-letter,
+  .made-splash-sub,
+  .made-splash-rise {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+  }
 }
