@@ -395,7 +395,7 @@ function getRemoteExecCommand(type: TerminalType, sessionResumeId?: string): str
  * Uses ssh.exe on Windows, ssh on macOS/Linux.
  */
 export function getSshCommand(
-  server: { username: string; host: string; authMethod: string; sshKeyPath?: string },
+  server: { username: string; host: string; authMethod: string; sshKeyPath?: string; claudeOauthToken?: string },
   terminalType: TerminalType,
   remoteCwd?: string,
   sessionResumeId?: string
@@ -418,7 +418,14 @@ export function getSshCommand(
   // Build the remote command: cd to dir (if specified) then exec the tool
   // BASH_SILENCE_DEPRECATION_WARNING suppresses macOS's "default shell is now zsh"
   // banner that /etc/bashrc prints on every interactive bash login.
-  const envExport = "export TERM=xterm-256color COLORTERM=truecolor BASH_SILENCE_DEPRECATION_WARNING=1;";
+  let envExport = "export TERM=xterm-256color COLORTERM=truecolor BASH_SILENCE_DEPRECATION_WARNING=1;";
+  // Keep Claude Code logged in across SSH panes: the remote macOS Keychain is locked to
+  // non-GUI SSH shells, so without this every new pane re-prompts for login. Injecting the
+  // long-lived OAuth token (`claude setup-token`) bypasses the Keychain entirely. Exported
+  // for any terminal type so a manually launched `claude` in a shell pane also stays signed in.
+  if (server.claudeOauthToken) {
+    envExport += ` export CLAUDE_CODE_OAUTH_TOKEN=${sh(server.claudeOauthToken)};`;
+  }
   const remoteCmd = getRemoteExecCommand(terminalType, sessionResumeId);
   if (remoteCwd) {
     args.push(`${envExport} cd ${sh(remoteCwd)} && ${remoteCmd}`);
@@ -426,5 +433,26 @@ export function getSshCommand(
     args.push(`${envExport} ${remoteCmd}`);
   }
 
+  return { command: isWindows() ? "ssh.exe" : "ssh", args };
+}
+
+/**
+ * Build SSH command + args to run `claude setup-token` on a remote server.
+ * Used by the token-setup wizard: it spawns this in a PTY, parses the OAuth URL,
+ * feeds the browser code back, and captures the printed `sk-ant-oat…` token.
+ * Deliberately does NOT inject CLAUDE_CODE_OAUTH_TOKEN (we're creating one).
+ */
+export function getClaudeSetupTokenCommand(
+  server: { username: string; host: string; authMethod: string; sshKeyPath?: string }
+): { command: string; args: string[] } {
+  const userHost = `${server.username}@${server.host}`;
+  const args: string[] = ["-t"];
+  if (server.authMethod === "ssh-key" && server.sshKeyPath) {
+    args.push("-i", server.sshKeyPath);
+  }
+  args.push("-o", "StrictHostKeyChecking=no");
+  args.push(userHost);
+  const envExport = "export TERM=xterm-256color COLORTERM=truecolor BASH_SILENCE_DEPRECATION_WARNING=1;";
+  args.push(`${envExport} claude setup-token`);
   return { command: isWindows() ? "ssh.exe" : "ssh", args };
 }

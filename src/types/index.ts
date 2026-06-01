@@ -11,6 +11,10 @@ export interface RemoteServer {
   username: string;
   authMethod: AuthMethod;
   sshKeyPath?: string;
+  // Long-lived Claude OAuth token (`claude setup-token`). When set, MADE exports it as
+  // CLAUDE_CODE_OAUTH_TOKEN into remote sessions so Claude Code stays logged in over SSH
+  // (the macOS Keychain is inaccessible to non-GUI SSH shells, otherwise re-prompts each pane).
+  claudeOauthToken?: string;
 }
 
 export interface TerminalConfig {

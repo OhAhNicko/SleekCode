@@ -325,6 +325,13 @@ function DevServerRow({ server }: { server: DevServer }) {
     updateDevServerStatus(server.id, "stopped");
   }, [server, updateDevServerStatus]);
 
+  // Remove forgets the saved command (Stop keeps it): clear the persisted
+  // project command so it won't be restored on next launch.
+  const handleRemove = useCallback(() => {
+    removeDevServer(server.id);
+    updateProjectServerCommand(server.workingDir, undefined, server.serverId);
+  }, [server, removeDevServer, updateProjectServerCommand]);
+
   const handleStart = useCallback(() => {
     const write = getPtyWrite(server.terminalId);
     if (write) {
@@ -340,7 +347,7 @@ function DevServerRow({ server }: { server: DevServer }) {
     const commandChanged = trimmed && trimmed !== server.command;
     if (commandChanged) {
       updateDevServerCommand(server.id, trimmed);
-      updateProjectServerCommand(server.workingDir, trimmed);
+      updateProjectServerCommand(server.workingDir, trimmed, server.serverId);
     }
 
     const num = parseInt(portValue, 10);
@@ -462,7 +469,7 @@ function DevServerRow({ server }: { server: DevServer }) {
             <FaExpand size={10} color="var(--ezy-text-muted)" />
           </SmallIconButton>
           {(server.status === "stopped" || server.status === "error") && (
-            <SmallIconButton title="Remove" onClick={() => removeDevServer(server.id)} danger>
+            <SmallIconButton title="Remove" onClick={handleRemove} danger>
               <FaXmark size={10} color="var(--ezy-text-muted)" />
             </SmallIconButton>
           )}
@@ -629,6 +636,8 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
   const addDevServer = useAppStore((s) => s.addDevServer);
   const addCustomServerCommand = useAppStore((s) => s.addCustomServerCommand);
   const removeCustomServerCommand = useAppStore((s) => s.removeCustomServerCommand);
+  const updateProjectServerCommand = useAppStore((s) => s.updateProjectServerCommand);
+  const addRecentProject = useAppStore((s) => s.addRecentProject);
 
   const [selectedPath, setSelectedPath] = useState("");
   const [selectedName, setSelectedName] = useState("");
@@ -700,8 +709,18 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
       status: "starting",
       serverId: selectedServerId,
     });
+    // Persist the command onto the project so it's remembered across restart.
+    // Upsert: a browsed-new dir may not be in recentProjects yet.
+    const exists = useAppStore.getState().recentProjects.some(
+      (p) => norm(p.path) === norm(selectedPath) && p.serverId === selectedServerId,
+    );
+    if (exists) {
+      updateProjectServerCommand(selectedPath, trimmed, selectedServerId);
+    } else {
+      addRecentProject({ path: selectedPath, name: selectedName, serverCommand: trimmed, serverId: selectedServerId });
+    }
     onClose();
-  }, [selectedPath, selectedName, selectedServerId, command, addTerminal, addDevServer, addCustomServerCommand, onClose]);
+  }, [selectedPath, selectedName, selectedServerId, command, addTerminal, addDevServer, addCustomServerCommand, updateProjectServerCommand, addRecentProject, onClose]);
 
   const inputStyle: React.CSSProperties = {
     width: "100%",

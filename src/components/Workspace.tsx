@@ -142,6 +142,11 @@ export default function Workspace({ tab }: WorkspaceProps) {
       el.style.height = "0px";
       el.style.display = "none";
       el.style.zIndex = "10";
+      // The park (document.body slot park) sets pointer-events:none so parked
+      // slots don't capture events. But this slot stays in the park while shown
+      // as a visible fixed overlay, so it must re-enable pointer events or the
+      // iframe inherits `none` and the whole preview becomes click/scroll-dead.
+      el.style.pointerEvents = "auto";
       parkSlot(el);
       browserSlotMapRef.current.set(paneId, el);
     }

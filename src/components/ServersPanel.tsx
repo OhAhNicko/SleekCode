@@ -8,6 +8,7 @@ import { useAppStore } from "../store";
 import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import type { RemoteServer } from "../types";
 import { invoke } from "@tauri-apps/api/core";
+import ClaudeTokenWizardModal from "./ClaudeTokenWizardModal";
 
 /* ── Types ── */
 
@@ -393,6 +394,7 @@ const EMPTY_SERVER: Omit<RemoteServer, "id"> = {
   host: "",
   username: "",
   authMethod: "ssh-key",
+  claudeOauthToken: "",
 };
 
 /* ── Main component ── */
@@ -415,6 +417,8 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
   const [detectedKeys, setDetectedKeys] = useState<SshKeyInfo[]>([]);
   const [formKeyTestStatus, setFormKeyTestStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [showToken, setShowToken] = useState(false);
+  const [setupWizardOpen, setSetupWizardOpen] = useState(false);
 
   // Scan ~/.ssh/ for existing key pairs
   const refreshKeys = useCallback(() => {
@@ -428,6 +432,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
     setEditingId(null);
     setShowForm(false);
     setFormKeyTestStatus("idle");
+    setShowToken(false);
   }, []);
 
   const handleEdit = useCallback((server: RemoteServer) => {
@@ -437,10 +442,12 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
       username: server.username,
       authMethod: server.authMethod,
       sshKeyPath: server.sshKeyPath,
+      claudeOauthToken: server.claudeOauthToken ?? "",
     });
     setEditingId(server.id);
     setShowForm(true);
     setFormKeyTestStatus("idle");
+    setShowToken(false);
   }, []);
 
   const handleSave = useCallback(() => {
@@ -607,6 +614,8 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
 
   const isFormValid = formData.name && formData.username && formData.host;
   const canFormTest = !!(formData.sshKeyPath && formData.host && formData.username);
+  // The token wizard SSHes in headlessly, so it needs key auth (no interactive password prompt).
+  const canRunWizard = !!(formData.host && formData.username && formData.authMethod === "ssh-key" && formData.sshKeyPath);
 
   /** Renders the test icon for the form inline test button */
   const formTestIcon = (isCompact: boolean) => {
@@ -792,6 +801,62 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                   Password prompted on connect
                 </div>
               )}
+
+              {/* Claude login token — keeps Claude Code signed in over SSH */}
+              <div>
+                <label style={cLabelStyle}>Claude login token (optional)</label>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <input
+                    style={cInputStyle}
+                    type={showToken ? "text" : "password"}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="sk-ant-oat… (run: claude setup-token)"
+                    value={formData.claudeOauthToken || ""}
+                    onChange={(e) => updateField("claudeOauthToken", e.target.value)}
+                  />
+                  <SmallIconButton
+                    compact
+                    title={showToken ? "Hide token" : "Show token"}
+                    onClick={() => setShowToken((v) => !v)}
+                  >
+                    {showToken ? (
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                        <line x1="1" y1="1" x2="23" y2="23" />
+                      </svg>
+                    ) : (
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                        <circle cx="12" cy="12" r="3" />
+                      </svg>
+                    )}
+                  </SmallIconButton>
+                </div>
+                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 3, lineHeight: 1.4 }}>
+                  Lets Claude Code stay logged in across SSH panes (the macOS Keychain is unavailable over SSH). Paste a token from <span style={{ color: "var(--ezy-text)" }}>claude setup-token</span>, or set it up automatically below.
+                </div>
+                <div
+                  onClick={canRunWizard ? () => setSetupWizardOpen(true) : undefined}
+                  title={canRunWizard ? "Run claude setup-token over SSH and capture the token" : "Requires an SSH-key server with host, username and key set"}
+                  style={{
+                    marginTop: 6,
+                    padding: "4px 0",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    textAlign: "center",
+                    borderRadius: 4,
+                    border: "1px solid var(--ezy-border-light)",
+                    color: canRunWizard ? "var(--ezy-text)" : "var(--ezy-text-muted)",
+                    backgroundColor: "var(--ezy-bg)",
+                    cursor: canRunWizard ? "pointer" : "default",
+                    opacity: canRunWizard ? 1 : 0.5,
+                    transition: "all 120ms ease",
+                  }}
+                >
+                  Set up automatically
+                </div>
+              </div>
 
               {/* Buttons */}
               <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
@@ -1424,6 +1489,19 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
           </div>
         )}
       </div>
+
+      {setupWizardOpen && (
+        <ClaudeTokenWizardModal
+          server={{
+            host: formData.host,
+            username: formData.username,
+            authMethod: formData.authMethod,
+            sshKeyPath: formData.sshKeyPath,
+          }}
+          onToken={(token) => updateField("claudeOauthToken", token)}
+          onClose={() => setSetupWizardOpen(false)}
+        />
+      )}
     </div>
   );
 }

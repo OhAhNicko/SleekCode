@@ -1041,6 +1041,8 @@ export default function SettingsPane() {
   const setNativeCursorStyle = useAppStore((s) => s.setNativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
   const setNativeCursorBlink = useAppStore((s) => s.setNativeCursorBlink);
+  const useNativeTerminalRenderer = useAppStore((s) => s.useNativeTerminalRenderer);
+  const setUseNativeTerminalRenderer = useAppStore((s) => s.setUseNativeTerminalRenderer);
   const aiTimeBursts = useAppStore((s) => s.aiTimeBursts);
   const clearAiTimeStats = useAppStore((s) => s.clearAiTimeStats);
   const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
@@ -1147,20 +1149,6 @@ export default function SettingsPane() {
               <SettingsRow label="Vibrant colors" description="Use brighter, more saturated accent colors throughout the UI.">
                 <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
               </SettingsRow>
-              <SettingsRow label="Native terminal cursor style" description="Applies to native terminal renderer only.">
-                <SegmentedControl<"bar" | "block" | "underline">
-                  options={[
-                    { value: "bar", label: "Bar" },
-                    { value: "block", label: "Block" },
-                    { value: "underline", label: "Underline" },
-                  ]}
-                  value={nativeCursorStyle}
-                  onChange={setNativeCursorStyle}
-                />
-              </SettingsRow>
-              <SettingsRow label="Native terminal cursor blink" description="Applies to native terminal renderer only.">
-                <ToggleSwitch checked={nativeCursorBlink} onChange={setNativeCursorBlink} />
-              </SettingsRow>
             </SettingsSection>
             <SettingsSection id="danger-zone" title="Danger Zone" description="Clear MADE's local storage. Your files on disk are not affected.">
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
@@ -1213,6 +1201,25 @@ export default function SettingsPane() {
                 </SettingsRow>
               </SettingsSection>
             )}
+            <SettingsSection id="native-renderer" title="Native renderer" description="Experimental GPU-accelerated terminal renderer. When off, MADE uses the classic xterm panes.">
+              <SettingsRow label="Native terminal renderer (beta)" description="Render terminals with the native GPU renderer instead of the classic xterm panes. When off, MADE uses the proven xterm renderer. Open terminals reload when you change this.">
+                <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
+              </SettingsRow>
+              <SettingsRow label="Native terminal cursor style" description="Applies to native terminal renderer only.">
+                <SegmentedControl<"bar" | "block" | "underline">
+                  options={[
+                    { value: "bar", label: "Bar" },
+                    { value: "block", label: "Block" },
+                    { value: "underline", label: "Underline" },
+                  ]}
+                  value={nativeCursorStyle}
+                  onChange={setNativeCursorStyle}
+                />
+              </SettingsRow>
+              <SettingsRow label="Native terminal cursor blink" description="Applies to native terminal renderer only.">
+                <ToggleSwitch checked={nativeCursorBlink} onChange={setNativeCursorBlink} />
+              </SettingsRow>
+            </SettingsSection>
             <SettingsSection id="cli" title="CLI Options" description="Per-CLI font size and YOLO mode settings.">
             {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
               const currentSize = cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE;

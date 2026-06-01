@@ -179,7 +179,7 @@ export interface RecentProjectsSlice {
   setPreviewInProjectTab: (value: boolean) => void;
   addCustomServerCommand: (command: string) => void;
   removeCustomServerCommand: (command: string) => void;
-  updateProjectServerCommand: (path: string, command: string, serverId?: string) => void;
+  updateProjectServerCommand: (path: string, command: string | undefined, serverId?: string) => void;
   setBrowserFullColumn: (value: boolean) => void;
   setBrowserSpawnLeft: (value: boolean) => void;
   setCopyOnSelect: (value: boolean) => void;

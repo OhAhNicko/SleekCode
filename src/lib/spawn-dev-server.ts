@@ -33,5 +33,8 @@ export function spawnDevServer(
       t.id === tabId ? { ...t, serverCommand: command } : t,
     ),
   }));
+  // Persist the command onto the project so it survives restart (create-flow,
+  // quick-open and boot-restore all funnel through here).
+  store.updateProjectServerCommand(workingDir, command, serverId);
   return terminalId;
 }
