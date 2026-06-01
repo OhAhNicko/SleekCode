@@ -1,0 +1,26 @@
+# Normalize line endings. This repo is developed across WSL (LF) and Windows
+# (CRLF) tooling, which caused whole-file CRLF<->LF churn in diffs (Cargo.lock,
+# package-lock.json, .gitignore, etc.). Store and check out text as LF everywhere.
+* text=auto eol=lf
+
+# Shell scripts must stay LF (they run in WSL/bash).
+*.sh text eol=lf
+
+# Binary assets Git must never line-ending-normalize.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.icns  binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.exe   binary
+*.msi   binary
+*.dmg   binary
