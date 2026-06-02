@@ -1,6 +1,6 @@
 [package]
 name = "made"
-version = "0.1.59"
+version = "0.1.60"
 description = "AI Terminal Workspace"
 authors = ["you"]
 edition = "2021"
