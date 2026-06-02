@@ -508,9 +508,11 @@ mod win32_border {
                 Box::into_raw(state) as usize,
             );
 
-            // 4) Force Windows to recalculate the frame
+            // 4) Remove the native resize frame completely. Custom JS handles
+            //    own resizing, so keeping WS_THICKFRAME only gives DWM another
+            //    chance to paint the generic Windows border during drag/restore.
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-            SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME);
+            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !WS_THICKFRAME);
             SetWindowPos(
                 hwnd,
                 std::ptr::null_mut(),

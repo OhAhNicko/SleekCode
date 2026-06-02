@@ -1,8 +1,12 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import type { CSSProperties } from "react";
+import { startCustomWindowResize, type CustomResizeDirection } from "../lib/window-chrome";
 
 const HANDLE = 6; // px — invisible resize border thickness
 
-const directions = [
+const directions: ReadonlyArray<{
+  dir: CustomResizeDirection;
+  style: CSSProperties;
+}> = [
   // Edges
   { dir: "North", style: { top: 0, left: HANDLE, right: HANDLE, height: HANDLE, cursor: "n-resize" } },
   { dir: "South", style: { bottom: 0, left: HANDLE, right: HANDLE, height: HANDLE, cursor: "s-resize" } },
@@ -21,10 +25,7 @@ export default function WindowResizeHandles() {
       {directions.map(({ dir, style }) => (
         <div
           key={dir}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            getCurrentWindow().startResizeDragging(dir);
-          }}
+          onPointerDown={(e) => startCustomWindowResize(e, dir)}
           style={{
             position: "fixed",
             zIndex: 9999,

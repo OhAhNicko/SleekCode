@@ -4,6 +4,7 @@ import { useAppStore } from "../store";
 import { findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane } from "../lib/layout-utils";
 import { getProjectColor } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
+import { startCustomWindowDrag } from "../lib/window-chrome";
 import ClipboardImageStrip from "./ClipboardImageStrip";
 import VoiceMicButton from "./VoiceMicButton";
 import { VOICE_ENABLED } from "../lib/voice/feature-flag";
@@ -276,8 +277,8 @@ export default function VerticalTabBar() {
             </svg>
           </div>
 
-          {/* Draggable spacer — only meaningful in wide mode (compact has no leftover width) */}
-          {!compact && <div data-tauri-drag-region style={{ flex: 1, cursor: "default" }} />}
+          {/* App-owned drag path; avoids Windows' native frame during restore drags. */}
+          {!compact && <div onPointerDown={startCustomWindowDrag} style={{ flex: 1, cursor: "grab" }} />}
 
           {/* New tab (far right of controls row) */}
           <div
@@ -718,8 +719,8 @@ export default function VerticalTabBar() {
           </div>
         )}
 
-        {/* Draggable filler — empty space below tabs is grabbable to move the window */}
-        <div data-tauri-drag-region style={{ flex: 1, minHeight: 24 }} />
+        {/* Empty space below tabs is grabbable to move the window. */}
+        <div onPointerDown={startCustomWindowDrag} style={{ flex: 1, minHeight: 24, cursor: "grab" }} />
       </div>
 
       {/* BOTTOM — voice mic, snip + thumbnails (wrap), divider, Settings */}

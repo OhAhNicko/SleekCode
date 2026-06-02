@@ -7,6 +7,7 @@ import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { isWindows, detectBackendForPath } from "../lib/platform";
+import { startCustomWindowDrag } from "../lib/window-chrome";
 import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import type { RemoteServer, TerminalType, TerminalBackend } from "../types";
 import RemoteFileBrowser from "./RemoteFileBrowser";
@@ -1354,12 +1355,11 @@ export default function TabBar() {
           </>}
         </div>
 
-        {/* Spacer — draggable region (disable drag when menu open so clicks close menus) */}
+        {/* Spacer — app-owned drag path; avoids Windows' native frame during restore drags. */}
         <div
           className="flex-1"
-          {...(!anyMenuOpen ? { "data-tauri-drag-region": true } : {})}
-          onMouseDown={anyMenuOpen ? closeAllMenus : undefined}
-          style={anyMenuOpen ? { cursor: "default" } : undefined}
+          onPointerDown={anyMenuOpen ? () => closeAllMenus() : startCustomWindowDrag}
+          style={{ cursor: anyMenuOpen ? "default" : "grab" }}
         />
 
         {/* Git Status Bar — only for project tabs with workingDir */}
