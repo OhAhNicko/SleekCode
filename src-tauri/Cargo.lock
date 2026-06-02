@@ -2555,8 +2555,10 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "unicode-width 0.2.2",
+ "webview2-com",
  "wgpu",
  "windows 0.58.0",
+ "windows 0.61.3",
 ]
 
 [[package]]

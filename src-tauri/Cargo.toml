@@ -49,6 +49,12 @@ alacritty_terminal = "0.24"
 unicode-width = "0.2"
 regex = "1"
 
+# WebView2 COM uses windows 0.61. The native terminal code above uses
+# windows 0.58, so keep the WebView2 Windows types under an alias.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38.2"
+windows-webview2 = { package = "windows", version = "0.61.3", features = ["Win32_Foundation"] }
+
 # Unix (macOS/Linux) only: alacritty_terminal 0.24 -> rustix-openpty 0.1.1 pulls
 # rustix 0.38 WITHOUT its `std` feature, so rustix falls back to its no_std
 # `OwnedFd` polyfill, which mismatches `std::os::fd::OwnedFd` in tty/unix.rs and

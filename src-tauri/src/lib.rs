@@ -46,7 +46,12 @@ fn wsl_command() -> Command {
 #[cfg(target_os = "windows")]
 mod win32_border {
     use std::ffi::c_void;
-    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Controller;
+    use windows_webview2::Win32::Foundation::{
+        HWND as WebViewHwnd,
+        RECT as WebViewRect,
+    };
 
     const DWMWA_NCRENDERING_POLICY: u32 = 2;
     const DWMNCRP_DISABLED: u32 = 1;
@@ -64,28 +69,39 @@ mod win32_border {
     const BORDER_COLOR_DARK: u32 = 0x000D0D0D;
     const WM_NCCALCSIZE: u32 = 0x0083;
     const WM_SIZE: u32 = 0x0005;
+    const WM_MOVE: u32 = 0x0003;
     const WM_ACTIVATE: u32 = 0x0006;
     const WM_SHOWWINDOW: u32 = 0x0018;
+    const WM_DISPLAYCHANGE: u32 = 0x007E;
+    const WM_NCDESTROY: u32 = 0x0082;
     const WM_WINDOWPOSCHANGED: u32 = 0x0047;
+    const WM_SIZING: u32 = 0x0214;
+    const WM_MOVING: u32 = 0x0216;
+    const WM_ENTERSIZEMOVE: u32 = 0x0231;
+    const WM_EXITSIZEMOVE: u32 = 0x0232;
+    const WM_DPICHANGED: u32 = 0x02E0;
     const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
     const WM_DWMCOLORIZATIONCOLORCHANGED: u32 = 0x0320;
     const WM_NCPAINT: u32 = 0x0085;
-    const WM_USER: u32 = 0x0400;
-    const WM_WEBVIEW_REPAINT: u32 = WM_USER + 100;
+    const WM_APP: u32 = 0x8000;
+    const WM_SYNC_WEBVIEW_BOUNDS: u32 = WM_APP + 0x4D;
     const SIZE_MINIMIZED: usize = 1;
     const SIZE_MAXIMIZED: usize = 2;
     const SIZE_RESTORED: usize = 0;
     const GWL_STYLE: i32 = -16;
     const WS_THICKFRAME: isize = 0x00040000;
-    const WS_MAXIMIZE: isize = 0x01000000;
     const SWP_FRAMECHANGED: u32 = 0x0020;
     const SWP_NOMOVE: u32 = 0x0002;
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_ASYNCWINDOWPOS: u32 = 0x4000;
     const MONITOR_DEFAULTTONEAREST: u32 = 2;
-
-    static WAS_MINIMIZED: AtomicBool = AtomicBool::new(false);
-    static WAS_MAXIMIZED: AtomicBool = AtomicBool::new(false);
+    const SUBCLASS_ID: usize = 1;
+    const SM_CXSIZEFRAME: i32 = 32;
+    const SM_CYSIZEFRAME: i32 = 33;
+    const SM_CXPADDEDBORDER: i32 = 92;
+    const FRAME_CLAMP_TOLERANCE_PX: i32 = 3;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -110,6 +126,13 @@ mod win32_border {
         lppos: *mut c_void,
     }
 
+    struct BorderSubclassState {
+        controller: ICoreWebView2Controller,
+        sync_pending: bool,
+        was_minimized: bool,
+        was_maximized: bool,
+    }
+
     extern "system" {
         fn DwmSetWindowAttribute(
             hwnd: *mut c_void,
@@ -127,6 +150,14 @@ mod win32_border {
             ref_data: usize,
         ) -> i32;
 
+        fn RemoveWindowSubclass(
+            hwnd: *mut c_void,
+            pfn_subclass: Option<unsafe extern "system" fn(
+                *mut c_void, u32, usize, isize, usize, usize,
+            ) -> isize>,
+            uid_subclass: usize,
+        ) -> i32;
+
         fn DefSubclassProc(
             hwnd: *mut c_void,
             msg: u32,
@@ -142,9 +173,11 @@ mod win32_border {
             x: i32, y: i32, cx: i32, cy: i32,
             flags: u32,
         ) -> i32;
+        fn GetClientRect(hwnd: *mut c_void, rect: *mut RECT) -> i32;
         fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
         fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MONITORINFO) -> i32;
-        fn GetWindowRect(hwnd: *mut c_void, rect: *mut RECT) -> i32;
+        fn GetDpiForWindow(hwnd: *mut c_void) -> u32;
+        fn GetSystemMetricsForDpi(index: i32, dpi: u32) -> i32;
         fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
         fn ShowWindow(hwnd: *mut c_void, cmd_show: i32) -> i32;
     }
@@ -202,32 +235,118 @@ mod win32_border {
         );
     }
 
+    #[inline]
+    unsafe fn queue_webview_bounds_sync(hwnd: *mut c_void, state: &mut BorderSubclassState) {
+        if state.sync_pending {
+            return;
+        }
+
+        state.sync_pending = true;
+        if PostMessageW(hwnd, WM_SYNC_WEBVIEW_BOUNDS, 0, 0) == 0 {
+            state.sync_pending = false;
+        }
+    }
+
+    #[inline]
+    unsafe fn sync_webview_bounds(hwnd: *mut c_void, state: &mut BorderSubclassState) {
+        let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetClientRect(hwnd, &mut rect) == 0 {
+            return;
+        }
+
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 0 || height <= 0 {
+            return;
+        }
+
+        let bounds = WebViewRect {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
+        let _ = state.controller.SetBounds(bounds);
+
+        let mut webview_hwnd = WebViewHwnd::default();
+        if state.controller.ParentWindow(&mut webview_hwnd).is_ok() && !webview_hwnd.0.is_null() {
+            SetWindowPos(
+                webview_hwnd.0,
+                std::ptr::null_mut(),
+                0,
+                0,
+                width,
+                height,
+                SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOZORDER,
+            );
+        }
+
+        let _ = state.controller.NotifyParentWindowPositionChanged();
+    }
+
+    #[inline]
+    unsafe fn frame_overshoot_limit(hwnd: *mut c_void) -> (i32, i32) {
+        let dpi = GetDpiForWindow(hwnd).max(96);
+        let fallback = ((8 * dpi as i32) + 95) / 96;
+
+        let frame_x = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi)
+            + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+        let frame_y = GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi)
+            + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
+
+        (
+            frame_x.max(fallback) + FRAME_CLAMP_TOLERANCE_PX,
+            frame_y.max(fallback) + FRAME_CLAMP_TOLERANCE_PX,
+        )
+    }
+
+    #[inline]
+    fn clamp_small_frame_overshoot(r: &mut RECT, work: RECT, max_x: i32, max_y: i32) {
+        let left_overshoot = work.left - r.left;
+        if left_overshoot > 0 && left_overshoot <= max_x {
+            r.left = work.left;
+        }
+
+        let right_overshoot = r.right - work.right;
+        if right_overshoot > 0 && right_overshoot <= max_x {
+            r.right = work.right;
+        }
+
+        let top_overshoot = work.top - r.top;
+        if top_overshoot > 0 && top_overshoot <= max_y {
+            r.top = work.top;
+        }
+
+        let bottom_overshoot = r.bottom - work.bottom;
+        if bottom_overshoot > 0 && bottom_overshoot <= max_y {
+            r.bottom = work.bottom;
+        }
+    }
+
     /// Window subclass proc that intercepts WM_NCCALCSIZE to remove the
     /// 1px top non-client border Windows draws on frameless windows.
     ///
-    /// Handles three cases:
-    /// - **Maximized** (Win+Up or maximize button): WS_MAXIMIZE is set, and
-    ///   WS_THICKFRAME extends the window rect ~8px beyond screen edges.
-    ///   We set client rect = monitor work area.
-    /// - **Snapped** (Win+Left/Right): WS_MAXIMIZE is NOT set, but
-    ///   WS_THICKFRAME still causes the proposed rect to overshoot the work
-    ///   area. We clamp the client rect to the work area boundaries so the
-    ///   window doesn't extend behind the taskbar.
-    /// - **Normal** (floating window): proposed rect is within the work area,
-    ///   no clamping needed. We return 0 to remove all non-client area.
+    /// Only tiny resize-frame overshoots are clamped to the monitor work area.
+    /// Large overshoots are left alone so a normal window can span monitors
+    /// without shrinking the client rect and exposing native background.
     unsafe extern "system" fn subclass_proc(
         hwnd: *mut c_void,
         msg: u32,
         wparam: usize,
         lparam: isize,
         _uid_subclass: usize,
-        _ref_data: usize,
+        ref_data: usize,
     ) -> isize {
-        // Track minimize → restore to fix WebView2 blank screen.
-        // WebView2 in frameless windows doesn't repaint its compositor
-        // surface after restore. We detect restore and post a deferred
-        // message that forces a 1px resize cycle, which triggers
-        // WebView2's put_Bounds and repaints the content.
+        let state_ptr = ref_data as *mut BorderSubclassState;
+
+        if msg == WM_NCDESTROY {
+            RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID);
+            if !state_ptr.is_null() {
+                drop(Box::from_raw(state_ptr));
+            }
+            return DefSubclassProc(hwnd, msg, wparam, lparam);
+        }
+
         // Aggressively re-apply DWM border suppression on every window state
         // change. Windows resets DWMWA_BORDER_COLOR during transitions
         // (drag-resize, maximize, minimize, activate, snap, theme change),
@@ -236,34 +355,53 @@ mod win32_border {
         // unreliable on many Windows builds and is what was causing the flash.
         if msg == WM_SIZE || msg == WM_ACTIVATE
            || msg == WM_SHOWWINDOW || msg == WM_WINDOWPOSCHANGED
+           || msg == WM_MOVE || msg == WM_MOVING || msg == WM_SIZING
+           || msg == WM_ENTERSIZEMOVE || msg == WM_EXITSIZEMOVE
+           || msg == WM_DPICHANGED || msg == WM_DISPLAYCHANGE
            || msg == WM_NCCALCSIZE || msg == WM_DWMCOMPOSITIONCHANGED
            || msg == WM_DWMCOLORIZATIONCOLORCHANGED
         {
             apply_border_suppression(hwnd);
         }
 
+        if !state_ptr.is_null() {
+            let state = &mut *state_ptr;
+            if msg == WM_SYNC_WEBVIEW_BOUNDS {
+                state.sync_pending = false;
+                sync_webview_bounds(hwnd, state);
+                return 0;
+            }
+
+            if msg == WM_MOVE || msg == WM_MOVING {
+                let _ = state.controller.NotifyParentWindowPositionChanged();
+            }
+
+            if msg == WM_DPICHANGED || msg == WM_DISPLAYCHANGE
+               || msg == WM_MOVE || msg == WM_MOVING || msg == WM_SIZING
+               || msg == WM_EXITSIZEMOVE || msg == WM_WINDOWPOSCHANGED
+               || msg == WM_SHOWWINDOW
+            {
+                queue_webview_bounds_sync(hwnd, state);
+            }
+        }
+
         if msg == WM_SIZE {
-            if wparam == SIZE_MINIMIZED {
-                WAS_MINIMIZED.store(true, Ordering::SeqCst);
-            } else {
-                // Force WebView2 to relayout ONLY on actual restore-from-
-                // minimize/maximize transitions. Earlier code triggered on
-                // every SIZE_RESTORED, but per MSDN that wparam fires on
-                // every normal resize (including drag-resize and our own
-                // SetWindowPos calls below). The result was an exponential
-                // message-loop cascade: WM_SIZE → post WM_WEBVIEW_REPAINT →
-                // SetWindowPos +1/-1 → 2× WM_SIZE → 2× WM_WEBVIEW_REPAINT,
-                // visible as the window shaking 1px during drag and pegging
-                // CPU on startup. Tracking transitions explicitly keeps the
-                // relayout one-shot per real state change.
-                let was_minimized = WAS_MINIMIZED.swap(false, Ordering::SeqCst);
-                let was_maximized = WAS_MAXIMIZED.swap(false, Ordering::SeqCst);
-                let needs_relayout = was_minimized || was_maximized;
-                if needs_relayout {
-                    PostMessageW(hwnd, WM_WEBVIEW_REPAINT, 0, 0);
+            if !state_ptr.is_null() {
+                let state = &mut *state_ptr;
+                if wparam == SIZE_MINIMIZED {
+                    state.was_minimized = true;
+                } else {
+                    state.was_minimized = false;
+                    queue_webview_bounds_sync(hwnd, state);
                 }
+            }
+
+            if wparam != SIZE_MINIMIZED {
                 if wparam == SIZE_MAXIMIZED {
-                    WAS_MAXIMIZED.store(true, Ordering::SeqCst);
+                    if !state_ptr.is_null() {
+                        let state = &mut *state_ptr;
+                        state.was_maximized = true;
+                    }
                     let corner_pref = DWMWCP_DONOTROUND;
                     DwmSetWindowAttribute(
                         hwnd,
@@ -271,42 +409,30 @@ mod win32_border {
                         &corner_pref as *const u32 as *const c_void,
                         std::mem::size_of::<u32>() as u32,
                     );
-                } else if wparam == SIZE_RESTORED && was_maximized {
-                    // Only re-apply rounded corners + frame recalc on the
-                    // actual maximize→restore edge — not on every drag tick.
-                    let corner_pref = DWMWCP_ROUND;
-                    DwmSetWindowAttribute(
-                        hwnd,
-                        DWMWA_WINDOW_CORNER_PREFERENCE,
-                        &corner_pref as *const u32 as *const c_void,
-                        std::mem::size_of::<u32>() as u32,
-                    );
-                    SetWindowPos(
-                        hwnd, std::ptr::null_mut(), 0, 0, 0, 0,
-                        SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-                    );
+                } else if wparam == SIZE_RESTORED {
+                    let was_maximized = if state_ptr.is_null() {
+                        false
+                    } else {
+                        let state = &mut *state_ptr;
+                        std::mem::take(&mut state.was_maximized)
+                    };
+                    if was_maximized {
+                        // Only re-apply rounded corners + frame recalc on the
+                        // actual maximize -> restore edge, not on every drag tick.
+                        let corner_pref = DWMWCP_ROUND;
+                        DwmSetWindowAttribute(
+                            hwnd,
+                            DWMWA_WINDOW_CORNER_PREFERENCE,
+                            &corner_pref as *const u32 as *const c_void,
+                            std::mem::size_of::<u32>() as u32,
+                        );
+                        SetWindowPos(
+                            hwnd, std::ptr::null_mut(), 0, 0, 0, 0,
+                            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+                        );
+                    }
                 }
             }
-        }
-
-        if msg == WM_WEBVIEW_REPAINT {
-            let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-            if (style & WS_MAXIMIZE) != 0 {
-                // Maximized: can't resize, force frame recalculation instead
-                SetWindowPos(
-                    hwnd, std::ptr::null_mut(), 0, 0, 0, 0,
-                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-                );
-            } else {
-                // Normal/snapped: resize +1px then back to force WebView2 relayout
-                let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-                GetWindowRect(hwnd, &mut rect);
-                let w = rect.right - rect.left;
-                let h = rect.bottom - rect.top;
-                SetWindowPos(hwnd, std::ptr::null_mut(), rect.left, rect.top, w + 1, h, SWP_NOZORDER);
-                SetWindowPos(hwnd, std::ptr::null_mut(), rect.left, rect.top, w, h, SWP_NOZORDER);
-            }
-            return 0;
         }
 
         if msg == WM_NCCALCSIZE && wparam == 1 {
@@ -319,30 +445,9 @@ mod win32_border {
                 dw_flags: 0,
             };
             if GetMonitorInfoW(monitor, &mut mi) != 0 {
-                // Always clamp to work area — same result as the previous
-                // "if WS_MAXIMIZE { = work_area } else { clamp }" branch
-                // because clamping a maximized window's overshooting rect
-                // produces the work area, but WITHOUT depending on the
-                // GWL_STYLE WS_MAXIMIZE flag. That flag is unreliable during
-                // maximize↔restore transitions: WM_NCCALCSIZE can fire with
-                // the new (restored) proposed rect while WS_MAXIMIZE is still
-                // set, causing the old code to set client = work_area while
-                // the actual window rect was already shrinking, leaving
-                // WebView2 with a stale "huge" client size and the rendered
-                // surface stuck at the old bounds.
                 let r = &mut params.rgrc[0];
-                if r.top < mi.rc_work.top {
-                    r.top = mi.rc_work.top;
-                }
-                if r.bottom > mi.rc_work.bottom {
-                    r.bottom = mi.rc_work.bottom;
-                }
-                if r.left < mi.rc_work.left {
-                    r.left = mi.rc_work.left;
-                }
-                if r.right > mi.rc_work.right {
-                    r.right = mi.rc_work.right;
-                }
+                let (max_x, max_y) = frame_overshoot_limit(hwnd);
+                clamp_small_frame_overshoot(r, mi.rc_work, max_x, max_y);
             }
             return 0;
         }
@@ -365,7 +470,7 @@ mod win32_border {
         }
     }
 
-    pub fn remove_border(hwnd: *mut c_void) {
+    pub fn remove_border(hwnd: *mut c_void, controller: ICoreWebView2Controller) {
         unsafe {
             // 1) Apply DWM border suppression: NC rendering disabled, dark
             //    immersive theming, dark border color. See the helper for the
@@ -386,8 +491,22 @@ mod win32_border {
             // 3) Subclass the window to intercept WM_NCCALCSIZE / WM_NCPAINT
             //    and re-apply border suppression on every state transition
             //    (DWM resets the attributes aggressively during resize/snap/
-            //    activate/maximize).
-            SetWindowSubclass(hwnd, Some(subclass_proc), 1, 0);
+            //    activate/maximize). It also owns a WebView2 controller clone
+            //    so drag-resize and cross-monitor DPI transitions can force
+            //    the webview to the current client rect without resizing the
+            //    parent window.
+            let state = Box::new(BorderSubclassState {
+                controller,
+                sync_pending: false,
+                was_minimized: false,
+                was_maximized: false,
+            });
+            SetWindowSubclass(
+                hwnd,
+                Some(subclass_proc),
+                SUBCLASS_ID,
+                Box::into_raw(state) as usize,
+            );
 
             // 4) Force Windows to recalculate the frame
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
@@ -398,6 +517,9 @@ mod win32_border {
                 0, 0, 0, 0,
                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
             );
+
+            // 5) Align the initial WebView2 bounds with the new client rect.
+            PostMessageW(hwnd, WM_SYNC_WEBVIEW_BOUNDS, 0, 0);
         }
     }
 }
@@ -6334,13 +6456,13 @@ pub fn run() {
                 {
                     extern "system" {
                         fn AllocConsole() -> i32;
-                        fn GetConsoleWindow() -> isize;
-                        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+                        fn GetConsoleWindow() -> *mut std::ffi::c_void;
+                        fn ShowWindow(hwnd: *mut std::ffi::c_void, cmd: i32) -> i32;
                     }
                     unsafe {
                         AllocConsole();
                         let hwnd = GetConsoleWindow();
-                        if hwnd != 0 {
+                        if !hwnd.is_null() {
                             ShowWindow(hwnd, 0); // SW_HIDE
                         }
                     }
@@ -6349,7 +6471,12 @@ pub fn run() {
                 let window = app.get_webview_window("main").expect("main window not found");
                 let hwnd = window.hwnd().expect("failed to get HWND");
                 native_term::registry::set_parent_hwnd(hwnd.0 as isize);
-                win32_border::remove_border(hwnd.0);
+                let hwnd_raw = hwnd.0 as isize;
+                window
+                    .with_webview(move |webview| {
+                        win32_border::remove_border(hwnd_raw as *mut _, webview.controller());
+                    })
+                    .expect("failed to configure Windows frameless window");
 
                 // Keep a persistent WSL process alive — boots the WSL VM and
                 // keeps it warm so subsequent wsl.exe calls are fast.
