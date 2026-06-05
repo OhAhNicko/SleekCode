@@ -4,7 +4,7 @@ import {
   PhysicalPosition,
   PhysicalSize,
 } from "@tauri-apps/api/window";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 
 export type CustomResizeDirection =
   | "East"
@@ -61,10 +61,9 @@ export function startCustomWindowDrag(event: ReactPointerEvent<HTMLElement>) {
   const pointerId = event.pointerId;
   const clickedXRatio = window.innerWidth > 0 ? event.clientX / window.innerWidth : 0.5;
   const clickedY = event.clientY;
-  const previousCursor = document.body.style.cursor;
 
   capturePointer(target, pointerId);
-  document.body.style.cursor = "grabbing";
+  // Keep the normal mouse cursor during drag (no "grabbing" hand).
 
   void (async () => {
     const win = getCurrentWindow();
@@ -82,7 +81,6 @@ export function startCustomWindowDrag(event: ReactPointerEvent<HTMLElement>) {
       window.removeEventListener("blur", cleanup);
       target.removeEventListener("lostpointercapture", cleanup);
       releasePointer(target, pointerId);
-      document.body.style.cursor = previousCursor;
     };
 
     const applyMove = async () => {
@@ -148,6 +146,23 @@ export function startCustomWindowDrag(event: ReactPointerEvent<HTMLElement>) {
       document.addEventListener("pointermove", onMove);
     } catch {
       cleanup();
+    }
+  })();
+}
+
+/** Double-clicking the topbar toggles maximize (fills the work area, keeps the taskbar). */
+export function toggleMaximizeOnDoubleClick(event: ReactMouseEvent<HTMLElement>) {
+  if (event.button !== 0) return;
+  void (async () => {
+    try {
+      const win = getCurrentWindow();
+      if (await win.isMaximized()) {
+        await win.unmaximize();
+      } else {
+        await win.maximize();
+      }
+    } catch {
+      // Ignore — the window may be mid-transition.
     }
   })();
 }

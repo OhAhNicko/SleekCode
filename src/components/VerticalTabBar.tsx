@@ -4,7 +4,7 @@ import { useAppStore } from "../store";
 import { findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane } from "../lib/layout-utils";
 import { getProjectColor } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
-import { startCustomWindowDrag } from "../lib/window-chrome";
+import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
 import ClipboardImageStrip from "./ClipboardImageStrip";
 import VoiceMicButton from "./VoiceMicButton";
 import { VOICE_ENABLED } from "../lib/voice/feature-flag";
@@ -278,7 +278,7 @@ export default function VerticalTabBar() {
           </div>
 
           {/* App-owned drag path; avoids Windows' native frame during restore drags. */}
-          {!compact && <div onPointerDown={startCustomWindowDrag} style={{ flex: 1, cursor: "grab" }} />}
+          {!compact && <div onPointerDown={startCustomWindowDrag} onDoubleClick={toggleMaximizeOnDoubleClick} style={{ flex: 1 }} />}
 
           {/* New tab (far right of controls row) */}
           <div
@@ -720,7 +720,7 @@ export default function VerticalTabBar() {
         )}
 
         {/* Empty space below tabs is grabbable to move the window. */}
-        <div onPointerDown={startCustomWindowDrag} style={{ flex: 1, minHeight: 24, cursor: "grab" }} />
+        <div onPointerDown={startCustomWindowDrag} onDoubleClick={toggleMaximizeOnDoubleClick} style={{ flex: 1, minHeight: 24 }} />
       </div>
 
       {/* BOTTOM — voice mic, snip + thumbnails (wrap), divider, Settings */}

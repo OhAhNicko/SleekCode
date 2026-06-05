@@ -7,7 +7,7 @@ import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { isWindows, detectBackendForPath } from "../lib/platform";
-import { startCustomWindowDrag } from "../lib/window-chrome";
+import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
 import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import type { RemoteServer, TerminalType, TerminalBackend } from "../types";
 import RemoteFileBrowser from "./RemoteFileBrowser";
@@ -1359,7 +1359,7 @@ export default function TabBar() {
         <div
           className="flex-1"
           onPointerDown={anyMenuOpen ? () => closeAllMenus() : startCustomWindowDrag}
-          style={{ cursor: anyMenuOpen ? "default" : "grab" }}
+          onDoubleClick={anyMenuOpen ? undefined : toggleMaximizeOnDoubleClick}
         />
 
         {/* Git Status Bar — only for project tabs with workingDir */}
