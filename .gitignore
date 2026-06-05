@@ -36,3 +36,6 @@ src-tauri/WixTools/
 # Project docs & tasks (local only)
 docs/
 tasks/
+
+# Agent git worktrees (never commit)
+.claude/worktrees/
