@@ -53,20 +53,19 @@ mod win32_border {
         RECT as WebViewRect,
     };
 
-    const DWMWA_NCRENDERING_POLICY: u32 = 2;
-    const DWMNCRP_DISABLED: u32 = 1;
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
     const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
     const DWMWCP_DONOTROUND: u32 = 1;
     const DWMWCP_ROUND: u32 = 2;
     const DWMWA_BORDER_COLOR: u32 = 34;
-    /// Border color #0D0D0D as Windows COLORREF (0x00BBGGRR). Matches the app's
-    /// dark background — DWM still draws a 1px border but it's visually invisible.
-    /// We use this everywhere instead of DWMWA_COLOR_NONE because COLOR_NONE
-    /// (0xFFFFFFFE) is unreliable: DWM falls back to the system accent color
-    /// during drag-resize, maximize, snap, and activate transitions, causing
-    /// a visible flash. The dark COLORREF is honored by DWM on all builds.
-    const BORDER_COLOR_DARK: u32 = 0x000D0D0D;
+    /// Special COLORREF telling DWM to draw NO window border at all (not just a
+    /// matching color). This is the Electron/Chromium recipe: keep the native
+    /// frame (WS_THICKFRAME) so DWM still composites the drop shadow + rounded
+    /// corners, but suppress the accent border line entirely. It is reliable
+    /// ONLY when DWM non-client rendering is left ENABLED — the previous code's
+    /// belief that COLOR_NONE "flashes" stemmed from pairing it with
+    /// NCRENDERING_POLICY = DISABLED, a contradictory combination.
+    const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     const WM_NCCALCSIZE: u32 = 0x0083;
     const WM_SIZE: u32 = 0x0005;
     const WM_MOVE: u32 = 0x0003;
@@ -82,7 +81,6 @@ mod win32_border {
     const WM_DPICHANGED: u32 = 0x02E0;
     const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
     const WM_DWMCOLORIZATIONCOLORCHANGED: u32 = 0x0320;
-    const WM_NCPAINT: u32 = 0x0085;
     const WM_APP: u32 = 0x8000;
     const WM_SYNC_WEBVIEW_BOUNDS: u32 = WM_APP + 0x4D;
     const WM_FORCE_NC_RECOMPOSITE: u32 = WM_APP + 0x4E;
@@ -198,31 +196,19 @@ mod win32_border {
         }
     }
 
-    /// Apply DWM border suppression. Three independent attributes have to be
-    /// set together because DWM uses any of them as a fallback:
-    /// 1. `DWMWA_NCRENDERING_POLICY = DISABLED` — tell DWM to not render the
-    ///    non-client area at all. This is the primary kill switch for the
-    ///    accent border. DWM may reset this between window-state transitions,
-    ///    so it has to be re-applied on every WM_SIZE / WM_ACTIVATE / etc.
-    /// 2. `DWMWA_USE_IMMERSIVE_DARK_MODE = TRUE` — without this, DWM picks
-    ///    light-theme border colors when it does decide to render, leaving
-    ///    a bright 1px line on a dark window.
-    /// 3. `DWMWA_BORDER_COLOR = #0D0D0D` — fallback if NC rendering is
-    ///    actually drawn anyway: the COLORREF matches the app background so
-    ///    even a drawn border is visually invisible. We use a dark COLORREF
-    ///    instead of `DWMWA_COLOR_NONE` because COLOR_NONE is unreliable on
-    ///    many builds — DWM falls back to the system accent during drag-
-    ///    resize, maximize, snap, and activate transitions.
+    /// Suppress the Windows 11 accent window border while KEEPING the native
+    /// frame so DWM still composites the drop shadow + rounded corners. Two
+    /// attributes, and critically NC rendering is left enabled (we do NOT set
+    /// DWMWA_NCRENDERING_POLICY = DISABLED — that kills the shadow and is what
+    /// made COLOR_NONE unreliable before):
+    /// 1. `DWMWA_USE_IMMERSIVE_DARK_MODE = TRUE` — keep DWM in dark theme so any
+    ///    transient NC fill is dark, not a bright light-theme color.
+    /// 2. `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE` — tell DWM to draw no border
+    ///    line at all. This is the Electron/Chromium approach and is stable
+    ///    across drag-resize / maximize / snap / activate transitions when NC
+    ///    rendering stays on. Re-applied on transitions defensively.
     #[inline]
     unsafe fn apply_border_suppression(hwnd: *mut c_void) {
-        let nc_disabled: u32 = DWMNCRP_DISABLED;
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_NCRENDERING_POLICY,
-            &nc_disabled as *const u32 as *const c_void,
-            std::mem::size_of::<u32>() as u32,
-        );
-
         let dark_mode: i32 = 1;
         DwmSetWindowAttribute(
             hwnd,
@@ -231,11 +217,11 @@ mod win32_border {
             std::mem::size_of::<i32>() as u32,
         );
 
-        let dark: u32 = BORDER_COLOR_DARK;
+        let no_border: u32 = DWMWA_COLOR_NONE;
         DwmSetWindowAttribute(
             hwnd,
             DWMWA_BORDER_COLOR,
-            &dark as *const u32 as *const c_void,
+            &no_border as *const u32 as *const c_void,
             std::mem::size_of::<u32>() as u32,
         );
     }
@@ -403,12 +389,10 @@ mod win32_border {
             return DefSubclassProc(hwnd, msg, wparam, lparam);
         }
 
-        // Aggressively re-apply DWM border suppression on every window state
-        // change. Windows resets DWMWA_BORDER_COLOR during transitions
-        // (drag-resize, maximize, minimize, activate, snap, theme change),
-        // causing the system accent color to flash through the 1px DWM border.
-        // We MUST use the dark COLORREF, NOT DWMWA_COLOR_NONE — the latter is
-        // unreliable on many Windows builds and is what was causing the flash.
+        // Re-apply DWMWA_COLOR_NONE + immersive dark on every window state
+        // change. Windows can reset DWMWA_BORDER_COLOR during transitions
+        // (drag-resize, maximize, minimize, activate, snap, theme change), so
+        // re-asserting "no border" defensively keeps the accent line away.
         if msg == WM_SIZE || msg == WM_ACTIVATE
            || msg == WM_SHOWWINDOW || msg == WM_WINDOWPOSCHANGED
            || msg == WM_MOVE || msg == WM_MOVING || msg == WM_SIZING
@@ -526,10 +510,9 @@ mod win32_border {
             }
             return 0;
         }
-        // Block non-client paint — prevents Windows from drawing the accent border
-        if msg == WM_NCPAINT {
-            return 0;
-        }
+        // NC paint is intentionally NOT blocked: DWM needs non-client rendering
+        // enabled to composite the drop shadow + rounded corners. The accent
+        // border line is suppressed via DWMWA_COLOR_NONE instead.
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
@@ -547,14 +530,13 @@ mod win32_border {
 
     pub fn remove_border(hwnd: *mut c_void, controller: ICoreWebView2Controller) {
         unsafe {
-            // 1) Apply DWM border suppression: NC rendering disabled, dark
-            //    immersive theming, dark border color. See the helper for the
-            //    full rationale on why all three are needed.
+            // 1) Suppress the accent border via DWMWA_COLOR_NONE + immersive
+            //    dark, leaving NC rendering ENABLED so DWM keeps the shadow.
             apply_border_suppression(hwnd);
 
-            // 2) Enable rounded corners (Windows 11+). Done AFTER NC rendering
-            //    is disabled so this attribute is set after the policy and
-            //    DWM still honors the corner preference.
+            // 2) Enable rounded corners (Windows 11+). DWM rounds the native
+            //    frame; the non-transparent client (#0d1117) fills under the
+            //    rounded mask, so no CSS corner work is needed.
             let corner_pref = DWMWCP_ROUND;
             DwmSetWindowAttribute(
                 hwnd,
@@ -563,13 +545,12 @@ mod win32_border {
                 std::mem::size_of::<u32>() as u32,
             );
 
-            // 3) Subclass the window to intercept WM_NCCALCSIZE / WM_NCPAINT
-            //    and re-apply border suppression on every state transition
-            //    (DWM resets the attributes aggressively during resize/snap/
-            //    activate/maximize). It also owns a WebView2 controller clone
-            //    so drag-resize and cross-monitor DPI transitions can force
-            //    the webview to the current client rect without resizing the
-            //    parent window.
+            // 3) Subclass the window to intercept WM_NCCALCSIZE (claim the full
+            //    client rect so the frame is invisible) and re-apply border
+            //    suppression on every state transition. It also owns a WebView2
+            //    controller clone so drag-resize and cross-monitor DPI
+            //    transitions can force the webview to the current client rect
+            //    without resizing the parent window.
             let state = Box::new(BorderSubclassState {
                 controller,
                 sync_pending: false,
@@ -584,11 +565,13 @@ mod win32_border {
                 Box::into_raw(state) as usize,
             );
 
-            // 4) Remove the native resize frame completely. Custom JS handles
-            //    own resizing, so keeping WS_THICKFRAME only gives DWM another
-            //    chance to paint the generic Windows border during drag/restore.
+            // 4) Ensure the native sizing frame (WS_THICKFRAME) is present.
+            //    This is what makes DWM composite the drop shadow + rounded
+            //    corners; WM_NCCALCSIZE below removes its visual frame from the
+            //    client area, and DWMWA_COLOR_NONE hides its border line. This
+            //    is the Electron/Chromium "frameless with shadow" recipe.
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !WS_THICKFRAME);
+            SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME);
             SetWindowPos(
                 hwnd,
                 std::ptr::null_mut(),

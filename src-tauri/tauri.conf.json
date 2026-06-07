@@ -16,7 +16,7 @@
         "width": 1280,
         "height": 800,
         "decorations": false,
-        "shadow": false,
+        "shadow": true,
         "resizable": true,
         "backgroundColor": "#0d1117"
       }
