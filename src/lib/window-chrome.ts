@@ -52,6 +52,8 @@ function releasePointer(target: HTMLElement, pointerId: number) {
   }
 }
 
+const DRAG_THRESHOLD_PX = 4;
+
 export function startCustomWindowDrag(event: ReactPointerEvent<HTMLElement>) {
   if (event.button !== 0) return;
 
@@ -61,59 +63,58 @@ export function startCustomWindowDrag(event: ReactPointerEvent<HTMLElement>) {
   const pointerId = event.pointerId;
   const clickedXRatio = window.innerWidth > 0 ? event.clientX / window.innerWidth : 0.5;
   const clickedY = event.clientY;
+  const startClientX = event.clientX;
+  const startClientY = event.clientY;
 
   capturePointer(target, pointerId);
   // Keep the normal mouse cursor during drag (no "grabbing" hand).
 
-  void (async () => {
-    const win = getCurrentWindow();
-    let disposed = false;
-    let updating = false;
-    let queued = false;
-    let offsetX = 0;
-    let offsetY = 0;
+  const win = getCurrentWindow();
+  let disposed = false;
+  let started = false;
+  let ready = false;
+  let updating = false;
+  let queued = false;
+  let offsetX = 0;
+  let offsetY = 0;
 
-    const cleanup = () => {
-      if (disposed) return;
-      disposed = true;
-      document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup", cleanup);
-      window.removeEventListener("blur", cleanup);
-      target.removeEventListener("lostpointercapture", cleanup);
-      releasePointer(target, pointerId);
-    };
+  const cleanup = () => {
+    if (disposed) return;
+    disposed = true;
+    document.removeEventListener("pointermove", onMove);
+    document.removeEventListener("pointerup", cleanup);
+    window.removeEventListener("blur", cleanup);
+    target.removeEventListener("lostpointercapture", cleanup);
+    releasePointer(target, pointerId);
+  };
 
-    const applyMove = async () => {
-      if (updating) {
-        queued = true;
-        return;
-      }
-
-      updating = true;
-      try {
-        do {
-          queued = false;
-          const cursor = await cursorPosition();
-          if (disposed) return;
-          await win.setPosition(
-            new PhysicalPosition(round(cursor.x - offsetX), round(cursor.y - offsetY))
-          );
-        } while (queued && !disposed);
-      } catch {
-        cleanup();
-      } finally {
-        updating = false;
-      }
-    };
-
-    function onMove() {
-      void applyMove();
+  const applyMove = async () => {
+    if (updating) {
+      queued = true;
+      return;
     }
 
-    document.addEventListener("pointerup", cleanup);
-    window.addEventListener("blur", cleanup);
-    target.addEventListener("lostpointercapture", cleanup);
+    updating = true;
+    try {
+      do {
+        queued = false;
+        const cursor = await cursorPosition();
+        if (disposed) return;
+        await win.setPosition(
+          new PhysicalPosition(round(cursor.x - offsetX), round(cursor.y - offsetY))
+        );
+      } while (queued && !disposed);
+    } catch {
+      cleanup();
+    } finally {
+      updating = false;
+    }
+  };
 
+  // Compute the drag offset — and restore a maximized window — on the FIRST
+  // real move, never on pointer-down. A plain click (no movement past the
+  // threshold) therefore does nothing; only a drag begins moving/restoring.
+  const beginDrag = async () => {
     try {
       const cursor = await cursorPosition();
 
@@ -141,13 +142,39 @@ export function startCustomWindowDrag(event: ReactPointerEvent<HTMLElement>) {
         offsetX = cursor.x - position.x;
         offsetY = cursor.y - position.y;
       }
-
-      if (disposed) return;
-      document.addEventListener("pointermove", onMove);
     } catch {
       cleanup();
     }
-  })();
+  };
+
+  function onMove(e: PointerEvent) {
+    if (disposed) return;
+
+    if (!started) {
+      const dx = e.clientX - startClientX;
+      const dy = e.clientY - startClientY;
+      if (dx * dx + dy * dy < DRAG_THRESHOLD_PX * DRAG_THRESHOLD_PX) return;
+      // Crossed the drag threshold — this is a real drag, not a click.
+      started = true;
+      void (async () => {
+        await beginDrag();
+        if (disposed) return;
+        ready = true;
+        void applyMove();
+      })();
+      return;
+    }
+
+    // Ignore moves that arrive while beginDrag() is still restoring the window;
+    // offsetX/offsetY aren't valid until it completes.
+    if (!ready) return;
+    void applyMove();
+  }
+
+  document.addEventListener("pointermove", onMove);
+  document.addEventListener("pointerup", cleanup);
+  window.addEventListener("blur", cleanup);
+  target.addEventListener("lostpointercapture", cleanup);
 }
 
 /** Double-clicking the topbar toggles maximize (fills the work area, keeps the taskbar). */
