@@ -85,6 +85,7 @@ mod win32_border {
     const WM_NCPAINT: u32 = 0x0085;
     const WM_APP: u32 = 0x8000;
     const WM_SYNC_WEBVIEW_BOUNDS: u32 = WM_APP + 0x4D;
+    const WM_FORCE_NC_RECOMPOSITE: u32 = WM_APP + 0x4E;
     const SIZE_MINIMIZED: usize = 1;
     const SIZE_MAXIMIZED: usize = 2;
     const SIZE_RESTORED: usize = 0;
@@ -129,6 +130,7 @@ mod win32_border {
     struct BorderSubclassState {
         controller: ICoreWebView2Controller,
         sync_pending: bool,
+        recomposite_pending: bool,
         was_minimized: bool,
         was_maximized: bool,
     }
@@ -174,6 +176,9 @@ mod win32_border {
             flags: u32,
         ) -> i32;
         fn GetClientRect(hwnd: *mut c_void, rect: *mut RECT) -> i32;
+        fn GetWindowRect(hwnd: *mut c_void, rect: *mut RECT) -> i32;
+        fn IsZoomed(hwnd: *mut c_void) -> i32;
+        fn IsIconic(hwnd: *mut c_void) -> i32;
         fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
         fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MONITORINFO) -> i32;
         fn GetDpiForWindow(hwnd: *mut c_void) -> u32;
@@ -245,6 +250,57 @@ mod win32_border {
         if PostMessageW(hwnd, WM_SYNC_WEBVIEW_BOUNDS, 0, 0) == 0 {
             state.sync_pending = false;
         }
+    }
+
+    /// Queue a deferred non-client recomposite. Posted (not synchronous) so it
+    /// runs AFTER the current transition's message burst settles — re-applying
+    /// the DWM attributes synchronously inside WM_SIZE/WM_EXITSIZEMOVE is too
+    /// early; DWM composites the accent frame afterward and overwrites it.
+    /// One-shot guarded by `recomposite_pending` to collapse duplicate queues.
+    #[inline]
+    unsafe fn queue_nc_recomposite(hwnd: *mut c_void, state: &mut BorderSubclassState) {
+        if state.recomposite_pending {
+            return;
+        }
+
+        state.recomposite_pending = true;
+        if PostMessageW(hwnd, WM_FORCE_NC_RECOMPOSITE, 0, 0) == 0 {
+            state.recomposite_pending = false;
+        }
+    }
+
+    /// Force DWM to drop a stale accent non-client frame left behind by a
+    /// maximize/restore, drag/resize, or DPI/monitor transition. Re-asserts the
+    /// border suppression, then performs a net-zero +1/-1 width nudge: only a
+    /// real geometry change forces DWM to recomposite the NC area (this is
+    /// exactly why the user's manual "resize again" clears the border). The
+    /// nudge's own WM_SIZE/WM_WINDOWPOSCHANGED never re-enters here because
+    /// recomposites are only queued from settling edges, never from WM_SIZE.
+    #[inline]
+    unsafe fn force_nc_recomposite(hwnd: *mut c_void) {
+        // Never nudge a maximized or minimized window — a size change would
+        // un-maximize it, and there's no visible frame to fix while iconic.
+        if IsIconic(hwnd) != 0 || IsZoomed(hwnd) != 0 {
+            return;
+        }
+
+        apply_border_suppression(hwnd);
+
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        if GetWindowRect(hwnd, &mut r) == 0 {
+            return;
+        }
+        let x = r.left;
+        let y = r.top;
+        let w = r.right - r.left;
+        let h = r.bottom - r.top;
+        if w <= 1 || h <= 1 {
+            return;
+        }
+
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
+        SetWindowPos(hwnd, std::ptr::null_mut(), x, y, w + 1, h, flags);
+        SetWindowPos(hwnd, std::ptr::null_mut(), x, y, w, h, flags);
     }
 
     #[inline]
@@ -372,6 +428,12 @@ mod win32_border {
                 return 0;
             }
 
+            if msg == WM_FORCE_NC_RECOMPOSITE {
+                state.recomposite_pending = false;
+                force_nc_recomposite(hwnd);
+                return 0;
+            }
+
             if msg == WM_MOVE || msg == WM_MOVING {
                 let _ = state.controller.NotifyParentWindowPositionChanged();
             }
@@ -382,6 +444,16 @@ mod win32_border {
                || msg == WM_SHOWWINDOW
             {
                 queue_webview_bounds_sync(hwnd, state);
+            }
+
+            // Settling edges only — NOT WM_SIZE/WM_WINDOWPOSCHANGED (those fire
+            // during the nudge and would risk a feedback loop). Each of these
+            // leaves a stale accent NC frame that only a real geometry change
+            // clears; defer a one-shot recomposite past the message burst.
+            if msg == WM_EXITSIZEMOVE || msg == WM_DPICHANGED
+               || msg == WM_DISPLAYCHANGE
+            {
+                queue_nc_recomposite(hwnd, state);
             }
         }
 
@@ -417,8 +489,8 @@ mod win32_border {
                         std::mem::take(&mut state.was_maximized)
                     };
                     if was_maximized {
-                        // Only re-apply rounded corners + frame recalc on the
-                        // actual maximize -> restore edge, not on every drag tick.
+                        // Only re-apply rounded corners on the actual maximize ->
+                        // restore edge, not on every drag tick.
                         let corner_pref = DWMWCP_ROUND;
                         DwmSetWindowAttribute(
                             hwnd,
@@ -426,10 +498,13 @@ mod win32_border {
                             &corner_pref as *const u32 as *const c_void,
                             std::mem::size_of::<u32>() as u32,
                         );
-                        SetWindowPos(
-                            hwnd, std::ptr::null_mut(), 0, 0, 0, 0,
-                            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-                        );
+                        // A synchronous SWP_FRAMECHANGED with no size delta runs
+                        // too early (inside the restore burst) and leaves DWM's
+                        // stale accent frame. Defer a real recomposite instead.
+                        if !state_ptr.is_null() {
+                            let state = &mut *state_ptr;
+                            queue_nc_recomposite(hwnd, state);
+                        }
                     }
                 }
             }
@@ -498,6 +573,7 @@ mod win32_border {
             let state = Box::new(BorderSubclassState {
                 controller,
                 sync_pending: false,
+                recomposite_pending: false,
                 was_minimized: false,
                 was_maximized: false,
             });
