@@ -45,6 +45,49 @@ function claimSessionId(id: string): boolean {
   return true;
 }
 
+// Per-pane bookkeeping used to stop an EXISTING pane from "stealing" a
+// newly-added pane's session. Both late-detection and drift-detection look for
+// session files started after THIS pane's spawn with no upper bound, so when a
+// new resumable pane is added its fresh session (necessarily newer) gets grabbed
+// by an older pane during the brief window before the new pane claims it. The
+// result is the header session/model/cost text swapping between the existing
+// pane and the freshly-added one (bodies/PTYs are unaffected).
+const paneSpawnMs = new Map<string, number>(); // terminalId -> first-seen (spawn) ms
+const panesWithLockedSession = new Set<string>(); // terminalIds that locked their own session
+const paneWorkingDir = new Map<string, string>(); // terminalId -> normalized workingDir
+
+/**
+ * True when a resumable pane spawned AFTER `terminalId` still hasn't locked its
+ * own session — a just-detected newer session most likely belongs to it, so we
+ * defer adoption. Bounded to 60s so a pane that never locks can't block older
+ * panes' legitimate drift forever.
+ */
+function newerResumablePaneStillResolving(terminalId: string): boolean {
+  const mine = paneSpawnMs.get(terminalId);
+  if (mine == null) return false;
+  const now = Date.now();
+  for (const [id, spawn] of paneSpawnMs) {
+    if (id !== terminalId && spawn > mine && !panesWithLockedSession.has(id) && now - spawn < 60_000) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when another resumable pane shares this pane's working dir. In that case
+ * the "__latest__" session fallback is ambiguous — the most-recent session for
+ * the dir may belong to the sibling pane — so an UNLOCKED pane must not display
+ * it (would show another pane's session/model/cost). Once the pane locks its own
+ * session this no longer applies.
+ */
+function otherResumablePaneSharesDir(terminalId: string, normalizedDir: string): boolean {
+  for (const [id, dir] of paneWorkingDir) {
+    if (id !== terminalId && dir === normalizedDir) return true;
+  }
+  return false;
+}
+
 // Load Hack font via JS FontFace API — bypasses CSS @font-face which
 // can fail silently in Tauri's WebView due to URL resolution issues.
 let hackFontReady: Promise<void> | null = null;
@@ -1536,13 +1579,23 @@ export default function TerminalPane({
         : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
       const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, isSsh ? workingDirRef.current : undefined);
       if (info !== null) {
-        // Merge partial updates — rate_limits and info come from different
-        // server events. Keep previous rate_limits when new poll has none.
-        setContextInfo((prev) => ({
-          ...info,
-          rateLimitFiveHour: info.rateLimitFiveHour ?? prev?.rateLimitFiveHour ?? null,
-          rateLimitWeekly: info.rateLimitWeekly ?? prev?.rateLimitWeekly ?? null,
-        }));
+        // When this pane hasn't locked its own session, `info` came from the
+        // "__latest__" fallback. That's only safe to display if no sibling
+        // resumable pane shares this working dir — otherwise it may be another
+        // pane's session. Suppress display (but keep late detection below).
+        const latestIsAmbiguous =
+          !sessionResumeId && otherResumablePaneSharesDir(terminalId, workingDir.replace(/\\/g, "/"));
+        if (latestIsAmbiguous) {
+          setContextInfo(null);
+        } else {
+          // Merge partial updates — rate_limits and info come from different
+          // server events. Keep previous rate_limits when new poll has none.
+          setContextInfo((prev) => ({
+            ...info,
+            rateLimitFiveHour: info.rateLimitFiveHour ?? prev?.rateLimitFiveHour ?? null,
+            rateLimitWeekly: info.rateLimitWeekly ?? prev?.rateLimitWeekly ?? null,
+          }));
+        }
         // Auto-update session name in registry from CLI output.
         // Claude: CUSTOM_TITLE only appears from /rename → authoritative (always overrides).
         // Codex/Gemini: auto-generated titles → soft update (won't override MADE renames).
@@ -1603,7 +1656,7 @@ export default function TerminalPane({
                 }
               }
             }
-            if (id && claimSessionId(id)) {
+            if (id && !newerResumablePaneStillResolving(terminalId) && claimSessionId(id)) {
               console.log(`[SessionResume] late detection found: ${id.slice(0, 8)}`);
               setSessionTrusted(true);
               sessionResumeIdPropRef.current = id;
@@ -1680,7 +1733,7 @@ export default function TerminalPane({
                 }
               }
             }
-            if (newId && newId !== sessionResumeId && claimSessionId(newId)) {
+            if (newId && newId !== sessionResumeId && !newerResumablePaneStillResolving(terminalId) && claimSessionId(newId)) {
               console.log(`[SessionResume] drift detected: ${sessionResumeId.slice(0, 8)} → ${newId.slice(0, 8)}`);
               claimedSessionIds.delete(sessionResumeId);
               setSessionTrusted(true);
@@ -1708,6 +1761,27 @@ export default function TerminalPane({
       if (intervalId) clearInterval(intervalId);
     };
   }, [terminalType, sessionResumeId]);
+
+  // Register this resumable pane's spawn ordering + locked state so older panes
+  // don't steal a newly-added pane's session (see newerResumablePaneStillResolving).
+  useEffect(() => {
+    if (supportsSessionResume(terminalType)) {
+      if (!paneSpawnMs.has(terminalId)) paneSpawnMs.set(terminalId, Date.now());
+      paneWorkingDir.set(terminalId, workingDir.replace(/\\/g, "/"));
+    } else {
+      paneSpawnMs.delete(terminalId);
+      paneWorkingDir.delete(terminalId);
+    }
+  }, [terminalId, terminalType, workingDir]);
+  useEffect(() => {
+    if (sessionResumeId) panesWithLockedSession.add(terminalId);
+    else panesWithLockedSession.delete(terminalId);
+  }, [sessionResumeId, terminalId]);
+  useEffect(() => () => {
+    paneSpawnMs.delete(terminalId);
+    panesWithLockedSession.delete(terminalId);
+    paneWorkingDir.delete(terminalId);
+  }, [terminalId]);
 
   // Composer settings — declared early because isActive effect references them.
   const composerAlwaysVisible = useAppStore((s) => s.promptComposerEnabled && s.promptComposerAlwaysVisible);
@@ -2044,13 +2118,18 @@ export default function TerminalPane({
       : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
     const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, isSsh ? workingDirRef.current : undefined);
     if (info !== null) {
+      // Don't display an ambiguous "__latest__" result that may belong to a
+      // sibling pane in the same dir (see the poll for the full rationale).
+      if (!sessionResumeId && otherResumablePaneSharesDir(terminalId, workingDir.replace(/\\/g, "/"))) {
+        return;
+      }
       setContextInfo((prev) => ({
         ...info,
         rateLimitFiveHour: info.rateLimitFiveHour ?? prev?.rateLimitFiveHour ?? null,
         rateLimitWeekly: info.rateLimitWeekly ?? prev?.rateLimitWeekly ?? null,
       }));
     }
-  }, [terminalType, sessionResumeId]);
+  }, [terminalType, sessionResumeId, terminalId, workingDir]);
 
   // Register this pane's "open search" callback so the central Ctrl+F handler
   // in App.tsx can reach us regardless of xterm focus state.
