@@ -338,6 +338,20 @@ export default function PromptComposer({
     return false;
   }
 
+  // Debug-only: small buffer snapshot (lines around `lineIdx`) for field
+  // diagnosis of exactly what text the steal would capture. Only invoked from
+  // inside debugLog(...) calls, which stay silent unless window.__ezyComposerDebug.
+  function bufferSnapshot(lineIdx: number): string[] {
+    if (!terminal) return [];
+    const buf = terminal.buffer.active;
+    const out: string[] = [];
+    for (let i = lineIdx - 1; i <= lineIdx + 1; i++) {
+      const line = buf.getLine(i);
+      out.push(`${i}: ${line ? JSON.stringify(line.translateToString(true)) : "<null>"}`);
+    }
+    return out;
+  }
+
   // Scan viewport for the prompt line and return its pixel offset (or null).
   // Extracted as a plain function so it can be called from both the initial
   // effect and the continuous onRender listener.
@@ -501,13 +515,57 @@ export default function PromptComposer({
         setTopOffset(result.offset);
         setCellHeight(result.cellHeight);
         promptLineIdxRef.current = result.promptLineIdx;
-        // Show the composer (background pane onRender may have hidden it
-        // before the poll found the prompt)
+        if (result.promptPass === 1) seenPass1Ref.current = true;
+
+        // During startup the Claude banner ("Welcome to Claude Code") and the
+        // resume/session picker are transiently on screen and can match a scan.
+        // Mirror the steady-state onRender hide path: never force-show or steal
+        // while the prompt is an interactive dialog, or on a Pass 2/3 banner
+        // match after a real Pass 1 was already seen. Without this guard the
+        // steal grabbed banner fragments ("Welcome"/"to") into the textarea and
+        // the focused composer swallowed the Enter meant for the picker —
+        // breaking resume (~50%) and sending stray prompts.
+        const interactive = isInteractiveMode(result.promptLineIdx);
+        const isBannerPass = result.promptPass !== 1 && seenPass1Ref.current;
+        const isResizing = Date.now() < resizingUntilRef.current;
+        if (!isResizing && (interactive || isBannerPass)) {
+          debugTransition(true, "tryFind:interactive-or-banner", {
+            promptPass: result.promptPass, seenPass1: seenPass1Ref.current, interactive,
+          });
+          if (!hiddenRef.current) {
+            hiddenRef.current = true;
+            setHidden(true);
+            if (isActiveRef.current) {
+              textareaRef.current?.blur();
+              if (document.hasFocus()) terminal?.focus();
+            }
+          }
+          return true; // counts as a poll hit for stabilization; just don't steal/show
+        }
+
+        // Safe to show (a background pane's onRender may have hidden it before
+        // the poll found the prompt).
         if (hiddenRef.current) {
           hiddenRef.current = false;
           setHidden(false);
         }
-        if (result.existing && !didStealText.current) {
+
+        // Only steal a STABLE, non-interactive Pass-1 prompt — never a transient
+        // startup frame. Defer until the prompt has been on screen for a short
+        // settle window the poll already tracks via firstHitAt (600ms leaves a
+        // safe margin before the 1s stabilization clears the interval, so the
+        // steal reliably fires on a tick before clearInterval). This preserves
+        // the legitimate "sync text typed directly into the CLI" feature.
+        const stableEnough =
+          result.promptPass === 1 && firstHitAt > 0 && Date.now() - firstHitAt >= 600;
+        if (!interactive && stableEnough && result.existing && !didStealText.current) {
+          debugLog("tryFind:STEAL candidate", {
+            existing: result.existing,
+            promptPass: result.promptPass,
+            interactive,
+            promptLineIdx: result.promptLineIdx,
+            snapshot: bufferSnapshot(result.promptLineIdx),
+          });
           didStealText.current = true;
           setValue(result.existing);
           write("\x7f".repeat(result.existing.length));

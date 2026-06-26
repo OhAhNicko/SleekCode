@@ -88,6 +88,50 @@ function otherResumablePaneSharesDir(terminalId: string, normalizedDir: string):
   return false;
 }
 
+// Session-resume diagnostics. Enable with `window.__madeSessionDebug = true` in
+// DevTools to trace every spawn-based lookup (inputs + result) and every dedup
+// adoption/defer decision — used to confirm in the field whether a residual
+// "not remembered" comes from clock skew, cwd casing, or the pane dedup race.
+function sessionDebugEnabled(): boolean {
+  return typeof window !== "undefined" && !!(window as { __madeSessionDebug?: boolean }).__madeSessionDebug;
+}
+function sessionDebug(msg: string, extra?: Record<string, unknown>) {
+  if (!sessionDebugEnabled()) return;
+  // eslint-disable-next-line no-console
+  console.debug(`[SessionResume] ${msg}`, extra ?? {});
+}
+
+/**
+ * Precise (spawn-based) Claude session lookup across all backends. Threads the
+ * Windows-clock `nowMs` so the WSL backend can correct the startedAt floor for
+ * WSL↔Windows clock skew, and a `debug` flag so the backend emits per-file
+ * diagnostics. Returns the matched sessionId or null.
+ */
+async function lookupClaudeBySpawn(
+  backend: string | undefined,
+  workingDir: string,
+  minStartedAt: number,
+  excludeIds: string[],
+  phase: string,
+): Promise<string | null> {
+  const debug = sessionDebugEnabled();
+  const nowMs = Date.now();
+  let id: string | null = null;
+  let projectPath = "";
+  if (backend === "native") {
+    projectPath = workingDir;
+    if (projectPath) id = await invoke<string | null>("get_claude_session_id_by_spawn_native", { projectPath, minStartedAtMs: minStartedAt, nowMs, excludeIds, debug });
+  } else if (backend === "windows") {
+    projectPath = workingDir;
+    if (projectPath) id = await invoke<string | null>("get_claude_session_id_by_spawn_windows", { projectPath, minStartedAtMs: minStartedAt, nowMs, excludeIds, debug });
+  } else {
+    projectPath = toWslPath(workingDir);
+    if (projectPath) id = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath, minStartedAtMs: minStartedAt, nowMs, excludeIds, debug });
+  }
+  sessionDebug(`${phase} by_spawn`, { backend: backend ?? "wsl", projectPath, minStartedAt, nowMs, excludeCount: excludeIds.length, result: id });
+  return id;
+}
+
 // Load Hack font via JS FontFace API — bypasses CSS @font-face which
 // can fail silently in Tauri's WebView due to URL resolution issues.
 let hackFontReady: Promise<void> | null = null;
@@ -410,23 +454,7 @@ export default function TerminalPane({
           // Skipped for SSH — sidecar precise detection isn't mirrored remotely.
           if (type === "claude" && !isSsh) {
             try {
-              const minStartedAt = ptySpawnTimeRef.current;
-              if (backend === "native") {
-                const cwd = workingDirRef.current;
-                if (cwd) {
-                  id = await invoke<string | null>("get_claude_session_id_by_spawn_native", { projectPath: cwd, minStartedAtMs: minStartedAt, excludeIds });
-                }
-              } else if (backend === "windows") {
-                const cwd = workingDirRef.current;
-                if (cwd) {
-                  id = await invoke<string | null>("get_claude_session_id_by_spawn_windows", { projectPath: cwd, minStartedAtMs: minStartedAt, excludeIds });
-                }
-              } else {
-                const wslCwd = toWslPath(workingDirRef.current);
-                if (wslCwd) {
-                  id = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath: wslCwd, minStartedAtMs: minStartedAt, excludeIds });
-                }
-              }
+              id = await lookupClaudeBySpawn(backend, workingDirRef.current, ptySpawnTimeRef.current, excludeIds, "initial");
               if (id) {
                 console.log(`[SessionResume] precise (spawn-based) match: ${id.slice(0, 8)}`);
               }
@@ -1613,15 +1641,7 @@ export default function TerminalPane({
             // Precise spawn-based lookup for Claude (only session files started
             // after this pane's PTY spawned, in this exact cwd). Skipped for SSH.
             if (type === "claude" && ptySpawnTimeRef.current > 0 && !isSsh) {
-              const minStartedAt = ptySpawnTimeRef.current;
-              if (backend === "native") {
-                if (workingDir) id = await invoke<string | null>("get_claude_session_id_by_spawn_native", { projectPath: workingDir, minStartedAtMs: minStartedAt, excludeIds });
-              } else if (backend === "windows") {
-                if (workingDir) id = await invoke<string | null>("get_claude_session_id_by_spawn_windows", { projectPath: workingDir, minStartedAtMs: minStartedAt, excludeIds });
-              } else {
-                const wslCwd = toWslPath(workingDir);
-                if (wslCwd) id = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath: wslCwd, minStartedAtMs: minStartedAt, excludeIds });
-              }
+              id = await lookupClaudeBySpawn(backend, workingDir, ptySpawnTimeRef.current, excludeIds, "late");
             }
             // Fallback: mtime-based for Codex/Gemini, or Claude if precise lookup returned nothing.
             if (!id) {
@@ -1656,11 +1676,16 @@ export default function TerminalPane({
                 }
               }
             }
-            if (id && !newerResumablePaneStillResolving(terminalId) && claimSessionId(id)) {
-              console.log(`[SessionResume] late detection found: ${id.slice(0, 8)}`);
-              setSessionTrusted(true);
-              sessionResumeIdPropRef.current = id;
-              onSessionResumeIdRef.current?.(id);
+            if (id) {
+              const deferred = newerResumablePaneStillResolving(terminalId);
+              if (!deferred && claimSessionId(id)) {
+                console.log(`[SessionResume] late detection found: ${id.slice(0, 8)}`);
+                setSessionTrusted(true);
+                sessionResumeIdPropRef.current = id;
+                onSessionResumeIdRef.current?.(id);
+              } else {
+                sessionDebug("late detection NOT adopted", { id: id.slice(0, 8), deferredToNewerPane: deferred, alreadyClaimed: claimedSessionIds.has(id) });
+              }
             }
           } catch (e) {
             console.error("[SessionResume] late detection failed:", e);
@@ -1706,15 +1731,7 @@ export default function TerminalPane({
             let newId: string | null = null;
             if (type === "claude" && ptySpawnTimeRef.current > 0) {
               // Precise spawn-based drift check
-              const minStartedAt = ptySpawnTimeRef.current;
-              if (backend === "native") {
-                if (workingDir) newId = await invoke<string | null>("get_claude_session_id_by_spawn_native", { projectPath: workingDir, minStartedAtMs: minStartedAt, excludeIds });
-              } else if (backend === "windows") {
-                if (workingDir) newId = await invoke<string | null>("get_claude_session_id_by_spawn_windows", { projectPath: workingDir, minStartedAtMs: minStartedAt, excludeIds });
-              } else {
-                const wslCwd = toWslPath(workingDir);
-                if (wslCwd) newId = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath: wslCwd, minStartedAtMs: minStartedAt, excludeIds });
-              }
+              newId = await lookupClaudeBySpawn(backend, workingDir, ptySpawnTimeRef.current, excludeIds, "drift");
             } else {
               // Codex/Gemini keep the mtime-based approach for drift
               if (backend === "native") {
@@ -1733,12 +1750,17 @@ export default function TerminalPane({
                 }
               }
             }
-            if (newId && newId !== sessionResumeId && !newerResumablePaneStillResolving(terminalId) && claimSessionId(newId)) {
-              console.log(`[SessionResume] drift detected: ${sessionResumeId.slice(0, 8)} → ${newId.slice(0, 8)}`);
-              claimedSessionIds.delete(sessionResumeId);
-              setSessionTrusted(true);
-              sessionResumeIdPropRef.current = newId;
-              onSessionResumeIdRef.current?.(newId);
+            if (newId && newId !== sessionResumeId) {
+              const deferred = newerResumablePaneStillResolving(terminalId);
+              if (!deferred && claimSessionId(newId)) {
+                console.log(`[SessionResume] drift detected: ${sessionResumeId.slice(0, 8)} → ${newId.slice(0, 8)}`);
+                claimedSessionIds.delete(sessionResumeId);
+                setSessionTrusted(true);
+                sessionResumeIdPropRef.current = newId;
+                onSessionResumeIdRef.current?.(newId);
+              } else {
+                sessionDebug("drift NOT adopted", { from: sessionResumeId.slice(0, 8), to: newId.slice(0, 8), deferredToNewerPane: deferred, alreadyClaimed: claimedSessionIds.has(newId) });
+              }
             }
           } catch (e) {
             console.error("[SessionResume] drift check failed:", e);

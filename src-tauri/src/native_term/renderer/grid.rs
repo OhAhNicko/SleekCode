@@ -90,6 +90,69 @@ fn ansi_color_to_rgb_bg(c: AnsiColor, theme: &ThemeColors) -> [u8; 3] {
     ansi_color_to_rgb(c, rgb3(theme.background), theme)
 }
 
+/// True for Unicode "Block Elements" (U+2580..=U+259F): full/half/eighth
+/// blocks, shades, and quadrants. These are the glyphs the Claude Code banner
+/// uses to draw its logo. We render them as solid quads on the fixed cell grid
+/// (see `block_element_fills` / `build_block_quads`) instead of as font glyphs:
+/// cosmic-text shapes them at advances that don't match the "M"-derived cell
+/// width, which sheared the pixel-art apart cell-by-cell. Grid-aligned quads
+/// also sidestep any gaps in the active font's coverage of these codepoints.
+#[inline]
+fn is_block_element(ch: char) -> bool {
+    ('\u{2580}'..='\u{259F}').contains(&ch)
+}
+
+/// Map a block-element char to its filled sub-rectangles in normalized cell
+/// space ([x0, y0, x1, y1], origin top-left, components in 0..1) plus a
+/// coverage alpha (< 1.0 only for the shade glyphs ░▒▓). Returns None for
+/// non-block chars.
+fn block_element_fills(ch: char) -> Option<(Vec<[f32; 4]>, f32)> {
+    // Eighth fractions of the cell box; H = half (4/8).
+    const E1: f32 = 1.0 / 8.0;
+    const E2: f32 = 2.0 / 8.0;
+    const E3: f32 = 3.0 / 8.0;
+    const E5: f32 = 5.0 / 8.0;
+    const E6: f32 = 6.0 / 8.0;
+    const E7: f32 = 7.0 / 8.0;
+    const H: f32 = 0.5;
+    let rects: Vec<[f32; 4]> = match ch {
+        '\u{2580}' => vec![[0.0, 0.0, 1.0, H]],   // ▀ upper half
+        '\u{2581}' => vec![[0.0, E7, 1.0, 1.0]],  // ▁ lower 1/8
+        '\u{2582}' => vec![[0.0, E6, 1.0, 1.0]],  // ▂ lower 1/4
+        '\u{2583}' => vec![[0.0, E5, 1.0, 1.0]],  // ▃ lower 3/8
+        '\u{2584}' => vec![[0.0, H, 1.0, 1.0]],   // ▄ lower half
+        '\u{2585}' => vec![[0.0, E3, 1.0, 1.0]],  // ▅ lower 5/8
+        '\u{2586}' => vec![[0.0, E2, 1.0, 1.0]],  // ▆ lower 3/4
+        '\u{2587}' => vec![[0.0, E1, 1.0, 1.0]],  // ▇ lower 7/8
+        '\u{2588}' => vec![[0.0, 0.0, 1.0, 1.0]], // █ full block
+        '\u{2589}' => vec![[0.0, 0.0, E7, 1.0]],  // ▉ left 7/8
+        '\u{258A}' => vec![[0.0, 0.0, E6, 1.0]],  // ▊ left 3/4
+        '\u{258B}' => vec![[0.0, 0.0, E5, 1.0]],  // ▋ left 5/8
+        '\u{258C}' => vec![[0.0, 0.0, H, 1.0]],   // ▌ left half
+        '\u{258D}' => vec![[0.0, 0.0, E3, 1.0]],  // ▍ left 3/8
+        '\u{258E}' => vec![[0.0, 0.0, E2, 1.0]],  // ▎ left 1/4
+        '\u{258F}' => vec![[0.0, 0.0, E1, 1.0]],  // ▏ left 1/8
+        '\u{2590}' => vec![[H, 0.0, 1.0, 1.0]],   // ▐ right half
+        '\u{2591}' => return Some((vec![[0.0, 0.0, 1.0, 1.0]], 0.25)), // ░ light shade
+        '\u{2592}' => return Some((vec![[0.0, 0.0, 1.0, 1.0]], 0.50)), // ▒ medium shade
+        '\u{2593}' => return Some((vec![[0.0, 0.0, 1.0, 1.0]], 0.75)), // ▓ dark shade
+        '\u{2594}' => vec![[0.0, 0.0, 1.0, E1]],  // ▔ upper 1/8
+        '\u{2595}' => vec![[E7, 0.0, 1.0, 1.0]],  // ▕ right 1/8
+        '\u{2596}' => vec![[0.0, H, H, 1.0]],     // ▖ lower-left quadrant
+        '\u{2597}' => vec![[H, H, 1.0, 1.0]],     // ▗ lower-right quadrant
+        '\u{2598}' => vec![[0.0, 0.0, H, H]],     // ▘ upper-left quadrant
+        '\u{2599}' => vec![[0.0, 0.0, H, H], [0.0, H, 1.0, 1.0]], // ▙ UL + lower half
+        '\u{259A}' => vec![[0.0, 0.0, H, H], [H, H, 1.0, 1.0]],   // ▚ UL + LR
+        '\u{259B}' => vec![[0.0, 0.0, 1.0, H], [0.0, H, H, 1.0]], // ▛ upper half + LL
+        '\u{259C}' => vec![[0.0, 0.0, 1.0, H], [H, H, 1.0, 1.0]], // ▜ upper half + LR
+        '\u{259D}' => vec![[H, 0.0, 1.0, H]],     // ▝ upper-right quadrant
+        '\u{259E}' => vec![[H, 0.0, 1.0, H], [0.0, H, H, 1.0]],   // ▞ UR + LL
+        '\u{259F}' => vec![[H, 0.0, 1.0, H], [0.0, H, 1.0, 1.0]], // ▟ UR + lower half
+        _ => return None,
+    };
+    Some((rects, 1.0))
+}
+
 /// Per-cell visual attrs that need to be reflected in `RowRun` identity so
 /// that two runs with the same text but different bold-ness re-shape and
 /// re-decorate correctly.
@@ -145,6 +208,17 @@ enum DecorKind {
     Strikeout,
 }
 
+/// One block-element cell (U+2580..=U+259F) rendered as grid-aligned quads
+/// rather than a font glyph. `color` is the resolved foreground (post-inverse)
+/// — the block's "ink". The text run substitutes a space at this column so
+/// surrounding glyphs keep their cell alignment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct BlockCell {
+    col: u16,
+    color: [u8; 3],
+    ch: char,
+}
+
 /// One Buffer per visible row, kept across frames so cosmic-text can reuse
 /// shape caches.
 pub struct CellGrid {
@@ -158,6 +232,9 @@ pub struct CellGrid {
     row_bg: Vec<Vec<BgSegment>>,
     /// Per-row decoration segments (underline/strikeout).
     row_decor: Vec<Vec<DecorSegment>>,
+    /// Per-row block-element cells (U+2580..=U+259F), rendered as grid-aligned
+    /// quads by `build_block_quads` instead of as font glyphs.
+    row_block: Vec<Vec<BlockCell>>,
     /// Shared theme palette. Owned by Renderer; cloned into CellGrid so
     /// snapshot_rows / sync_from_term can resolve named/indexed ansi colors
     /// against the current theme. Updated atomically by `Renderer::set_theme`.
@@ -178,11 +255,13 @@ impl CellGrid {
         let row_runs = vec![Vec::new(); rows];
         let row_bg = vec![Vec::new(); rows];
         let row_decor = vec![Vec::new(); rows];
+        let row_block = vec![Vec::new(); rows];
         CellGrid {
             row_buffers,
             row_runs,
             row_bg,
             row_decor,
+            row_block,
             theme,
             damage: DamageTracker::new(rows),
             cols,
@@ -205,6 +284,9 @@ impl CellGrid {
         for decor in self.row_decor.iter_mut() {
             decor.clear();
         }
+        for block in self.row_block.iter_mut() {
+            block.clear();
+        }
         for y in 0..self.rows {
             self.damage.mark_row(y);
         }
@@ -223,6 +305,7 @@ impl CellGrid {
         self.row_runs = vec![Vec::new(); rows];
         self.row_bg = vec![Vec::new(); rows];
         self.row_decor = vec![Vec::new(); rows];
+        self.row_block = vec![Vec::new(); rows];
         self.damage.resize(rows);
         self.cols = cols;
         self.rows = rows;
@@ -244,6 +327,9 @@ impl CellGrid {
         for decor in self.row_decor.iter_mut() {
             decor.clear();
         }
+        for block in self.row_block.iter_mut() {
+            block.clear();
+        }
         for y in 0..self.rows {
             self.damage.mark_row(y);
         }
@@ -260,8 +346,12 @@ impl CellGrid {
 
         let len = snapshot.len().min(self.rows);
         for (y, row) in snapshot.into_iter().enumerate().take(len) {
-            let RowSnapshot { runs, bg, decor } = row;
-            if self.row_runs[y] == runs && self.row_bg_matches(y, &bg) && self.row_decor_matches(y, &decor) {
+            let RowSnapshot { runs, bg, decor, block } = row;
+            if self.row_runs[y] == runs
+                && self.row_bg_matches(y, &bg)
+                && self.row_decor_matches(y, &decor)
+                && self.row_block.get(y).map(Vec::as_slice) == Some(block.as_slice())
+            {
                 continue;
             }
             // Apply text/Attrs to buffer via set_rich_text. We need a vec of
@@ -300,6 +390,7 @@ impl CellGrid {
             self.row_runs[y] = runs;
             self.row_bg[y] = bg;
             self.row_decor[y] = decor;
+            self.row_block[y] = block;
             self.damage.mark_row(y);
         }
     }
@@ -361,6 +452,7 @@ impl CellGrid {
             let mut runs: Vec<RowRun> = Vec::new();
             let mut bg_segs: Vec<BgSegment> = Vec::new();
             let mut decor_segs: Vec<DecorSegment> = Vec::new();
+            let mut block_cells: Vec<BlockCell> = Vec::new();
             // Run accumulators for text spans.
             let mut current_color: Option<[u8; 3]> = None;
             let mut current_attrs: CellAttrs = CellAttrs::default();
@@ -394,9 +486,26 @@ impl CellGrid {
                     }
                 }
 
+                // --- block elements (U+2580..=U+259F) ---
+                // Render these as grid-aligned quads (see build_block_quads),
+                // not font glyphs: cosmic-text shapes them at advances that
+                // don't match the cell grid, which sheared the Claude Code
+                // logo apart. Substitute a space (default fg/attrs) in the text
+                // run so it merges with blank runs and keeps the surrounding
+                // glyphs on the grid; the real ink is drawn by the block quad.
+                let is_block = is_block_element(ch);
+                if is_block {
+                    block_cells.push(BlockCell { col: x as u16, color: fg, ch });
+                }
+                let (text_ch, text_fg, text_attrs) = if is_block {
+                    (' ', fg_default_rgb, CellAttrs::default())
+                } else {
+                    (ch, fg, attrs)
+                };
+
                 // --- text runs (fg color + attrs identity) ---
-                if Some(fg) == current_color && attrs == current_attrs {
-                    current_text.push(ch);
+                if Some(text_fg) == current_color && text_attrs == current_attrs {
+                    current_text.push(text_ch);
                 } else {
                     if !current_text.is_empty() {
                         runs.push(RowRun {
@@ -405,9 +514,9 @@ impl CellGrid {
                             attrs: current_attrs,
                         });
                     }
-                    current_color = Some(fg);
-                    current_attrs = attrs;
-                    current_text.push(ch);
+                    current_color = Some(text_fg);
+                    current_attrs = text_attrs;
+                    current_text.push(text_ch);
                 }
 
                 // --- background segments (skip cells matching clear color) ---
@@ -522,7 +631,7 @@ impl CellGrid {
                     runs.pop();
                 }
             }
-            out.push(RowSnapshot { runs, bg: bg_segs, decor: decor_segs });
+            out.push(RowSnapshot { runs, bg: bg_segs, decor: decor_segs, block: block_cells });
         }
         out
     }
@@ -608,6 +717,37 @@ impl CellGrid {
         }
         out
     }
+
+    /// Convert per-row block-element cells (U+2580..=U+259F) into QuadInstance
+    /// rects on the fixed cell grid — the same coordinate system as
+    /// `build_bg_quads`, so the block "pixels" tile seamlessly and align to
+    /// their colored cells. Drawn right after the bg quads (before the glyph
+    /// pass). Shade glyphs (░▒▓) carry an alpha < 1 and alpha-blend over the bg.
+    pub fn build_block_quads(&self, cell_w: f32, line_h: f32) -> Vec<QuadInstance> {
+        let mut out = Vec::new();
+        for (y, cells) in self.row_block.iter().enumerate() {
+            let row_top = y as f32 * line_h;
+            for bc in cells {
+                if let Some((rects, alpha)) = block_element_fills(bc.ch) {
+                    let cell_x = bc.col as f32 * cell_w;
+                    let [r, g, b] = bc.color;
+                    let color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, alpha];
+                    for [fx0, fy0, fx1, fy1] in rects {
+                        out.push(QuadInstance {
+                            rect: [
+                                cell_x + fx0 * cell_w,
+                                row_top + fy0 * line_h,
+                                (fx1 - fx0) * cell_w,
+                                (fy1 - fy0) * line_h,
+                            ],
+                            color,
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Internal: one row's worth of decoded data returned by `snapshot_rows`.
@@ -615,4 +755,5 @@ struct RowSnapshot {
     runs: Vec<RowRun>,
     bg: Vec<BgSegment>,
     decor: Vec<DecorSegment>,
+    block: Vec<BlockCell>,
 }

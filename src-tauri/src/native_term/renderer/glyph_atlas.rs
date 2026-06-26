@@ -10,15 +10,15 @@
 //
 // API verified against `glyphon-0.6.0/src/`:
 //   - `Cache::new(device)` — cache.rs:44
-//   - `TextAtlas::new(device, queue, cache, format)` — text_atlas.rs:304
+//   - `TextAtlas::with_color_mode(device, queue, cache, format, ColorMode::Web)` — text_atlas.rs:309
 //   - `Viewport::new(device, cache)` then `viewport.update(queue, Resolution)` — viewport.rs:20, 46
 //   - `TextRenderer::new(&mut atlas, device, MultisampleState, None)` — text_render.rs:24
 //   - `prepare(device, queue, font_system, atlas, viewport, [TextArea], swash_cache)` — text_render.rs:49
 //   - `render(&atlas, &viewport, &mut pass)` — text_render.rs:334
 
 use glyphon::{
-    Attrs, Buffer, Cache, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache, TextArea,
-    TextAtlas, TextBounds, TextRenderer, Viewport,
+    Attrs, Buffer, Cache, ColorMode, Family, FontSystem, Metrics, Resolution, Shaping, SwashCache,
+    TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
 };
 use wgpu::{Device, MultisampleState, Queue, RenderPass, TextureFormat};
 
@@ -52,7 +52,14 @@ impl GlyphStack {
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
-        let mut atlas = TextAtlas::new(device, queue, &cache, format);
+        // ColorMode::Web disables glyphon's sRGB→linear text conversion so glyph
+    // colors are written raw, matching the background quad + clear-color paths
+    // (which also write raw sRGB values). Paired with the non-sRGB surface
+    // format chosen in pipeline.rs, the whole frame stays in one consistent
+    // color space — fixing the "background/text colors look off" bug. The
+    // default `TextAtlas::new` uses ColorMode::Accurate, which only renders
+    // correctly on an *Srgb surface.
+    let mut atlas = TextAtlas::with_color_mode(device, queue, &cache, format, ColorMode::Web);
         let mut viewport = Viewport::new(device, &cache);
         viewport.update(
             queue,

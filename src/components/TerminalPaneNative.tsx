@@ -275,34 +275,46 @@ export default function TerminalPaneNative({
       });
     });
 
-    const ro = new ResizeObserver(() => {
-      if (createdId == null) return;
-      void invoke("native_term_spike_resize", {
-        id: createdId,
-        rect: rectOf(el),
-        dpr: window.devicePixelRatio,
-      }).catch(() => {});
-    });
-    ro.observe(el);
-
-    const onWinChange = () => {
+    // Geometry driver: a continuous rAF re-read with a no-change guard.
+    // A bare ResizeObserver (the previous approach) misses POSITION-only
+    // changes — e.g. the header settling into flow pushes this inner div down
+    // without changing its size, so the surface stayed at the pane top and the
+    // header drew over the first rows. RO also coalesces during a fast divider
+    // drag, so the native surface lagged the DOM header. Re-reading rectOf(el)
+    // every frame and pushing only on change fixes both. Mirrors the existing
+    // region driver in useNativePaneRegion.ts:47-103.
+    let geomRafId = 0;
+    let lastGeomJson = "";
+    const pushGeom = () => {
+      geomRafId = requestAnimationFrame(pushGeom);
       if (createdId == null || !el.isConnected) return;
+      const rect = rectOf(el);
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const dpr = window.devicePixelRatio;
+      const json = JSON.stringify([rect, dpr]);
+      if (json === lastGeomJson) return;
+      lastGeomJson = json;
       void invoke("native_term_spike_resize", {
         id: createdId,
-        rect: rectOf(el),
-        dpr: window.devicePixelRatio,
+        rect,
+        dpr,
       }).catch(() => {});
     };
-    window.addEventListener("resize", onWinChange);
-    window.addEventListener("scroll", onWinChange, true);
+    geomRafId = requestAnimationFrame(pushGeom);
+
+    // ResizeObserver now only resets the guard so the next rAF tick re-pushes
+    // promptly after a size change (the rAF read covers position changes).
+    const ro = new ResizeObserver(() => {
+      lastGeomJson = "";
+    });
+    ro.observe(el);
 
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf1);
       if (raf2Id) cancelAnimationFrame(raf2Id);
+      if (geomRafId) cancelAnimationFrame(geomRafId);
       ro.disconnect();
-      window.removeEventListener("resize", onWinChange);
-      window.removeEventListener("scroll", onWinChange, true);
       if (createdId != null) {
         unregisterNativeTerm(createdId);
         void invoke("native_term_spike_destroy", { id: createdId }).catch(

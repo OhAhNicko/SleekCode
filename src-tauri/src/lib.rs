@@ -3464,42 +3464,70 @@ async fn get_claude_session_id(project_path: String, exclude_ids: Vec<String>, m
 async fn get_claude_session_id_by_spawn(
     project_path: String,
     min_started_at_ms: u64,
+    now_ms: u64,
     exclude_ids: Vec<String>,
+    debug: bool,
 ) -> Result<Option<String>, String> {
     let script = format!(
         r#"python3 -c "
-import json, os, sys, glob
-cwd = sys.argv[1]
+import json, os, sys, glob, time
+cwd = (sys.argv[1] or '').rstrip('/').lower()
 min_ms = int(sys.argv[2])
-exclude = set(sys.argv[3].split(',')) if len(sys.argv) > 3 and sys.argv[3] else set()
+now_ms = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
+exclude = set(sys.argv[4].split(',')) if len(sys.argv) > 4 and sys.argv[4] else set()
+debug = len(sys.argv) > 5 and sys.argv[5] == '1'
+wsl_now = int(time.time() * 1000)
+# startedAt is written by Claude INSIDE WSL, but min_ms/now_ms come from the
+# Windows WebView clock. WSL2 clocks drift from Windows (esp. after sleep), so
+# correct the floor into WSL time; otherwise a positive skew filters out the
+# genuine just-spawned session and the resume is silently lost.
+floor = min_ms + (wsl_now - now_ms) if now_ms > 0 else min_ms
 best_id = None
 best_started = -1
+diag = []
 for path in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
             v = json.load(f)
     except Exception:
         continue
-    if v.get('cwd') != cwd: continue
+    # Case- and trailing-slash-insensitive cwd compare: /mnt/c is case-folding so
+    # the same project shows up as Documents/...2codeCC and documents/...2codecc.
+    vcwd = (v.get('cwd') or '').rstrip('/').lower()
+    if vcwd != cwd: continue
     started = v.get('startedAt', 0)
     if not isinstance(started, (int, float)): continue
-    if started < min_ms: continue
     sid = v.get('sessionId', '')
-    if not sid or sid in exclude: continue
+    if not sid: continue
+    if debug: diag.append('%s started=%d ok=%s excluded=%s' % (sid[:8], int(started), started >= floor, sid in exclude))
+    if started < floor: continue
+    if sid in exclude: continue
     if started > best_started:
         best_started = started
         best_id = sid
 if best_id: print(best_id)
-" '{cwd}' '{min_ms}' '{excl}'"#,
+if debug:
+    sys.stderr.write('[by_spawn] cwd=%s floor=%d wsl_now=%d min_ms=%d now_ms=%d match=%s\n' % (cwd, floor, wsl_now, min_ms, now_ms, best_id))
+    for d in diag: sys.stderr.write('  ' + d + '\n')
+" '{cwd}' '{min_ms}' '{now_ms}' '{excl}' '{dbg}'"#,
         cwd = project_path.replace('\'', "'\\''"),
         min_ms = min_started_at_ms,
-        excl = exclude_ids.join(",")
+        now_ms = now_ms,
+        excl = exclude_ids.join(","),
+        dbg = if debug { "1" } else { "0" },
     );
 
     let output = wsl_command()
         .args(["--", "bash", "-lic", &script])
         .output()
         .map_err(|e| format!("Failed to query Claude session by spawn: {}", e))?;
+
+    if debug {
+        let se = String::from_utf8_lossy(&output.stderr);
+        if !se.trim().is_empty() {
+            eprintln!("[get_claude_session_id_by_spawn]\n{}", se.trim_end());
+        }
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.is_empty() { return Ok(None); }
@@ -3511,11 +3539,14 @@ if best_id: print(best_id)
 async fn get_claude_session_id_by_spawn_native(
     project_path: String,
     min_started_at_ms: u64,
+    now_ms: u64,
     exclude_ids: Vec<String>,
+    debug: bool,
 ) -> Result<Option<String>, String> {
+    let _ = now_ms; // native: session startedAt and the floor share one OS clock — no skew correction
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     let sessions_dir = std::path::Path::new(&home).join(".claude").join("sessions");
-    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids)
+    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids, debug)
 }
 
 /// Windows variant of get_claude_session_id_by_spawn.
@@ -3523,11 +3554,14 @@ async fn get_claude_session_id_by_spawn_native(
 async fn get_claude_session_id_by_spawn_windows(
     project_path: String,
     min_started_at_ms: u64,
+    now_ms: u64,
     exclude_ids: Vec<String>,
+    debug: bool,
 ) -> Result<Option<String>, String> {
+    let _ = now_ms; // windows-native: same OS clock for startedAt and floor — no skew correction
     let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
     let sessions_dir = std::path::Path::new(&home).join(".claude").join("sessions");
-    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids)
+    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids, debug)
 }
 
 /// Helper: scan a directory of pid-keyed session sidecars and return the
@@ -3538,6 +3572,7 @@ fn scan_claude_sessions_dir(
     project_path: &str,
     min_started_at_ms: u64,
     exclude_ids: &[String],
+    debug: bool,
 ) -> Result<Option<String>, String> {
     if !sessions_dir.is_dir() {
         return Ok(None);
@@ -3546,6 +3581,10 @@ fn scan_claude_sessions_dir(
         Ok(e) => e,
         Err(_) => return Ok(None),
     };
+    // Case- and trailing-slash-insensitive cwd compare. The same project can be
+    // recorded with different casing (Documents vs documents) on Windows.
+    let norm = |s: &str| s.trim_end_matches(|c| c == '/' || c == '\\').to_ascii_lowercase();
+    let target = norm(project_path);
     let mut best: Option<(u64, String)> = None;
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
@@ -3559,16 +3598,29 @@ fn scan_claude_sessions_dir(
             Err(_) => continue,
         };
         let cwd = v.get("cwd").and_then(|c| c.as_str()).unwrap_or("");
-        if cwd != project_path { continue; }
+        if norm(cwd) != target { continue; }
         let started = v.get("startedAt").and_then(|s| s.as_u64()).unwrap_or(0);
-        if started < min_started_at_ms { continue; }
         let sid = v.get("sessionId").and_then(|s| s.as_str()).unwrap_or("");
+        if debug {
+            let short: String = sid.chars().take(8).collect();
+            eprintln!(
+                "[scan_claude_sessions_dir]   {} started={} ok={} excluded={}",
+                short, started, started >= min_started_at_ms, exclude_ids.iter().any(|ex| ex == sid)
+            );
+        }
+        if started < min_started_at_ms { continue; }
         if sid.is_empty() { continue; }
         if exclude_ids.iter().any(|ex| ex == sid) { continue; }
         match &best {
             Some((b, _)) if *b >= started => {}
             _ => { best = Some((started, sid.to_string())); }
         }
+    }
+    if debug {
+        eprintln!(
+            "[scan_claude_sessions_dir] cwd={} floor={} match={:?}",
+            target, min_started_at_ms, best.as_ref().map(|(_, s)| s)
+        );
     }
     Ok(best.map(|(_, id)| id))
 }

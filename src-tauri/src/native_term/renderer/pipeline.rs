@@ -51,6 +51,11 @@ pub struct Renderer {
     /// between them.
     bg_quads: QuadPipeline,
     decor_quads: QuadPipeline,
+    /// Dedicated quad pipeline for block-element glyphs (U+2580..=U+259F),
+    /// drawn right after `bg_quads` and before the glyph pass. Kept separate so
+    /// it owns its own uploaded instance buffer (same rationale as
+    /// `search_quads`). See `CellGrid::build_block_quads`.
+    block_quads: QuadPipeline,
     /// Placeholder Buffer used in the no-Term path. Pre-built once in `new`
     /// so render() doesn't re-shape every frame.
     placeholder_buffer: Buffer,
@@ -157,12 +162,22 @@ impl Renderer {
         .map_err(|e| format!("request_device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| matches!(f, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb))
-            .unwrap_or(caps.formats[0]);
+        // Pick a NON-sRGB (linear) surface explicitly so the GPU performs no
+        // linear→sRGB re-encode on write. Combined with glyphon's
+        // ColorMode::Web (no text color conversion) and the raw quad/clear
+        // color paths, the whole frame stays in one consistent sRGB-value
+        // space — matching the xterm/canvas pane. The previous code accepted
+        // EITHER Bgra8Unorm or Bgra8UnormSrgb (whichever the adapter listed
+        // first), which was non-deterministic across backends and broke the
+        // text-vs-background color match. Choosing the format here makes it
+        // deterministic.
+        let format = [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Rgba8Unorm,
+        ]
+        .into_iter()
+        .find(|f| caps.formats.contains(f))
+        .unwrap_or(caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -200,6 +215,7 @@ impl Renderer {
         let cursor = CursorPipeline::new(&device, format);
         let bg_quads = QuadPipeline::new(&device, format);
         let decor_quads = QuadPipeline::new(&device, format);
+        let block_quads = QuadPipeline::new(&device, format);
         let search_quads = QuadPipeline::new(&device, format);
 
         let theme_init = ThemeColors::default_tango();
@@ -217,6 +233,7 @@ impl Renderer {
             cursor,
             bg_quads,
             decor_quads,
+            block_quads,
             placeholder_buffer,
             bg_clear,
             theme,
@@ -361,15 +378,21 @@ impl Renderer {
         // are cheap allocations (Vec<QuadInstance>) over the grid's cached
         // per-row segment lists; the grid only re-snapshots rows that
         // actually changed.
-        let (bg_instances, decor_instances) = if let Some(grid) = self.grid.as_ref() {
-            (grid.build_bg_quads(cell_w, line_h), grid.build_decor_quads(cell_w, line_h))
+        let (bg_instances, decor_instances, block_instances) = if let Some(grid) = self.grid.as_ref() {
+            (
+                grid.build_bg_quads(cell_w, line_h),
+                grid.build_decor_quads(cell_w, line_h),
+                grid.build_block_quads(cell_w, line_h),
+            )
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
         self.bg_quads
             .upload(&self.device, &self.queue, surface_w, surface_h, &bg_instances);
         self.decor_quads
             .upload(&self.device, &self.queue, surface_w, surface_h, &decor_instances);
+        self.block_quads
+            .upload(&self.device, &self.queue, surface_w, surface_h, &block_instances);
 
         // Search highlight instances. Translucent overlay drawn AFTER bg
         // quads but BEFORE the glyph pass so the underlying text stays
@@ -431,6 +454,11 @@ impl Renderer {
             // Per-cell backgrounds first so glyphs and decorations layer
             // on top of them.
             self.bg_quads.draw(&mut pass);
+
+            // Block-element glyphs (▀ ▄ █ ░▒▓ …) rendered as grid-aligned
+            // quads, right after the cell backgrounds so they sit on top of
+            // them and tile seamlessly (the cells' text glyph is a space).
+            self.block_quads.draw(&mut pass);
 
             // Search highlights sit between bg and glyphs — alpha-blended so
             // the matching text underneath stays legible.
