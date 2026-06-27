@@ -63,9 +63,7 @@ body,
   height: 100%;
   width: 100%;
   overflow: hidden;
-  /* Transparent so the OS window's see-through gutter lets the CSS drop shadow
-     render over the desktop. The opaque dark surface lives on `.window-frame`. */
-  background-color: transparent;
+  background-color: var(--ezy-bg);
   color: var(--ezy-text);
   font-family:
     "Inter Variable",
@@ -77,47 +75,6 @@ body,
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: "kern" 1, "liga" 1;
-}
-
-/* ── Frameless window: transparent OS window + CSS drop shadow ──────────────
-   The OS window is borderless, shadowless, transparent (tauri.conf.json) and
-   square-cornered (Rust sets DWMWCP_DONOTROUND so it adds no second edge).
-   `.window-root` is a transparent gutter the size of the shadow's reach;
-   `.window-frame` is the visible window — opaque, rounded, with the drop shadow
-   that bleeds into the gutter. Maximized, the gutter/radius/shadow collapse so
-   it fills the work area. Dragging uses the OS move loop (native startDragging),
-   so moving a transparent window stays smooth.
-   See win-err/docs/frameless-no-border-with-shadow.md. */
-.window-root {
-  height: 100%;
-  width: 100%;
-  padding: 20px; /* gutter ≈ shadow reach; must clear the blur so it isn't clipped */
-  box-sizing: border-box;
-  background: transparent;
-}
-
-.window-frame {
-  position: relative; /* anchors the absolutely-positioned resize grips */
-  height: 100%;
-  width: 100%;
-  border-radius: 11px;
-  background-color: var(--ezy-bg);
-  overflow: hidden; /* clips child corners (titlebar, panes) to the rounded shape */
-  /* Reach kept within the 20px gutter so it isn't clipped at the window edge:
-     a tight key shadow + a soft ambient layer + a 1px light hairline. */
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.05), /* hairline — subtle edge definition */
-    0 2px 6px rgba(0, 0, 0, 0.4), /* tight key shadow */
-    0 10px 28px -8px rgba(0, 0, 0, 0.72); /* soft ambient depth */
-}
-
-/* Maximized: fill the work area, no gutter / corners / shadow. */
-.window-root.is-max {
-  padding: 0;
-}
-.window-root.is-max .window-frame {
-  border-radius: 0;
-  box-shadow: none;
 }
 
 /* Scrollbar styling */

@@ -60,14 +60,13 @@ mod win32_border {
     const DWMWA_BORDER_COLOR: u32 = 34;
     /// Special COLORREF telling DWM to draw NO window border at all (not just a
     /// matching color). This suppresses the Windows 11 accent border line on all
-    /// four sides (border #1). The window is transparent (`transparent: true`,
-    /// `shadow: false`) with the drop shadow drawn in CSS (`.window-frame`
-    /// box-shadow); no WS_THICKFRAME is added, so DWM composites no native shadow
-    /// frame and there is no intermittent 1px top line on resize (border #2). The
-    /// OS window is left SQUARE (DWMWCP_DONOTROUND) so it adds no second rounded
-    /// edge; CSS owns the visible corners. Dragging uses the native OS move loop
-    /// (`startDragging`), so a transparent window still drags smoothly.
-    /// See win-err/docs/frameless-no-border-with-shadow.md.
+    /// four sides (border #1). The window is opaque and borderless with rounded
+    /// corners (DWMWCP_ROUND) but has NO drop shadow: no WS_THICKFRAME is added
+    /// and `shadow: false` in tauri.conf.json, so DWM composites no native shadow
+    /// frame — which is what produced the intermittent 1px top line on resize
+    /// (border #2). We use the top-line diagnosis from
+    /// win-err/docs/frameless-no-border-with-shadow.md but NOT its transparent +
+    /// CSS-shadow approach (transparency caused drag lag + a double edge here).
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     const WM_NCCALCSIZE: u32 = 0x0083;
     const WM_SIZE: u32 = 0x0005;
@@ -194,8 +193,8 @@ mod win32_border {
     }
 
     /// Suppress the Windows 11 accent window border (border #1, all four sides).
-    /// The drop shadow is drawn in CSS on a transparent window, so there is no
-    /// native shadow frame to preserve. Two DWM attributes:
+    /// The window is opaque with no drop shadow (no native shadow, not
+    /// transparent), so there is no shadow frame to preserve. Two DWM attributes:
     /// 1. `DWMWA_USE_IMMERSIVE_DARK_MODE = TRUE` — keep DWM in dark theme so any
     ///    transient non-client fill is dark, not a bright light-theme color.
     /// 2. `DWMWA_BORDER_COLOR = DWMWA_COLOR_NONE` — tell DWM to draw no border
@@ -467,10 +466,9 @@ mod win32_border {
                         std::mem::take(&mut state.was_maximized)
                     };
                     if was_maximized {
-                        // Keep the OS window square on restore — CSS owns the
-                        // corners; rounding the transparent window would re-add a
-                        // second outer edge (the "double border").
-                        let corner_pref = DWMWCP_DONOTROUND;
+                        // Only re-apply rounded corners on the actual maximize ->
+                        // restore edge, not on every drag tick.
+                        let corner_pref = DWMWCP_ROUND;
                         DwmSetWindowAttribute(
                             hwnd,
                             DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -526,16 +524,15 @@ mod win32_border {
     pub fn remove_border(hwnd: *mut c_void, controller: ICoreWebView2Controller) {
         unsafe {
             // 1) Suppress the all-sides accent border via DWMWA_COLOR_NONE +
-            //    immersive dark. There is no native shadow (no WS_THICKFRAME,
-            //    shadow:false), so no DWM shadow frame and no intermittent top
-            //    line; the drop shadow is drawn in CSS on the transparent window.
+            //    immersive dark. The window has no native shadow (no WS_THICKFRAME,
+            //    shadow:false), so there is no DWM shadow frame and no intermittent
+            //    top line on resize.
             apply_border_suppression(hwnd);
 
-            // 2) Keep the OS window SQUARE (DWMWCP_DONOTROUND). The visible
-            //    rounded corners are drawn in CSS on `.window-frame`; rounding the
-            //    transparent OS window too would add a second, outer rounded edge
-            //    (the "double border"). CSS owns the corners.
-            let corner_pref = DWMWCP_DONOTROUND;
+            // 2) Enable rounded corners (Windows 11+). DWM rounds the opaque
+            //    borderless window; the opaque client (#0d1117) fills under the
+            //    rounded mask, so no CSS corner work is needed.
+            let corner_pref = DWMWCP_ROUND;
             DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -3181,36 +3178,6 @@ async fn reveal_in_explorer(path: String) -> Result<(), String> {
             .unwrap_or_else(|| ".".to_string());
         let _ = Command::new("xdg-open")
             .arg(&parent)
-            .spawn()
-            .map_err(|e| format!("Failed to launch file manager: {}", e))?;
-    }
-    Ok(())
-}
-
-/// Open a folder in the platform's file manager (shows the folder's contents).
-/// Unlike `reveal_in_explorer`, this opens the folder itself rather than selecting it in its parent.
-#[tauri::command]
-async fn open_folder(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        // Normalize forward slashes to backslashes for explorer.exe
-        let win_path = path.replace('/', "\\");
-        let _ = Command::new("explorer.exe")
-            .arg(win_path)
-            .spawn()
-            .map_err(|e| format!("Failed to launch explorer: {}", e))?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Failed to launch Finder: {}", e))?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = Command::new("xdg-open")
-            .arg(&path)
             .spawn()
             .map_err(|e| format!("Failed to launch file manager: {}", e))?;
     }
@@ -6563,7 +6530,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_debug_inject_bytes, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_spike_create, native_term::native_term_spike_resize, native_term::native_term_spike_destroy, native_term::native_term_spike_show, native_term::native_term_spike_hide, native_term::native_term_spike_set_region])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_debug_inject_bytes, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_spike_create, native_term::native_term_spike_resize, native_term::native_term_spike_destroy, native_term::native_term_spike_show, native_term::native_term_spike_hide, native_term::native_term_spike_set_region])
         .setup(|app| {
             // Registry of active `ssh -N -L` port-forward processes for remote
             // dev servers (commands: ssh_forward_port_start / _stop).

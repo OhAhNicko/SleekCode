@@ -27,10 +27,7 @@ export default function WindowResizeHandles() {
           key={dir}
           onPointerDown={(e) => startCustomWindowResize(e, dir)}
           style={{
-            // absolute (not fixed) so the grips anchor to `.window-frame` and
-            // sit on the visible window edge — not 20px out in the transparent
-            // shadow gutter. `.window-frame` is position:relative.
-            position: "absolute",
+            position: "fixed",
             zIndex: 9999,
             ...style,
           }}
