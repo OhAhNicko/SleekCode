@@ -160,10 +160,20 @@ export function usePtyNative({
           command = config.command;
           args = [...config.args];
         } else if (backend === "windows") {
-          const cwdForConfig = terminalType === "shell" ? (currentWorkingDir || undefined) : undefined;
+          // Shell AND devserver pass the project cwd so PowerShell launches with
+          // -NoExit -Command "Set-Location ..." baked in (a Tauri dev server
+          // routed here must land in the project dir to run `npm run tauri:dev`).
+          const cwdForConfig = terminalType === "shell" || terminalType === "devserver"
+            ? (currentWorkingDir || undefined)
+            : undefined;
           const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, "windows");
           command = config.command;
           args = [...config.args];
+          if (terminalType === "devserver") {
+            // Set-Location (baked into args) handles the directory; don't also
+            // hand a possibly-/mnt-form cwd to CreateProcessW.
+            cwd = undefined;
+          }
         } else {
           let wslCwd: string | undefined;
           if (cwd && isWslTerminal(terminalType, backend)) {

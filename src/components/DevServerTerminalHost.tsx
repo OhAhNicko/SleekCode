@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import { getPtyWrite, registerTerminalDataListener, unregisterTerminalDataListener } from "../store/terminalSlice";
 import { injectPort } from "../lib/server-commands";
+import type { DevServer } from "../types";
 import TerminalPane from "./TerminalPane";
 
 /**
@@ -152,6 +153,8 @@ export default function DevServerTerminalHost() {
   const updateDevServerPort = useAppStore((s) => s.updateDevServerPort);
   const updateDevServerError = useAppStore((s) => s.updateDevServerError);
   const setDevServerNetworkUrls = useAppStore((s) => s.setDevServerNetworkUrls);
+  const setDevServerBackend = useAppStore((s) => s.setDevServerBackend);
+  const setProjectServerInWindows = useAppStore((s) => s.setProjectServerInWindows);
 
   // Track which servers have had their command written
   const commandSentRef = useRef<Set<string>>(new Set());
@@ -234,6 +237,38 @@ export default function DevServerTerminalHost() {
   // Timers for grace-period unregistration after port detection
   const graceTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
+  /**
+   * Switch a (local) dev server between the WSL bash and Windows PowerShell
+   * shells. Persists the choice as a per-project override, clears all detection
+   * state so the remounted pane re-sends the command, and flips ds.backend —
+   * which changes the TerminalPane key and remounts it in the new shell.
+   */
+  const switchBackend = useCallback(
+    (ds: DevServer, target: "wsl" | "windows") => {
+      if (ds.backend === target) return;
+      // Remember the choice for next time (overrides Tauri auto-detect).
+      setProjectServerInWindows(ds.workingDir, ds.serverId, target === "windows");
+      // Clear detection state so the fresh pane re-sends + re-detects cleanly.
+      commandSentRef.current.delete(ds.id);
+      resolvedRef.current.delete(ds.id);
+      portDetectedRef.current.delete(ds.id);
+      stoppedMonitorRef.current.delete(ds.id);
+      lockRetryRef.current.delete(ds.id);
+      const graceTimer = graceTimersRef.current.get(ds.id);
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimersRef.current.delete(ds.id);
+      }
+      unregisterTerminalDataListener(ds.terminalId);
+      updateDevServerStatus(ds.id, "starting");
+      updateDevServerPort(ds.id, 0);
+      updateDevServerError(ds.id, undefined);
+      setDevServerNetworkUrls(ds.id, []);
+      setDevServerBackend(ds.id, target);
+    },
+    [setProjectServerInWindows, setDevServerBackend, updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls]
+  );
+
   // Register data listeners for port detection + error detection
   useEffect(() => {
     for (const ds of devServers) {
@@ -285,7 +320,9 @@ export default function DevServerTerminalHost() {
               updateDevServerPort(ds.id, 0);
               updateDevServerError(ds.id, undefined);
 
-              const backend = useAppStore.getState().terminalBackend ?? "wsl";
+              // Use the server's resolved backend so a Windows-routed dev server
+              // gets the PowerShell cleanup (Get-NetTCPConnection), not WSL fuser.
+              const backend = ds.backend ?? useAppStore.getState().terminalBackend ?? "wsl";
               const cleanup = buildCleanupPrefix(ds.command, ds.port, backend);
 
               if (attempts === 0) {
@@ -605,6 +642,54 @@ export default function DevServerTerminalHost() {
               </span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              {/* Shell toggle — local servers on a Windows host only. Lets the user
+                  override the Tauri auto-detection (WSL bash ⇄ Windows PowerShell). */}
+              {!expandedServer.serverId &&
+                (expandedServer.backend === "wsl" || expandedServer.backend === "windows") && (
+                <div
+                  role="group"
+                  aria-label="Dev server shell"
+                  title="Which shell the dev server runs in. Tauri projects default to Windows so `npm run tauri:dev` uses the Windows toolchain instead of failing in WSL."
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    height: 24,
+                    marginRight: 4,
+                    border: "1px solid var(--ezy-border)",
+                    borderRadius: 6,
+                    overflow: "hidden",
+                    userSelect: "none",
+                  }}
+                >
+                  {(["wsl", "windows"] as const).map((mode) => {
+                    const active = expandedServer.backend === mode;
+                    return (
+                      <div
+                        key={mode}
+                        title={mode === "windows" ? "Run in Windows PowerShell" : "Run in WSL bash"}
+                        onClick={() => switchBackend(expandedServer, mode)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          height: "100%",
+                          padding: "0 8px",
+                          fontSize: 11,
+                          fontWeight: 600,
+                          letterSpacing: 0.2,
+                          cursor: active ? "default" : "pointer",
+                          backgroundColor: active ? "var(--ezy-accent)" : "transparent",
+                          color: active ? "#fff" : "var(--ezy-text-muted)",
+                          transition: "background-color 120ms ease, color 120ms ease",
+                        }}
+                        onMouseEnter={(e) => { if (!active) e.currentTarget.style.color = "var(--ezy-text)"; }}
+                        onMouseLeave={(e) => { if (!active) e.currentTarget.style.color = "var(--ezy-text-muted)"; }}
+                      >
+                        {mode === "windows" ? "Win" : "WSL"}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               {/* Restart */}
               <div
                 title="Restart"
@@ -673,31 +758,42 @@ export default function DevServerTerminalHost() {
 
         {/* Terminal container */}
         <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-          {devServers.map((ds) => (
-            <div
-              key={ds.id}
-              style={{
-                position: "absolute",
-                inset: 0,
-                visibility: ds.id === expandedDevServerId ? "visible" : "hidden",
-              }}
-            >
-              <TerminalPane
-                terminalId={ds.terminalId}
-                terminalType="devserver"
-                workingDir={ds.workingDir}
-                serverId={ds.serverId}
-                isActive={ds.id === expandedDevServerId}
-                paneCount={99}
-                hideChrome
-                onClose={() => {}}
-                onChangeType={() => {}}
-                onFocus={() => {}}
-                onPtyReady={() => handlePtyReady(ds.id, ds.terminalId, ds.command)}
-                onPtyExit={(code) => handlePtyExit(ds.id, code)}
-              />
-            </div>
-          ))}
+          {devServers.map((ds) => {
+            // Wait for the spawn backend to resolve (Tauri auto-detect / project
+            // override) before mounting — otherwise we'd spawn a throwaway WSL
+            // shell that runs the command and fails before the correct PowerShell
+            // pane takes over.
+            if (ds.backend === undefined) return null;
+            return (
+              <div
+                key={ds.id}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  visibility: ds.id === expandedDevServerId ? "visible" : "hidden",
+                }}
+              >
+                <TerminalPane
+                  // Remount when the backend changes (header toggle) so usePty
+                  // re-reads it — backendRef is only initialised at mount.
+                  key={ds.backend}
+                  terminalId={ds.terminalId}
+                  terminalType="devserver"
+                  workingDir={ds.workingDir}
+                  serverId={ds.serverId}
+                  backend={ds.backend}
+                  isActive={ds.id === expandedDevServerId}
+                  paneCount={99}
+                  hideChrome
+                  onClose={() => {}}
+                  onChangeType={() => {}}
+                  onFocus={() => {}}
+                  onPtyReady={() => handlePtyReady(ds.id, ds.terminalId, ds.command)}
+                  onPtyExit={(code) => handlePtyExit(ds.id, code)}
+                />
+              </div>
+            );
+          })}
         </div>
       </div>
     </>

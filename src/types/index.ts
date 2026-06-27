@@ -47,6 +47,14 @@ export interface DevServer {
   serverId?: string;
   /** Additional non-local addresses parsed from server output (e.g. LAN / Tailscale IPs). */
   networkUrls?: string[];
+  /**
+   * Resolved spawn backend for this server's PTY. `undefined` means "still
+   * resolving" — DevServerTerminalHost waits for it before mounting the pane so
+   * we never spawn a throwaway WSL shell first. "windows" → real PowerShell
+   * pane (Tauri projects, or a user override) so `npm run tauri:dev` uses the
+   * Windows toolchain instead of failing inside WSL bash.
+   */
+  backend?: TerminalBackend;
 }
 
 // Recursive pane layout tree

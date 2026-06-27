@@ -25,6 +25,13 @@ export interface RecentProject {
   serverId?: string;
   /** Sticky per-project terminal backend. Set on first add via path detection; user-overridable. */
   preferredBackend?: TerminalBackend;
+  /**
+   * Per-project override for which shell the dev server runs in.
+   * `true`  → force the Windows PowerShell pane, `false` → force WSL bash,
+   * `undefined` → auto-detect (Tauri projects route to Windows). See
+   * `resolveDevServerBackend`.
+   */
+  serverInWindows?: boolean;
 }
 
 export function isRemoteProject(p: RecentProject): boolean {
@@ -193,6 +200,8 @@ export interface RecentProjectsSlice {
   toggleMiniGamesButton: () => void;
   setTerminalBackend: (value: TerminalBackend) => void;
   setProjectBackend: (path: string, serverId: string | undefined, backend: TerminalBackend) => void;
+  /** Set the per-project dev-server shell override. `undefined` clears it (back to auto-detect). */
+  setProjectServerInWindows: (path: string, serverId: string | undefined, value: boolean | undefined) => void;
   setCommitMsgMode: (value: CommitMsgMode) => void;
   setShadowAiCli: (value: ShadowAiCli) => void;
   updateProjectTemplate: (path: string, template: RecentProjectTemplate, serverId?: string) => void;
@@ -489,6 +498,16 @@ export const createRecentProjectsSlice: StateCreator<
       recentProjects: state.recentProjects.map((p) =>
         normalizePath(p.path) === normalized && p.serverId === serverId
           ? { ...p, preferredBackend: backend }
+          : p
+      ),
+    }));
+  },
+  setProjectServerInWindows: (path, serverId, value) => {
+    const normalized = normalizePath(path);
+    set((state) => ({
+      recentProjects: state.recentProjects.map((p) =>
+        normalizePath(p.path) === normalized && p.serverId === serverId
+          ? { ...p, serverInWindows: value }
           : p
       ),
     }));

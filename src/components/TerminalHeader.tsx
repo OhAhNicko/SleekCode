@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import type { TerminalType, TerminalBackend, ProjectSession, SessionIndexEntry } from "../types";
 import type { ContextInfo } from "../lib/context-parser";
@@ -1066,9 +1067,15 @@ export default function TerminalHeader({
             textOverflow: "ellipsis",
             minWidth: 0,
             lineHeight: 1.2,
-            marginLeft: 4,
+            marginLeft: 0,
+            cursor: "pointer",
+            borderRadius: 3,
+            padding: "1px 4px",
           }}
-          title={workingDir}
+          title={`${workingDir} — double-click to open in file manager`}
+          onDoubleClick={() => { void invoke("open_folder", { path: workingDir }).catch(() => {}); }}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-border)")}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
         >
           · {truncatePath(workingDir)}
         </span>

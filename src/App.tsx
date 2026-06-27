@@ -19,6 +19,7 @@ import SnippetPanel from "./components/SnippetPanel";
 import CommandHistory from "./components/CommandHistory";
 import Sidebar from "./components/Sidebar";
 import WindowResizeHandles from "./components/WindowResizeHandles";
+import { useWindowMaximized } from "./hooks/useWindowMaximized";
 import { NativePaneVisibilityCoordinator } from "./native-term/NativePaneVisibilityCoordinator";
 import { AutoOverlayPublisher } from "./native-term/AutoOverlayPublisher";
 import { invoke } from "@tauri-apps/api/core";
@@ -70,6 +71,8 @@ export default function App() {
   const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
   const orientation = useOrientation();
   const isVertical = orientation === "portrait" && verticalModeEnabled;
+  // Drives the frameless window's shadow gutter: collapse it when maximized.
+  const isMaximized = useWindowMaximized();
   const pendingDir = useAppStore((s) => s.pendingDir);
   const setPendingDir = useAppStore((s) => s.setPendingDir);
   const addTerminals = useAppStore((s) => s.addTerminals);
@@ -908,8 +911,9 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
-      <WindowResizeHandles />
+    <div className={`window-root${isMaximized ? " is-max" : ""}`}>
+      <div className="window-frame flex flex-col h-full w-full">
+      {!isMaximized && <WindowResizeHandles />}
       <NativePaneVisibilityCoordinator />
       <AutoOverlayPublisher />
       {!isVertical && <TabBar />}
@@ -1089,6 +1093,7 @@ export default function App() {
           initialNoDevServer={matchingRecentForPending?.noDevServer}
         />
       )}
+      </div>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import type { StateCreator } from "zustand";
-import type { TerminalInstance, TerminalType, DevServer } from "../types";
+import type { TerminalInstance, TerminalType, DevServer, TerminalBackend } from "../types";
 import { clearTerminalActivity } from "../lib/terminal-activity";
 
 // PTY write callbacks — runtime only, not persisted.
@@ -74,6 +74,7 @@ export interface TerminalSlice {
   updateDevServerPort: (serverId: string, port: number) => void;
   updateDevServerError: (serverId: string, errorMessage: string | undefined) => void;
   setDevServerNetworkUrls: (serverId: string, urls: string[]) => void;
+  setDevServerBackend: (serverId: string, backend: TerminalBackend) => void;
   setExpandedDevServerId: (id: string | null) => void;
 }
 
@@ -202,6 +203,14 @@ export const createTerminalSlice: StateCreator<
         if (prev.length === urls.length && prev.every((u, i) => u === urls[i])) return ds;
         return { ...ds, networkUrls: urls };
       }),
+    }));
+  },
+
+  setDevServerBackend: (serverId, backend) => {
+    set((state) => ({
+      devServers: state.devServers.map((ds) =>
+        ds.id === serverId ? { ...ds, backend } : ds
+      ),
     }));
   },
 

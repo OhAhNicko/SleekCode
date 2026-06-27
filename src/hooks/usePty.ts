@@ -180,13 +180,22 @@ export function usePty({
           // cwd stays as native path
         } else if (backend === "windows") {
           // Windows native: use resolved CLI path directly, native Windows cwd.
-          // For shell type, pass the project cwd so PS launches with
-          // -NoExit -Command "Set-Location ..." baked in.
-          const cwdForConfig = terminalType === "shell" ? (currentWorkingDir || undefined) : undefined;
+          // For shell AND devserver, pass the project cwd so PowerShell launches
+          // with -NoExit -Command "Set-Location ..." baked in (a Tauri dev server
+          // routed here must land in the project dir to run `npm run tauri:dev`).
+          const cwdForConfig = terminalType === "shell" || terminalType === "devserver"
+            ? (currentWorkingDir || undefined)
+            : undefined;
           const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, "windows");
           command = config.command;
           args = [...config.args];
-          // cwd stays as native Windows path
+          if (terminalType === "devserver") {
+            // Set-Location (baked into args) handles the directory; don't also
+            // hand a possibly-/mnt-form cwd to CreateProcessW, which can't chdir
+            // into a WSL-style path.
+            cwd = undefined;
+          }
+          // (shell keeps cwd as the native Windows path, as before)
         } else {
           // WSL backend
           let wslCwd: string | undefined;
