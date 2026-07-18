@@ -1,8 +1,8 @@
 // R1.c: native-terminal production command surface.
 //
-// Replaces the Phase-0 `native_term_spike_*` set with the 12-command
-// production interface locked between workstreams R/J/O. The JS bridge
-// (`src/lib/native-term-bridge.ts`) wires these 1:1.
+// The 12-command production interface locked between workstreams R/J/O
+// (the Phase-0 debug command aliases it replaced were deleted in P7a).
+// The JS bridge (`src/lib/native-term-bridge.ts`) wires these 1:1.
 //
 // Frame conventions (locked Phase 0):
 //   - create/resize rect: WINDOW-CLIENT coords (raw getBoundingClientRect()).
@@ -18,10 +18,11 @@ pub mod renderer;
 pub mod window;
 
 use serde::{Deserialize, Serialize};
-use window::{CreateOpts, NativeTermWindow, PlatformWindow, Rect, TerminalTheme};
+use window::{CreateOpts, DebugStats, NativeTermWindow, PlatformWindow, Rect, TerminalTheme};
 
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::vte::ansi::{ClearMode, Handler};
 
 #[derive(Serialize, Debug, Clone, Copy)]
@@ -35,17 +36,36 @@ pub struct ProposedDimensions {
 pub fn native_term_create(app: tauri::AppHandle, opts: CreateOpts) -> Result<u32, String> {
     let parent = registry::parent_hwnd()
         .ok_or_else(|| "native_term: parent HWND not captured yet".to_string())?;
-    // R1.c keeps PlatformWindow::new minimal (rect+dpr only). theme/font/cursor
-    // are no-op stubs in win32 set_theme/set_font/set_cursor_style — R1.d wires
-    // them into the renderer. Apply them now so the values are recorded for
-    // the eventual hot-swap call sites.
+    // PlatformWindow::new stays minimal (rect+dpr only); every other
+    // CreateOpts field is applied through the same mutators the hot-swap
+    // commands use, so create and hot-swap can never drift apart.
     let mut win = PlatformWindow::new(parent, opts.rect, opts.dpr)?;
     // O2-B: hand the AppHandle to PlatformWindow so the wnd_proc can emit
     // per-pane events (ime_composition, r_button, mouse_passthrough).
     win.set_app_handle(app);
-    let _ = win.set_theme(&opts.theme);
-    let _ = win.set_font(&opts.font.family, opts.font.size_px);
-    let _ = win.set_cursor_style(&opts.cursor_style, opts.cursor_blink);
+    // P7a: record the scrollback limit BEFORE any attach_pty — the parser
+    // bridge reads it when spawning the alacritty Term (scrolling_history).
+    win.set_scrollback(opts.scrollback);
+    // Failures are non-fatal (the pane still works on renderer defaults) but
+    // MUST be logged — set_theme is genuinely fallible (a hand-edited theme
+    // file with a malformed hex string), and the pre-P7a JS post-create
+    // pushes logged their rejections; a silent `let _ =` here would leave a
+    // wrong-colored pane with no diagnostic anywhere.
+    if let Err(e) = win.set_theme(&opts.theme) {
+        eprintln!("[native_term] create: set_theme failed: {e}");
+    }
+    if let Err(e) = win.set_font(&opts.font.family, opts.font.size_px) {
+        eprintln!("[native_term] create: set_font failed: {e}");
+    }
+    if let Err(e) = win.set_cursor_style(&opts.cursor_style, opts.cursor_blink) {
+        eprintln!("[native_term] create: set_cursor_style failed: {e}");
+    }
+    // P2a: seed the focus flag from CreateOpts (P7a: JS sends the live
+    // `isActive && appWindowFocused` value at create time); the JS focus
+    // effect re-asserts it via `native_term_set_focused` on any change.
+    if let Err(e) = win.set_focused(opts.focused) {
+        eprintln!("[native_term] create: set_focused failed: {e}");
+    }
     let id = registry::alloc_id();
     win.set_term_id(id);
     registry::insert(id, Box::new(win));
@@ -79,6 +99,132 @@ pub fn native_term_resize(id: u32, rect: Rect, dpr: f32) -> Result<(), String> {
 pub fn native_term_set_region(id: u32, holes: Vec<Rect>) -> Result<(), String> {
     // DPR omitted from wire format (locked with O); win32 reads cached last_dpr.
     registry::with_window(id, |w| w.set_region(&holes, 0.0))
+}
+
+/// P4a/D3: one entry of the batched `native_term_frame_sync` command.
+/// `rect` + `dpr` together request the same work as `native_term_resize`;
+/// `holes` requests the same work as `native_term_set_region`. Any
+/// combination may be present on one entry.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameSyncEntry {
+    pub id: u32,
+    pub rect: Option<Rect>,
+    pub dpr: Option<f32>,
+    pub holes: Option<Vec<Rect>>,
+}
+
+/// P4a/D3: batched per-frame geometry sync. One invoke carries every pane's
+/// rect/dpr move and/or hole-region update for a layout frame. The window
+/// moves are applied in ONE BeginDeferWindowPos/EndDeferWindowPos
+/// transaction so panes flanking a splitter reposition atomically — no
+/// transient gap/overlap shear between two sequential `native_term_resize`
+/// invokes. Entries are processed INDEPENDENTLY: a bad id or a failed
+/// sub-operation is collected and logged, never aborts the rest, and the
+/// command returns Ok even with partial failures.
+#[tauri::command]
+pub fn native_term_frame_sync(entries: Vec<FrameSyncEntry>) -> Result<(), String> {
+    let mut errors: Vec<String> = Vec::new();
+
+    // --- Phase 1: window moves, batched. --------------------------------
+    // Collect the well-formed (id, rect, dpr) moves up front; a
+    // half-specified entry (rect without dpr or vice versa) is a per-entry
+    // error, not an abort.
+    let mut moves: Vec<(u32, Rect, f32)> = Vec::new();
+    for e in &entries {
+        match (e.rect, e.dpr) {
+            (Some(rect), Some(dpr)) => moves.push((e.id, rect, dpr)),
+            (Some(_), None) | (None, Some(_)) => errors.push(format!(
+                "id {}: rect and dpr must be sent together",
+                e.id
+            )),
+            (None, None) => {}
+        }
+    }
+
+    if !moves.is_empty() {
+        // 0 = batching unavailable (BeginDeferWindowPos failed, or a
+        // non-Windows stub) → the fallback below applies moves plainly.
+        let started = window::begin_move_batch(moves.len());
+        let mut batch = started;
+        if batch != 0 {
+            for (id, rect, dpr) in &moves {
+                // with_window only fails on an unknown id — the closure never
+                // ran, the transaction handle is untouched, and remaining
+                // entries still batch. INSIDE the closure the Win32 HDWP
+                // contract applies: once DeferWindowPos fails, the handle is
+                // DEAD and must never be passed to another DeferWindowPos or
+                // EndDeferWindowPos. resize_deferred reports that as either
+                // Ok(0) (defer failed, its immediate SetWindowPos fallback
+                // landed) or Err (defer failed AND the fallback failed) — so
+                // on Err the batch is killed too instead of keeping the
+                // pre-call (now invalid) handle. Once batch is 0, remaining
+                // moves apply immediately inside resize_deferred, the commit
+                // below no-ops, and the fallback pass re-applies every move
+                // plainly.
+                let res = registry::with_window(*id, |w| {
+                    match w.resize_deferred(*rect, *dpr, batch) {
+                        Ok(next) => {
+                            batch = next;
+                            Ok(())
+                        }
+                        Err(e) => {
+                            batch = 0;
+                            Err(e)
+                        }
+                    }
+                });
+                if let Err(e) = res {
+                    errors.push(format!("id {id}: {e}"));
+                }
+            }
+        }
+        // Commit: every deferred move applies atomically here. Each moved
+        // window's WM_SIZE (surface reconfigure + synchronous repaint)
+        // fires inside this call, on this thread — deliberately OUTSIDE the
+        // registry lock (WM_SIZE only touches ChildState, but keeping the
+        // lock window tight costs nothing). end_move_batch(0) is a no-op Ok.
+        let end_result = window::end_move_batch(batch);
+        let end_failed = end_result.is_err();
+        if let Err(e) = end_result {
+            errors.push(format!("commit: {e}"));
+        }
+        // Fallback: batching never started, the transaction died mid-loop
+        // (a DeferWindowPos failure abandoned the HDWP → batch flipped to 0;
+        // the failing entry TRIED to apply itself immediately — that can
+        // itself fail — and entries deferred BEFORE the death were dropped
+        // with the dead handle), or the commit failed. Re-apply EVERY move
+        // via the plain path — idempotent: a move that already landed
+        // re-lands on identical geometry (cheap no-op).
+        if started == 0 || batch == 0 || end_failed {
+            for (id, rect, dpr) in &moves {
+                if let Err(e) = registry::with_window(*id, |w| w.resize(*rect, *dpr)) {
+                    errors.push(format!("id {id}: plain resize: {e}"));
+                }
+            }
+        }
+    }
+
+    // --- Phase 2: hole regions, AFTER the moves so set_region reads the
+    // post-move client rect. Same wire semantics as native_term_set_region
+    // (dpr omitted → cached last_dpr).
+    for e in &entries {
+        if let Some(holes) = &e.holes {
+            if let Err(err) = registry::with_window(e.id, |w| w.set_region(holes, 0.0)) {
+                errors.push(format!("id {}: set_region: {err}", e.id));
+            }
+        }
+    }
+
+    // Partial failures are logged, never propagated — one stale/destroyed
+    // pane id in a batch must not fail the frame for the healthy panes.
+    if !errors.is_empty() {
+        eprintln!(
+            "[native_term] frame_sync partial failures: {}",
+            errors.join("; ")
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -138,6 +284,28 @@ pub fn native_term_set_cursor_style(
     registry::with_window(id, |w| w.set_cursor_style(&style, blink))
 }
 
+/// P2a: mark this pane as focused/unfocused. Only the focused pane blinks
+/// its cursor (per the cursor_blink setting); unfocused panes draw a static
+/// hollow outline. Driven by the JS active-pane effect.
+#[tauri::command]
+pub fn native_term_set_focused(id: u32, focused: bool) -> Result<(), String> {
+    registry::with_window(id, |w| w.set_focused(focused))
+}
+
+/// P7b: route Win32 KEYBOARD focus to this pane's HWND — parity with the
+/// xterm pane calling `term.focus()` when it becomes the active pane.
+/// Distinct from `native_term_set_focused` (cursor VISUAL only). Win32
+/// posts WM_APP_FOCUS to the pane's own wnd_proc, which calls SetFocus
+/// thread-correctly (a direct SetFocus from a command context is
+/// unreliable cross-thread); the trait default is a no-op Ok for the
+/// macOS/Linux stubs. The JS call site guards hard — active pane + app
+/// focused + `document.activeElement === document.body` — so this can
+/// never steal focus from composer/search/rename inputs.
+#[tauri::command]
+pub fn native_term_focus_keyboard(id: u32) -> Result<(), String> {
+    registry::with_window(id, |w| w.focus_keyboard())
+}
+
 /// Debug-only: inject raw bytes directly into the parser bridge channel for
 /// `id`, bypassing the PTY. Used by the `#native-spike` page to verify SGR
 /// color rendering without depending on shell behavior (cmd.exe is monochrome
@@ -150,6 +318,20 @@ pub fn native_term_debug_inject_bytes(id: u32, bytes: Vec<u8>) -> Result<(), Str
         .ok_or_else(|| format!("native_term: id {id} has no attached parser bridge"))?;
     tx.try_send(bytes)
         .map_err(|e| format!("inject_bytes try_send: {e}"))
+}
+
+/// P0 perf instrumentation: snapshot the pane's render counters + cached
+/// geometry. Registry-based dispatch like the other per-id commands;
+/// `debug_stats` is `&self`, so — mirroring `native_term_propose_dimensions`
+/// — we copy the snapshot out of the `with_window` closure.
+#[tauri::command]
+pub fn native_term_debug_stats(id: u32) -> Result<DebugStats, String> {
+    let mut out = DebugStats::default();
+    registry::with_window(id, |w| {
+        out = w.debug_stats();
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 // ===========================================================================
@@ -188,6 +370,12 @@ pub struct SearchOpts {
 pub struct SearchResult {
     pub total: u32,
     pub active_index: i32,
+    /// D-review: alacritty SIGNED grid line of the active match — same
+    /// space as `native_term_scroll_to_line`'s abs_line ([-history, screen);
+    /// negative = scrollback). Lets JS scroll the active match into view
+    /// without reverse-engineering it from rect.y ÷ cell metrics. Only
+    /// meaningful when `active_index >= 0`; 0 otherwise.
+    pub active_line: i64,
     pub rects: Vec<Rect>,
 }
 
@@ -252,7 +440,13 @@ pub fn native_term_get_viewport_state(id: u32) -> Result<ViewportState, String> 
     let screen = grid.screen_lines() as i64;
     let display_offset = grid.display_offset() as i64;
     let base_y = -history;
-    let viewport_y = base_y + display_offset;
+    // P6a: viewport_y is the ABS grid line at the viewport's top edge —
+    // 0 when pinned to the live bottom (display_offset == 0), negative
+    // while scrolled into history, bottoming out at base_y (= -history) at
+    // the top. Same space as `native_term_scroll_to_line`'s abs_line and
+    // the `scroll` event's viewportY (the previous `base_y + offset`
+    // formula inverted the axis and never matched either consumer).
+    let viewport_y = -display_offset;
     let cursor_y = grid.cursor.point.line.0 as i64;
     let length = history + screen;
     Ok(ViewportState {
@@ -277,7 +471,19 @@ pub fn native_term_scroll_to_bottom(id: u32) -> Result<(), String> {
     let term = term_arc(id)?;
     let mut t = term.lock().map_err(|_| "term mutex poisoned".to_string())?;
     t.scroll_display(Scroll::Bottom);
-    Ok(())
+    // P3b: repaint is event-driven now (no 16ms pump) — every direct Term
+    // mutation must request a redraw. Drop the Term lock BEFORE re-entering
+    // the registry (locked ordering: registry → term, never the reverse).
+    drop(t);
+    registry::with_window(id, |w| {
+        w.request_redraw()?;
+        // D-review: push the new viewport position to JS. The parser worker
+        // only emits `scroll` on byte arrival and JS `isAtBottom` is driven
+        // exclusively by scroll events — without this, clicking the
+        // jump-to-bottom button on a quiet PTY snaps the view but leaves the
+        // button stuck visible until the next byte/wheel event.
+        w.emit_scroll_state()
+    })
 }
 
 #[tauri::command]
@@ -299,7 +505,18 @@ pub fn native_term_scroll_to_line(id: u32, abs_line: i64) -> Result<(), String> 
     if delta != 0 {
         t.scroll_display(Scroll::Delta(delta));
     }
-    Ok(())
+    // P3b: event-driven repaint (see native_term_scroll_to_bottom). Term
+    // lock dropped before the registry re-entry; requested unconditionally —
+    // the delta == 0 case takes the renderer's clean-frame early-out.
+    drop(t);
+    registry::with_window(id, |w| {
+        w.request_redraw()?;
+        // D-review: emit the coalesced `scroll` for the same reason as
+        // scroll_to_bottom — a command-driven jump into history must show
+        // the jump-to-bottom button even when the PTY is quiet. Dedups to
+        // nothing when the offset didn't change (delta == 0 case).
+        w.emit_scroll_state()
+    })
 }
 
 #[tauri::command]
@@ -311,7 +528,10 @@ pub fn native_term_clear(id: u32) -> Result<(), String> {
     // calling both gives us the full "clear" UX.
     Handler::clear_screen(&mut *t, ClearMode::All);
     Handler::clear_screen(&mut *t, ClearMode::Saved);
-    Ok(())
+    // P3b: event-driven repaint (see native_term_scroll_to_bottom). Term
+    // lock dropped before the registry re-entry.
+    drop(t);
+    registry::with_window(id, |w| w.request_redraw())
 }
 
 #[tauri::command]
@@ -319,7 +539,10 @@ pub fn native_term_reset(id: u32) -> Result<(), String> {
     let term = term_arc(id)?;
     let mut t = term.lock().map_err(|_| "term mutex poisoned".to_string())?;
     Handler::reset_state(&mut *t);
-    Ok(())
+    // P3b: event-driven repaint (see native_term_scroll_to_bottom). Term
+    // lock dropped before the registry re-entry.
+    drop(t);
+    registry::with_window(id, |w| w.request_redraw())
 }
 
 /// Per-term search cursor. The (query + opts) fingerprint lets us detect
@@ -365,17 +588,25 @@ pub fn native_term_search(
         // Empty query clears the saved cursor — next non-empty search
         // restarts from the top regardless of prior state.
         search_states().lock().map_err(|_| "search state poisoned".to_string())?.remove(&id);
-        return Ok(SearchResult { total: 0, active_index: -1, rects: Vec::new() });
+        return Ok(SearchResult { total: 0, active_index: -1, active_line: 0, rects: Vec::new() });
     }
     let case_sensitive = opts.case_sensitive.unwrap_or(false);
     let use_regex = opts.regex.unwrap_or(false);
     let whole_word = opts.whole_word.unwrap_or(false);
     let forward = !direction.eq_ignore_ascii_case("backward");
 
-    // Cell metrics mirror the win32 hardcoded values. R3 freeze: when font
-    // becomes hot-swappable we must read these from the renderer per-pane.
-    const CELL_W: f32 = 8.4;
-    const CELL_H: f32 = 17.0;
+    // P1a: per-pane cell metrics snapshotted from the platform window —
+    // single source of truth is the renderer's measured advance/line-height
+    // (win32 mirrors it on ChildState; the macOS/Linux stubs inherit the
+    // trait default). Snapshotted via the registry BEFORE the Term lock
+    // below, preserving the lock-ordering rule: never hold the registry
+    // lock while locking the Term.
+    let mut metrics = (8.4_f32, 17.0_f32);
+    registry::with_window(id, |w| {
+        metrics = w.cell_metrics();
+        Ok(())
+    })?;
+    let (cell_w, cell_h) = metrics;
 
     // Build the regex matcher. In literal mode we still funnel through
     // `regex` (with `escape()`) so whole-word handling stays uniform. A
@@ -394,7 +625,7 @@ pub fn native_term_search(
         Err(_) => {
             // Invalid pattern — clear any saved cursor + return empty.
             search_states().lock().map_err(|_| "search state poisoned".to_string())?.remove(&id);
-            return Ok(SearchResult { total: 0, active_index: -1, rects: Vec::new() });
+            return Ok(SearchResult { total: 0, active_index: -1, active_line: 0, rects: Vec::new() });
         }
     };
 
@@ -404,19 +635,22 @@ pub fn native_term_search(
     let cols = grid.columns();
     let screen = grid.screen_lines() as i32;
     let history = grid.history_size() as i32;
-    let display_offset = grid.display_offset() as i32;
 
     let mut rects: Vec<Rect> = Vec::new();
+    // D-review: signed grid line per match, parallel to `rects`, so the
+    // resolved active match can report its line for JS scroll-into-view.
+    let mut match_lines: Vec<i64> = Vec::new();
     // Walk the full alacritty Line range — [-history, screen) — so scrollback
-    // matches participate in `total` AND get rects emitted. Rects for rows
-    // above the visible viewport have a NEGATIVE y (off-screen), which is
-    // intentional: the pane-region driver clips them via its intersection
-    // skip and the React layer can either drop them or render scrollback
-    // indicators in the margin.
+    // matches participate in `total` AND get rects emitted.
     //
-    // y formula: visible_row = line + display_offset (current visible-row
-    // code uses Line(visible_row - display_offset), inverted here). When
-    // line + display_offset < 0 the rect sits above the viewport.
+    // P6a CONTENT-space contract: y = absolute grid line × cell_h — NEGATIVE
+    // for history rows, independent of the current display_offset. The JS
+    // side round-trips these rects verbatim into
+    // `native_term_set_search_highlights` (TerminalPaneNative never
+    // interprets y), and the RENDERER translates by display_offset × line_h
+    // per frame + clips rows outside the viewport (pipeline.rs search pass).
+    // That keeps highlights glued to their text while the user scrolls
+    // without re-running the search per wheel tick.
     for line_i in -history..screen {
         let row = &grid[Line(line_i)];
         let mut line_chars: Vec<char> = Vec::with_capacity(cols);
@@ -434,7 +668,6 @@ pub fn native_term_search(
                 line_str[..byte_idx].chars().count()
             }
         };
-        let visible_row = line_i + display_offset;
         // Non-overlapping matches via find_iter (regex crate semantic).
         for m in re.find_iter(&line_str) {
             let col_start = byte_to_col(m.start());
@@ -445,10 +678,26 @@ pub fn native_term_search(
                 continue;
             }
             let match_chars = match_str.chars().count();
-            let x = col_start as f32 * CELL_W;
-            let y = visible_row as f32 * CELL_H;
-            let w = match_chars as f32 * CELL_W;
-            rects.push(Rect { x, y, width: w, height: CELL_H });
+            let x = col_start as f32 * cell_w;
+            // P6a: content-space y (absolute line × cell_h) — see the
+            // contract comment above the loop. NOT display_offset-adjusted.
+            let y = line_i as f32 * cell_h;
+            // P6b wide chars: the haystack pushes exactly ONE char per cell
+            // (see `line_chars` above), so char-index == column holds — a
+            // wide char occupies its start column and its spacer cell
+            // contributes the ' ' at the next index. When the match's
+            // exclusive END column lands on that spacer, the last matched
+            // char is a double-width glyph whose ink spans the spacer cell
+            // too — extend the rect by one cell so the highlight covers the
+            // whole glyph.
+            let end_col = col_start + match_chars;
+            let wide_tail = end_col < cols
+                && row[Column(end_col)]
+                    .flags
+                    .contains(CellFlags::WIDE_CHAR_SPACER);
+            let w = (match_chars + usize::from(wide_tail)) as f32 * cell_w;
+            rects.push(Rect { x, y, width: w, height: cell_h });
+            match_lines.push(line_i as i64);
         }
     }
     drop(t);
@@ -489,7 +738,14 @@ pub fn native_term_search(
         );
         next_idx
     };
-    Ok(SearchResult { total, active_index, rects })
+    // D-review: signed line of the active match (0 when there is none —
+    // JS gates on active_index >= 0 before using it).
+    let active_line = if active_index >= 0 {
+        match_lines.get(active_index as usize).copied().unwrap_or(0)
+    } else {
+        0
+    };
+    Ok(SearchResult { total, active_index, active_line, rects })
 }
 
 #[tauri::command]
@@ -518,50 +774,3 @@ pub fn native_term_set_search_highlights(id: u32, rects: Vec<Rect>) -> Result<()
     registry::with_window(id, move |w| w.set_search_highlights(rects))
 }
 
-// --- Phase 0 spike command aliases (kept for the `#native-spike` debug
-// route and `TerminalPaneNative.tsx`'s current `invoke("native_term_spike_*")`
-// call sites). Each just delegates to the production handler with default
-// CreateOpts for theme/font/cursor — those are no-op stubs in R1.c anyway.
-// J will flip JS to the production wrappers in a follow-up; until then these
-// keep the debug route alive. Delete after the JS flip lands.
-
-#[tauri::command]
-pub fn native_term_spike_create(
-    app: tauri::AppHandle,
-    rect: Rect,
-    dpr: f32,
-) -> Result<u32, String> {
-    let parent = registry::parent_hwnd()
-        .ok_or_else(|| "native_term: parent HWND not captured yet".to_string())?;
-    let mut win = PlatformWindow::new(parent, rect, dpr)?;
-    win.set_app_handle(app);
-    let id = registry::alloc_id();
-    win.set_term_id(id);
-    registry::insert(id, Box::new(win));
-    Ok(id)
-}
-
-#[tauri::command]
-pub fn native_term_spike_resize(id: u32, rect: Rect, dpr: f32) -> Result<(), String> {
-    native_term_resize(id, rect, dpr)
-}
-
-#[tauri::command]
-pub fn native_term_spike_destroy(id: u32) -> Result<(), String> {
-    native_term_destroy(id)
-}
-
-#[tauri::command]
-pub fn native_term_spike_show(id: u32) -> Result<(), String> {
-    native_term_show(id)
-}
-
-#[tauri::command]
-pub fn native_term_spike_hide(id: u32) -> Result<(), String> {
-    native_term_hide(id)
-}
-
-#[tauri::command]
-pub fn native_term_spike_set_region(id: u32, holes: Vec<Rect>) -> Result<(), String> {
-    native_term_set_region(id, holes)
-}

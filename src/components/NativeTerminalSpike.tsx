@@ -1,14 +1,19 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import {
-  nativeTermSpikeCreate,
-  nativeTermSpikeDestroy,
-  nativeTermSpikeResize,
+  nativeTermCreate,
+  nativeTermDebugStats,
+  nativeTermDestroy,
+  nativeTermResize,
   rectOf,
+  type CreateOpts,
+  type DebugStats,
   type NativeTermId,
+  type Rect,
 } from "../lib/native-term-bridge";
 import { RegionDriver } from "../native-term/RegionDriver";
 import { useAnimatedOverlay } from "../native-term/useAnimatedOverlay";
+import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
 
 const PANE_WIDTH = 800;
 const PANE_HEIGHT = 500;
@@ -16,11 +21,74 @@ const SPAWN_PTY = true; // R1.c live verification: attach a real shell PTY
 const PTY_COLS = 80;
 const PTY_ROWS = 24;
 
+// P7a: the debug page now uses the production `native_term_create`, which
+// requires a full CreateOpts. Mirror the Rust-side Tango defaults the old
+// spike_create relied on (renderer/mod.rs ThemeColors::default_tango) so the
+// smoke test renders identically. focused: true because this page is
+// single-pane with no activation model — the cursor should always blink.
+function defaultCreateOpts(rect: Rect, dpr: number): CreateOpts {
+  return {
+    rect,
+    dpr,
+    theme: {
+      background: "#0d0d11",
+      foreground: "#d3d7cf",
+      cursor: "#dbd6cf",
+      cursorAccent: "#0d0d11",
+      selection: "#44556b",
+      ansi0: "#000000",
+      ansi1: "#cc0000",
+      ansi2: "#4e9a06",
+      ansi3: "#c4a000",
+      ansi4: "#3465a4",
+      ansi5: "#75507b",
+      ansi6: "#06989a",
+      ansi7: "#d3d7cf",
+      ansi8: "#555753",
+      ansi9: "#ef2929",
+      ansi10: "#8ae234",
+      ansi11: "#fce94f",
+      ansi12: "#729fcf",
+      ansi13: "#ad7fa8",
+      ansi14: "#34e2e2",
+      ansi15: "#eeeeec",
+    },
+    font: { family: TERMINAL_FONT_FAMILY, sizePx: 14 },
+    cursorStyle: "block",
+    cursorBlink: true,
+    scrollback: 10000,
+    focused: true,
+  };
+}
+
 export default function NativeTerminalSpike() {
   const paneDivRef = useRef<HTMLDivElement | null>(null);
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [termId, setTermId] = useState<NativeTermId | null>(null);
+  const [stats, setStats] = useState<DebugStats | null>(null);
+
+  // P0 perf instrumentation: poll the native pane's debug counters once per
+  // second while a term exists. Read-only — no effect on render scheduling.
+  useEffect(() => {
+    if (termId == null) return;
+    let disposed = false;
+    const tick = () => {
+      nativeTermDebugStats(termId)
+        .then((s) => {
+          if (!disposed) setStats(s);
+        })
+        .catch(() => {
+          /* pane may be mid-teardown — benign */
+        });
+    };
+    tick();
+    const interval = window.setInterval(tick, 1000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [termId]);
 
   useAnimatedOverlay({
     overlayRef,
@@ -42,12 +110,11 @@ export default function NativeTerminalSpike() {
       raf2Id = requestAnimationFrame(async () => {
         if (cancelled) return;
         try {
-          const id = await nativeTermSpikeCreate({
-            rect: rectOf(el),
-            dpr: window.devicePixelRatio,
-          });
+          const id = await nativeTermCreate(
+            defaultCreateOpts(rectOf(el), window.devicePixelRatio),
+          );
           if (cancelled) {
-            nativeTermSpikeDestroy(id).catch(() => {});
+            nativeTermDestroy(id).catch(() => {});
             return;
           }
           createdId = id;
@@ -115,7 +182,7 @@ export default function NativeTerminalSpike() {
 
     const ro = new ResizeObserver(() => {
       if (createdId == null) return;
-      nativeTermSpikeResize(createdId, rectOf(el), window.devicePixelRatio).catch(
+      nativeTermResize(createdId, rectOf(el), window.devicePixelRatio).catch(
         () => {},
       );
     });
@@ -123,7 +190,7 @@ export default function NativeTerminalSpike() {
 
     const onWinChange = () => {
       if (createdId == null || !el.isConnected) return;
-      nativeTermSpikeResize(createdId, rectOf(el), window.devicePixelRatio).catch(
+      nativeTermResize(createdId, rectOf(el), window.devicePixelRatio).catch(
         () => {},
       );
     };
@@ -141,12 +208,13 @@ export default function NativeTerminalSpike() {
         invoke("pty_kill", { ptyId }).catch(() => {});
       }
       if (createdId != null) {
-        nativeTermSpikeDestroy(createdId).catch(() => {});
+        nativeTermDestroy(createdId).catch(() => {});
       }
     };
   }, []);
 
   return (
+    <>
     <div
       ref={paneDivRef}
       style={{
@@ -193,5 +261,41 @@ export default function NativeTerminalSpike() {
         />
       )}
     </div>
+    {/* P0 debug stats readout. Sits BELOW the pane rect so the native HWND
+        never occludes it (no region hole needed). Plain neutral text —
+        default font + tabular-nums per the UI rules (no font-mono at small
+        sizes, no amber/yellow/blue, no animation). */}
+    {termId != null && stats != null && (
+      <div
+        style={{
+          position: "fixed",
+          top: 80 + PANE_HEIGHT + 8,
+          left: 80,
+          width: PANE_WIDTH,
+          color: "#a3a3a3",
+          fontFamily: "system-ui, sans-serif",
+          fontSize: 11,
+          lineHeight: 1.5,
+          fontVariantNumeric: "tabular-nums",
+          zIndex: 99998,
+          pointerEvents: "none",
+        }}
+      >
+        <div>
+          frames {stats.framesRendered} (skipped clean{" "}
+          {stats.framesSkippedClean}) | frame cpu{" "}
+          {stats.lastFrameCpuMs.toFixed(2)}ms (ewma{" "}
+          {stats.frameCpuMsEwma.toFixed(2)}ms) | configures {stats.configures}{" "}
+          | wakes {stats.wakesPosted} posted / {stats.wakesCoalesced} coalesced
+        </div>
+        <div>
+          {stats.attached ? "attached" : "detached"} |{" "}
+          {stats.visible ? "visible" : "hidden"} | cell{" "}
+          {stats.cellWPx.toFixed(1)}x{stats.cellHPx.toFixed(1)}px | dpr{" "}
+          {stats.dpr} | surface {stats.surfaceW}x{stats.surfaceH}px
+        </div>
+      </div>
+    )}
+    </>
   );
 }

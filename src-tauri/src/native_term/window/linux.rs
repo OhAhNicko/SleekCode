@@ -17,6 +17,9 @@ impl PlatformWindow {
 
     /// O2-B no-op stub for parity with the Win32 implementation.
     pub fn set_term_id(&mut self, _id: u32) {}
+
+    /// P7a no-op stub for parity with the Win32 implementation.
+    pub fn set_scrollback(&mut self, _lines: u32) {}
 }
 
 impl NativeTermWindow for PlatformWindow {

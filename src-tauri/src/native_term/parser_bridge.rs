@@ -18,6 +18,7 @@
 // No rendering yet — that's R1.b.
 
 use crossbeam_channel::Receiver;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -31,11 +32,13 @@ use super::events::{emit_cursor, emit_osc133, emit_scroll, Cursor, Osc133, Scrol
 
 /// Minimal `Dimensions` impl for `Term::new`. Mirrors alacritty's internal
 /// test `TermSize` since the public `Dimensions` trait is what `Term::new`
-/// actually requires.
+/// actually requires. `pub(crate)` so the win32 resize-commit path
+/// (`commit_dims`) can reuse it for `Term::resize` instead of duplicating
+/// the shape.
 #[derive(Clone, Copy)]
-struct TermDims {
-    columns: usize,
-    screen_lines: usize,
+pub(crate) struct TermDims {
+    pub(crate) columns: usize,
+    pub(crate) screen_lines: usize,
 }
 
 impl Dimensions for TermDims {
@@ -83,10 +86,115 @@ impl EventListener for TermListener {
     }
 }
 
+/// P3b event-driven render wake, shared between the parser worker (producer)
+/// and the platform window (consumer). After each parsed batch the worker
+/// calls [`RenderWake::notify`], which posts `WM_APP_RENDER` to the pane's
+/// HWND via `PostMessageW` — the documented thread-safe cross-thread wake.
+/// The `pending` AtomicBool bounds the message queue to ONE in-flight wake:
+/// batches landing while a wake is pending only bump `batches` (the wnd_proc
+/// arm clears `pending` BEFORE invalidating, so a batch landing after the
+/// clear posts a fresh message — no lost-wake window).
+///
+/// SAFETY PROTOCOL: the worker thread is DETACHED (dropping the bridge does
+/// NOT join it), so this handle can outlive the pane. The platform window
+/// MUST store 0 into `hwnd` on detach/destroy BEFORE dropping the bridge /
+/// destroying the window — `notify` treats hwnd == 0 as "pane gone" and
+/// never posts.
+pub(crate) struct RenderWake {
+    /// Target HWND as isize; 0 = detached/destroyed (never post).
+    pub(crate) hwnd: AtomicIsize,
+    /// True while a WM_APP_RENDER is in flight. Cleared by the wnd_proc arm
+    /// before it invalidates.
+    pub(crate) pending: AtomicBool,
+    /// Total batches parsed. The win32 watchdog timer compares this against
+    /// its last-seen value to convert any missed-wake bug into a <=500ms
+    /// hiccup instead of a frozen pane.
+    pub(crate) batches: AtomicU64,
+    /// P0 counter: wakes successfully posted (PostMessageW returned Ok).
+    pub(crate) wakes_posted: AtomicU64,
+    /// P0 counter: notifies skipped because a wake was already pending.
+    pub(crate) wakes_coalesced: AtomicU64,
+}
+
+impl RenderWake {
+    pub(crate) fn new(hwnd: isize) -> Self {
+        RenderWake {
+            hwnd: AtomicIsize::new(hwnd),
+            pending: AtomicBool::new(false),
+            batches: AtomicU64::new(0),
+            wakes_posted: AtomicU64::new(0),
+            wakes_coalesced: AtomicU64::new(0),
+        }
+    }
+
+    /// Record a parsed batch and wake the render thread if no wake is
+    /// already in flight. Called by the worker AFTER the Term lock for the
+    /// batch has been released (never wake-while-locked — the paint path
+    /// re-acquires the Term lock in sync_from_term).
+    fn notify(&self) {
+        self.batches.fetch_add(1, Ordering::AcqRel);
+        if self.pending.swap(true, Ordering::AcqRel) {
+            // A wake is already queued — the wnd_proc arm clears `pending`
+            // before invalidating, so this batch is covered by that paint
+            // (or by the fresh wake the next notify posts).
+            self.wakes_coalesced.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let h = self.hwnd.load(Ordering::Acquire);
+        if h == 0 {
+            // Detached/destroyed pane. `pending` stays latched true so this
+            // dying handle never posts again — intentional terminal state.
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+            use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+            // SAFETY: PostMessageW is documented thread-safe; a stale (just
+            // destroyed) HWND makes it fail harmlessly, and the hwnd-zeroing
+            // protocol above prevents posts once teardown has begun.
+            //
+            // TOCTOU note: a worker that loaded a non-zero hwnd can race the
+            // entire destroy() (zero → DestroyWindow) and post to a handle
+            // the OS has already recycled. Accepted as benign: for another
+            // native_term pane (same class) the WM_APP_RENDER arm just clears
+            // that pane's own `pending` and invalidates — an early pending
+            // clear only ever causes an extra post, never a lost wake. For a
+            // foreign window WM_APP+1 is in the app-private message range and
+            // well-behaved windows ignore unknown WM_APP messages.
+            let posted = unsafe {
+                PostMessageW(
+                    HWND(h as *mut core::ffi::c_void),
+                    super::window::WM_APP_RENDER,
+                    WPARAM(0),
+                    LPARAM(0),
+                )
+            }
+            .is_ok();
+            if posted {
+                self.wakes_posted.fetch_add(1, Ordering::Relaxed);
+            } else {
+                // Post failed with a LIVE hwnd (e.g. the thread's 10k message
+                // queue is full during an output storm). Release the latch so
+                // the next batch retries the post — otherwise `pending` stays
+                // true forever with no message in flight and the pane degrades
+                // permanently to watchdog-only 500ms repaints. Worst case this
+                // allows an extra wake message, which the protocol already
+                // tolerates (the wnd_proc arm clears `pending` before
+                // invalidating). The hwnd == 0 latch above stays terminal.
+                self.pending.store(false, Ordering::Release);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = h;
+    }
+}
+
 /// Public handle to the parser-bridge for a single native_term_id. Owns the
-/// worker thread (joined on Drop) and the shared Term (held behind a mutex
-/// so future `get_buffer_lines` / `get_viewport_state` commands can snapshot
-/// it cheaply).
+/// worker thread handle (the worker is DETACHED — dropping a JoinHandle does
+/// not join; the worker exits when the crossbeam Sender side closes) and the
+/// shared Term (held behind a mutex so `get_buffer_lines` /
+/// `get_viewport_state` commands can snapshot it cheaply).
 pub struct ParserBridge {
     pub term: Arc<Mutex<Term<TermListener>>>,
     _worker: JoinHandle<()>,
@@ -97,28 +205,45 @@ impl ParserBridge {
     /// `pty_route::create_channel(term_id)` and own the corresponding
     /// `Receiver<Vec<u8>>`. The worker thread takes ownership of the receiver.
     ///
-    /// `cell_w`/`line_h` are the renderer's per-cell logical-px metrics, used
-    /// to translate the alacritty cursor grid position into pane-local pixel
-    /// coords for the `cursor` Tauri event. `app` is the AppHandle the worker
-    /// emits with — `None` disables cursor emission (used by tests where no
-    /// Tauri app is initialised).
+    /// `scrollback` is the maximum scrollback history in lines
+    /// (CreateOpts.scrollback, wired through `PlatformWindow::attach_pty`) —
+    /// it maps 1:1 onto alacritty's `Config::scrolling_history`; every other
+    /// Config field keeps its default. `cell_metrics` is a shared
+    /// `(cell_w, line_h)` pair — the renderer's
+    /// per-cell logical-px metrics, used to translate the alacritty cursor
+    /// grid position into pane-local pixel coords for the `cursor` Tauri
+    /// event. The worker re-reads it per batch, so a font hot-swap (which
+    /// updates the pair via `PlatformWindow::set_font`) propagates without
+    /// respawning the bridge. `wake` is the P3b render-wake handle — the
+    /// worker calls `notify()` after each batch (Term lock released) so the
+    /// platform window repaints event-driven instead of on a timer pump;
+    /// pass a wake with hwnd 0 to disable posting (tests / non-Windows).
+    /// `app` is the AppHandle the worker emits with — `None` disables cursor
+    /// emission (used by tests where no Tauri app is initialised).
     pub fn spawn(
         term_id: u32,
         cols: usize,
         screen_lines: usize,
+        scrollback: usize,
         rx: Receiver<Vec<u8>>,
-        cell_w: f32,
-        line_h: f32,
+        cell_metrics: Arc<Mutex<(f32, f32)>>,
+        wake: Arc<RenderWake>,
         app: Option<AppHandle>,
     ) -> Self {
         let dims = TermDims { columns: cols, screen_lines };
         let listener = TermListener { term_id };
-        let term = Arc::new(Mutex::new(Term::new(Config::default(), &dims, listener)));
+        // P7a: CreateOpts.scrollback → alacritty scrolling_history (field
+        // name verified against alacritty_terminal 0.24.2 term::Config).
+        let config = Config { scrolling_history: scrollback, ..Config::default() };
+        let term = Arc::new(Mutex::new(Term::new(config, &dims, listener)));
 
+        let (cell_w, line_h) = *cell_metrics
+            .lock()
+            .expect("parser_bridge cell_metrics mutex poisoned");
         let term_for_worker = Arc::clone(&term);
         let worker = std::thread::Builder::new()
             .name(format!("native_term-{}-parser", term_id))
-            .spawn(move || worker_loop(term_id, term_for_worker, rx, cell_w, line_h, app))
+            .spawn(move || worker_loop(term_id, term_for_worker, rx, cell_metrics, wake, app))
             .expect("failed to spawn parser worker");
 
         eprintln!(
@@ -134,8 +259,8 @@ fn worker_loop(
     term_id: u32,
     term: Arc<Mutex<Term<TermListener>>>,
     rx: Receiver<Vec<u8>>,
-    cell_w: f32,
-    line_h: f32,
+    cell_metrics: Arc<Mutex<(f32, f32)>>,
+    wake: Arc<RenderWake>,
     app: Option<AppHandle>,
 ) {
     // Per-thread Processor: byte-level ANSI/UTF-8 state machine. Cheap to
@@ -198,6 +323,12 @@ fn worker_loop(
         let display_offset_now = t.grid().display_offset();
         drop(t); // release before any eprintln / app.emit
 
+        // P3b: wake the render thread for this batch — AFTER the Term lock
+        // drop (the paint path re-locks the Term in sync_from_term) and
+        // BEFORE the slow eprintln/emit tail so the repaint isn't delayed
+        // behind console IO.
+        wake.notify();
+
         eprintln!(
             "[native_term] term {} batch={} bytes={} total={} cursor=(line={}, col={}) last_line=\"{}\"",
             term_id, batches, bytes.len(), total_bytes, pt.line.0, pt.column.0, snippet
@@ -210,8 +341,22 @@ fn worker_loop(
         // the live area; values are still useful when scrolled back so we
         // don't gate on sign here.
         if let Some(app) = app.as_ref() {
+            // Re-read the shared metrics per batch so a font hot-swap done on
+            // the main thread (set_font → mirrors → this pair) is picked up
+            // by the very next cursor emission. Uncontended in practice —
+            // set_font writes are rare.
+            let (cell_w, line_h) = *cell_metrics
+                .lock()
+                .expect("parser_bridge cell_metrics mutex poisoned");
             let x = pt.column.0 as f32 * cell_w;
-            let y = pt.line.0 as f32 * line_h;
+            // P6a scrollback: the renderer shows grid line (y - offset) at
+            // visual row y, so the cursor's RENDERED row is line + offset.
+            // Using the offset captured under this batch's Term lock keeps
+            // the IME popup glued to the visible cursor cell (it may land
+            // below the pane while scrolled far back — the popup follows the
+            // same convention as the renderer's cursor pass, which hides the
+            // cursor once its visual row leaves the viewport).
+            let y = (pt.line.0 + display_offset_now as i32) as f32 * line_h;
             let key = (x.round() as i32, y.round() as i32);
             if last_cursor != Some(key) {
                 last_cursor = Some(key);
@@ -240,8 +385,12 @@ fn worker_loop(
             }
 
             // Scroll: emit when display_offset has changed AND we're past the
-            // 50ms coalesce window. base_y = -history_size; viewport_y =
-            // base_y + display_offset → mirrors the JS ViewportState math.
+            // 50ms coalesce window. P6a unified space (same as
+            // ViewportState.viewportY and the win32 wheel-arm emit):
+            // viewport_y = -display_offset — 0 pinned to the live bottom,
+            // negative while scrolled into history, base_y (= -history) at
+            // the very top. The previous `base_y + offset` formula inverted
+            // the axis and broke the JS at-bottom check (viewportY >= -3).
             if last_emitted_offset != Some(display_offset_now) {
                 let now = std::time::Instant::now();
                 if now.duration_since(last_scroll_emit).as_millis()
@@ -250,7 +399,7 @@ fn worker_loop(
                     last_emitted_offset = Some(display_offset_now);
                     last_scroll_emit = now;
                     let base_y = -(history);
-                    let viewport_y = base_y + display_offset_now as i64;
+                    let viewport_y = -(display_offset_now as i64);
                     emit_scroll(
                         app,
                         term_id,
@@ -454,7 +603,18 @@ mod tests {
         drop(tx);
         pty_route::close_channel(term_id);
 
-        let bridge = ParserBridge::spawn(term_id, 80, 24, rx, 9.0, 17.0, None);
+        // P3b: hwnd 0 → the wake never posts (no HWND in a headless test);
+        // batches still count, which is all the assertion path needs.
+        let bridge = ParserBridge::spawn(
+            term_id,
+            80,
+            24,
+            10_000,
+            rx,
+            Arc::new(Mutex::new((9.0, 17.0))),
+            Arc::new(RenderWake::new(0)),
+            None,
+        );
 
         // Join the worker by dropping the bridge after a brief settle. In a
         // real session the bridge lives for the term's lifetime.

@@ -20,7 +20,9 @@ use std::cell::RefCell;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::NonNull;
+use std::sync::atomic::Ordering as AtomicOrdering;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{BOOL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
@@ -47,32 +49,39 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::term::cell::Flags as CellFlags;
 use alacritty_terminal::term::{Term, TermMode};
 
 use tauri::AppHandle;
 
 use super::super::events::{
-    emit_cell_hover, emit_cell_hover_end, emit_ime_composition, emit_key_down_preview,
-    emit_link_click, emit_link_hover, emit_mouse_passthrough, emit_r_button, emit_selection,
-    CellHover, ImeComposition, KeyDownPreview, KeyEventDto, KeyModifiers, LinkClick, LinkHover,
-    MousePassthrough, RButton, Selection as SelectionEvent,
+    emit_cell_hover, emit_cell_hover_end, emit_focus_gained, emit_focus_lost,
+    emit_ime_composition, emit_key_down_preview, emit_link_click, emit_link_hover,
+    emit_mouse_passthrough, emit_r_button, emit_resized, emit_scroll, emit_selection,
+    CellHover, ImeComposition, KeyDownPreview, KeyEventDto, KeyModifiers, LinkClick,
+    LinkHover, MousePassthrough, RButton, Resized, Scroll as ScrollEvt,
+    Selection as SelectionEvent,
 };
-use super::super::parser_bridge::{ParserBridge, TermListener};
+use super::super::parser_bridge::{ParserBridge, RenderWake, TermDims, TermListener};
+use super::super::renderer::pipeline::RenderOutcome;
 use super::super::renderer::ThemeColors;
 use super::super::pty_route;
 use super::super::region;
-use super::{NativeTermWindow, Rect, TerminalTheme};
+use super::{DebugStats, NativeTermWindow, Rect, TerminalTheme};
 
 /// CF_UNICODETEXT clipboard format id. Hardcoded because the windows-rs
 /// constant lives behind a different feature gate; this is a stable Win32 value.
 const CF_UNICODETEXT: u32 = 13;
 
-/// Per-cell PHYSICAL-pixel metrics for the default Hack 14px font in
-/// pipeline.rs. These are the INITIAL values stored on every ChildState; the
-/// per-pane fields are updated by `set_font` once the renderer reports back
-/// fresh measurements from `GlyphStack::cell_advance_px / line_height_px`.
-/// Default matches `glyph_atlas::measure_cell_advance` fallback (14*0.6 ≈ 8.4)
-/// and `(14*1.2).ceil() = 17`.
+/// Pre-renderer PLACEHOLDER per-cell metrics (Hack 14px approximation at
+/// dpr 1.0). Only used to seed ChildState between CreateWindowExW and
+/// Renderer construction — `PlatformWindow::new` overwrites both mirrors
+/// from `Renderer::cell_metrics()` (the single source of truth: the
+/// measured, P5a dpr-scaled `GlyphStack::cell_advance_px / line_height_px`)
+/// as soon as the renderer exists; `set_font` and the `prepare_move`
+/// dpr-change path refresh them on every hot-swap. Values match the
+/// `glyph_atlas::measure_cell_advance` fallback (14*0.6 ≈ 8.4) and
+/// `(14*1.2).ceil() = 17`.
 const CELL_W_PX: f32 = 8.4;
 const CELL_H_PX: f32 = 17.0;
 
@@ -90,9 +99,88 @@ const CLASS_NAME: &[u16] = &[
 
 static CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
 
-/// Timer id for the continuous-repaint timer set on attach_pty. Per-HWND so
-/// the constant is fine — SetTimer scopes the id to the target window.
-const RENDER_TIMER_ID: usize = 1;
+// Timer id 1 was the retired R1.c 16ms continuous-repaint pump (RENDER_TIMER_ID),
+// deleted in P3b — the event-driven WM_APP_RENDER wake + the 500ms watchdog
+// below replace it. Do NOT reuse id 1 without auditing for stale-timer
+// interactions in older builds.
+
+/// P2a cursor-blink timer id. Armed by `update_blink_timer` ONLY when the
+/// renderer wants ticks (focused + blink enabled + Term attached) and the
+/// window is visible; killed (with the phase pinned visible) otherwise. The
+/// WM_TIMER arm flips the renderer's blink phase each tick.
+const BLINK_TIMER_ID: usize = 2;
+/// Cursor blink half-period (ms). xterm uses ~530ms on/off; matched so the
+/// blink cadence feels native.
+const BLINK_HALF_PERIOD_MS: u32 = 530;
+
+/// P3b watchdog timer id. Armed @500ms in `attach_pty`, killed in
+/// `detach_pty` and at the top of `destroy()`. Each tick compares the
+/// wake's `batches` counter against `ChildState.last_seen_batches`; a
+/// mismatch means PTY batches landed since the last check — repaint.
+/// Safety net for the event-driven scheduler: converts any missed-wake bug
+/// into a <=500ms hiccup instead of a frozen pane. Cheap when idle (counter
+/// unchanged → no-op) and when the wake already painted (the renderer's
+/// clean-frame early-out makes the extra invalidation nearly free).
+const WATCHDOG_TIMER_ID: usize = 3;
+const WATCHDOG_INTERVAL_MS: u32 = 500;
+
+/// P3b event-driven render wake. Posted by the parser worker thread via
+/// `RenderWake::notify` (PostMessageW — the documented thread-safe
+/// cross-thread wake) after each byte batch mutates the Term. The paired
+/// `RenderWake::pending` AtomicBool bounds the queue to ONE in-flight
+/// message; the wnd_proc arm clears `pending` BEFORE invalidating so a
+/// batch landing mid-paint posts a fresh wake (no lost-wake window).
+/// `pub(crate)` + re-exported through `window/mod.rs` for the worker side.
+pub(crate) const WM_APP_RENDER: u32 = WM_APP + 1;
+
+/// P7b keyboard-focus request, posted by `focus_keyboard` (the
+/// `native_term_focus_keyboard` command). SetFocus is only valid when the
+/// calling thread owns the HWND — a Tauri command context can't guarantee
+/// that, so the command POSTS this message and the wnd_proc arm calls
+/// SetFocus thread-correctly. The arm mirrors WM_LBUTTONDOWN's
+/// click-to-focus SetFocus: keyboard focus moves WITHOUT activation
+/// (WS_EX_NOACTIVATE + MA_NOACTIVATE stay in charge of that), and the
+/// resulting WM_SETFOCUS emits `focus_gained` exactly like a click.
+const WM_APP_FOCUS: u32 = WM_APP + 2;
+
+/// P1b resize-settle timer id. Armed (re-armed) on every WM_SIZE; because
+/// SetTimer with the same id RESETS the countdown, the timer only fires once
+/// the resize has been quiet for `RESIZE_SETTLE_MS`. The WM_TIMER arm kills
+/// it (one-shot semantics) and then commits the settled dimensions via
+/// `commit_dims`.
+const RESIZE_SETTLE_TIMER_ID: usize = 4;
+const RESIZE_SETTLE_MS: u32 = 150;
+
+/// Surface-loss retry timer id. One-shot: armed via `render_with_retry`
+/// (the WM_PAINT arm and the P4a WM_SIZE synchronous repaint) whenever
+/// `render()` did NOT present (SurfaceError::Lost/Outdated reconfigure-and-
+/// skip, or a hard render error). Pre-P3b the 16ms pump guaranteed the "next
+/// WM_PAINT redraws" after a surface loss; with the pump gone an idle pane
+/// would otherwise display a stale/garbage frame until the next wake/watchdog
+/// activity. The WM_TIMER arm kills the timer and invalidates — if the
+/// surface is still lost, the paint arm re-arms, giving a paced ~16ms retry
+/// loop (the old pump cadence) instead of an Invalidate busy-spin.
+const SURFACE_RETRY_TIMER_ID: usize = 5;
+const SURFACE_RETRY_MS: u32 = 16;
+
+/// P6a: coalesce window for LOCAL scrollback `scroll` emits (WM_MOUSEWHEEL +
+/// the snap-to-bottom typing path). Matches the parser worker's 50ms
+/// SCROLL_COALESCE_MS so the two emitters share one cadence on the JS bus —
+/// keep them in sync (the parser-side constant is locked; change neither
+/// independently).
+const SCROLL_EMIT_COALESCE_MS: u128 = 50;
+
+/// P6a trailing-edge flush for the coalesced local `scroll` emit. One-shot:
+/// armed by `emit_scroll_coalesced` whenever the 50ms window SUPPRESSES an
+/// emit — without it, the final notch of a fast wheel flick would be
+/// swallowed and (with a quiet PTY — no parser-side emits) JS would keep a
+/// stale viewportY forever, hiding the jump-to-bottom button while the pane
+/// sits scrolled back. The WM_TIMER arm kills the timer, re-reads the LIVE
+/// offset, and re-runs the coalesced emit (by then the window has elapsed;
+/// an offset that bounced back to the last-emitted value dedups to nothing).
+/// 60ms = just past the coalesce window.
+const SCROLL_EMIT_FLUSH_TIMER_ID: usize = 6;
+const SCROLL_EMIT_FLUSH_MS: u32 = 60;
 
 thread_local! {
     // Set during CreateWindowExW so WM_NCCREATE/WM_CREATE can stash the
@@ -162,6 +250,31 @@ struct ChildState {
     /// Phase 3 set_font: per-pane PHYSICAL line height in pixels. Same source
     /// + lifecycle as `cell_w_px`.
     cell_h_px: f32,
+    /// P2a: JS-authoritative focus flag, mirrored from `set_focused` so the
+    /// wnd_proc's BLINK arm can guard against a stale WM_TIMER that was
+    /// already posted when focus was lost (timer killed, message in flight).
+    focused: bool,
+    /// P3b: shared render-wake handle for the event-driven scheduler.
+    /// Created per-attach in `attach_pty` (hwnd pre-set), a clone goes to
+    /// the DETACHED parser worker; this copy serves the wnd_proc
+    /// WM_APP_RENDER arm (pending-clear), the watchdog (batches compare)
+    /// and `debug_stats` (wake counters). The hwnd inside is zeroed on
+    /// detach/destroy BEFORE the bridge drop so the outliving worker can
+    /// never post to a dead window.
+    wake: Option<Arc<RenderWake>>,
+    /// P3b watchdog bookkeeping: `wake.batches` value at the last watchdog
+    /// tick. Reset to 0 whenever a new wake is installed (fresh wake starts
+    /// its counter at 0).
+    last_seen_batches: u64,
+    /// P6a: display_offset of the most recent LOCAL `scroll` emit (wheel /
+    /// snap-to-bottom). Emit-side dedup — unchanged offset never re-emits.
+    /// Independent of the parser worker's own coalescer state by design;
+    /// the payloads are idempotent so double emission is harmless.
+    last_scroll_emitted_offset: Option<usize>,
+    /// P6a: timestamp of the most recent local `scroll` emit, for the 50ms
+    /// coalesce window (`SCROLL_EMIT_COALESCE_MS`). `None` = never emitted,
+    /// so the first emit always passes.
+    last_scroll_emit: Option<Instant>,
 }
 
 pub struct PlatformWindow {
@@ -175,6 +288,21 @@ pub struct PlatformWindow {
     /// The native_term_id assigned by the mod.rs handler. Cached so detach
     /// can close the crossbeam channel.
     term_id: Option<u32>,
+    /// Shared LOGICAL-px per-cell metrics `(cell_w, line_h)` consumed by the
+    /// parser-bridge worker for its cursor-event pixel math. Same unit the
+    /// worker always used (ChildState physical mirrors ÷ dpr) — this is
+    /// plumbing, not a unit change. A clone is handed to
+    /// `ParserBridge::spawn` on attach; `set_font` updates the pair right
+    /// after refreshing the ChildState mirrors so the worker picks the new
+    /// metrics up on its next batch.
+    cursor_metrics: Arc<Mutex<(f32, f32)>>,
+    /// P7a: CreateOpts.scrollback (max scrollback history in lines).
+    /// Recorded via `set_scrollback` right after create; consumed by
+    /// `attach_pty`, which hands it to `ParserBridge::spawn` →
+    /// alacritty's `Config::scrolling_history`. Defaults to 10_000 (the
+    /// alacritty default) so a create path that never sets it keeps the
+    /// pre-P7a behavior.
+    scrollback: u32,
     // Owned heap allocation — pointer matches GWLP_USERDATA. We free it in
     // destroy() AFTER DestroyWindow returns.
     state: NonNull<ChildState>,
@@ -211,6 +339,11 @@ impl PlatformWindow {
                 mouse_tracking: false,
                 cell_w_px: CELL_W_PX,
                 cell_h_px: CELL_H_PX,
+                focused: false,
+                wake: None,
+                last_seen_batches: 0,
+                last_scroll_emitted_offset: None,
+                last_scroll_emit: None,
             })) as *mut ChildState;
             PENDING_STATE.with(|cell| *cell.borrow_mut() = Some(state));
 
@@ -258,11 +391,16 @@ impl PlatformWindow {
             let rwh = RawWindowHandle::Win32(win32_handle);
             let rdh = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
 
+            // P5a: Renderer::new takes the dpr so the very first glyph
+            // metrics are already physical-px scaled + advance-quantized —
+            // no separate set_scale seeding step (set_scale is now a no-op
+            // on an unchanged dpr and a full font re-derivation otherwise).
             let renderer = super::super::renderer::Renderer::new(
                 rwh,
                 rdh,
                 w.max(1) as u32,
                 h.max(1) as u32,
+                dpr,
             )
             .map_err(|e| {
                 // Roll back the window we just created.
@@ -272,6 +410,18 @@ impl PlatformWindow {
             })?;
 
             (*state).renderer = Some(renderer);
+
+            // P1a metrics unification: refresh the ChildState mirrors from
+            // the renderer's freshly-measured metrics NOW, not just in
+            // set_font — otherwise a pane whose set_font call short-circuits
+            // (or never arrives) runs its whole life on the 8.4/17
+            // placeholder consts while the renderer draws with the real
+            // measured advance/line-height.
+            if let Some(r) = (*state).renderer.as_ref() {
+                let (cw, ch) = r.cell_metrics();
+                (*state).cell_w_px = cw.max(0.001);
+                (*state).cell_h_px = ch.max(0.001);
+            }
 
             // Bring the child HWND above the WebView2 child in the parent's
             // child-window Z-order. Without this, WebView2 (also a WS_CHILD
@@ -284,12 +434,23 @@ impl PlatformWindow {
             // Force the first paint.
             let _ = InvalidateRect(hwnd, None, BOOL(0));
 
+            // Seed the shared parser-bridge metrics with the current
+            // LOGICAL values (physical mirrors ÷ dpr) — attach_pty re-primes
+            // the pair with the same formula before spawning the worker.
+            let dpr_div = dpr.max(0.0001);
+            let cursor_metrics = Arc::new(Mutex::new((
+                (*state).cell_w_px / dpr_div,
+                (*state).cell_h_px / dpr_div,
+            )));
+
             Ok(PlatformWindow {
                 hwnd,
                 last_dpr: dpr,
                 parser_bridge: None,
                 attached_pty_id: None,
                 term_id: None,
+                cursor_metrics,
+                scrollback: 10_000,
                 state: NonNull::new_unchecked(state),
             })
         }
@@ -313,27 +474,166 @@ impl PlatformWindow {
             self.state.as_mut().term_id = Some(id);
         }
     }
-}
 
-impl NativeTermWindow for PlatformWindow {
-    fn resize(&mut self, rect: Rect, dpr: f32) -> Result<(), String> {
+    /// P7a: record CreateOpts.scrollback. Called by `native_term_create`
+    /// before any PTY attaches; `attach_pty` reads it when spawning the
+    /// parser bridge (the Term's scrolling_history is fixed at spawn — a
+    /// later change would need a detach/re-attach, which no caller does).
+    pub fn set_scrollback(&mut self, lines: u32) {
+        self.scrollback = lines;
+    }
+
+    /// P4a/D3: pre-move bookkeeping shared by `resize` (plain SetWindowPos)
+    /// and `resize_deferred` (DeferWindowPos batch). Stores the dpr on the
+    /// outer struct + the ChildState mirror, refreshes the renderer's scale,
+    /// and returns the physical target rect. The MOVE itself is the caller's
+    /// job; the surface reconfigure + D1 synchronous repaint happen in
+    /// WM_SIZE when the move actually lands.
+    fn prepare_move(&mut self, rect: Rect, dpr: f32) -> (i32, i32, i32, i32) {
         unsafe {
+            // P5a: detect a REAL dpr change (monitor swap / zoom) before
+            // overwriting last_dpr — a change means the physical glyph
+            // metrics are about to be re-derived and every metric consumer
+            // must be refreshed below.
+            let dpr_changed = dpr != self.last_dpr;
             self.last_dpr = dpr;
             // Mirror dpr into ChildState so the wnd_proc edge-band /
             // RButton / passthrough math uses the up-to-date scale even when
             // WM_SIZE doesn't carry DPR info.
-            self.state.as_mut().dpr = dpr;
-            let (x, y, w, h) = logical_rect_to_physical(rect, dpr);
+            let state = self.state.as_mut();
+            state.dpr = dpr;
+            // Keep the renderer's dpr in sync. Safe to call unconditionally:
+            // set_scale no-ops on an unchanged dpr and only re-derives the
+            // scaled font (physical rasterization + advance quantization +
+            // row-buffer rebuild + full damage + force_render) on a change.
+            if let Some(r) = state.renderer.as_mut() {
+                r.set_scale(dpr);
+            }
+            if dpr_changed {
+                // P5a dpr-change fan-out, mirroring the set_font flow:
+                // 1) refresh the ChildState PHYSICAL metric mirrors from the
+                //    re-derived renderer metrics (mouse/hit-test math);
+                if let Some(r) = state.renderer.as_ref() {
+                    let (cw, ch) = r.cell_metrics();
+                    state.cell_w_px = cw.max(0.001);
+                    state.cell_h_px = ch.max(0.001);
+                }
+                // 2) re-prime the parser-bridge's shared LOGICAL pair
+                //    (physical mirrors ÷ dpr — same formula as attach_pty /
+                //    set_font) for the worker's cursor-event pixel math;
+                let dpr_div = dpr.max(0.0001);
+                if let Ok(mut m) = self.cursor_metrics.lock() {
+                    *m = (state.cell_w_px / dpr_div, state.cell_h_px / dpr_div);
+                }
+                // 3) commit dims — the same client rect holds a different
+                //    grid when the cell size changed (Term::resize →
+                //    resize_grid → resize_pty_sync → `resized` emit; no-ops
+                //    when detached or unchanged);
+                commit_dims(state, self.hwnd);
+                // 4) repaint even if the grid dims happened to stay equal —
+                //    the glyphs themselves changed size. (The move that
+                //    usually accompanies a dpr change repaints synchronously
+                //    in WM_SIZE, but an equal-pixel-size move skips WM_SIZE.)
+                let _ = InvalidateRect(self.hwnd, None, BOOL(0));
+            }
+        }
+        logical_rect_to_physical(rect, dpr)
+    }
+}
+
+/// P4a/D3: open a DeferWindowPos transaction sized for `count` window moves.
+/// Returns the HDWP as an isize (0 on failure — callers fall back to plain
+/// per-window `resize`). Exposed cross-platform through
+/// `window::begin_move_batch`.
+pub(crate) fn begin_move_batch(count: usize) -> isize {
+    unsafe {
+        BeginDeferWindowPos(count as i32)
+            .map(|hdwp| hdwp.0 as isize)
+            .unwrap_or(0)
+    }
+}
+
+/// P4a/D3: commit a move batch. Every deferred move applies atomically in
+/// ONE EndDeferWindowPos transaction — panes flanking a splitter reposition
+/// together with no transient gap/overlap shear. Each moved window receives
+/// its WM_WINDOWPOSCHANGED → WM_SIZE (surface reconfigure + D1 synchronous
+/// repaint) INSIDE this call, on the calling (owning) thread. `batch == 0`
+/// (no transaction — begin failed or everything already applied immediately)
+/// is a no-op Ok.
+pub(crate) fn end_move_batch(batch: isize) -> Result<(), String> {
+    if batch == 0 {
+        return Ok(());
+    }
+    unsafe {
+        EndDeferWindowPos(HDWP(batch as *mut _))
+            .map_err(|e| format!("EndDeferWindowPos: {e}"))
+    }
+}
+
+impl NativeTermWindow for PlatformWindow {
+    fn resize(&mut self, rect: Rect, dpr: f32) -> Result<(), String> {
+        // P4a: bookkeeping split into `prepare_move` so `resize_deferred`
+        // shares it. The singular resize path deliberately stays plain
+        // SetWindowPos (no single-entry defer batch) — one window can't
+        // shear against itself, and the HDWP round-trip would buy nothing.
+        let (x, y, w, h) = self.prepare_move(rect, dpr);
+        unsafe {
             SetWindowPos(
                 self.hwnd,
                 HWND::default(),
                 x, y, w, h,
-                SWP_NOZORDER | SWP_NOACTIVATE,
+                // P4a/D2: SWP_NOCOPYBITS stops Windows blitting the OLD
+                // client pixels into the new rect (the drag smear). The D1
+                // synchronous repaint in WM_SIZE draws real content in the
+                // same pump turn, so nothing stale is ever composited.
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
             )
             .map_err(|e| format!("SetWindowPos: {e}"))?;
-            // WM_SIZE will fire and the subclass will resize the surface.
+            // WM_SIZE fires inside SetWindowPos: the subclass reconfigures
+            // the surface AND presents a fresh frame synchronously (D1).
             Ok(())
         }
+    }
+
+    fn resize_deferred(&mut self, rect: Rect, dpr: f32, batch: isize) -> Result<isize, String> {
+        // P4a/D3: same bookkeeping as `resize`, but the window move is
+        // DEFERRED into the caller's DeferWindowPos transaction so all
+        // panes in a frame_sync batch reposition atomically at
+        // EndDeferWindowPos. `batch == 0` means "no active transaction" —
+        // apply immediately.
+        let (x, y, w, h) = self.prepare_move(rect, dpr);
+        unsafe {
+            if batch != 0 {
+                match DeferWindowPos(
+                    HDWP(batch as *mut _),
+                    self.hwnd,
+                    HWND::default(),
+                    x, y, w, h,
+                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
+                ) {
+                    // Success: hand back the (possibly reallocated) handle.
+                    Ok(next) if !next.0.is_null() => return Ok(next.0 as isize),
+                    // Failure (Err, or a paranoid null-Ok): per the Win32
+                    // contract the HDWP is now INVALID — abandoned, never to
+                    // be passed to DeferWindowPos or EndDeferWindowPos
+                    // again. Fall through and apply THIS move immediately.
+                    // Ok(0) marks the batch dead so the caller's remaining
+                    // moves flip to the immediate path; if the SetWindowPos
+                    // below ALSO fails we return Err and the caller must
+                    // STILL treat its handle as dead (frame_sync zeroes its
+                    // batch on Err before continuing).
+                    _ => {}
+                }
+            }
+            SetWindowPos(
+                self.hwnd,
+                HWND::default(),
+                x, y, w, h,
+                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
+            )
+            .map_err(|e| format!("SetWindowPos: {e}"))?;
+        }
+        Ok(0)
     }
 
     fn show(&mut self) -> Result<(), String> {
@@ -343,6 +643,17 @@ impl NativeTermWindow for PlatformWindow {
             // call hide/show, and Windows may have re-stacked siblings
             // (e.g. WebView2 popups, IME windows) while we were hidden.
             let _ = bring_above_siblings(self.hwnd);
+            // P3a: force the first frame after SW_SHOW. While hidden, the
+            // pane's WM_PAINTs may have taken the clean-frame early-out, and
+            // the swapchain's retained buffer can be stale — pair an explicit
+            // force with an InvalidateRect so WM_PAINT fires AND renders.
+            if let Some(r) = self.state.as_mut().renderer.as_mut() {
+                r.force_next_frame();
+            }
+            let _ = InvalidateRect(self.hwnd, None, BOOL(0));
+            // P2a: the blink timer is gated on visibility — re-evaluate now
+            // that the window is showing again.
+            update_blink_timer(self.state.as_mut(), self.hwnd);
         }
         Ok(())
     }
@@ -350,6 +661,9 @@ impl NativeTermWindow for PlatformWindow {
     fn hide(&mut self) -> Result<(), String> {
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
+            // P2a: hidden panes never need blink ticks — kills the timer
+            // (visibility gate) + pins the phase visible.
+            update_blink_timer(self.state.as_mut(), self.hwnd);
         }
         Ok(())
     }
@@ -367,10 +681,25 @@ impl NativeTermWindow for PlatformWindow {
     }
 
     fn destroy(mut self: Box<Self>) -> Result<(), String> {
-        // Kill the repaint timer before tearing down anything else so a
-        // pending WM_TIMER can't fire mid-destroy and touch a freed state.
+        // Kill the timers before tearing down anything else so a pending
+        // WM_TIMER can't fire mid-destroy and touch a freed state
+        // (KillTimer-before-free rule).
         unsafe {
-            let _ = KillTimer(self.hwnd, RENDER_TIMER_ID);
+            let _ = KillTimer(self.hwnd, WATCHDOG_TIMER_ID);
+            let _ = KillTimer(self.hwnd, BLINK_TIMER_ID);
+            let _ = KillTimer(self.hwnd, RESIZE_SETTLE_TIMER_ID);
+            let _ = KillTimer(self.hwnd, SURFACE_RETRY_TIMER_ID);
+            let _ = KillTimer(self.hwnd, SCROLL_EMIT_FLUSH_TIMER_ID);
+        }
+        // P3b: zero the wake's HWND BEFORE the bridge drop / DestroyWindow /
+        // state free. The parser worker is DETACHED (drop below does not
+        // join) and holds its own Arc<RenderWake> — a zeroed hwnd makes any
+        // post-teardown notify a no-op instead of a PostMessageW to a
+        // destroyed (or recycled) window.
+        unsafe {
+            if let Some(w) = self.state.as_mut().wake.take() {
+                w.hwnd.store(0, AtomicOrdering::Release);
+            }
         }
         // Tear down PTY routing first so the parser worker exits cleanly
         // before we drop anything else.
@@ -380,7 +709,8 @@ impl NativeTermWindow for PlatformWindow {
         if let Some(term_id) = self.term_id.take() {
             pty_route::close_channel(term_id);
         }
-        // Dropping the ParserBridge joins the worker thread.
+        // Drop the ParserBridge handle. The worker thread is detached — it
+        // exits on its own once the channel Sender (closed above) drains.
         self.parser_bridge.take();
 
         unsafe {
@@ -426,14 +756,28 @@ impl NativeTermWindow for PlatformWindow {
         };
         let cell_w_logical = cell_w_physical / dpr;
         let line_h_logical = cell_h_physical / dpr;
+        // Prime the shared pair with the same values the bridge previously
+        // received by value, then hand it a clone — the worker re-reads the
+        // pair per batch so later set_font swaps propagate live.
+        if let Ok(mut m) = self.cursor_metrics.lock() {
+            *m = (cell_w_logical, line_h_logical);
+        }
         let app_for_bridge = unsafe { self.state.as_ref().app.clone() };
+        // P3b event-driven wake: created with the HWND pre-set so the very
+        // first parsed batch can post. One clone rides with the detached
+        // worker; the ChildState copy serves the WM_APP_RENDER arm, the
+        // watchdog and debug_stats. Per-attach lifetime — detach/destroy
+        // zero the hwnd, and a re-attach builds a FRESH wake (counters and
+        // pending state start clean).
+        let wake = Arc::new(RenderWake::new(self.hwnd.0 as isize));
         let bridge = ParserBridge::spawn(
             term_id,
             cols,
             rows,
+            self.scrollback as usize,
             rx,
-            cell_w_logical,
-            line_h_logical,
+            Arc::clone(&self.cursor_metrics),
+            Arc::clone(&wake),
             app_for_bridge,
         );
         let term_arc = Arc::clone(&bridge.term);
@@ -448,22 +792,38 @@ impl NativeTermWindow for PlatformWindow {
             state.pty_id = Some(pty_id);
             // Mirror the Term Arc so wnd_proc can drive scroll + selection.
             state.term = Some(term_arc);
+            // P3b: install the wake + reset the watchdog baseline (a fresh
+            // wake's batch counter starts at 0).
+            state.wake = Some(wake);
+            state.last_seen_batches = 0;
         }
 
         self.parser_bridge = Some(bridge);
         self.attached_pty_id = Some(pty_id);
         self.term_id = Some(term_id);
 
-        // R1.c continuous-repaint timer. WM_PAINT alone doesn't fire on PTY
-        // bytes arriving — without this, screen would freeze after first paint.
-        // 16ms ≈ 60Hz; the WM_TIMER handler InvalidateRects which triggers
-        // WM_PAINT which calls renderer.render(). Cheap when no damage; the
-        // renderer rebuilds dirty rows only. Killed on detach + destroy.
-        // R1.d will replace this with damage-driven repaint signaled from
-        // parser_bridge.
+        // P3b frame scheduling: force the first frame now; every subsequent
+        // repaint is event-driven — the parser worker posts WM_APP_RENDER
+        // per batch (bounded to one in-flight by RenderWake.pending) and the
+        // 500ms watchdog below converts any missed wake into a short hiccup.
+        // This replaces the R1.c 16ms continuous-repaint pump (deleted).
         unsafe {
             let _ = InvalidateRect(self.hwnd, None, BOOL(0));
-            SetTimer(self.hwnd, RENDER_TIMER_ID, 16, None);
+            SetTimer(self.hwnd, WATCHDOG_TIMER_ID, WATCHDOG_INTERVAL_MS, None);
+        }
+
+        // P1b: commit dimensions once at attach. No-op when the JS-proposed
+        // cols/rows already match the live client rect ÷ cell metrics;
+        // synchronously corrects any drift (alacritty grid + renderer
+        // CellGrid + PTY + `resized` event) when they do not.
+        unsafe {
+            commit_dims(self.state.as_mut(), self.hwnd);
+        }
+
+        // P2a: a Term is now attached — a focused pane with blink enabled
+        // starts ticking immediately.
+        unsafe {
+            update_blink_timer(self.state.as_mut(), self.hwnd);
         }
 
         Ok(())
@@ -471,7 +831,24 @@ impl NativeTermWindow for PlatformWindow {
 
     fn detach_pty(&mut self) -> Result<(), String> {
         unsafe {
-            let _ = KillTimer(self.hwnd, RENDER_TIMER_ID);
+            let _ = KillTimer(self.hwnd, RESIZE_SETTLE_TIMER_ID);
+            let _ = KillTimer(self.hwnd, WATCHDOG_TIMER_ID);
+            // P6a: a pending trailing-flush tick after detach would find no
+            // Term and no-op, but kill it anyway — detached panes should own
+            // zero live timers besides blink (handled below).
+            let _ = KillTimer(self.hwnd, SCROLL_EMIT_FLUSH_TIMER_ID);
+        }
+        // P3b: zero the wake's HWND BEFORE dropping the bridge. The worker
+        // is detached and keeps its own Arc<RenderWake> — zeroing here makes
+        // any notify from a still-draining batch a no-op. A stale
+        // WM_APP_RENDER already in the queue is harmless: the arm just
+        // invalidates and the renderer takes the clean-frame early-out.
+        unsafe {
+            let state = self.state.as_mut();
+            if let Some(w) = state.wake.take() {
+                w.hwnd.store(0, AtomicOrdering::Release);
+            }
+            state.last_seen_batches = 0;
         }
         if let Some(pty_id) = self.attached_pty_id.take() {
             pty_route::unlink(pty_id);
@@ -492,21 +869,35 @@ impl NativeTermWindow for PlatformWindow {
             state.lbutton_down = false;
             state.last_cell_hover = None;
             state.last_link_hover = None;
+            // D-review: drop the P6a local scroll-emit dedup state so a
+            // re-attach on this pane starts clean — the new Term begins at
+            // offset 0, and a stale cached offset from the OLD term could
+            // swallow the first wheel emit that happens to land on it.
+            state.last_scroll_emitted_offset = None;
+            state.last_scroll_emit = None;
+            // P2a: no Term → no blink ticks (wants_blink_ticks goes false);
+            // this kills the BLINK timer + pins the phase visible.
+            update_blink_timer(state, self.hwnd);
             let _ = InvalidateRect(self.hwnd, None, BOOL(0));
         }
         Ok(())
     }
 
     fn propose_dimensions(&self, width_px: u32, height_px: u32) -> (u32, u32) {
-        // R1.c stub: approximate Hack 14px metrics. Real font-metrics
-        // pull-through lands in R1.d when glyph_atlas exposes them.
-        // 14px @ ~60% character aspect ≈ 8.4px advance, line-height 1.2 → ~17px.
-        // We cap cols at minimum 20 per the plan's narrow-pane guard rather
-        // than returning an error — the JS side treats this as a soft floor.
-        let cell_w: u32 = 9;
-        let cell_h: u32 = 17;
-        let cols = (width_px / cell_w).max(20);
-        let rows = (height_px / cell_h).max(1);
+        // Contract: width_px/height_px arrive in LOGICAL CSS px (the JS
+        // rectOf convention — same space as the create/resize rects).
+        // Convert to physical with the same dpr `logical_rect_to_physical`
+        // uses, then divide by the renderer-measured PHYSICAL cell metrics
+        // mirrored on ChildState. We cap cols at minimum 20 per the plan's
+        // narrow-pane guard rather than returning an error — the JS side
+        // treats this as a soft floor.
+        let dpr = self.last_dpr.max(0.0001);
+        let (cell_w, cell_h) = unsafe {
+            let s = self.state.as_ref();
+            (s.cell_w_px.max(0.001), s.cell_h_px.max(0.001))
+        };
+        let cols = ((width_px as f32 * dpr / cell_w).floor() as u32).clamp(20, 4096);
+        let rows = ((height_px as f32 * dpr / cell_h).floor() as u32).clamp(1, 4096);
         (cols, rows)
     }
 
@@ -539,7 +930,23 @@ impl NativeTermWindow for PlatformWindow {
                 let (cw, ch) = r.cell_metrics();
                 state.cell_w_px = cw.max(0.001);
                 state.cell_h_px = ch.max(0.001);
+                // Propagate to the parser-bridge's shared LOGICAL pair
+                // (mirrors ÷ dpr — same formula as attach_pty) so the
+                // worker's cursor-event math tracks the new font on its
+                // next batch.
+                let dpr = self.last_dpr.max(0.0001);
+                if let Ok(mut m) = self.cursor_metrics.lock() {
+                    *m = (state.cell_w_px / dpr, state.cell_h_px / dpr);
+                }
             }
+            // P1d: a font swap changes the cell metrics, so the same client
+            // rect now holds a different grid — re-propose dims through the
+            // whole chain (Term::resize → renderer resize_grid →
+            // resize_pty_sync → `resized` emit). Safe to call directly:
+            // native_term commands run on the wnd_proc's (main) thread, and
+            // commit_dims itself guards the detached / zero-size cases and
+            // no-ops when the grid already matches.
+            commit_dims(state, self.hwnd);
             let _ = InvalidateRect(self.hwnd, None, BOOL(0));
         }
         Ok(())
@@ -554,9 +961,42 @@ impl NativeTermWindow for PlatformWindow {
             if let Some(r) = state.renderer.as_mut() {
                 r.set_cursor_style(style, blink);
             }
+            // P2a: the blink setting may have flipped — re-evaluate the
+            // BLINK timer (arms when focused + blink + attached + visible,
+            // kills + pins the phase visible otherwise).
+            update_blink_timer(state, self.hwnd);
             let _ = InvalidateRect(self.hwnd, None, BOOL(0));
         }
         Ok(())
+    }
+
+    fn set_focused(&mut self, focused: bool) -> Result<(), String> {
+        // P2a: JS-authoritative focus flag. Only the focused pane blinks its
+        // cursor; unfocused panes render a static hollow outline. Store the
+        // flag (ChildState mirror + renderer), re-evaluate the BLINK timer,
+        // and repaint so the cursor swaps solid/hollow immediately.
+        unsafe {
+            let state = self.state.as_mut();
+            state.focused = focused;
+            if let Some(r) = state.renderer.as_mut() {
+                r.set_focused(focused);
+            }
+            update_blink_timer(state, self.hwnd);
+            let _ = InvalidateRect(self.hwnd, None, BOOL(0));
+        }
+        Ok(())
+    }
+
+    fn focus_keyboard(&mut self) -> Result<(), String> {
+        // P7b: keyboard-focus request from JS (active-pane parity with the
+        // xterm pane's term.focus()). SetFocus is thread-sensitive, so post
+        // WM_APP_FOCUS and let the wnd_proc call it on the owning thread.
+        // Fire-and-forget: delivery is confirmed by the WM_SETFOCUS →
+        // `focus_gained` round-trip, same as the click-to-focus path.
+        unsafe {
+            PostMessageW(self.hwnd, WM_APP_FOCUS, WPARAM(0), LPARAM(0))
+                .map_err(|e| format!("PostMessageW(WM_APP_FOCUS): {e}"))
+        }
     }
 
     fn set_search_highlights(&mut self, rects: Vec<Rect>) -> Result<(), String> {
@@ -581,6 +1021,18 @@ impl NativeTermWindow for PlatformWindow {
         Ok(())
     }
 
+    fn cell_metrics(&self) -> (f32, f32) {
+        // P1a: live per-pane metrics — the ChildState mirrors, refreshed
+        // from `Renderer::cell_metrics()` at construction, on every
+        // set_font, and on every dpr change (prepare_move). PHYSICAL
+        // surface px — P5a scales the font by dpr and quantizes the
+        // advance, so these are no longer numerically equal to logical.
+        unsafe {
+            let s = self.state.as_ref();
+            (s.cell_w_px, s.cell_h_px)
+        }
+    }
+
     fn term(&self) -> Option<Arc<Mutex<Term<TermListener>>>> {
         // R3: hand out a strong clone of the Term Arc so the per-pane command
         // handlers (get_buffer_lines / scroll / search) can snapshot the grid
@@ -589,6 +1041,82 @@ impl NativeTermWindow for PlatformWindow {
         // term(), drop the registry guard via the closure return, then lock
         // the Term separately.
         self.parser_bridge.as_ref().map(|b| Arc::clone(&b.term))
+    }
+
+    fn request_redraw(&mut self) -> Result<(), String> {
+        // P3b: explicit invalidation hook for Term mutations performed
+        // OUTSIDE the PlatformWindow (the mod.rs scroll_to_bottom /
+        // scroll_to_line / clear / reset handlers lock the Term Arc
+        // directly). The renderer detects what actually changed on the next
+        // WM_PAINT — display_offset via the FrameSnapshot, row content via
+        // sync_from_term's damage bitset — so an invalidation with nothing
+        // changed takes the clean-frame early-out.
+        unsafe {
+            let _ = InvalidateRect(self.hwnd, None, BOOL(0));
+        }
+        Ok(())
+    }
+
+    fn emit_scroll_state(&mut self) -> Result<(), String> {
+        // D-review: command-driven viewport changes (scroll_to_bottom /
+        // scroll_to_line) must reach the JS bus — the parser worker only
+        // emits `scroll` on byte arrival, so on a quiet PTY the
+        // jump-to-bottom button state would go permanently stale after a
+        // command scroll. Read the LIVE offset under a brief Term lock
+        // (we're inside the registry closure here: registry → term is the
+        // allowed lock order, same as attach_pty → commit_dims), then
+        // funnel through emit_scroll_coalesced so ChildState's
+        // last_scroll_emitted_offset dedup cache stays coherent with what
+        // JS last saw (a plain emit_scroll here would desync it).
+        let term = unsafe {
+            match self.state.as_ref().term.as_ref() {
+                Some(t) => Arc::clone(t),
+                None => return Ok(()),
+            }
+        };
+        let (offset_now, history) = {
+            let t = term.lock().map_err(|_| "term mutex poisoned".to_string())?;
+            let grid = t.grid();
+            (grid.display_offset(), grid.history_size() as i64)
+        }; // Term lock released before the emit below.
+        unsafe {
+            emit_scroll_coalesced(self.state.as_mut(), self.hwnd, offset_now, history);
+        }
+        Ok(())
+    }
+
+    fn debug_stats(&self) -> DebugStats {
+        // P0 perf instrumentation: read-only snapshot. Renderer counters are
+        // reached through the ChildState pointer (same-thread access, like
+        // every other accessor); `visible` is queried from Win32 directly so
+        // ShowWindow-driven hide/show is reflected without extra mirroring.
+        unsafe {
+            let state = self.state.as_ref();
+            let mut out = DebugStats::default();
+            if let Some(r) = state.renderer.as_ref() {
+                out.frames_rendered = r.frames_rendered;
+                out.frames_skipped_clean = r.frames_skipped_clean;
+                out.last_frame_cpu_ms = r.last_frame_cpu_ms;
+                out.frame_cpu_ms_ewma = r.frame_cpu_ms_ewma;
+                out.configures = r.configures;
+                let (sw, sh) = r.surface_size();
+                out.surface_w = sw;
+                out.surface_h = sh;
+            }
+            // P3b: the wake counters are the RenderWake atomics (shared with
+            // the detached parser worker) — they never lived on the
+            // Renderer. Zeros when no PTY is attached (no wake installed).
+            if let Some(w) = state.wake.as_ref() {
+                out.wakes_posted = w.wakes_posted.load(AtomicOrdering::Relaxed);
+                out.wakes_coalesced = w.wakes_coalesced.load(AtomicOrdering::Relaxed);
+            }
+            out.attached = self.parser_bridge.is_some();
+            out.visible = IsWindowVisible(self.hwnd).as_bool();
+            out.cell_w_px = state.cell_w_px;
+            out.cell_h_px = state.cell_h_px;
+            out.dpr = state.dpr;
+            out
+        }
     }
 }
 
@@ -604,6 +1132,197 @@ unsafe fn bring_above_siblings(hwnd: HWND) -> Result<(), String> {
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
     )
     .map_err(|e| format!("SetWindowPos(HWND_TOP): {e}"))
+}
+
+/// P4a/D1: run `render()` and — when the frame did NOT present
+/// (SurfaceError::Lost/Outdated reconfigure-and-skip, or a hard render
+/// error) — arm the one-shot SURFACE_RETRY timer for a paced ~16ms retry.
+/// Presented and SkippedClean frames need nothing (the flip-model swapchain
+/// holds a valid buffer). Shared by the WM_PAINT arm and the WM_SIZE
+/// synchronous repaint so the retry-pacing semantics stay identical in both
+/// paths.
+unsafe fn render_with_retry(state: &mut ChildState, hwnd: HWND) {
+    if let Some(r) = state.renderer.as_mut() {
+        let outcome = r.render();
+        let presented_or_clean = matches!(
+            outcome,
+            Ok(RenderOutcome::Presented | RenderOutcome::SkippedClean)
+        );
+        if !presented_or_clean {
+            SetTimer(hwnd, SURFACE_RETRY_TIMER_ID, SURFACE_RETRY_MS, None);
+        }
+    }
+}
+
+/// P2a: single decision point for the cursor-blink timer. Arms the BLINK
+/// timer when the renderer wants ticks (focused + cursor_blink + Term
+/// attached) AND a Term is attached AND the window is visible; otherwise
+/// kills it and pins the blink phase visible so an unfocused/hidden pane can
+/// never strand its cursor in the hidden half-phase (the unfocused hollow
+/// outline ignores phase anyway — pinning is belt-and-suspenders for the
+/// next focus gain). Called from set_focused / set_cursor_style / attach_pty
+/// / detach_pty / show / hide; SetTimer with the same id just resets the
+/// countdown, so re-arming is idempotent.
+unsafe fn update_blink_timer(state: &mut ChildState, hwnd: HWND) {
+    let attached = state.term.is_some();
+    let visible = IsWindowVisible(hwnd).as_bool();
+    let wants = state
+        .renderer
+        .as_ref()
+        .map_or(false, |r| r.wants_blink_ticks());
+    if wants && attached && visible {
+        SetTimer(hwnd, BLINK_TIMER_ID, BLINK_HALF_PERIOD_MS, None);
+    } else {
+        let _ = KillTimer(hwnd, BLINK_TIMER_ID);
+        if let Some(r) = state.renderer.as_mut() {
+            r.reset_blink_visible();
+        }
+    }
+}
+
+/// P6a: coalesced LOCAL-scrollback `scroll` emit, shared by the
+/// WM_MOUSEWHEEL arm and the snap-to-bottom typing path. Same payload shape
+/// + space as the parser worker's emit: viewport_y = -display_offset (0 =
+/// pinned to the live bottom, negative while scrolled into history),
+/// base_y = -history. Needed because the parser only emits on byte arrival
+/// — during quiet output a wheel scroll would otherwise never reach JS and
+/// the jump-to-bottom UI could never appear.
+///
+/// Coalescing: dedup on unchanged offset, then a 50ms window matching the
+/// parser-side constant. `display_offset == 0` bypasses the time window —
+/// the return-to-bottom edge must always land so the JS at-bottom check
+/// (`viewportY >= -3`) hides the jump button promptly instead of sticking
+/// until the next PTY batch. A window-suppressed emit arms the one-shot
+/// SCROLL_EMIT_FLUSH timer so the trailing edge of a fast flick is never
+/// permanently swallowed (see the constant's docs).
+unsafe fn emit_scroll_coalesced(
+    state: &mut ChildState,
+    hwnd: HWND,
+    display_offset: usize,
+    history: i64,
+) {
+    if state.last_scroll_emitted_offset == Some(display_offset) {
+        return;
+    }
+    let now = Instant::now();
+    let past_window = state
+        .last_scroll_emit
+        .map_or(true, |t| now.duration_since(t).as_millis() >= SCROLL_EMIT_COALESCE_MS);
+    if !past_window && display_offset != 0 {
+        SetTimer(hwnd, SCROLL_EMIT_FLUSH_TIMER_ID, SCROLL_EMIT_FLUSH_MS, None);
+        return;
+    }
+    state.last_scroll_emitted_offset = Some(display_offset);
+    state.last_scroll_emit = Some(now);
+    if let (Some(app), Some(tid)) = (state.app.as_ref(), state.term_id) {
+        let base_y = -history;
+        emit_scroll(
+            app,
+            tid,
+            ScrollEvt {
+                viewport_y: -(display_offset as i64),
+                base_y,
+            },
+        );
+    }
+}
+
+/// P6a snap-to-bottom: typing while scrolled into history jumps the viewport
+/// back to the live bottom BEFORE the byte reaches the PTY (standard
+/// terminal behavior — alacritty/xterm both do this). Called from the
+/// WM_CHAR / WM_KEYDOWN arms right before their `write_to_pty_sync`. Brief
+/// Term lock; no-op when already at the bottom (the common case — one cheap
+/// lock + compare per keystroke). On an actual snap we invalidate (offset
+/// changed → FrameSnapshot dirties the next paint; no PTY echo is
+/// guaranteed, so the repaint can't ride on the parser wake) and emit the
+/// coalesced `scroll` so the JS jump-to-bottom button hides immediately.
+unsafe fn snap_to_bottom_on_input(state: &mut ChildState, hwnd: HWND) {
+    let term = match state.term.as_ref() {
+        Some(t) => Arc::clone(t),
+        None => return,
+    };
+    let snapped_history = {
+        let mut t = term.lock().expect("term lock poisoned");
+        if t.grid().display_offset() > 0 {
+            t.scroll_display(Scroll::Bottom);
+            Some(t.grid().history_size() as i64)
+        } else {
+            None
+        }
+    }; // Term lock released before invalidate/emit.
+    if let Some(history) = snapped_history {
+        let _ = InvalidateRect(hwnd, None, BOOL(0));
+        emit_scroll_coalesced(state, hwnd, 0, history);
+    }
+}
+
+/// P1b resize-commit: recompute cols/rows from the live client rect and cell
+/// metrics, then commit them through the whole chain — alacritty grid →
+/// renderer CellGrid → PTY → `resized` Tauri event. Fired from the
+/// resize-settle timer (WM_TIMER / RESIZE_SETTLE_TIMER_ID) and once at the
+/// end of `attach_pty`. Whole-chain no-op when the grid already matches, so
+/// re-fires are cheap and attach-time drift correction is exact.
+///
+/// Locking discipline: the Term mutex is held ONLY for the compare +
+/// `Term::resize` (idempotent — alacritty no-ops on unchanged dims) and is
+/// released BEFORE the renderer rebuild, the PTY ioctl, and the Tauri emit,
+/// so the parser worker is never blocked on a broadcast. NEVER touches the
+/// registry mutex — everything it needs lives on ChildState mirrors.
+unsafe fn commit_dims(state: &mut ChildState, hwnd: HWND) {
+    // Guard: zero-area client (minimised / mid-teardown) or no attached term
+    // → nothing to commit.
+    let (client_w, client_h) = state.client_px;
+    if client_w <= 0 || client_h <= 0 {
+        return;
+    }
+    let term = match state.term.as_ref() {
+        Some(t) => Arc::clone(t),
+        None => return,
+    };
+
+    // Same formula + floors as `propose_dimensions`: physical client px ÷
+    // physical cell metrics, floored to whole cells, min 20 cols
+    // (narrow-pane guard) / 1 row.
+    let cell_w = state.cell_w_px.max(0.001);
+    let cell_h = state.cell_h_px.max(0.001);
+    // Upper clamp guards the `as u16` PTY cast and Term allocation against a
+    // degenerate cell metric (the 0.001 floor above).
+    let cols = ((client_w as f32 / cell_w).floor() as usize).clamp(20, 4096);
+    let rows = ((client_h as f32 / cell_h).floor() as usize).clamp(1, 4096);
+
+    let changed = {
+        let mut t = term.lock().expect("term lock poisoned");
+        let grid = t.grid();
+        if (grid.columns(), grid.screen_lines()) != (cols, rows) {
+            t.resize(TermDims { columns: cols, screen_lines: rows });
+            true
+        } else {
+            false
+        }
+    }; // Term mutex released here — before renderer / PTY / emit.
+    if !changed {
+        return;
+    }
+
+    if let Some(r) = state.renderer.as_mut() {
+        r.resize_grid(cols, rows);
+    }
+    if let Some(pid) = state.pty_id {
+        let _ = crate::pty::resize_pty_sync(pid, cols as u16, rows as u16);
+    }
+    if let (Some(app), Some(tid)) = (state.app.as_ref(), state.term_id) {
+        emit_resized(
+            app,
+            tid,
+            Resized {
+                cols: cols as u32,
+                rows: rows as u32,
+                // Internal/settle-driven resize — no originating JS invoke.
+                correlation_id: None,
+            },
+        );
+    }
+    let _ = InvalidateRect(hwnd, None, BOOL(0));
 }
 
 fn logical_rect_to_physical(rect: Rect, dpr: f32) -> (i32, i32, i32, i32) {
@@ -624,7 +1343,12 @@ unsafe fn ensure_class_registered() -> Result<(), String> {
             .0,
     );
     let class = WNDCLASSW {
-        style: CS_HREDRAW | CS_VREDRAW,
+        // P4a/D2: CS_HREDRAW | CS_VREDRAW removed. They queued a redundant
+        // full-invalidate WM_PAINT after every size change; the WM_SIZE arm
+        // now repaints SYNCHRONOUSLY (D1) and validates, so the class-level
+        // invalidation would only add a wasted paint dispatch per resize
+        // tick (harmless — clean-frame early-out — but pure overhead).
+        style: WNDCLASS_STYLES(0),
         lpfnWndProc: Some(wnd_proc),
         cbClsExtra: 0,
         cbWndExtra: 0,
@@ -662,9 +1386,12 @@ unsafe extern "system" fn wnd_proc(
         WM_PAINT => {
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
             if !state_ptr.is_null() {
-                if let Some(r) = (*state_ptr).renderer.as_mut() {
-                    let _ = r.render();
-                }
+                // P3b: with the 16ms pump gone, a frame that did NOT present
+                // has no guaranteed "next WM_PAINT" on an idle pane —
+                // render_with_retry schedules a bounded retry via the
+                // one-shot SURFACE_RETRY timer (P4a: logic shared with the
+                // WM_SIZE synchronous repaint).
+                render_with_retry(&mut *state_ptr, hwnd);
             }
             // Validate the whole client area — we drew with wgpu, not GDI.
             // Skipping ValidateRect would cause WM_PAINT to fire continuously.
@@ -683,14 +1410,184 @@ unsafe extern "system" fn wnd_proc(
                 if let Some(r) = (*state_ptr).renderer.as_mut() {
                     r.resize(w, h);
                 }
+                // P1b resize-settle: (re-)arm the settle timer. SetTimer with
+                // the same id RESETS the countdown, so a drag-resize keeps
+                // pushing the deadline out and the commit fires exactly once,
+                // RESIZE_SETTLE_MS after the last WM_SIZE (settle-after-quiet).
+                SetTimer(hwnd, RESIZE_SETTLE_TIMER_ID, RESIZE_SETTLE_MS, None);
+                // P4a/D1: SYNCHRONOUS repaint (what alacritty/WezTerm do).
+                // WM_SIZE is delivered inside the SetWindowPos /
+                // EndDeferWindowPos that moved us, so rendering HERE means
+                // the surface is reconfigured AND presented at the new size
+                // in the same pump turn as the move — the window never
+                // composits a stretched/stale frame while an async
+                // InvalidateRect → WM_PAINT round-trip catches up.
+                // renderer.resize above already set force_render for w,h>0;
+                // force_next_frame is belt-and-suspenders (explicit + covers
+                // any future resize early-out changes). Zero-size guard
+                // mirrors renderer.resize's own guard — never render into a
+                // surface that skipped reconfigure.
+                if w > 0 && h > 0 {
+                    if let Some(r) = (*state_ptr).renderer.as_mut() {
+                        r.force_next_frame();
+                    }
+                    // Same outcome handling as WM_PAINT: a frame that did
+                    // not present arms the paced SURFACE_RETRY one-shot.
+                    render_with_retry(&mut *state_ptr, hwnd);
+                    // The move invalidated the newly-exposed client region
+                    // (SWP_NOCOPYBITS invalidates the whole client area on
+                    // size change). We just presented the full surface via
+                    // wgpu, so validate to drop the queued redundant
+                    // WM_PAINT. Nothing can be lost here: only this thread
+                    // ever calls InvalidateRect on this HWND (the parser
+                    // worker POSTS WM_APP_RENDER instead, whose own
+                    // invalidation happens when it is dispatched later),
+                    // and even a hypothetical miss is bounded by the 500ms
+                    // watchdog. If Windows re-invalidates after WM_SIZE
+                    // returns, the resulting WM_PAINT hits the clean-frame
+                    // early-out — correct either way, just one wasted
+                    // dispatch.
+                    let _ = ValidateRect(hwnd, None);
+                }
             }
             LRESULT(0)
         }
-        WM_TIMER => {
-            // R1.c continuous-repaint pump. Only active while a PTY is
-            // attached (SetTimer in attach_pty, KillTimer in detach_pty).
-            let _ = InvalidateRect(hwnd, None, BOOL(0));
+        WM_APP_RENDER => {
+            // P3b event-driven wake from the parser worker. Clear `pending`
+            // FIRST, then invalidate — this order closes the lost-wake
+            // window: a batch landing after the clear posts a fresh message,
+            // so the paint below can never miss it. (The reverse order would
+            // let a batch slip in between InvalidateRect and the clear and
+            // be silently swallowed.) A stale message from a detached wake
+            // (state.wake already None / replaced) just invalidates — the
+            // renderer's clean-frame early-out makes that free.
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+            if !state_ptr.is_null() {
+                if let Some(wake) = (*state_ptr).wake.as_ref() {
+                    wake.pending.store(false, AtomicOrdering::Release);
+                }
+                let _ = InvalidateRect(hwnd, None, BOOL(0));
+            }
             LRESULT(0)
+        }
+        WM_APP_FOCUS => {
+            // P7b: keyboard-focus request posted by `focus_keyboard`
+            // (native_term_focus_keyboard). We're on the HWND's owning
+            // thread here, where SetFocus is always valid. Keyboard focus
+            // moves WITHOUT activation (WS_EX_NOACTIVATE); WM_SETFOCUS then
+            // fires → DECSET-1004 bytes + `focus_gained` emit exactly as on
+            // the WM_LBUTTONDOWN click-to-focus path. The JS caller guards
+            // hard (active pane + app focused + no webview input focused),
+            // so this can never steal focus from composer/search/rename.
+            let _ = SetFocus(hwnd);
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            match wparam.0 {
+                WATCHDOG_TIMER_ID => {
+                    // P3b safety net for the event-driven scheduler: if
+                    // batches landed whose wake never arrived (a missed-
+                    // invalidation bug anywhere), repaint within 500ms
+                    // instead of freezing. Cheap when idle (batch counter
+                    // unchanged → no-op) and when the wake already painted
+                    // (renderer clean-frame early-out).
+                    let state_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+                    if !state_ptr.is_null() {
+                        if let Some(wake) = (*state_ptr).wake.as_ref() {
+                            let batches = wake.batches.load(AtomicOrdering::Acquire);
+                            if batches != (*state_ptr).last_seen_batches {
+                                (*state_ptr).last_seen_batches = batches;
+                                let _ = InvalidateRect(hwnd, None, BOOL(0));
+                            }
+                        }
+                    }
+                    LRESULT(0)
+                }
+                BLINK_TIMER_ID => {
+                    // P2a cursor blink: flip the renderer's phase each
+                    // half-period + repaint. The guard mirrors
+                    // `update_blink_timer`'s FULL arm condition (renderer
+                    // wants ticks + Term attached + window visible) — not
+                    // just `focused` — because KillTimer does not remove a
+                    // WM_TIMER already posted to the queue. A stale tick
+                    // landing after ANY kill transition (focus loss, blink
+                    // disabled via set_cursor_style, detach, hide) would
+                    // otherwise call toggle_blink_phase and un-pin the
+                    // phase that the kill path just pinned visible —
+                    // stranding a focused non-blinking pane's cursor
+                    // invisible with no timer left to flip it back.
+                    let state_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+                    if !state_ptr.is_null() && (*state_ptr).focused {
+                        let attached = (*state_ptr).term.is_some();
+                        let visible = IsWindowVisible(hwnd).as_bool();
+                        let wants = (*state_ptr)
+                            .renderer
+                            .as_ref()
+                            .map_or(false, |r| r.wants_blink_ticks());
+                        if wants && attached && visible {
+                            if let Some(r) = (*state_ptr).renderer.as_mut() {
+                                r.toggle_blink_phase();
+                            }
+                            let _ = InvalidateRect(hwnd, None, BOOL(0));
+                        }
+                    }
+                    LRESULT(0)
+                }
+                RESIZE_SETTLE_TIMER_ID => {
+                    // Kill FIRST — SetTimer timers are periodic, and without
+                    // this the settle commit would re-fire every 150ms forever.
+                    let _ = KillTimer(hwnd, RESIZE_SETTLE_TIMER_ID);
+                    let state_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+                    if !state_ptr.is_null() {
+                        commit_dims(&mut *state_ptr, hwnd);
+                    }
+                    LRESULT(0)
+                }
+                SURFACE_RETRY_TIMER_ID => {
+                    // One-shot surface-loss retry: kill first (SetTimer
+                    // timers are periodic), then invalidate so WM_PAINT
+                    // re-runs render(). If the surface is STILL lost, the
+                    // paint arm re-arms this timer — a paced ~16ms retry
+                    // loop (the pre-P3b pump cadence) instead of an
+                    // Invalidate busy-spin.
+                    let _ = KillTimer(hwnd, SURFACE_RETRY_TIMER_ID);
+                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    LRESULT(0)
+                }
+                SCROLL_EMIT_FLUSH_TIMER_ID => {
+                    // P6a trailing-edge flush: kill first (one-shot), then
+                    // re-read the LIVE offset and re-run the coalesced emit.
+                    // By now the 50ms window has elapsed, so the suppressed
+                    // final wheel notch of a flick lands on the JS bus; an
+                    // offset that bounced back to the last-emitted value
+                    // dedups to nothing. No Term (detached mid-flight) →
+                    // no-op.
+                    let _ = KillTimer(hwnd, SCROLL_EMIT_FLUSH_TIMER_ID);
+                    let state_ptr =
+                        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+                    if !state_ptr.is_null() {
+                        let term = (*state_ptr).term.as_ref().map(Arc::clone);
+                        if let Some(term) = term {
+                            let (offset_now, history) = {
+                                let t = term.lock().expect("term lock poisoned");
+                                let grid = t.grid();
+                                (grid.display_offset(), grid.history_size() as i64)
+                            };
+                            emit_scroll_coalesced(
+                                &mut *state_ptr,
+                                hwnd,
+                                offset_now,
+                                history,
+                            );
+                        }
+                    }
+                    LRESULT(0)
+                }
+                _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+            }
         }
         WM_MOUSEACTIVATE => {
             // Tell Windows: "process this mouse click but DO NOT activate me."
@@ -943,11 +1840,23 @@ unsafe extern "system" fn wnd_proc(
 
             let lines = delta_raw / WHEEL_DELTA * LINES_PER_NOTCH;
             if lines != 0 {
-                if let Some(term) = (*state_ptr).term.as_ref() {
-                    let mut t = term.lock().expect("term lock poisoned");
-                    t.scroll_display(Scroll::Delta(lines));
-                    drop(t);
+                let term = (*state_ptr).term.as_ref().map(Arc::clone);
+                if let Some(term) = term {
+                    // P6a: capture the post-scroll offset + history under the
+                    // SAME lock so the emit below reflects exactly what the
+                    // next frame renders.
+                    let (offset_now, history) = {
+                        let mut t = term.lock().expect("term lock poisoned");
+                        t.scroll_display(Scroll::Delta(lines));
+                        let grid = t.grid();
+                        (grid.display_offset(), grid.history_size() as i64)
+                    };
                     let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    // P6a: the parser worker only emits `scroll` on byte
+                    // arrival — a wheel scroll during quiet output must emit
+                    // from HERE or the jump-to-bottom UI never appears.
+                    // Coalesced (50ms, parser-matched) in the helper.
+                    emit_scroll_coalesced(&mut *state_ptr, hwnd, offset_now, history);
                 }
             }
             LRESULT(0)
@@ -1000,6 +1909,12 @@ unsafe extern "system" fn wnd_proc(
             };
             let bytes = vk_to_bytes(vk);
             if let (Some(pid), Some(b)) = (pty_id, bytes) {
+                // P6a snap-to-bottom: keystrokes headed for the PTY jump a
+                // scrolled-back viewport to the live bottom first (standard
+                // terminal behavior). Cheap no-op when already pinned.
+                if !state_ptr.is_null() {
+                    snap_to_bottom_on_input(&mut *state_ptr, hwnd);
+                }
                 let _ = crate::pty::write_to_pty_sync(pid, b);
                 return LRESULT(0);
             }
@@ -1024,6 +1939,12 @@ unsafe extern "system" fn wnd_proc(
                     return LRESULT(0);
                 }
                 if let Some(c) = char::from_u32(unit as u32) {
+                    // P6a snap-to-bottom: mirror the WM_KEYDOWN forward path —
+                    // any character reaching the PTY jumps a scrolled-back
+                    // viewport to the live bottom first.
+                    if !state_ptr.is_null() {
+                        snap_to_bottom_on_input(&mut *state_ptr, hwnd);
+                    }
                     let mut buf = [0u8; 4];
                     let s = c.encode_utf8(&mut buf);
                     let _ = crate::pty::write_to_pty_sync(pid, s.as_bytes());
@@ -1264,13 +2185,23 @@ unsafe extern "system" fn wnd_proc(
                 // Single brief lock: read display_offset AND the hyperlink at
                 // the hovered cell so WM_MOUSEMOVE only crosses the term mutex
                 // once per move. Emits happen AFTER the lock drops.
-                let (display_offset, hover_uri) = if let Some(term) = (*state_ptr).term.as_ref() {
+                //
+                // P6b wide chars: the bridge contract (CellHoverEvent in
+                // native-term-bridge.ts) promises wide CJK chars report the
+                // START col of the glyph — when the hovered cell is the
+                // trailing WIDE_CHAR_SPACER half, normalize to col-1 (flags
+                // read inside this same lock). The hyperlink is then read
+                // from the normalized cell so both halves resolve the same
+                // link.
+                let (display_offset, hover_uri, col_norm) = if let Some(term) =
+                    (*state_ptr).term.as_ref()
+                {
                     let t = term.lock().expect("term lock poisoned");
                     let grid = t.grid();
                     let cols = grid.columns();
                     let rows = grid.screen_lines();
                     let display_offset_i = grid.display_offset() as i32;
-                    let uri = if cols > 0
+                    let (uri, col_n) = if cols > 0
                         && rows > 0
                         && row_visible >= 0
                         && (row_visible as usize) < rows
@@ -1278,19 +2209,27 @@ unsafe extern "system" fn wnd_proc(
                         && (col_raw as usize) < cols
                     {
                         let line = Line(row_visible - display_offset_i);
-                        let cell = &grid[line][Column(col_raw as usize)];
-                        cell.hyperlink().map(|h| h.uri().to_owned())
+                        let mut c = col_raw as usize;
+                        if c > 0
+                            && grid[line][Column(c)]
+                                .flags
+                                .contains(CellFlags::WIDE_CHAR_SPACER)
+                        {
+                            c -= 1;
+                        }
+                        let cell = &grid[line][Column(c)];
+                        (cell.hyperlink().map(|h| h.uri().to_owned()), c as i32)
                     } else {
-                        None
+                        (None, col_raw)
                     };
-                    (display_offset_i, uri)
+                    (display_offset_i, uri, col_n)
                 } else {
-                    (0, None)
+                    (0, None, col_raw)
                 };
                 // Visible row 0 = top of screen; line = row - display_offset.
                 // When user has scrolled back N lines, row 0 maps to Line(-N).
                 let line_signed = row_visible as i64 - display_offset as i64;
-                let col = col_raw.max(0) as u32;
+                let col = col_norm.max(0) as u32;
                 let key = (line_signed, col);
                 if (*state_ptr).last_cell_hover != Some(key) {
                     (*state_ptr).last_cell_hover = Some(key);
@@ -1515,6 +2454,17 @@ unsafe extern "system" fn wnd_proc(
                     let _ = crate::pty::write_to_pty_sync(pid, b"\x1b[I");
                 }
             }
+            // P2a (additive — the DECSET-1004 bytes above are untouched):
+            // tell the React layer the native HWND gained keyboard focus
+            // (click-to-focus path) so it can mark this pane active and its
+            // focus effect can call native_term_set_focused.
+            if !state_ptr.is_null() {
+                if let (Some(app), Some(tid)) =
+                    ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                {
+                    emit_focus_gained(app, tid);
+                }
+            }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_KILLFOCUS => {
@@ -1527,6 +2477,22 @@ unsafe extern "system" fn wnd_proc(
             if !state_ptr.is_null() && is_focus_reporting_enabled(&*state_ptr) {
                 if let Some(pid) = (*state_ptr).pty_id {
                     let _ = crate::pty::write_to_pty_sync(pid, b"\x1b[O");
+                }
+            }
+            // P2b (additive — the DECSET-1004 bytes above are untouched):
+            // tell the React layer the native HWND lost Win32 keyboard
+            // focus. On Windows the tauri onFocusChanged event mirrors
+            // WEBVIEW focus only, so when a native pane holds focus an
+            // Alt-Tab away produces no JS blur at all — this event is the
+            // store's only way to clear nativePaneFocused. Focus moving
+            // pane→pane is fine: Windows delivers WM_KILLFOCUS (old pane)
+            // before WM_SETFOCUS (new pane), so focus_lost → focus_gained
+            // arrive in order and the store converges on focused=true.
+            if !state_ptr.is_null() {
+                if let (Some(app), Some(tid)) =
+                    ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                {
+                    emit_focus_lost(app, tid);
                 }
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -1845,20 +2811,20 @@ fn encode_mouse_event(
 /// and clamps to the visible grid. Returns None if no Term is attached or the
 /// grid has zero columns/rows (defensive — shouldn't happen post-attach).
 ///
-/// Scrollback handling: the renderer currently always renders rows 0..N as
-/// alacritty Line(0)..Line(N), regardless of display_offset (R2 frozen — the
-/// scrollback-aware rendering pass isn't built yet). For consistency with what
-/// the user actually sees, we map visible_row → Line(row). When the rendering
-/// pass learns to honour display_offset, this fn must subtract it: the
-/// alacritty Line for visible_row y becomes `Line(y as i32 - display_offset as i32)`.
+/// P6a scrollback: the renderer now honours display_offset (visible row y
+/// shows grid line `y - offset`), so this fn subtracts the offset to hand
+/// selection a TRUE grid line — negative while the click lands on history
+/// rows. Matches the cell_hover / link-click math and the snapshot's
+/// selection-containment convention, so selections anchor to content and
+/// stay correct while scrolled.
 unsafe fn mouse_to_point(state: &ChildState, x_px: i32, y_px: i32) -> Option<Point> {
     let term = state.term.as_ref()?;
     let cell_w = state.cell_w_px.max(0.001);
     let line_h = state.cell_h_px.max(0.001);
-    let (cols, rows) = {
+    let (cols, rows, display_offset) = {
         let t = term.lock().expect("term lock poisoned");
         let grid = t.grid();
-        (grid.columns(), grid.screen_lines())
+        (grid.columns(), grid.screen_lines(), grid.display_offset() as i32)
     };
     if cols == 0 || rows == 0 {
         return None;
@@ -1867,7 +2833,7 @@ unsafe fn mouse_to_point(state: &ChildState, x_px: i32, y_px: i32) -> Option<Poi
     let row_raw = (y_px as f32 / line_h).floor() as i32;
     let col = col_raw.clamp(0, (cols as i32).saturating_sub(1)) as usize;
     let row = row_raw.clamp(0, (rows as i32).saturating_sub(1));
-    Some(Point::new(Line(row), Column(col)))
+    Some(Point::new(Line(row - display_offset), Column(col)))
 }
 
 /// Copy a UTF-8 string to the Windows clipboard as CF_UNICODETEXT.

@@ -22,6 +22,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   subscribeOsc133,
   nativeTermGetBufferLines,
+  nativeTermGetViewportState,
   type NativeTermId,
   type Osc133Event,
 } from "../lib/native-term-bridge";
@@ -119,10 +120,19 @@ export function useNativeCommandBlocks(
             // Fire-and-forget buffer fetch to backfill command + output.
             (async () => {
               try {
+                // D-review coordinate fix: OSC 133 absLine is emitted in
+                // scrollback-origin space (abs = history + cursorLine, 0 =
+                // oldest buffered line — see events.rs). Buffer reads take
+                // alacritty's SIGNED space [-history, screen), so map
+                // through the LIVE baseY (= -history) at fetch time —
+                // passing absLine raw made lo > screen once any history
+                // existed, returning empty command/output text.
+                const vp = await nativeTermGetViewportState(termId);
+                const toSigned = (abs: number) => abs + vp.baseY;
                 const commandLines = await nativeTermGetBufferLines(
                   termId,
-                  pending.promptLine,
-                  commandStartLine + 1,
+                  toSigned(pending.promptLine),
+                  toSigned(commandStartLine + 1),
                 );
                 const rawCommand = commandLines.join("\n");
                 const match = rawCommand.match(/[$>#]\s*(.+?)$/);
@@ -130,8 +140,8 @@ export function useNativeCommandBlocks(
 
                 const outputLines = await nativeTermGetBufferLines(
                   termId,
-                  commandStartLine + 1,
-                  endLine,
+                  toSigned(commandStartLine + 1),
+                  toSigned(endLine),
                 );
                 const outputText =
                   outputLines.join("\n").trimEnd() || null;

@@ -1,7 +1,8 @@
 // Pane-local hole rect: top-left of the native child HWND's client area = (0,0).
-// Distinct from window-client coords used by spike_create/spike_resize, which
-// are relative to the parent (webview) client. Rust applies DPI scaling and
-// per-platform edge expansion (Win32 1px overshoot for SetWindowRgn aliasing).
+// Distinct from window-client coords used by native_term_create /
+// native_term_resize, which are relative to the parent (webview) client. Rust
+// applies DPI scaling and per-platform edge expansion (Win32 1px overshoot for
+// SetWindowRgn aliasing).
 import type { Rect } from "../lib/native-term-bridge";
 
 export function getOverlayRectInPane(

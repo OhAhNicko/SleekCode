@@ -18,12 +18,33 @@ export interface NativeRendererSlice {
   // Always replaced immutably — never mutated via .add()/.delete() — so
   // Zustand selector identity flips only on actual content change.
   liveNativeTerms: ReadonlySet<NativeTermId>;
+  // P2b focus model. On Windows, tauri's getCurrentWindow().onFocusChanged
+  // mirrors the WEBVIEW's focus (WebView2 GotFocus/LostFocus), NOT the OS
+  // window's — clicking a native terminal HWND blurs the webview even though
+  // the app window is still foreground. So the app-focus truth is split into
+  // two raw inputs and one derived output:
+  //   - webviewFocused: raw onFocusChanged payload (App.tsx single writer).
+  //   - nativePaneFocused: a native term HWND owns Win32 keyboard focus.
+  //     Set by the per-pane focus_gained (WM_SETFOCUS) subscription, cleared
+  //     by focus_lost (WM_KILLFOCUS) and by webview GotFocus.
+  //   - appWindowFocused (derived) = webviewFocused || nativePaneFocused.
+  // A pane's cursor is "focused" iff isActive && appWindowFocused — computed
+  // in JS only; Win32 keyboard focus never drives visuals directly
+  // (composer/search inputs take webview focus while the pane stays active
+  // and must keep blinking).
+  // NOT persisted — `partialize` in store/index.ts is an allowlist and these
+  // fields are intentionally excluded (stale focus across launches is wrong).
+  webviewFocused: boolean;
+  nativePaneFocused: boolean;
+  appWindowFocused: boolean;
 
   setUseNativeTerminalRenderer: (v: boolean) => void;
   setPaneRendererOverride: (paneId: string, override: PaneRendererOverride) => void;
   recordNativeRendererCrash: () => void;
   registerNativeTerm: (id: NativeTermId) => void;
   unregisterNativeTerm: (id: NativeTermId) => void;
+  setWebviewFocused: (focused: boolean) => void;
+  setNativePaneFocused: (focused: boolean) => void;
 }
 
 const EMPTY_LIVE: ReadonlySet<NativeTermId> = new Set();
@@ -38,8 +59,36 @@ export const createNativeRendererSlice: StateCreator<
   paneRendererOverride: {},
   nativeRendererTelemetry: { panes: 0, crashes: 0, lastCrashAt: null },
   liveNativeTerms: EMPTY_LIVE,
+  webviewFocused: true,
+  nativePaneFocused: false,
+  appWindowFocused: true,
 
   setUseNativeTerminalRenderer: (v) => set({ useNativeTerminalRenderer: v }),
+
+  setWebviewFocused: (focused) => {
+    const s = get();
+    // Webview GotFocus proves Win32 focus left any native pane — clear the
+    // native flag too (belt-and-suspenders with the focus_lost event, which
+    // can race this in either order; both converge).
+    const nativePaneFocused = focused ? false : s.nativePaneFocused;
+    if (s.webviewFocused === focused && s.nativePaneFocused === nativePaneFocused) {
+      return;
+    }
+    set({
+      webviewFocused: focused,
+      nativePaneFocused,
+      appWindowFocused: focused || nativePaneFocused,
+    });
+  },
+
+  setNativePaneFocused: (focused) => {
+    const s = get();
+    if (s.nativePaneFocused === focused) return;
+    set({
+      nativePaneFocused: focused,
+      appWindowFocused: s.webviewFocused || focused,
+    });
+  },
 
   setPaneRendererOverride: (paneId, override) => {
     const prev = get().paneRendererOverride;

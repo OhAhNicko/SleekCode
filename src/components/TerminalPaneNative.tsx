@@ -1,5 +1,4 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import type { Terminal } from "@xterm/xterm";
 import { useAppStore } from "../store";
 import type { TerminalType, TerminalBackend } from "../types";
@@ -15,14 +14,23 @@ import {
   subscribeMousePassthrough,
   subscribeKeyDownPreview,
   subscribeScroll,
+  subscribeFocusGained,
+  subscribeFocusLost,
+  nativeTermCreate,
+  nativeTermDestroy,
+  nativeTermSetFocused,
+  nativeTermFocusKeyboard,
   nativeTermScrollToBottom,
   nativeTermScrollToLine,
   nativeTermSearch,
   nativeTermSearchClear,
   nativeTermSetSearchHighlights,
   nativeTermGetBufferLines,
+  nativeTermGetViewportState,
   nativeTermSetTheme,
   nativeTermSetCursorStyle,
+  nativeTermSetFont,
+  nativeTermProposeDimensions,
 } from "../lib/native-term-bridge";
 import type { MadeTheme } from "../lib/themes";
 import { useNativeCommandBlocks } from "../hooks/useNativeCommandBlocks";
@@ -32,6 +40,8 @@ import type { NativeRendererSlice } from "../store/nativeRendererSlice";
 import ImeCompositionPopup from "../native-term/ImeCompositionPopup";
 import FileLinkTooltip from "../native-term/FileLinkTooltip";
 import { useNativePaneRegion } from "../native-term/useNativePaneRegion";
+import { queueGeom } from "../native-term/frameSync";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
 import PromptComposer from "./PromptComposer";
 import PaneSearchBar from "./PaneSearchBar";
@@ -40,6 +50,7 @@ import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import { getTheme } from "../lib/themes";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
+import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
 
 // Until `store/index.ts` (M-list) registers `createNativeRendererSlice`,
 // these fields aren't visible on AppStore at the type level. Cast through
@@ -116,9 +127,10 @@ function madeThemeToNative(theme: MadeTheme): NativeTermTheme {
 //   5. Registry registration via nativeRendererSlice so O's coordinator can
 //      see this pane.
 //
-// Until R's full Phase 1 command surface lands (per signature confirmation
-// thread), create/resize/destroy use the spike commands as a temporary
-// fallback so the selector can be wired in dev mode.
+// P7a: lifecycle runs on the production command surface — one
+// `native_term_create` carries the full CreateOpts (theme/font/cursor/
+// scrollback/focused), so the first frame already paints with the user's
+// settings; hot-swap effects below handle every later change.
 
 interface TerminalPaneNativeProps {
   terminalId: string;
@@ -189,6 +201,12 @@ export default function TerminalPaneNative({
   // Theme + font for PromptComposer styling (read from store like xterm pane).
   const themeId = useAppStore((s) => s.themeId);
   const theme = useMemo(() => getTheme(themeId), [themeId]);
+  // P7a: mirror themeId into a ref so the create effect can build the
+  // CreateOpts.theme payload without adding themeId to its dep array
+  // (which would tear down + recreate the HWND on every theme switch).
+  // Live changes flow through the theme hot-swap effect below.
+  const themeIdRef = useRef(themeId);
+  useEffect(() => { themeIdRef.current = themeId; }, [themeId]);
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
   // Mirror cursor settings into refs so the create effect can read the
@@ -198,7 +216,34 @@ export default function TerminalPaneNative({
   const nativeCursorBlinkRef = useRef(nativeCursorBlink);
   useEffect(() => { nativeCursorStyleRef.current = nativeCursorStyle; }, [nativeCursorStyle]);
   useEffect(() => { nativeCursorBlinkRef.current = nativeCursorBlink; }, [nativeCursorBlink]);
+  // P2b: whether the app effectively has focus. Derived in the store as
+  // webviewFocused || nativePaneFocused, because on Windows tauri's
+  // onFocusChanged mirrors WEBVIEW focus only — clicking a native pane blurs
+  // the webview while the app stays foreground; the pane's own
+  // focus_gained/focus_lost events (below) supply the native half. A pane's
+  // cursor is focused iff isActive && appWindowFocused — computed here in JS
+  // only (composer/search inputs take webview focus while the pane stays
+  // active and must keep blinking).
+  const appWindowFocused = useAppStore((s) => s.appWindowFocused);
+  // Mirror isActive + the pane-activation callback into refs so the
+  // focus_gained subscription (registered in the event effect below) can
+  // read the latest values without growing that effect's dep array —
+  // same pattern as the cursor-style refs above. appWindowFocused is
+  // mirrored too (P7a) so the create effect can seed CreateOpts.focused
+  // with the live `isActive && appWindowFocused` value.
+  const isActiveRef = useRef(isActive);
+  const onFocusRef = useRef(onFocus);
+  const appWindowFocusedRef = useRef(appWindowFocused);
+  useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
+  useEffect(() => { onFocusRef.current = onFocus; }, [onFocus]);
+  useEffect(() => { appWindowFocusedRef.current = appWindowFocused; }, [appWindowFocused]);
   const cliFontSize = useAppStore((s) => s.cliFontSizes[terminalType] ?? DEFAULT_CLI_FONT_SIZE);
+  // P5b: mirror the CLI font size into a ref so the create effect can push
+  // the initial set_font without adding cliFontSize to its dep array (which
+  // would tear down + recreate the HWND on every size change). Live changes
+  // flow through the dedicated font hot-swap effect below.
+  const cliFontSizeRef = useRef(cliFontSize);
+  useEffect(() => { cliFontSizeRef.current = cliFontSize; }, [cliFontSize]);
   const composerAlwaysVisible = useAppStore(
     (s) => s.promptComposerEnabled && s.promptComposerAlwaysVisible,
   );
@@ -211,6 +256,11 @@ export default function TerminalPaneNative({
   // race-condition flicker during rapid output.
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  // D-review: the button floats over the native-HWND-covered area, so it
+  // must publish its rect for the hole-cut driver or it renders occluded
+  // and click-dead under the native surface. Publishes null automatically
+  // while hidden (display:none → zero-size rect).
+  useOverlayPublisher(`native-jump-btn-${terminalId}`, jumpBtnRef);
 
   const registerNativeTerm = useAppStore(
     (s) => (s as AppStoreWithNative).registerNativeTerm,
@@ -231,43 +281,72 @@ export default function TerminalPaneNative({
       raf2Id = requestAnimationFrame(async () => {
         if (cancelled) return;
         try {
-          // Phase 1: real `native_term_create` lands once R confirms
-          // CreateOpts shape. Temporarily using the spike create — the
-          // spike command surface and the real one both return u32 and
-          // both accept (rect, dpr) — the difference is the optional
-          // CreateOpts fields.
-          const id = await invoke<NativeTermId>("native_term_spike_create", {
+          // P7a: ONE `native_term_create` carries the full CreateOpts —
+          // theme, font (Hack + the user's CLI font size), cursor
+          // style/blink, scrollback and the live focus state — so the
+          // first frame already paints with the user's settings and the
+          // dimension handshake below runs against the real font metrics.
+          // Everything is read through refs so this effect's dep array
+          // stays create-once; live changes flow through the dedicated
+          // hot-swap effects below.
+          const id = await nativeTermCreate({
             rect: rectOf(el),
             dpr: window.devicePixelRatio,
+            theme: madeThemeToNative(getTheme(themeIdRef.current)),
+            font: {
+              family: TERMINAL_FONT_FAMILY,
+              sizePx: cliFontSizeRef.current,
+            },
+            cursorStyle: nativeCursorStyleRef.current,
+            cursorBlink: nativeCursorBlinkRef.current,
+            scrollback: 10000,
+            focused: isActiveRef.current && appWindowFocusedRef.current,
           });
           if (cancelled) {
-            void invoke("native_term_spike_destroy", { id }).catch(() => {});
+            void nativeTermDestroy(id).catch(() => {});
             return;
           }
           createdId = id;
-          setTermId(id);
           registerNativeTerm(id);
-          // Apply the active theme immediately so the first frame paints
-          // with the user's colors rather than the Rust-side Tango default.
-          // The spike `create` accepts only (rect, dpr) — the real CreateOpts
-          // path lands later; until then we use option (b) from the design
-          // note and call set_theme post-create.
-          try {
-            await nativeTermSetTheme(id, madeThemeToNative(getTheme(themeId)));
-          } catch (e) {
-            console.error("[TerminalPaneNative] set_theme failed", e);
+          // ── P1c: initial-size handshake (kills the 80x24 flash) ────────
+          // Re-read the anchor rect: during pane-grid mount the div can
+          // report 0x0 for a frame or two. Retry on successive rAFs
+          // (bounded) rather than spawning the PTY at guessed dims
+          // (learnings: pty-spawn-dimensions-race). On exhaustion we still
+          // call propose — its Rust-side floors (cols>=20, rows>=1) keep
+          // the spawn sane.
+          let rect = rectOf(el);
+          for (
+            let attempt = 0;
+            attempt < 10 && (rect.width <= 0 || rect.height <= 0);
+            attempt++
+          ) {
+            await new Promise<void>((r) => requestAnimationFrame(() => r()));
+            if (cancelled) return;
+            rect = rectOf(el);
           }
-          // Apply user's cursor style + blink preference once on create.
-          // Live updates flow through the dedicated effect below.
+          // Ask Rust for the real cols/rows for this rect (LOGICAL px —
+          // rectOf convention; Rust multiplies by its cached dpr).
+          let dims = { cols: 80, rows: 24 };
           try {
-            await nativeTermSetCursorStyle(
+            dims = await nativeTermProposeDimensions(
               id,
-              nativeCursorStyleRef.current,
-              nativeCursorBlinkRef.current,
+              rect.width,
+              rect.height,
             );
           } catch (e) {
-            console.error("[TerminalPaneNative] set_cursor_style failed", e);
+            console.error("[TerminalPaneNative] propose_dimensions failed", e);
           }
+          if (cancelled) return;
+          // Publish dims BEFORE termId, all in one synchronous block —
+          // React batches these, so when usePtyNative's spawn effect fires
+          // (keyed on `ready: termId != null`) the cols/rows props and
+          // colsRef/rowsRef already hold the real values and the PTY spawns
+          // at the correct size. Do NOT add a JS pty_resize on `resized`
+          // events — Rust resizes the PTY itself (double-resize otherwise).
+          setCols(dims.cols);
+          setRows(dims.rows);
+          setTermId(id);
           setPtyReady(true);
         } catch (err) {
           console.error("[TerminalPaneNative] create failed", err);
@@ -294,11 +373,11 @@ export default function TerminalPaneNative({
       const json = JSON.stringify([rect, dpr]);
       if (json === lastGeomJson) return;
       lastGeomJson = json;
-      void invoke("native_term_spike_resize", {
-        id: createdId,
-        rect,
-        dpr,
-      }).catch(() => {});
+      // P4b: route through the frame-sync coalescer instead of a direct
+      // resize invoke — all panes' geometry (and hole) updates for a frame
+      // merge into ONE `native_term_frame_sync` batch, applied Rust-side in
+      // a single DeferWindowPos transaction (atomic splitter moves).
+      queueGeom(createdId, rect, dpr);
     };
     geomRafId = requestAnimationFrame(pushGeom);
 
@@ -317,9 +396,7 @@ export default function TerminalPaneNative({
       ro.disconnect();
       if (createdId != null) {
         unregisterNativeTerm(createdId);
-        void invoke("native_term_spike_destroy", { id: createdId }).catch(
-          () => {},
-        );
+        void nativeTermDestroy(createdId).catch(() => {});
       }
     };
   }, [registerNativeTerm, unregisterNativeTerm]);
@@ -430,10 +507,65 @@ export default function TerminalPaneNative({
       });
       unlistens.push(u6);
 
+      // focus_gained (P2a click-to-focus): the native HWND took Win32
+      // keyboard focus. Set the store's nativePaneFocused flag (the webview
+      // is about to fire — or already fired — a blur, since WebView2's
+      // LostFocus triggers whenever a sibling HWND takes Win32 focus; the
+      // derived appWindowFocused stays true through that) and activate this
+      // pane — mirrors the onPaneClick delegation. Refs keep this effect's
+      // dep array stable.
+      const u7 = await subscribeFocusGained(termId, () => {
+        if (cancelled) return;
+        useAppStore.getState().setNativePaneFocused(true);
+        if (!isActiveRef.current) onFocusRef.current();
+      });
+      unlistens.push(u7);
+
+      // focus_lost (P2b): the native HWND lost Win32 keyboard focus. Clear
+      // the store's native flag — this is the ONLY blur signal when the
+      // user Alt-Tabs away while a native pane holds focus (the webview
+      // already blurred earlier, so onFocusChanged stays silent). Focus
+      // moving pane→pane is safe: WM_KILLFOCUS (old) precedes WM_SETFOCUS
+      // (new), so the paired focus_gained lands after this and re-sets the
+      // flag; clicking back into the webview re-asserts via
+      // onFocusChanged(true).
+      const u8 = await subscribeFocusLost(termId, () => {
+        if (cancelled) return;
+        useAppStore.getState().setNativePaneFocused(false);
+      });
+      unlistens.push(u8);
+
       // Phase 2 wires: osc133 → useNativeCommandBlocks (hook below),
       // cell_hover/link_click → useNativeFileLinks (hook below),
       // selection → clipboard, data_rate → terminal-activity.
       // cursor + ime_composition: ImeCompositionPopup subscribes directly.
+
+      // ── Attach-race re-sync (Run A review finding) ────────────────────
+      // Rust's attach-tail commit_dims can emit `resized` BEFORE the
+      // listen() registrations above complete, leaving cols/rows stale at
+      // their pre-attach values. Now that the resized listener is live,
+      // re-read the anchor rect and re-propose once. Idempotent — any
+      // later `resized` event simply overwrites these values, and
+      // propose_dimensions has no Rust-side side effects.
+      if (cancelled) return;
+      const el = terminalDivRef.current;
+      if (el) {
+        const rect = rectOf(el);
+        if (rect.width > 0 && rect.height > 0) {
+          try {
+            const dims = await nativeTermProposeDimensions(
+              termId,
+              rect.width,
+              rect.height,
+            );
+            if (cancelled) return;
+            setCols(dims.cols);
+            setRows(dims.rows);
+          } catch {
+            // Benign race: pane destroyed mid-invoke.
+          }
+        }
+      }
     })();
 
     return () => {
@@ -469,6 +601,51 @@ export default function TerminalPaneNative({
       (e) => console.error("[TerminalPaneNative] set_cursor_style update failed", e),
     );
   }, [termId, nativeCursorStyle, nativeCursorBlink]);
+
+  // ── Font hot-swap (P5b) ───────────────────────────────────────────────
+  // Re-push the font whenever the user changes the CLI font size (same
+  // store field the xterm pane reads). Rust-side set_font re-derives the
+  // cell metrics and runs commit_dims (Term::resize → resize_grid →
+  // resize_pty_sync → `resized` emit), so cols/rows and the PTY adjust
+  // automatically. First apply happens in the create flow above (the
+  // termId-flip firing here re-sends the same values — idempotent:
+  // commit_dims no-ops when the grid already matches).
+  useEffect(() => {
+    if (termId == null) return;
+    void nativeTermSetFont(termId, TERMINAL_FONT_FAMILY, cliFontSize).catch(
+      (e) => console.error("[TerminalPaneNative] set_font update failed", e),
+    );
+  }, [termId, cliFontSize]);
+
+  // ── Cursor focus push (P2b) ───────────────────────────────────────────
+  // JS-authoritative: the store computes the single source of truth
+  // (isActive && appWindowFocused) and pushes it to the renderer. Errors
+  // are benign races (pane tearing down mid-invoke).
+  useEffect(() => {
+    if (termId == null) return;
+    void nativeTermSetFocused(termId, isActive && appWindowFocused).catch(() => {});
+  }, [termId, isActive, appWindowFocused]);
+
+  // ── Win32 keyboard-focus routing (P7b) ────────────────────────────────
+  // Parity with the xterm pane, which calls term.focus() when it becomes
+  // the active pane: route Win32 keyboard focus to the native HWND so
+  // typing works without an extra click. DELIBERATELY its own effect —
+  // isolated so it can be reverted alone if a focus-steal case surfaces
+  // (repo history: composer mount steal, background .focus() theft).
+  // ALL guards must hold, or we do nothing:
+  //   - isActive: never focus a background pane
+  //     (feedback_focus_calls_isactive).
+  //   - appWindowFocused: never fight another app for focus.
+  //   - document.activeElement === document.body: NON-NEGOTIABLE — if the
+  //     composer, pane search, tab rename, or ANY other webview input owns
+  //     focus, this effect must not steal it. Only when webview focus is
+  //     parked on <body> (nothing interactive focused) may the HWND claim
+  //     keyboard focus.
+  useEffect(() => {
+    if (termId == null || !isActive || !appWindowFocused) return;
+    if (document.activeElement !== document.body) return;
+    void nativeTermFocusKeyboard(termId).catch(() => {});
+  }, [termId, isActive, appWindowFocused]);
 
   // ── PTY hookup ────────────────────────────────────────────────────────
   // Native mode: bytes route to Rust via R's pty_route::sender_for(id)
@@ -568,6 +745,14 @@ export default function TerminalPaneNative({
           // Push rects to the renderer so the highlight overlay draws.
           // Best-effort: a destroyed pane racing this call is benign.
           void nativeTermSetSearchHighlights(termId, r.rects).catch(() => {});
+          // D-review: bring the active match into the viewport — the
+          // renderer clips off-viewport rects by design, so without this
+          // Find Next/Prev against a scrollback match updated the counter
+          // while visibly doing nothing. activeLine is Rust-computed in
+          // the same signed space nativeTermScrollToLine consumes.
+          if (r.activeIndex >= 0) {
+            void nativeTermScrollToLine(termId, r.activeLine).catch(() => {});
+          }
         })
         .catch(() => setSearchResult(null));
     },
@@ -667,10 +852,27 @@ export default function TerminalPaneNative({
 
     let cancelled = false;
     (async () => {
+      // D-review coordinate fix: promptLines hold OSC 133 absLine values
+      // (scrollback-origin space, 0 = oldest buffered line) while
+      // nativeTermGetBufferLines takes alacritty's SIGNED space
+      // [-history, screen) — map through the LIVE baseY (= -history) at
+      // fetch time or every read returns empty once history exists. The
+      // cache stays keyed by absLine (stable identifier).
+      let baseY = 0;
+      try {
+        baseY = (await nativeTermGetViewportState(termId)).baseY;
+      } catch {
+        // No PTY attached yet — keep 0 (fresh pane, no history).
+      }
+      if (cancelled) return;
       for (const line of needs) {
         inflight.add(line);
         try {
-          const lines = await nativeTermGetBufferLines(termId, line, line + 1);
+          const lines = await nativeTermGetBufferLines(
+            termId,
+            line + baseY,
+            line + baseY + 1,
+          );
           if (cancelled) return;
           const text = (lines[0] ?? "").trimEnd();
           cache.set(line, { line, text, fromComposer: false });
@@ -702,7 +904,20 @@ export default function TerminalPaneNative({
   const handleScrollToPromptLine = useCallback(
     (line: number) => {
       if (termId == null) return;
-      void nativeTermScrollToLine(termId, line).catch(() => {});
+      // D-review coordinate fix: `line` is an OSC 133 absLine
+      // (scrollback-origin space); nativeTermScrollToLine takes alacritty's
+      // SIGNED space where 0 = bottom of the live screen. Convert through
+      // the live baseY (= -history) at CLICK time — passing the raw
+      // positive value clamped to offset 0 and jumped to the bottom
+      // instead of the prompt.
+      void (async () => {
+        try {
+          const vp = await nativeTermGetViewportState(termId);
+          await nativeTermScrollToLine(termId, line + vp.baseY);
+        } catch {
+          // Benign race: pane torn down mid-invoke.
+        }
+      })();
     },
     [termId],
   );
@@ -833,13 +1048,16 @@ export default function TerminalPaneNative({
           suppressAutoFocus={false}
         />
       )}
-      {/* Jump-to-bottom — wired but hidden until R3 scroll events land. */}
+      {/* Jump-to-bottom — appears while scrolled into history (driven by
+          `scroll` events). Anchored bottom-right; its rect is published via
+          useOverlayPublisher above so the native HWND cuts a hole for it. */}
       <div
         ref={jumpBtnRef}
         style={{
           display: isAtBottom ? "none" : "flex",
           position: "absolute",
           right: 12,
+          bottom: 12,
           width: 22,
           height: 22,
           borderRadius: 4,

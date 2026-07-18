@@ -3,49 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 export type Rect = { x: number; y: number; width: number; height: number };
 export type NativeTermId = number;
 
-export type NativeTermSpikeCmd =
-  | "native_term_spike_create"
-  | "native_term_spike_resize"
-  | "native_term_spike_destroy"
-  | "native_term_spike_show"
-  | "native_term_spike_hide"
-  | "native_term_spike_set_region";
-
-export function nativeTermSpikeCreate(args: {
-  rect: Rect;
-  dpr: number;
-}): Promise<NativeTermId> {
-  return invoke<NativeTermId>("native_term_spike_create", args);
-}
-
-export function nativeTermSpikeResize(
-  id: NativeTermId,
-  rect: Rect,
-  dpr: number,
-): Promise<void> {
-  return invoke<void>("native_term_spike_resize", { id, rect, dpr });
-}
-
-export function nativeTermSpikeDestroy(id: NativeTermId): Promise<void> {
-  return invoke<void>("native_term_spike_destroy", { id });
-}
-
-export function nativeTermSpikeShow(id: NativeTermId): Promise<void> {
-  return invoke<void>("native_term_spike_show", { id });
-}
-
-export function nativeTermSpikeHide(id: NativeTermId): Promise<void> {
-  return invoke<void>("native_term_spike_hide", { id });
-}
-
-// holes are PANE-relative (overlay rect minus pane rect), not window-relative.
-export function nativeTermSpikeSetRegion(
-  id: NativeTermId,
-  holes: Rect[],
-): Promise<void> {
-  return invoke<void>("native_term_spike_set_region", { id, holes });
-}
-
 export function rectOf(el: Element): Rect {
   const r = el.getBoundingClientRect();
   return { x: r.x, y: r.y, width: r.width, height: r.height };
@@ -98,6 +55,10 @@ export interface CreateOpts {
   cursorStyle: CursorStyle;
   cursorBlink: boolean;
   scrollback: number;
+  // P2a/P7a: initial keyboard-focus state (isActive && appWindowFocused at
+  // create time). Rust serde-defaults this to false when omitted; the
+  // set_focused effect re-asserts the live value on any later change.
+  focused: boolean;
 }
 
 export interface ViewportState {
@@ -125,7 +86,17 @@ export type SearchDirection = "forward" | "backward";
 export interface SearchResult {
   total: number;
   activeIndex: number;
-  rects: Rect[]; // pane-local (inner-widget overlay marks)
+  // D-review: alacritty SIGNED grid line of the active match — same space
+  // as nativeTermScrollToLine's absLine ([-history, screen); negative =
+  // scrollback). Callers scroll the active match into view with it. Only
+  // meaningful when activeIndex >= 0 (0 otherwise).
+  activeLine: number;
+  // P6a: pane-local CONTENT-space rects (y = absolute grid line × cell
+  // height, negative for scrollback rows). Opaque to JS — round-trip them
+  // VERBATIM into nativeTermSetSearchHighlights; the native renderer
+  // translates by the live scroll offset each frame and clips off-viewport
+  // rows, so highlights track their text while the user scrolls.
+  rects: Rect[];
 }
 
 export interface KeyEventDTO {
@@ -239,6 +210,20 @@ export interface CellHoverEvent {
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface CellHoverEndEvent {}
 
+// P2a: the native HWND gained keyboard focus (WM_SETFOCUS click-to-focus
+// path). No payload — the JS side marks the pane active and sets the store's
+// nativePaneFocused flag; visuals stay JS-authoritative via
+// native_term_set_focused.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface FocusGainedEvent {}
+
+// P2b: the native HWND lost keyboard focus (WM_KILLFOCUS). No payload. On
+// Windows the tauri onFocusChanged event mirrors WEBVIEW focus only, so when
+// a native pane holds Win32 focus an Alt-Tab away produces no JS blur — this
+// event is the store's only signal to clear nativePaneFocused.
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface FocusLostEvent {}
+
 // Discriminated union of all event kinds. Channel suffix maps to payload.
 export type NativeTermEventKind =
   | "osc133"
@@ -255,7 +240,9 @@ export type NativeTermEventKind =
   | "r_button"
   | "mouse_passthrough"
   | "cell_hover"
-  | "cell_hover_end";
+  | "cell_hover_end"
+  | "focus_gained"
+  | "focus_lost";
 
 export interface NativeTermEventPayloadMap {
   osc133: Osc133Event;
@@ -273,6 +260,8 @@ export interface NativeTermEventPayloadMap {
   mouse_passthrough: MousePassthroughEvent;
   cell_hover: CellHoverEvent;
   cell_hover_end: CellHoverEndEvent;
+  focus_gained: FocusGainedEvent;
+  focus_lost: FocusLostEvent;
 }
 
 export function nativeTermEventChannel(
@@ -283,10 +272,10 @@ export function nativeTermEventChannel(
 }
 
 // ===========================================================================
-// Phase 1 invoke() wrappers. Wire format locked per R coordination thread.
-// The Rust commands land in R1.c (atomic swap with spike commands), so calling
-// these before then will reject with "command not found". TerminalPaneNative
-// continues to use the spike commands until R1.c.
+// Production invoke() wrappers. Wire format locked per R coordination thread;
+// these map 1:1 onto the Rust command surface in
+// `src-tauri/src/native_term/mod.rs` (the Phase-0 debug aliases were deleted
+// in P7a).
 // ===========================================================================
 
 export type NativeTermCmd =
@@ -299,9 +288,12 @@ export type NativeTermCmd =
   | "native_term_attach_pty"
   | "native_term_detach_pty"
   | "native_term_set_region"
+  | "native_term_frame_sync"
   | "native_term_set_theme"
   | "native_term_set_font"
   | "native_term_set_cursor_style"
+  | "native_term_set_focused"
+  | "native_term_focus_keyboard"
   | "native_term_get_buffer_lines"
   | "native_term_get_viewport_state"
   | "native_term_get_selection"
@@ -311,10 +303,7 @@ export type NativeTermCmd =
   | "native_term_reset"
   | "native_term_search"
   | "native_term_search_clear"
-  | "native_term_set_search_highlights"
-  | "native_term_key_event_forward"
-  | "native_term_ime_commit"
-  | "native_term_ime_preedit";
+  | "native_term_set_search_highlights";
 
 // --- Lifecycle ---
 
@@ -336,10 +325,12 @@ export function nativeTermHide(id: NativeTermId): Promise<void> {
 
 // --- Geometry ---
 
-// Resolves AFTER `resized` event fires (R confirmation #3). Awaiters can
-// trust that get_viewport_state will return post-resize cols/rows.
-// `correlationId` is optional — pass a monotonic counter from the caller
-// to match the originating request against the Resized event payload.
+// Resolves after the window/surface resize only. The grid/PTY commit runs
+// ~150ms later on the Rust settle timer and announces itself via the
+// `resized` event — await that event, not this promise, for post-resize
+// cols/rows. `correlationId` is optional — pass a monotonic counter from
+// the caller to match the originating request against the Resized payload
+// (settle-driven commits carry correlationId: null).
 export function nativeTermResize(
   id: NativeTermId,
   rect: Rect,
@@ -350,26 +341,34 @@ export function nativeTermResize(
 }
 
 // Honors cols<20 narrow guard: returned cols is capped at 20, rows at 1.
+// widthPx/heightPx are LOGICAL CSS px (rectOf convention) — the Rust side
+// multiplies by its cached dpr. Wire args are u32 (Rust
+// `native_term_propose_dimensions(id, width_px, height_px)`), so fractional
+// getBoundingClientRect values are rounded here or serde rejects the invoke.
 export function nativeTermProposeDimensions(
   id: NativeTermId,
-  width: number,
-  height: number,
+  widthPx: number,
+  heightPx: number,
 ): Promise<ProposedDimensions> {
   return invoke<ProposedDimensions>("native_term_propose_dimensions", {
     id,
-    width,
-    height,
+    widthPx: Math.max(0, Math.round(widthPx)),
+    heightPx: Math.max(0, Math.round(heightPx)),
   });
 }
 
 // --- PTY ---
 
 // Synchronous registration; bytes flow on next pty.rs read after resolve.
+// cols/rows are REQUIRED by the Rust command (they size the alacritty Term
+// the parser bridge spawns) — omitting them makes serde reject the invoke.
 export function nativeTermAttachPty(
   id: NativeTermId,
   ptyId: number,
+  cols: number,
+  rows: number,
 ): Promise<void> {
-  return invoke<void>("native_term_attach_pty", { id, ptyId });
+  return invoke<void>("native_term_attach_pty", { id, ptyId, cols, rows });
 }
 
 export function nativeTermDetachPty(id: NativeTermId): Promise<void> {
@@ -383,6 +382,32 @@ export function nativeTermSetRegion(
   holes: Rect[],
 ): Promise<void> {
   return invoke<void>("native_term_set_region", { id, holes });
+}
+
+// --- Frame sync (P4a/P4b batched geometry + regions) ---
+
+// One entry of the batched `native_term_frame_sync` command. `rect` + `dpr`
+// together request the same work as `native_term_resize` (they must be sent
+// together — Rust treats a half-specified pair as a per-entry error);
+// `holes` requests the same work as `native_term_set_region` (pane-local
+// coords). Any combination may be present on one entry.
+export interface FrameSyncEntry {
+  id: NativeTermId;
+  rect?: Rect;
+  dpr?: number;
+  holes?: Rect[];
+}
+
+// Batched per-frame geometry sync: one invoke carries every pane's rect/dpr
+// move and/or hole-region update for a layout frame. Rust applies the window
+// moves in a single BeginDeferWindowPos/EndDeferWindowPos transaction so
+// panes flanking a splitter reposition atomically. Entries are processed
+// independently — a stale/destroyed id is logged Rust-side and never fails
+// the batch, so the returned promise resolves Ok even on partial failures.
+// Callers should route through `src/native-term/frameSync.ts` (the per-frame
+// coalescer) rather than invoking this directly from rAF loops.
+export function nativeTermFrameSync(entries: FrameSyncEntry[]): Promise<void> {
+  return invoke<void>("native_term_frame_sync", { entries });
 }
 
 // --- Appearance hot-swap ---
@@ -408,6 +433,30 @@ export function nativeTermSetCursorStyle(
   blink: boolean,
 ): Promise<void> {
   return invoke<void>("native_term_set_cursor_style", { id, style, blink });
+}
+
+// P2b: JS-authoritative cursor focus. Caller computes
+// `isActive && appWindowFocused` (store is the single source of truth) and
+// pushes it here; the renderer draws a solid/blinking cursor when focused
+// and a hollow outline when not. Win32 WM_SETFOCUS/WM_KILLFOCUS never drive
+// this directly.
+export function nativeTermSetFocused(
+  id: NativeTermId,
+  focused: boolean,
+): Promise<void> {
+  return invoke<void>("native_term_set_focused", { id, focused });
+}
+
+// P7b: route Win32 KEYBOARD focus to the pane's HWND — parity with the xterm
+// pane calling term.focus() on activation. Distinct from
+// nativeTermSetFocused (cursor visual only). Rust posts WM_APP_FOCUS to the
+// pane's wnd_proc (thread-correct SetFocus, no activation); WM_SETFOCUS then
+// emits focus_gained exactly like the click-to-focus path. Call sites MUST
+// guard hard — isActive && appWindowFocused &&
+// document.activeElement === document.body — focus-steal from
+// composer/search/rename inputs is a known failure class in this repo.
+export function nativeTermFocusKeyboard(id: NativeTermId): Promise<void> {
+  return invoke<void>("native_term_focus_keyboard", { id });
 }
 
 // --- Buffer reads (replace term.buffer.active.*) ---
@@ -484,31 +533,38 @@ export function nativeTermSetSearchHighlights(
   return invoke<void>("native_term_set_search_highlights", { id, rects });
 }
 
-// --- Input ---
+// NOTE (input): there are deliberately NO key/IME injection wrappers here.
+// The native widget owns its own keyboard via WM_KEY*/WM_IME_* — DO NOT
+// addEventListener("keydown") on the pane container; that would
+// double-deliver. (The unimplemented key_event_forward / ime_commit /
+// ime_preedit wrappers were deleted in P7a — they never had Rust handlers.)
 
-// JS-originated key injection (palette shortcuts, paste). The native widget
-// owns its own keyboard via WM_KEY* — DO NOT addEventListener("keydown") on
-// the pane container; that would double-deliver.
-export function nativeTermKeyEventForward(
-  id: NativeTermId,
-  ev: KeyEventDTO,
-): Promise<void> {
-  return invoke<void>("native_term_key_event_forward", { id, ev });
+// --- Debug / perf instrumentation (P0) ---
+
+// Snapshot of the native pane's render counters + cached geometry. Counter
+// semantics live in Rust (`renderer/pipeline.rs`). All counters are live:
+// framesSkippedClean is wired by the P3a clean-frame early-out; wakesPosted
+// and wakesCoalesced by the P3b RenderWake (zeros while no PTY is attached).
+// Rust serializes with #[serde(rename_all = "camelCase")].
+export interface DebugStats {
+  framesRendered: number;
+  framesSkippedClean: number;
+  lastFrameCpuMs: number;
+  frameCpuMsEwma: number;
+  configures: number;
+  wakesPosted: number;
+  wakesCoalesced: number;
+  attached: boolean;
+  visible: boolean;
+  cellWPx: number;
+  cellHPx: number;
+  dpr: number;
+  surfaceW: number;
+  surfaceH: number;
 }
 
-export function nativeTermImeCommit(
-  id: NativeTermId,
-  text: string,
-): Promise<void> {
-  return invoke<void>("native_term_ime_commit", { id, text });
-}
-
-export function nativeTermImePreedit(
-  id: NativeTermId,
-  text: string,
-  cursor: number,
-): Promise<void> {
-  return invoke<void>("native_term_ime_preedit", { id, text, cursor });
+export function nativeTermDebugStats(id: NativeTermId): Promise<DebugStats> {
+  return invoke<DebugStats>("native_term_debug_stats", { id });
 }
 
 // ===========================================================================
@@ -636,4 +692,18 @@ export function subscribeCellHoverEnd(
   cb: () => void,
 ): Promise<Unlisten> {
   return subscribe(id, "cell_hover_end", () => cb());
+}
+
+export function subscribeFocusGained(
+  id: NativeTermId,
+  cb: () => void,
+): Promise<Unlisten> {
+  return subscribe(id, "focus_gained", () => cb());
+}
+
+export function subscribeFocusLost(
+  id: NativeTermId,
+  cb: () => void,
+): Promise<Unlisten> {
+  return subscribe(id, "focus_lost", () => cb());
 }

@@ -521,6 +521,21 @@ export default function App() {
     return () => { unlisten?.(); };
   }, []);
 
+  // P2b: single app-level window-focus listener. IMPORTANT: on Windows this
+  // event mirrors the WEBVIEW's focus (WebView2 GotFocus/LostFocus), not the
+  // OS window's — clicking a native terminal HWND fires payload=false while
+  // the app is still foreground. So it feeds the raw webviewFocused input;
+  // the store derives appWindowFocused = webviewFocused || nativePaneFocused
+  // (the latter driven by the panes' focus_gained/focus_lost events). Panes
+  // compute cursor focus as isActive && appWindowFocused (JS-authoritative).
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    getCurrentWindow().onFocusChanged(({ payload }) => {
+      useAppStore.getState().setWebviewFocused(payload);
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
+
   // Belt-and-braces flush in case the webview unloads without onCloseRequested
   // firing (browser preview, unusual Tauri paths). localStorage writes inside
   // beforeunload are synchronous via Zustand's persist middleware.

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::Term;
+use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor, Rgb};
 use glyphon::{Attrs, Buffer, Color, Family, Shaping, Style, TextArea, TextBounds, Weight};
 
@@ -219,6 +219,35 @@ struct BlockCell {
     ch: char,
 }
 
+/// P3a frame-scheduler: cursor + viewport state captured under the SAME Term
+/// lock as `snapshot_rows`, so `Renderer::render` takes exactly ONE Term lock
+/// acquisition per frame (the cursor pass previously re-locked). Returned by
+/// `sync_from_term`; feeds both the renderer's cursor quads and its
+/// `FrameSnapshot` dirty check (cursor movement / DECSET-25 / wheel-scroll
+/// offset changes must dirty a frame even when no row content changed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TermFrameInfo {
+    /// Cursor column (0-based, alacritty `Column.0`).
+    pub cursor_col: usize,
+    /// Cursor line in alacritty's signed viewport space (`Line.0`).
+    pub cursor_line: i32,
+    /// Visible grid rows (`screen_lines`).
+    pub visible_rows: usize,
+    /// Visible grid columns.
+    pub visible_cols: usize,
+    /// DECSET 25 SHOW_CURSOR mode bit (vim hides the cursor through it).
+    pub show_cursor: bool,
+    /// Scrollback display offset (0 = pinned to the live bottom).
+    pub display_offset: usize,
+    /// P6b wide chars: the (spacer-normalized) cursor cell carries
+    /// WIDE_CHAR — the cursor pass widens Block/Underline/hollow-outline
+    /// cursors to span 2 cells (Bar keeps its normal thin width).
+    /// `cursor_col` is already normalized to the wide-char START column when
+    /// the raw cursor sat on the trailing WIDE_CHAR_SPACER half (mirrors
+    /// alacritty's RenderableCursor), so consumers never see the spacer col.
+    pub cursor_wide: bool,
+}
+
 /// One Buffer per visible row, kept across frames so cosmic-text can reuse
 /// shape caches.
 pub struct CellGrid {
@@ -239,6 +268,17 @@ pub struct CellGrid {
     /// snapshot_rows / sync_from_term can resolve named/indexed ansi colors
     /// against the current theme. Updated atomically by `Renderer::set_theme`.
     theme: Arc<RwLock<ThemeColors>>,
+    /// P6a scrollback: `display_offset` of the most recent `sync_from_term`.
+    /// The per-row caches above are keyed by ROW SLOT (viewport position),
+    /// not by grid line — when the offset changes, every slot now shows a
+    /// different grid line, so the sync loop bypasses the per-row identity
+    /// short-circuit and re-shapes the whole viewport (simple, always
+    /// correct: one screenful of re-shaping per offset change).
+    /// TODO(P6a-rotate): rotate the caches by the offset delta instead
+    /// (clear only the newly-exposed rows, |delta| >= rows → clear all).
+    /// Deferred: a wrong rotation shows wrong pixels transiently and this
+    /// change shipped without live-GUI verification.
+    last_display_offset: usize,
     pub damage: DamageTracker,
     pub cols: usize,
     pub rows: usize,
@@ -263,6 +303,7 @@ impl CellGrid {
             row_decor,
             row_block,
             theme,
+            last_display_offset: 0,
             damage: DamageTracker::new(rows),
             cols,
             rows,
@@ -336,18 +377,39 @@ impl CellGrid {
     }
 
     /// Refresh row buffers from the alacritty grid. Reads only — does not
-    /// hold the Term lock while shaping.
+    /// hold the Term lock while shaping. P3a: returns the cursor/viewport
+    /// state captured under `snapshot_rows`'s Term lock so the renderer never
+    /// needs a second lock acquisition in the same frame.
     pub fn sync_from_term(
         &mut self,
         glyph: &mut GlyphStack,
         term: &Arc<Mutex<Term<TermListener>>>,
-    ) {
-        let snapshot = self.snapshot_rows(term);
+    ) -> TermFrameInfo {
+        let (snapshot, info) = self.snapshot_rows(term);
+
+        // P6a scrollback fallback invalidation (see `last_display_offset`
+        // docs): ANY offset change re-shapes every row slot. Implemented as
+        // an identity-check bypass rather than a literal cache clear — a
+        // cleared (empty) cache entry compares EQUAL to a genuinely-blank
+        // incoming row, which would skip `set_rich_text` on a Buffer still
+        // holding the pre-scroll glyphs. Bypassing the short-circuit keeps
+        // the "clear-all + mark_all" semantics without that aliasing trap.
+        let offset_changed = info.display_offset != self.last_display_offset;
+        self.last_display_offset = info.display_offset;
+
+        // P5b: shape with the pane's ACTUAL font family. One clone per sync
+        // keeps the borrow simple (`set_rich_text` needs `&mut glyph` while
+        // the Attrs borrow the name). `Family::Monospace` here was the
+        // family-ignored bug — set_font's family string never reached the
+        // shaper, so most machines rendered the system-default mono instead
+        // of Hack.
+        let family_name = glyph.family_name.clone();
 
         let len = snapshot.len().min(self.rows);
         for (y, row) in snapshot.into_iter().enumerate().take(len) {
             let RowSnapshot { runs, bg, decor, block } = row;
-            if self.row_runs[y] == runs
+            if !offset_changed
+                && self.row_runs[y] == runs
                 && self.row_bg_matches(y, &bg)
                 && self.row_decor_matches(y, &decor)
                 && self.row_block.get(y).map(Vec::as_slice) == Some(block.as_slice())
@@ -361,7 +423,7 @@ impl CellGrid {
                 .map(|r| {
                     let [cr, cg, cb] = r.color;
                     let mut attrs = Attrs::new()
-                        .family(Family::Monospace)
+                        .family(Family::Name(family_name.as_str()))
                         .color(Color::rgba(cr, cg, cb, 0xFF));
                     if r.attrs.bold {
                         attrs = attrs.weight(Weight::BOLD);
@@ -375,12 +437,14 @@ impl CellGrid {
             // Default Attrs used for any text not covered by a span; with
             // contiguous spans this never fires, but cosmic-text requires it.
             let fg_default = self.fg_default();
-            let default_attrs = Attrs::new().family(Family::Monospace).color(Color::rgba(
-                fg_default[0],
-                fg_default[1],
-                fg_default[2],
-                0xFF,
-            ));
+            let default_attrs = Attrs::new()
+                .family(Family::Name(family_name.as_str()))
+                .color(Color::rgba(
+                    fg_default[0],
+                    fg_default[1],
+                    fg_default[2],
+                    0xFF,
+                ));
             self.row_buffers[y].set_rich_text(
                 &mut glyph.font_system,
                 spans.iter().copied(),
@@ -393,6 +457,7 @@ impl CellGrid {
             self.row_block[y] = block;
             self.damage.mark_row(y);
         }
+        info
     }
 
     fn row_bg_matches(&self, y: usize, other: &[BgSegment]) -> bool {
@@ -416,8 +481,13 @@ impl CellGrid {
 
     /// Pull each visible row into a sequence of color-runs + bg/decoration
     /// segments under one short lock of the Term. Trailing empty cells are
-    /// dropped from runs to avoid shaping blank suffixes.
-    fn snapshot_rows(&self, term: &Arc<Mutex<Term<TermListener>>>) -> Vec<RowSnapshot> {
+    /// dropped from runs to avoid shaping blank suffixes. P3a: also captures
+    /// cursor + viewport state (`TermFrameInfo`) under the SAME lock — the
+    /// renderer's only Term lock acquisition per frame.
+    fn snapshot_rows(
+        &self,
+        term: &Arc<Mutex<Term<TermListener>>>,
+    ) -> (Vec<RowSnapshot>, TermFrameInfo) {
         // Snapshot theme under its own (very short) read lock. We copy the
         // ~88-byte struct so the inner loop reads from the stack — avoids
         // holding both the term mutex and a theme RwLock guard at once and
@@ -440,15 +510,50 @@ impl CellGrid {
         let grid = t.grid();
         let visible_rows = grid.screen_lines();
         let visible_cols = grid.columns();
+        // P3a: cursor + viewport capture, same lock as the row scan. The
+        // renderer's cursor pass and FrameSnapshot dirty check both consume
+        // this instead of re-locking the Term later in the frame.
+        //
+        // P6b wide chars: normalize the cursor to the wide-char START cell —
+        // when the raw cursor sits on the trailing WIDE_CHAR_SPACER half,
+        // draw it at col-1 (mirrors alacritty's RenderableCursor). Then flag
+        // whether the (possibly adjusted) cell is a WIDE_CHAR so the cursor
+        // pass can span 2 cells. Flags read under this same Term lock.
+        let cursor_point = grid.cursor.point;
+        let mut cursor_col = cursor_point.column.0;
+        if cursor_col > 0
+            && grid[cursor_point.line][Column(cursor_col)]
+                .flags
+                .contains(Flags::WIDE_CHAR_SPACER)
+        {
+            cursor_col -= 1;
+        }
+        let cursor_wide = grid[cursor_point.line][Column(cursor_col)]
+            .flags
+            .contains(Flags::WIDE_CHAR);
+        let info = TermFrameInfo {
+            cursor_col,
+            cursor_line: cursor_point.line.0,
+            visible_rows,
+            visible_cols,
+            show_cursor: t.mode().contains(TermMode::SHOW_CURSOR),
+            display_offset: grid.display_offset(),
+            cursor_wide,
+        };
+        // P6a scrollback: visible row y shows grid line (y - display_offset).
+        // Offset 0 pins the live screen (lines 0..screen_lines); scrolling
+        // back N exposes history lines (negative Line values) — the same
+        // signed indexing `native_term_get_buffer_lines` walks.
+        let display_offset = info.display_offset as i32;
         // R3-mouse: capture the live selection range as absolute (line, column)
         // bounds. Selection lines are alacritty grid lines (signed, scrollback
-        // is negative); we test cells with their viewport-row Line(y) below
-        // — matching the renderer's convention of rendering Line(0..screen_lines)
-        // as the visible viewport regardless of display_offset.
+        // is negative). P6a: we now test cells with their TRUE grid line
+        // (`Line(y - display_offset)` below), so selection containment stays
+        // anchored to content — and therefore correct — while scrolled.
         let sel_range = t.selection.as_ref().and_then(|s| s.to_range(&*t));
         let mut out = Vec::with_capacity(visible_rows);
         for y in 0..visible_rows {
-            let line = Line(y as i32);
+            let line = Line(y as i32 - display_offset);
             let mut runs: Vec<RowRun> = Vec::new();
             let mut bg_segs: Vec<BgSegment> = Vec::new();
             let mut decor_segs: Vec<DecorSegment> = Vec::new();
@@ -468,6 +573,22 @@ impl CellGrid {
                 let ch = if cell.c == '\u{0}' { ' ' } else { cell.c };
                 let attrs = CellAttrs::from_flags(cell.flags);
                 let inverse = cell.flags.contains(Flags::INVERSE);
+                // P6b wide chars: spacer cells (the trailing half of a CJK
+                // glyph, or the line-end LEADING spacer before a wrapped
+                // one) are SKIPPED from the TEXT run — appending their ' '
+                // made a double-width glyph consume ~3 cells of advance
+                // (em-square glyph + spacer space). Skipping lets the wide
+                // glyph advance ~2 cells naturally (Hack has no CJK;
+                // cosmic-text per-glyph fallback supplies em-square faces).
+                // Spacers STAY in the bg/decor/selection segment logic below
+                // — they carry the wide char's background/selection color.
+                // Accepted residual: a fallback face whose em-square advance
+                // is not exactly 2×cell_w drifts glyphs AFTER it within the
+                // row; exact per-cell alignment for wide glyphs is a future
+                // per-run re-anchoring project.
+                let is_spacer = cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
 
                 // Resolve fg / bg with INVERSE applied AFTER color resolution
                 // (xterm semantics: swap the two final colors, not the inputs).
@@ -476,9 +597,10 @@ impl CellGrid {
                 let (fg, mut bg) = if inverse { (raw_bg, raw_fg) } else { (raw_fg, raw_bg) };
 
                 // R3-mouse: selection overlay. Override bg to the selection
-                // color when this cell falls inside the active selection. We
-                // build a Point in viewport-row space (matches the renderer's
-                // Line(y) iteration above) and check containment.
+                // color when this cell falls inside the active selection.
+                // P6a: `line` is the TRUE grid line (offset-adjusted above),
+                // the same space `Selection::to_range` reports — containment
+                // is exact whether or not the viewport is scrolled.
                 if let Some(range) = sel_range {
                     let p = Point::new(line, Column(x));
                     if range.contains(p) {
@@ -504,19 +626,24 @@ impl CellGrid {
                 };
 
                 // --- text runs (fg color + attrs identity) ---
-                if Some(text_fg) == current_color && text_attrs == current_attrs {
-                    current_text.push(text_ch);
-                } else {
-                    if !current_text.is_empty() {
-                        runs.push(RowRun {
-                            text: std::mem::take(&mut current_text),
-                            color: current_color.unwrap_or(fg_default_rgb),
-                            attrs: current_attrs,
-                        });
+                // P6b: spacer cells contribute NO text (see comment above) —
+                // and must not break the current run either, or a wide
+                // char's spacer would split its own run on color identity.
+                if !is_spacer {
+                    if Some(text_fg) == current_color && text_attrs == current_attrs {
+                        current_text.push(text_ch);
+                    } else {
+                        if !current_text.is_empty() {
+                            runs.push(RowRun {
+                                text: std::mem::take(&mut current_text),
+                                color: current_color.unwrap_or(fg_default_rgb),
+                                attrs: current_attrs,
+                            });
+                        }
+                        current_color = Some(text_fg);
+                        current_attrs = text_attrs;
+                        current_text.push(text_ch);
                     }
-                    current_color = Some(text_fg);
-                    current_attrs = text_attrs;
-                    current_text.push(text_ch);
                 }
 
                 // --- background segments (skip cells matching clear color) ---
@@ -633,11 +760,14 @@ impl CellGrid {
             }
             out.push(RowSnapshot { runs, bg: bg_segs, decor: decor_segs, block: block_cells });
         }
-        out
+        (out, info)
     }
 
     /// Build a TextArea per row, positioned at line_height * y. Lifetime tied
-    /// to `&self` so the caller can pass straight into prepare().
+    /// to `&self` so the caller can pass straight into prepare(). P5a: tops
+    /// are integer by construction — `line_height_px` is `.ceil()`ed in
+    /// `GlyphStack::set_font_scaled`, so `y * line_height_px` is exact and
+    /// glyphon never sees a fractional TextArea origin.
     pub fn text_areas<'a>(&'a self, line_height_px: f32) -> Vec<TextArea<'a>> {
         let fg = self.fg_default();
         let default_color = Color::rgba(fg[0], fg[1], fg[2], 0xFF);
@@ -658,7 +788,11 @@ impl CellGrid {
 
     /// Convert per-row bg segments into QuadInstance rects in pixel space.
     /// Called every frame by `pipeline::render` BEFORE the glyph pass so
-    /// background fills sit behind the text.
+    /// background fills sit behind the text. P5a: origins/sizes are integer
+    /// by construction — `cell_w` is the quantized integer advance and
+    /// `line_h` is ceiled, so `col * cell_w` / `y * line_h` are exact (no
+    /// per-quad rounding needed; only the raw-advance fallback path is
+    /// fractional, and there correctness beats snapping).
     pub fn build_bg_quads(&self, cell_w: f32, line_h: f32) -> Vec<QuadInstance> {
         let mut out = Vec::new();
         for (y, segs) in self.row_bg.iter().enumerate() {
@@ -723,6 +857,13 @@ impl CellGrid {
     /// `build_bg_quads`, so the block "pixels" tile seamlessly and align to
     /// their colored cells. Drawn right after the bg quads (before the glyph
     /// pass). Shade glyphs (░▒▓) carry an alpha < 1 and alpha-blend over the bg.
+    ///
+    /// P5a integer snapping: the eighth/quadrant fractions are inherently
+    /// sub-pixel, so each EDGE is rounded in ABSOLUTE pixel space —
+    /// `x0 = round(cell_x + fx0*w)`, `x1 = round(cell_x + fx1*w)`, width =
+    /// `x1 - x0` (same for vertical). Rounding edges (not origin + size)
+    /// means two fills that share a fractional edge round to the SAME pixel
+    /// coordinate — adjacent blocks tile with no seams and no overlaps.
     pub fn build_block_quads(&self, cell_w: f32, line_h: f32) -> Vec<QuadInstance> {
         let mut out = Vec::new();
         for (y, cells) in self.row_block.iter().enumerate() {
@@ -733,13 +874,12 @@ impl CellGrid {
                     let [r, g, b] = bc.color;
                     let color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, alpha];
                     for [fx0, fy0, fx1, fy1] in rects {
+                        let x0 = (cell_x + fx0 * cell_w).round();
+                        let x1 = (cell_x + fx1 * cell_w).round();
+                        let y0 = (row_top + fy0 * line_h).round();
+                        let y1 = (row_top + fy1 * line_h).round();
                         out.push(QuadInstance {
-                            rect: [
-                                cell_x + fx0 * cell_w,
-                                row_top + fy0 * line_h,
-                                (fx1 - fx0) * cell_w,
-                                (fy1 - fy0) * line_h,
-                            ],
+                            rect: [x0, y0, x1 - x0, y1 - y0],
                             color,
                         });
                     }

@@ -308,6 +308,30 @@ pub fn write_to_pty_sync(pty_id: u32, data: &[u8]) -> bool {
     }
 }
 
+/// Synchronous PTY resize. Used by native_term's win32 resize-settle path
+/// (`commit_dims`) so the grid → PTY commit happens in one synchronous chain
+/// without an async round-trip. Returns true on success, false if the PTY
+/// doesn't exist or the resize failed — silent failure is the right policy
+/// from a window message handler, mirroring `write_to_pty_sync`.
+pub fn resize_pty_sync(pty_id: u32, cols: u16, rows: u16) -> bool {
+    let map = match sessions().lock() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    match map.get(&pty_id) {
+        Some(s) => s
+            .master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .is_ok(),
+        None => false,
+    }
+}
+
 #[tauri::command]
 pub async fn pty_resize(pty_id: u32, cols: u16, rows: u16) -> Result<(), String> {
     let map = sessions().lock().unwrap();

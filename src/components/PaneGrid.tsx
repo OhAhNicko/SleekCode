@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import type { PaneLayout, GameType } from "../types";
 import {
@@ -9,6 +9,7 @@ import {
 } from "../lib/layout-utils";
 import { useAppStore } from "../store";
 import { snapshotPane } from "../store/undoCloseStore";
+import { flushNow, setDragActive } from "../native-term/frameSync";
 import EditorPane from "./EditorPane";
 import KanbanBoard from "./KanbanBoard";
 import CodeReviewPane from "./CodeReviewPane";
@@ -81,6 +82,38 @@ export default function PaneGrid({
       }
     },
     [tabId, layout, onLayoutChange, redistributeOnClose]
+  );
+
+  // P4b: splitter drag coordination for native panes. onDragging fires only
+  // on drag start/end (not per mousemove) — a module-level flag in
+  // frameSync.ts (no store churn) tells useNativePaneRegion to skip hole
+  // recomputation while the drag is in flight; pane geometry keeps flowing
+  // through the frame-sync coalescer so panes track the splitter. On
+  // release, wait one rAF so each pane's rAF driver re-reads the final
+  // layout and queues its exact geometry+holes, then flush that batch
+  // immediately instead of waiting another coalescer frame.
+  // P4b failsafe: if a PanelResizeHandle unmounts mid-drag (pane closed,
+  // layout swap, tab teardown), onDragging(false) never fires and the
+  // dragActive coarsening flag would stay stuck — hole recomputation frozen
+  // for every native pane. Track whether a handle in THIS grid armed the
+  // flag and clear it when the grid unmounts; frameSync's own watchdog
+  // covers a handle that unmounts while the grid stays mounted.
+  const dragArmedRef = useRef(false);
+  const handleSplitterDragging = useCallback((isDragging: boolean) => {
+    dragArmedRef.current = isDragging;
+    setDragActive(isDragging);
+    if (!isDragging) {
+      requestAnimationFrame(() => flushNow());
+    }
+  }, []);
+  useEffect(
+    () => () => {
+      if (dragArmedRef.current) {
+        dragArmedRef.current = false;
+        setDragActive(false);
+      }
+    },
+    []
   );
 
   const handleKanbanReposition = useCallback(
@@ -425,6 +458,7 @@ export default function PaneGrid({
           {renderPane(node.children[0])}
         </Panel>
         <PanelResizeHandle
+          onDragging={handleSplitterDragging}
           style={{
             width: direction === "horizontal" ? 4 : undefined,
             height: direction === "vertical" ? 4 : undefined,

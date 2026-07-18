@@ -12,6 +12,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Resized {
     pub cols: u32,
     pub rows: u32,
@@ -218,5 +219,39 @@ pub fn emit_cell_hover_end(app: &AppHandle, term_id: u32) {
     let _ = app.emit(
         &format!("native_term:{}:cell_hover_end", term_id),
         CellHoverEnd {},
+    );
+}
+
+// ---- P2a: focus.
+
+/// The native HWND gained keyboard focus (WM_SETFOCUS — the click-to-focus
+/// path in win32.rs). No payload; the JS side uses it to mark the pane
+/// active so its focus effect and `native_term_set_focused` stay in sync.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusGained {}
+
+pub fn emit_focus_gained(app: &AppHandle, term_id: u32) {
+    let _ = app.emit(
+        &format!("native_term:{}:focus_gained", term_id),
+        FocusGained {},
+    );
+}
+
+/// The native HWND lost keyboard focus (WM_KILLFOCUS). No payload. Needed
+/// because on Windows the tauri window `onFocusChanged` event mirrors the
+/// WEBVIEW's focus, not the OS window's — while a native pane holds Win32
+/// focus, an Alt-Tab away from the app produces no JS-side blur at all.
+/// The store clears `nativePaneFocused` on this event; a pane→pane focus
+/// move is covered by Windows' ordering guarantee (WM_KILLFOCUS on the old
+/// pane precedes WM_SETFOCUS on the new one).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusLost {}
+
+pub fn emit_focus_lost(app: &AppHandle, term_id: u32) {
+    let _ = app.emit(
+        &format!("native_term:{}:focus_lost", term_id),
+        FocusLost {},
     );
 }

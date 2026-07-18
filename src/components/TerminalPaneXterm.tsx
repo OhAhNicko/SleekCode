@@ -33,6 +33,7 @@ import { useXtermSearch } from "../hooks/usePaneSearch";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import hackRegularUrl from "../fonts/hack-regular.woff2?url";
 import hackBoldUrl from "../fonts/hack-bold.woff2?url";
+import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
 
 // Track session IDs already claimed by panes in this app instance.
 // Prevents multiple panes from claiming the same session file during disk lookup.
@@ -656,7 +657,7 @@ export default function TerminalPane({
       cursorBlink: true,
       cursorStyle: "bar",
       cursorWidth: 2,
-      fontFamily: "Hack, monospace",
+      fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: baseFontSize,
       fontWeight: "normal",
       fontWeightBold: "bold",
@@ -830,7 +831,7 @@ export default function TerminalPane({
           const webgl = new WebglAddon();
           term.loadAddon(webgl);
           // Force WebGL to rebuild glyph atlas with the correct font
-          term.options.fontFamily = "Hack, monospace";
+          term.options.fontFamily = TERMINAL_FONT_FAMILY;
           term.options.fontSize = baseFontSize;
           safeFit();
           if (wasAtBottom) {

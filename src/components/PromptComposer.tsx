@@ -10,6 +10,7 @@ import { useBrowserConsoleStore } from "../store/browserConsoleStore";
 import { getImageLabel, resolveImagePath } from "../lib/clipboard-insert";
 import { registerImageMask } from "../lib/image-mask";
 import { SLASH_COMMANDS, SLASH_ARG_HINTS, loadUserSkills, type SlashCommand } from "../lib/slash-commands";
+import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
 import type { TerminalType } from "../types";
 import { HiMiniArrowLongRight, HiMiniArrowLongLeft } from "react-icons/hi2";
 import { FaWandMagicSparkles, FaCopy, FaDeleteLeft } from "react-icons/fa6";
@@ -1775,7 +1776,7 @@ export default function PromptComposer({
                 >
                   <span
                     style={{
-                      fontFamily: "Hack, monospace",
+                      fontFamily: TERMINAL_FONT_FAMILY,
                       fontSize: effectiveFontSize - 1,
                       minWidth: 90,
                       flexShrink: 0,
@@ -1916,7 +1917,7 @@ export default function PromptComposer({
             width: "100%",
             backgroundColor: "transparent",
             color: (consoleTagRef.current && value.includes(consoleTagRef.current)) || styledSegments || hasArrows ? "transparent" : terminalFg,
-            fontFamily: "Hack, monospace",
+            fontFamily: TERMINAL_FONT_FAMILY,
             fontSize: effectiveFontSize,
             lineHeight: 1.4,
             letterSpacing: 1,
@@ -1947,7 +1948,7 @@ export default function PromptComposer({
                 left: 0,
                 right: 0,
                 pointerEvents: "none",
-                fontFamily: "Hack, monospace",
+                fontFamily: TERMINAL_FONT_FAMILY,
                 fontSize: effectiveFontSize,
                 lineHeight: 1.4,
                 letterSpacing: 1,
@@ -1974,7 +1975,7 @@ export default function PromptComposer({
               left: 0,
               right: 0,
               pointerEvents: "none",
-              fontFamily: "Hack, monospace",
+              fontFamily: TERMINAL_FONT_FAMILY,
               fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
@@ -2000,7 +2001,7 @@ export default function PromptComposer({
               left: 0,
               right: 0,
               pointerEvents: "none",
-              fontFamily: "Hack, monospace",
+              fontFamily: TERMINAL_FONT_FAMILY,
               fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
@@ -2025,7 +2026,7 @@ export default function PromptComposer({
               left: value ? 0 : 10,
               right: 0,
               pointerEvents: "none",
-              fontFamily: "Hack, monospace",
+              fontFamily: TERMINAL_FONT_FAMILY,
               fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
@@ -2055,7 +2056,7 @@ export default function PromptComposer({
               left: 10,
               right: 0,
               pointerEvents: "none",
-              fontFamily: "Hack, monospace",
+              fontFamily: TERMINAL_FONT_FAMILY,
               fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,

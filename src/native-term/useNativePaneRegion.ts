@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getOverlayRectInPane } from "./geometry";
 import type { Rect } from "../lib/native-term-bridge";
+import { dropPendingRegion, isDragActive, queueRegion } from "./frameSync";
 import { useAppStore } from "../store";
 import type { OverlayRegionSlice } from "../store/overlayRegionSlice";
 
@@ -22,9 +23,10 @@ type Params = ParamsPropDrilled | ParamsSliceSourced;
 type StoreWithOverlaySlice = ReturnType<typeof useAppStore.getState> &
   OverlayRegionSlice;
 
-// Both `native_term_set_region` and `native_term_spike_set_region` operate on
-// any registry id — the spike form just delegates. We use the production name
-// so the call survives Phase 0 spike removal.
+// Always the production `native_term_set_region` — it operates on any
+// registry id. (The Phase-0 debug alias it once shadowed was deleted in P7a;
+// pinning the production name here is why that removal was a no-op for this
+// hook.)
 function commandFor(_isPhase0Spike: boolean): string {
   return "native_term_set_region";
 }
@@ -47,6 +49,13 @@ export function useNativePaneRegion(params: Params): void {
     const tick = () => {
       if (cancelled) return;
       rafRef.current = requestAnimationFrame(tick);
+
+      // P4b: coarsen during splitter drags — skip hole recomputation
+      // entirely while PaneGrid reports a drag in flight (geometry keeps
+      // flowing via queueGeom so panes track the splitter). On release
+      // PaneGrid clears the flag and the next tick recomputes; the
+      // lastEmitJsonRef guard re-emits only if the holes actually changed.
+      if (isDragActive()) return;
 
       const paneRect = pane.getBoundingClientRect();
       if (paneRect.width <= 0 || paneRect.height <= 0) return;
@@ -90,9 +99,11 @@ export function useNativePaneRegion(params: Params): void {
       if (json === lastEmitJsonRef.current) return;
       lastEmitJsonRef.current = json;
 
-      invoke(cmd, { id: termId, holes: rects }).catch((e) =>
-        console.warn("[native-term/region] set_region rejected:", e),
-      );
+      // P4b: route through the frame-sync coalescer — this pane's holes
+      // merge with every pane's geometry/holes for the frame into ONE
+      // `native_term_frame_sync` invoke. Stale-id failures are logged
+      // Rust-side as benign partial failures.
+      queueRegion(termId, rects);
     };
 
     rafRef.current = requestAnimationFrame(tick);
@@ -106,6 +117,11 @@ export function useNativePaneRegion(params: Params): void {
       cancelled = true;
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       ro.disconnect();
+      // Drop any queued-but-unflushed hole update for this id BEFORE the
+      // direct clear below — otherwise the coalescer could flush stale
+      // holes one frame AFTER the clear. Teardown stays a direct invoke
+      // (no rAF dependency while unmounting).
+      dropPendingRegion(termId);
       invoke(cmd, { id: termId, holes: [] }).catch((e) =>
         console.warn("[native-term/region] set_region cleanup rejected:", e),
       );
