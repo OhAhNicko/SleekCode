@@ -162,6 +162,15 @@ pub trait NativeTermWindow: Send {
         Ok(())
     }
 
+    /// N-b copy-on-select: mirror the JS `copyOnSelect` store flag. When true,
+    /// a finalized text selection auto-copies to the clipboard on mouse-up
+    /// (legacy default false — selection still emits, but does not copy).
+    /// Explicit copy paths are unaffected. Default no-op keeps the macOS/Linux
+    /// stubs compiling — Win32 overrides with the ChildState mirror.
+    fn set_copy_on_select(&mut self, _on: bool) -> Result<(), String> {
+        Ok(())
+    }
+
     /// P7b: route platform KEYBOARD focus to this pane's native window —
     /// parity with the xterm pane calling `term.focus()` when it becomes the
     /// active pane. Distinct from `set_focused` (the JS-authoritative cursor

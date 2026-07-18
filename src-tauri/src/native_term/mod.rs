@@ -294,6 +294,15 @@ pub fn native_term_set_focused(id: u32, focused: bool) -> Result<(), String> {
     registry::with_window(id, |w| w.set_focused(focused))
 }
 
+/// N-b copy-on-select: mirror the JS `copyOnSelect` store flag onto the pane
+/// so WM_LBUTTONUP knows whether a finalized selection should auto-copy to the
+/// clipboard (legacy default false). Pushed from the TerminalPaneNative effect
+/// whenever the store value changes.
+#[tauri::command]
+pub fn native_term_set_copy_on_select(id: u32, copy_on_select: bool) -> Result<(), String> {
+    registry::with_window(id, |w| w.set_copy_on_select(copy_on_select))
+}
+
 /// P7b: route Win32 KEYBOARD focus to this pane's HWND — parity with the
 /// xterm pane calling `term.focus()` when it becomes the active pane.
 /// Distinct from `native_term_set_focused` (cursor VISUAL only). Win32

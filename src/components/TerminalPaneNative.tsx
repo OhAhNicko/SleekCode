@@ -30,9 +30,9 @@ import {
   nativeTermSetTheme,
   nativeTermSetCursorStyle,
   nativeTermSetFont,
+  nativeTermSetCopyOnSelect,
   nativeTermProposeDimensions,
 } from "../lib/native-term-bridge";
-import type { MadeTheme } from "../lib/themes";
 import { useNativeCommandBlocks } from "../hooks/useNativeCommandBlocks";
 import { useNativeFileLinks } from "../native-term/useNativeFileLinks";
 import { usePtyNative } from "../hooks/usePtyNative";
@@ -48,7 +48,20 @@ import PaneSearchBar from "./PaneSearchBar";
 import ClipboardImagePreview from "./ClipboardImagePreview";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
-import { getTheme } from "../lib/themes";
+import {
+  registerPtyWrite,
+  unregisterPtyWrite,
+  registerTerminalFocus,
+  unregisterTerminalFocus,
+  getTerminalDataListener,
+} from "../store/terminalSlice";
+import {
+  recordTerminalActivity,
+  recordTerminalWrite,
+  recordTerminalResize,
+  clearTerminalActivity,
+} from "../lib/terminal-activity";
+import { getTheme, getEffectiveTerminalTheme } from "../lib/themes";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
 import { invoke } from "@tauri-apps/api/core";
@@ -98,14 +111,15 @@ const FALLBACK_ANSI: Record<string, string> = {
   ansi15: "#eeeeec",
 };
 
-/// Convert a MadeTheme to the native_term wire-format TerminalTheme.
-/// xterm ITheme uses `selectionBackground` / `black`/.../`brightWhite`; the
-/// Rust side wants `selection` and `ansi0..15`. A few defensive fallbacks for
-/// keys MadeTheme might not declare on every theme.
-function madeThemeToNative(theme: MadeTheme): NativeTermTheme {
-  const t = theme.terminal;
+/// Convert an EFFECTIVE terminal theme (xterm ITheme shape from
+/// `getEffectiveTerminalTheme` — includes the active-pane background lift
+/// and vibrant ANSI overlay, exactly what the legacy xterm pane renders
+/// with) to the native_term wire-format TerminalTheme. xterm ITheme uses
+/// `selectionBackground` / `black`/.../`brightWhite`; the Rust side wants
+/// `selection` and `ansi0..15`. Defensive fallbacks for undeclared keys.
+function madeThemeToNative(t: Record<string, string | undefined>): NativeTermTheme {
   const pick = (key: string, fallback: string): string =>
-    (t as Record<string, string | undefined>)[key] ?? fallback;
+    t[key] ?? fallback;
   return {
     background: pick("background", "#0d0d11"),
     foreground: pick("foreground", "#d3d7cf"),
@@ -371,6 +385,12 @@ export default function TerminalPaneNative({
   // Live changes flow through the theme hot-swap effect below.
   const themeIdRef = useRef(themeId);
   useEffect(() => { themeIdRef.current = themeId; }, [themeId]);
+  // Legacy-pane parity: vibrant ANSI + active-pane background lift ride the
+  // effective theme (same helper the xterm pane uses). Ref for the create
+  // path; the hot-swap effect below reads the live values.
+  const vibrantColors = useAppStore((s) => s.vibrantColors);
+  const vibrantColorsRef = useRef(vibrantColors);
+  useEffect(() => { vibrantColorsRef.current = vibrantColors; }, [vibrantColors]);
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
   // Mirror cursor settings into refs so the create effect can read the
@@ -401,6 +421,9 @@ export default function TerminalPaneNative({
   useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
   useEffect(() => { onFocusRef.current = onFocus; }, [onFocus]);
   useEffect(() => { appWindowFocusedRef.current = appWindowFocused; }, [appWindowFocused]);
+  // N-b: copy-on-select store flag (legacy default false). Pushed to the
+  // native pane below so a mouse-selection auto-copies only when enabled.
+  const copyOnSelect = useAppStore((s) => s.copyOnSelect);
   const cliFontSize = useAppStore((s) => s.cliFontSizes[terminalType] ?? DEFAULT_CLI_FONT_SIZE);
   // P5b: mirror the CLI font size into a ref so the create effect can push
   // the initial set_font without adding cliFontSize to its dep array (which
@@ -425,6 +448,21 @@ export default function TerminalPaneNative({
   // and click-dead under the native surface. Publishes null automatically
   // while hidden (display:none → zero-size rect).
   useOverlayPublisher(`native-jump-btn-${terminalId}`, jumpBtnRef);
+
+  // ── Process-exit feedback (S15, xterm parity) ────────────────────────
+  // `exited` flips true when the attached PTY dies. It (a) gates clipboard
+  // image paste (threaded into useClipboardImagePaste below — xterm blocks
+  // input after exit the same way) and (b) drives the DOM "[Process exited]"
+  // banner rendered over the terminal anchor. The native pane has no xterm
+  // buffer to write the banner into (the way TerminalPaneXterm does at
+  // ~:610), so it's a DOM overlay instead.
+  const [exited, setExited] = useState(false);
+  // The banner floats over the native-HWND-covered terminal area, so — like
+  // the jump-to-bottom button above — its rect is published for the hole-cut
+  // driver or the native surface would paint straight over it. Publishes
+  // null automatically while unmounted (ref null → zero-size rect).
+  const exitBannerRef = useRef<HTMLDivElement>(null);
+  useOverlayPublisher(`native-exit-banner-${terminalId}`, exitBannerRef);
 
   const registerNativeTerm = useAppStore(
     (s) => (s as AppStoreWithNative).registerNativeTerm,
@@ -456,7 +494,13 @@ export default function TerminalPaneNative({
           const id = await nativeTermCreate({
             rect: rectOf(el),
             dpr: window.devicePixelRatio,
-            theme: madeThemeToNative(getTheme(themeIdRef.current)),
+            theme: madeThemeToNative(
+              getEffectiveTerminalTheme(
+                themeIdRef.current,
+                vibrantColorsRef.current,
+                isActiveRef.current,
+              ) as Record<string, string | undefined>,
+            ),
             font: {
               family: TERMINAL_FONT_FAMILY,
               sizePx: cliFontSizeRef.current,
@@ -576,6 +620,9 @@ export default function TerminalPaneNative({
     (async () => {
       const u1 = await subscribeResized(termId, (p) => {
         if (cancelled) return;
+        // Lock out the activity tracker around a reflow so the redraw burst
+        // the resize triggers isn't misread as AI output.
+        recordTerminalResize(terminalId);
         setCols(p.cols);
         setRows(p.rows);
       });
@@ -583,6 +630,10 @@ export default function TerminalPaneNative({
 
       const u2 = await subscribeExit(termId, (p) => {
         if (cancelled) return;
+        // Gate input + show the banner regardless of which exit channel
+        // fires first (this native-renderer event or usePtyNative's onExit →
+        // handlePtyExit). setExited is idempotent, so both firing is safe.
+        setExited(true);
         onPtyExit?.(p.code);
       });
       unlistens.push(u2);
@@ -751,10 +802,22 @@ export default function TerminalPaneNative({
   // is derived from `themeId` and would cause a redundant re-render trigger.
   useEffect(() => {
     if (termId == null) return;
-    void nativeTermSetTheme(termId, madeThemeToNative(getTheme(themeId))).catch(
+    // Legacy-pane parity: the effective theme carries the ACTIVE-pane
+    // background lift + vibrant ANSI overlay, so the native pane matches
+    // the xterm pane's lighter focused background and re-tints on focus
+    // changes exactly like the legacy renderer.
+    void nativeTermSetTheme(
+      termId,
+      madeThemeToNative(
+        getEffectiveTerminalTheme(themeId, vibrantColors, isActive) as Record<
+          string,
+          string | undefined
+        >,
+      ),
+    ).catch(
       (e) => console.error("[TerminalPaneNative] set_theme update failed", e),
     );
-  }, [termId, themeId]);
+  }, [termId, themeId, vibrantColors, isActive]);
 
   // ── Cursor style/blink hot-swap ───────────────────────────────────────
   // Re-push the cursor settings whenever the user changes them in Settings.
@@ -765,6 +828,18 @@ export default function TerminalPaneNative({
       (e) => console.error("[TerminalPaneNative] set_cursor_style update failed", e),
     );
   }, [termId, nativeCursorStyle, nativeCursorBlink]);
+
+  // ── Copy-on-select push (N-b) ─────────────────────────────────────────
+  // Mirror the `copyOnSelect` store flag onto the native pane. Legacy default
+  // is false: selecting text emits a `selection` event but does not auto-copy
+  // to the clipboard. The Rust WM_LBUTTONUP arm gates its copy on this. Also
+  // fires once on termId-flip so a freshly-created pane starts in sync.
+  useEffect(() => {
+    if (termId == null) return;
+    void nativeTermSetCopyOnSelect(termId, copyOnSelect).catch(
+      (e) => console.error("[TerminalPaneNative] set_copy_on_select update failed", e),
+    );
+  }, [termId, copyOnSelect]);
 
   // ── Font hot-swap (P5b) ───────────────────────────────────────────────
   // Re-push the font whenever the user changes the CLI font size (same
@@ -815,12 +890,27 @@ export default function TerminalPaneNative({
   // Native mode: bytes route to Rust via R's pty_route::sender_for(id)
   // branch in pty.rs. The JS-side onData channel stays live during rollout
   // (plan hard requirement) — we just don't write into a JS renderer.
-  const handlePtyData = useCallback((_data: Uint8Array) => {
-    // Native side consumes bytes directly via the attached pty_id (no JS
-    // renderer write). This channel is still the "PTY is alive" signal:
-    // on first data from a resumable CLI, look up the session ID from disk —
-    // mirrors TerminalPaneXterm's initial detection (same floor, atomic
-    // claim, and retry semantics; do not diverge from the xterm guards).
+  const handlePtyData = useCallback((data: Uint8Array) => {
+    // Native side RENDERS bytes directly via the attached pty_id, but the
+    // JS onData channel is still the tap for cross-cutting consumers that
+    // must see raw output regardless of renderer:
+    //   1. Registered data listeners (dev-server port/URL/error/stopped
+    //      detection registers one via registerTerminalDataListener) — without
+    //      this forward, dev-server native panes never leave "starting".
+    //   2. Terminal-activity signal ("AI working" WIP badge, git auto-refresh,
+    //      ai-time tracking) — recordTerminalActivity below. Note: the Rust
+    //      side ALSO emits a coalesced `data_rate` event we subscribe to, but
+    //      forwarding here keeps the listener contract identical to xterm.
+    getTerminalDataListener(terminalId)?.(data);
+    // Terminal-activity signal: feeds the per-tab "AI working" WIP badge, git
+    // auto-refresh, and ai-time tracking. recordTerminalActivity self-gates to
+    // AI CLI types and honors the write/resize lockouts set below (so the
+    // user's own echo and resize redraws don't read as AI output).
+    recordTerminalActivity(terminalId, terminalTypeRef.current, data.length);
+    // This channel is also the "PTY is alive" signal: on first data from a
+    // resumable CLI, look up the session ID from disk — mirrors
+    // TerminalPaneXterm's initial detection (same floor, atomic claim, and
+    // retry semantics; do not diverge from the xterm guards).
     if (!sessionLookupDone.current && supportsSessionResume(terminalTypeRef.current) && !sessionResumeIdPropRef.current) {
       sessionLookupDone.current = true;
       // Session files with startedAt < this belong to a DIFFERENT pane or
@@ -969,10 +1059,15 @@ export default function TerminalPaneNative({
 
   const handlePtyExit = useCallback(
     (code: number) => {
+      // Mirror TerminalPaneXterm.handlePtyExit (~:606-612): flag exit (gates
+      // input + shows the banner), stop the "AI working" activity badge from
+      // spinning forever, and cancel any in-flight session-lookup retries.
+      setExited(true);
+      clearTerminalActivity(terminalId);
       sessionRetryCancelRef.current?.();
       onPtyExit?.(code);
     },
-    [onPtyExit],
+    [onPtyExit, terminalId],
   );
 
   const { write: ptyWrite } = usePtyNative({
@@ -990,6 +1085,34 @@ export default function TerminalPaneNative({
     backend,
     attachTo: termId,
   });
+
+  // ── PTY-write registry (legacy-pane parity) ───────────────────────────
+  // External actions reach the active terminal through `getPtyWrite(id)`:
+  // clipboard-image insert (topbar strip / paste), snippets, command
+  // history, dev-server key sends, AI-explain, etc. The xterm pane
+  // registers `write`; the native pane must register its own `ptyWrite`
+  // (forwards bytes to the attached PTY) or ALL of those silently no-op on
+  // native panes (the reported "paste image does nothing"). Gated on
+  // termId so the write only registers once the PTY is actually attached.
+  useEffect(() => {
+    if (termId == null) return;
+    registerPtyWrite(terminalId, ptyWrite);
+    return () => unregisterPtyWrite(terminalId);
+  }, [terminalId, termId, ptyWrite]);
+
+  // Focus registry: external actions (e.g. returning focus to the pane
+  // after an image insert) call `getTerminalFocus(id)`. Route it to the
+  // native HWND keyboard-focus command (guarded activeElement check lives
+  // Rust-side / in the dedicated focus effect; this is the explicit
+  // external-request path, same contract as the xterm pane's `.focus()`).
+  useEffect(() => {
+    if (termId == null) return;
+    const id = termId;
+    registerTerminalFocus(terminalId, () => {
+      void nativeTermFocusKeyboard(id).catch(() => {});
+    });
+    return () => unregisterTerminalFocus(terminalId);
+  }, [terminalId, termId]);
 
   // ── Hole-cut driver ───────────────────────────────────────────────────
   // Reads globally-published overlay rects from `overlayRegionSlice`,
@@ -1011,27 +1134,157 @@ export default function TerminalPaneNative({
   // ── PromptComposer handlers ───────────────────────────────────────────
   const composerWrite = useCallback(
     (data: string) => {
+      // User-originated write: lock out the activity tracker briefly so the
+      // shell's echo of this input doesn't register as AI output.
+      recordTerminalWrite(terminalId);
       ptyWrite(data);
     },
-    [ptyWrite],
+    [ptyWrite, terminalId],
   );
+  // Legacy-pane parity (was a no-op → composer submits sent NOTHING on
+  // native panes): PromptComposer.submit() records history + calls onSubmit
+  // but never writes the prompt body itself — the parent's onSubmit is the
+  // actual PTY write. Mirror TerminalPaneXterm.handleComposerSubmit exactly,
+  // using ptyWrite. CLI TUIs (claude/codex/gemini) need bracketed paste + a
+  // length-scaled delayed Enter so the REPL ingests the whole prompt before
+  // the carriage return (otherwise long prompts land as "[Text #N]").
   const handleComposerSubmit = useCallback(
-    (_text: string) => {
-      // PromptComposer writes the prompt itself via composerWrite; nothing
-      // else to do here for the native pane (no command-block tracking yet).
+    (text: string) => {
+      recordTerminalWrite(terminalId);
+      const isCli =
+        terminalType === "claude" ||
+        terminalType === "codex" ||
+        terminalType === "gemini";
+      if (isCli) {
+        const content = text + (terminalType === "gemini" ? " " : "");
+        const baseDelay = terminalType === "claude" ? 150 : 80;
+        const extraDelay =
+          terminalType === "claude"
+            ? Math.min(Math.max(0, content.length - 200), 1850)
+            : 0;
+        const pasteDelay = baseDelay + extraDelay;
+        ptyWrite("\x1b[200~" + content + "\x1b[201~");
+        setTimeout(() => ptyWrite("\r"), pasteDelay);
+      } else {
+        ptyWrite(text + "\r");
+      }
     },
-    [],
+    [ptyWrite, terminalId, terminalType],
   );
   const handleComposerClose = useCallback(() => {
     setComposerOpen(false);
   }, []);
-  // TODO(R3): scroll-to-prompt + scroll-to-next-prompt need OSC 133 buffer.
-  const stubScrollToPrompt = useCallback(() => {}, []);
-  const stubScrollToNextPrompt = useCallback(() => {}, []);
 
   // ── Native command blocks + file links ────────────────────────────────
   const { commandBlocks, promptLines } = useNativeCommandBlocks(termId);
   const { hover: fileLinkHover } = useNativeFileLinks({ termId, workingDir });
+
+  // ── Scroll-to-prompt / scroll-to-next-prompt (S10, xterm parity) ──────
+  // PgUp/PgDn in PromptComposer jump between prompts. Prompt positions come
+  // from OSC 133;A `absLine` values in `promptLines` (scrollback-origin
+  // space, 0 = oldest buffered line). nativeTermScrollToLine and
+  // ViewportState.viewportY both use alacritty's SIGNED space
+  // ([-history, screen); 0 = live bottom, negative = scrollback), so each
+  // prompt maps to signed = absLine + baseY (baseY = -history) — the exact
+  // conversion the prompt-cache + header scroll-to-prompt-line path already
+  // use. promptLines is read through a ref so the callbacks keep a stable
+  // identity for PromptComposer (which the stubs also had). Best-effort:
+  // a torn-down pane racing the async viewport read is swallowed.
+  const promptLinesRef = useRef<number[]>([]);
+  promptLinesRef.current = promptLines;
+
+  const handleScrollToPrompt = useCallback(() => {
+    if (termId == null) return;
+    void (async () => {
+      try {
+        const vp = await nativeTermGetViewportState(termId);
+        const signed = promptLinesRef.current
+          .map((a) => a + vp.baseY)
+          .sort((x, y) => x - y);
+        if (signed.length === 0) return;
+        // Nearest prompt strictly ABOVE the viewport top edge; if none is
+        // above, wrap to the most-recent prompt (mirrors xterm scrollToPrompt
+        // "all prompts at/below viewport → scroll to the last one").
+        let target: number | null = null;
+        for (let i = signed.length - 1; i >= 0; i--) {
+          if (signed[i] < vp.viewportY) {
+            target = signed[i];
+            break;
+          }
+        }
+        if (target == null) target = signed[signed.length - 1];
+        await nativeTermScrollToLine(termId, target);
+      } catch {
+        // Benign race: pane torn down mid-invoke.
+      }
+    })();
+  }, [termId]);
+
+  const handleScrollToNextPrompt = useCallback(() => {
+    if (termId == null) return;
+    void (async () => {
+      try {
+        const vp = await nativeTermGetViewportState(termId);
+        const signed = promptLinesRef.current
+          .map((a) => a + vp.baseY)
+          .sort((x, y) => x - y);
+        if (signed.length === 0) return;
+        // First prompt at/below the viewport top + 2 (the +2 skips the prompt
+        // currently pinned to the top after a jump — mirrors xterm
+        // scrollToNextPrompt). No prompt below → snap to the live bottom.
+        const threshold = vp.viewportY + 2;
+        const next = signed.find((s) => s >= threshold);
+        if (next != null) {
+          await nativeTermScrollToLine(termId, next);
+        } else {
+          await nativeTermScrollToBottom(termId);
+        }
+      } catch {
+        // Benign race: pane torn down mid-invoke.
+      }
+    })();
+  }, [termId]);
+
+  // ── Command-history recording (S8, xterm parity ~:1556-1578) ──────────
+  // Feed completed native command blocks into the shared history store so
+  // the command palette / history view sees shell runs from native panes
+  // too. Deduped by block id via recordedBlocksRef so re-renders (and the
+  // async command/output backfill in useNativeCommandBlocks) never double-
+  // record. NATIVE DIVERGENCE: a native block is first pushed with an empty
+  // `command` (exitCode already set at OSC 133;D) and the real command text
+  // is backfilled asynchronously; we therefore wait for a non-empty command
+  // before recording (and only then mark it recorded) so history never gets
+  // a blank entry. Trade-off: a block whose backfill never resolves is
+  // dropped rather than logged empty — acceptable (xterm always has the
+  // command synchronously, so it doesn't hit this).
+  const recordedBlocksRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const addHistoryEntry = useAppStore.getState().addHistoryEntry;
+    const tabs = useAppStore.getState().tabs;
+    const tab = tabs.find((t) =>
+      t.layout?.type === "terminal" ? t.layout.terminalId === terminalId : false,
+    );
+    const tabName = tab?.name ?? "Shell";
+
+    for (const block of commandBlocks) {
+      if (
+        block.exitCode !== null &&
+        block.command &&
+        !recordedBlocksRef.current.has(block.id)
+      ) {
+        recordedBlocksRef.current.add(block.id);
+        addHistoryEntry({
+          command: block.command,
+          exitCode: block.exitCode,
+          timestamp: block.timestamp,
+          endTimestamp: block.endTimestamp,
+          workingDir,
+          terminalId,
+          tabName,
+        });
+      }
+    }
+  }, [commandBlocks, terminalId, workingDir]);
 
   // ── PaneSearchBar handlers ────────────────────────────────────────────
   const handleSearchClose = useCallback(() => {
@@ -1107,7 +1360,7 @@ export default function TerminalPaneNative({
     terminalType,
     terminalId,
     write: composerWrite,
-    exited: false,
+    exited,
     onFocus,
   });
 
@@ -1388,12 +1641,42 @@ export default function TerminalPaneNative({
           terminalId={terminalId}
           terminalType={terminalType}
           workingDir={workingDir}
-          scrollToPrompt={stubScrollToPrompt}
-          scrollToNextPrompt={stubScrollToNextPrompt}
+          scrollToPrompt={handleScrollToPrompt}
+          scrollToNextPrompt={handleScrollToNextPrompt}
           isActive={isActive}
           didStealRef={composerDidStealRef}
           suppressAutoFocus={false}
         />
+      )}
+      {/* Process-exited banner (S15) — subtle grey pill shown over the
+          terminal after the PTY dies. xterm writes "[Process exited]" into
+          its buffer; the native pane has no JS buffer, so this is a DOM
+          overlay whose rect is published (via useOverlayPublisher above) so
+          the native HWND cuts a hole and it isn't painted over. Display-only
+          (pointer-events:none). */}
+      {exited && (
+        <div
+          ref={exitBannerRef}
+          style={{
+            position: "absolute",
+            left: "50%",
+            bottom: 12,
+            transform: "translateX(-50%)",
+            padding: "3px 10px",
+            borderRadius: 4,
+            backgroundColor: "var(--ezy-surface-raised)",
+            border: "1px solid var(--ezy-border)",
+            color: "var(--ezy-text-muted)",
+            fontSize: 12,
+            lineHeight: 1.4,
+            letterSpacing: 0.2,
+            pointerEvents: "none",
+            userSelect: "none",
+            zIndex: 10,
+          }}
+        >
+          [Process exited]
+        </div>
       )}
       {/* Jump-to-bottom — appears while scrolled into history (driven by
           `scroll` events). Anchored bottom-right; its rect is published via

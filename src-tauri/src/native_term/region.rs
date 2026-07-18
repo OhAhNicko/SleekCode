@@ -11,18 +11,34 @@
 // Each hole rect (pane-local logical px) is scaled by DPR, expanded by 1
 // physical pixel per side to swallow subpixel rendering on overlay edges
 // (risk #5 — SetWindowRgn has no per-pixel alpha), then subtracted from the
-// pane rect via CombineRgn(RGN_DIFF).
+// pane rect via CombineRgn(RGN_DIFF) as a ROUNDED rect: MADE's floating
+// overlays (toasts, popups, tooltips) use an ~8px CSS border-radius, so a
+// square hole would reveal the pane background in the overlay's rounded
+// corners (the "why is the toast square" artifact). Rounding the hole to
+// match keeps the corners clean. The corner radius includes the 1px edge
+// expansion so the hole never cuts INTO the overlay's own rounded corner
+// (which would leave a pane sliver) — it sits a hair outside it.
 //
 // Non-Windows: not implemented (Phase 4).
 
 use super::window::Rect;
 
+/// Overlay CSS border-radius (logical px) the rounded holes target. Matches
+/// the app's standard floating-surface radius; +1 aligns with the per-side
+/// physical-px expansion below.
+#[cfg(target_os = "windows")]
+const OVERLAY_CORNER_RADIUS_LOGICAL: f32 = 8.0;
+
 #[cfg(target_os = "windows")]
 pub fn apply_region(hwnd: isize, pane_size_px: (i32, i32), holes: &[Rect], dpr: f32) -> Result<(), String> {
     use windows::Win32::Foundation::{BOOL, HWND};
     use windows::Win32::Graphics::Gdi::{
-        CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_DIFF,
+        CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, RGN_DIFF,
     };
+
+    // Corner ELLIPSE diameter for CreateRoundRectRgn = 2 × corner radius.
+    // Radius = overlay radius + the 1px expansion (see header), in physical px.
+    let corner_diam = (((OVERLAY_CORNER_RADIUS_LOGICAL + 1.0) * dpr).round() as i32 * 2).max(2);
 
     let hwnd = HWND(hwnd as *mut _);
     let (w_px, h_px) = pane_size_px;
@@ -48,10 +64,13 @@ pub fn apply_region(hwnd: isize, pane_size_px: (i32, i32), holes: &[Rect], dpr: 
             let r = (((hole.x + hole.width) * dpr).ceil() as i32) + 1;
             let b = (((hole.y + hole.height) * dpr).ceil() as i32) + 1;
 
-            let hole_rgn = CreateRectRgn(l, t, r, b);
+            // Rounded hole so the overlay's CSS-rounded corners don't reveal
+            // the pane behind them. CreateRoundRectRgn's last two args are the
+            // corner ellipse width/height (= 2 × radius).
+            let hole_rgn = CreateRoundRectRgn(l, t, r, b, corner_diam, corner_diam);
             if hole_rgn.is_invalid() {
                 let _ = DeleteObject(full);
-                return Err("CreateRectRgn (hole) failed".to_string());
+                return Err("CreateRoundRectRgn (hole) failed".to_string());
             }
             // RGN_DIFF: full = full - hole_rgn
             let res = CombineRgn(full, full, hole_rgn, RGN_DIFF);

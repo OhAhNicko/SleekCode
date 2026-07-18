@@ -34,12 +34,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{BOOL, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    BOOL, HANDLE, HGLOBAL, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{InvalidateRect, ValidateRect};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{
+    GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
+};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, GCS_COMPSTR, GCS_CURSORPOS,
     GCS_RESULTSTR,
@@ -298,6 +302,21 @@ struct ChildState {
     /// coalesce window (`SCROLL_EMIT_COALESCE_MS`). `None` = never emitted,
     /// so the first emit always passes.
     last_scroll_emit: Option<Instant>,
+    /// N-b copy-on-select: mirrors the JS `copyOnSelect` store flag (legacy
+    /// default false). Gates the auto-copy in WM_LBUTTONUP — when false, a
+    /// finalized selection is emitted (`selection` event) but NOT written to
+    /// the clipboard. Explicit copy paths (Ctrl+Shift+C via the React layer)
+    /// are unaffected. Pushed from JS via `native_term_set_copy_on_select`.
+    copy_on_select: bool,
+    /// M2: one-shot latch that drops the WM_CHAR TranslateMessage queues for a
+    /// WM_KEYDOWN we already consumed as a paste (Ctrl+V) or UI shortcut. The
+    /// message loop runs TranslateMessage BEFORE DispatchMessage, so returning
+    /// LRESULT(0) from the WM_KEYDOWN handler cannot un-queue that WM_CHAR — the
+    /// leaked control char (0x16 for Ctrl+V, 0x12 for Ctrl+R, …) would reach the
+    /// PTY on the next pump. Set true when a keydown is consumed, cleared by the
+    /// following WM_CHAR (which it swallows) and reset to false at the top of
+    /// every keydown so it can never swallow a later, legitimate character.
+    swallow_next_char: bool,
 }
 
 pub struct PlatformWindow {
@@ -378,6 +397,8 @@ impl PlatformWindow {
                 last_seen_batches: 0,
                 last_scroll_emitted_offset: None,
                 last_scroll_emit: None,
+                copy_on_select: false,
+                swallow_next_char: false,
             })) as *mut ChildState;
             PENDING_STATE.with(|cell| *cell.borrow_mut() = Some(state));
 
@@ -1145,6 +1166,17 @@ impl NativeTermWindow for PlatformWindow {
         Ok(())
     }
 
+    fn set_copy_on_select(&mut self, on: bool) -> Result<(), String> {
+        // N-b: mirror the JS `copyOnSelect` store flag onto ChildState. Read
+        // by WM_LBUTTONUP to decide whether a finalized selection auto-copies
+        // to the clipboard (legacy default false). No repaint needed — this
+        // only changes clipboard behavior, not what's drawn.
+        unsafe {
+            self.state.as_mut().copy_on_select = on;
+        }
+        Ok(())
+    }
+
     fn focus_keyboard(&mut self) -> Result<(), String> {
         // P7b: keyboard-focus request from JS (active-pane parity with the
         // xterm pane's term.focus()). SetFocus is thread-sensitive, so post
@@ -1860,6 +1892,37 @@ unsafe extern "system" fn wnd_proc(
                         }
                         return LRESULT(0);
                     }
+
+                    // S12/S13 plain-text parity: Rust can't run the JS URL /
+                    // file-path regexes, so a Ctrl+Click that did NOT land on an
+                    // OSC 8 hyperlink emits a link_click with an EMPTY uri. The
+                    // React hook (useNativeFileLinks) treats that as "activate the
+                    // regex link currently hovered" (its live hover ref) and
+                    // dispatches made:open-url / made:open-file — mirroring xterm's
+                    // Ctrl+Click on plain text. line/col are viewport-relative
+                    // best-effort and unused by the empty-uri consumer. Return
+                    // early so Ctrl+Click never starts a selection, matching the
+                    // hyperlink branch above.
+                    if let (Some(app), Some(tid)) =
+                        ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                    {
+                        emit_link_click(
+                            app,
+                            tid,
+                            LinkClick {
+                                uri: String::new(),
+                                line: row_visible as i64,
+                                col: col_raw.max(0) as u32,
+                                modifiers: KeyModifiers {
+                                    ctrl,
+                                    shift,
+                                    alt,
+                                    meta: false,
+                                },
+                            },
+                        );
+                    }
+                    return LRESULT(0);
                 }
 
                 // R4-mouse: xterm mouse-mode forwarding. When the running TUI
@@ -1954,9 +2017,15 @@ unsafe extern "system" fn wnd_proc(
                             SelectionEvent { text: text.clone() },
                         );
                     }
+                    // N-b: auto-copy only when the copyOnSelect store flag is
+                    // set (legacy default false). The `selection` event above
+                    // always fires; explicit copy (Ctrl+Shift+C via the React
+                    // layer) is a separate path and unaffected by this gate.
                     // Best-effort clipboard write; failure is silent (no
                     // surface to surface the error to here).
-                    let _ = copy_to_clipboard(hwnd, &text);
+                    if (*state_ptr).copy_on_select {
+                        let _ = copy_to_clipboard(hwnd, &text);
+                    }
                 }
             }
             LRESULT(0)
@@ -2031,6 +2100,44 @@ unsafe extern "system" fn wnd_proc(
                 return LRESULT(0);
             }
 
+            // S7: Ctrl+wheel zooms the CLI font instead of scrolling history
+            // (reached only when mouse mode is OFF or Shift bypassed it). We
+            // reuse the SAME made:font-zoom path App.tsx already owns by
+            // replaying a synthetic Ctrl+= (wheel up) / Ctrl+- (wheel down)
+            // through the key_down_preview channel — App turns those into a
+            // made:font-zoom event, so both renderers share one zoom code
+            // path. One step per wheel event (delta sign only), matching the
+            // xterm pane's Ctrl+wheel which steps once per event.
+            if ctrl && delta_raw != 0 {
+                if let (Some(app), Some(tid)) =
+                    ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                {
+                    // delta_raw > 0 = wheel forward = zoom IN (matches the
+                    // xterm pane's `deltaY < 0 ? +1 : -1`).
+                    let (key, code) = if delta_raw > 0 {
+                        ("=", "Equal")
+                    } else {
+                        ("-", "Minus")
+                    };
+                    emit_key_down_preview(
+                        app,
+                        tid,
+                        KeyDownPreview {
+                            ev: KeyEventDto {
+                                code: code.to_string(),
+                                key: key.to_string(),
+                                ctrl: true,
+                                shift: false,
+                                alt: false,
+                                meta: false,
+                                repeat: false,
+                            },
+                        },
+                    );
+                }
+                return LRESULT(0);
+            }
+
             let lines = delta_raw / WHEEL_DELTA * LINES_PER_NOTCH;
             if lines != 0 {
                 let term = (*state_ptr).term.as_ref().map(Arc::clone);
@@ -2044,7 +2151,19 @@ unsafe extern "system" fn wnd_proc(
                         let grid = t.grid();
                         (grid.display_offset(), grid.history_size() as i64)
                     };
-                    let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    // Scroll snappiness: render SYNCHRONOUSLY (same D1
+                    // pattern as WM_SIZE) instead of InvalidateRect-and-wait.
+                    // During wheel storms WM_PAINT is the lowest-priority
+                    // message and gets starved behind the input/wake stream —
+                    // frames arrived at a fraction of the wheel rate and
+                    // scrolling read as laggy/smeary. Each frame is cheap now
+                    // (cache rotation re-shapes only newly-exposed rows), so
+                    // rendering per wheel event is bounded and immediate.
+                    if let Some(r) = (*state_ptr).renderer.as_mut() {
+                        r.force_next_frame();
+                    }
+                    render_with_retry(&mut *state_ptr, hwnd);
+                    let _ = ValidateRect(hwnd, None);
                     // P6a: the parser worker only emits `scroll` on byte
                     // arrival — a wheel scroll during quiet output must emit
                     // from HERE or the jump-to-bottom UI never appears.
@@ -2066,6 +2185,50 @@ unsafe extern "system" fn wnd_proc(
             let ctrl = (GetKeyState(VK_CONTROL_RAW as i32) as u16 & 0x8000) != 0;
             let shift = (GetKeyState(VK_SHIFT_RAW as i32) as u16 & 0x8000) != 0;
             let alt = (GetKeyState(VK_MENU_RAW as i32) as u16 & 0x8000) != 0;
+
+            // M2: reset the WM_CHAR-swallow latch on EVERY keydown. Only the two
+            // consume paths below (paste / UI shortcut) re-arm it; a normal
+            // keydown leaves it false so its own legitimate WM_CHAR is forwarded.
+            // This bounds the latch to at most the immediately-following WM_CHAR.
+            if !state_ptr.is_null() {
+                (*state_ptr).swallow_next_char = false;
+            }
+
+            // M2: clipboard paste — Ctrl+V or Shift+Insert. Read CF_UNICODETEXT,
+            // normalize line endings, wrap in bracketed-paste markers when the
+            // TUI enabled DECSET 2004, and write to the PTY. CONSUME the event so
+            // the paste text is the ONLY thing that reaches the PTY. Returning
+            // LRESULT(0) does NOT stop TranslateMessage from queuing Ctrl+V's
+            // 0x16 SYN as a WM_CHAR, so we arm swallow_next_char (below) to drop
+            // it. Handled before vk_to_ui_shortcut / vk_to_bytes.
+            if !state_ptr.is_null() && is_paste_shortcut(vk, ctrl, shift, alt) {
+                if let Some(text) = read_clipboard_text(hwnd) {
+                    if !text.is_empty() {
+                        // A paste is input headed for the PTY — snap a
+                        // scrolled-back viewport to the live bottom first,
+                        // exactly like a keystroke (cheap no-op when pinned).
+                        snap_to_bottom_on_input(&mut *state_ptr, hwnd);
+                        let bracketed = paste_is_bracketed(&*state_ptr);
+                        let bytes: Vec<u8> = if bracketed {
+                            let mut b = Vec::with_capacity(text.len() + 12);
+                            b.extend_from_slice(b"\x1b[200~");
+                            b.extend_from_slice(text.as_bytes());
+                            b.extend_from_slice(b"\x1b[201~");
+                            b
+                        } else {
+                            text.into_bytes()
+                        };
+                        if let Some(pid) = (*state_ptr).pty_id {
+                            let _ = crate::pty::write_to_pty_sync(pid, &bytes);
+                        }
+                    }
+                }
+                // M2: drop the 0x16 SYN that TranslateMessage queued for this
+                // consumed Ctrl+V so it can't trail the pasted bytes into the PTY.
+                (*state_ptr).swallow_next_char = true;
+                return LRESULT(0);
+            }
+
             if !state_ptr.is_null() {
                 if let Some((key, code)) = vk_to_ui_shortcut(vk, ctrl, alt, shift) {
                     if let (Some(app), Some(tid)) =
@@ -2087,6 +2250,11 @@ unsafe extern "system" fn wnd_proc(
                             },
                         );
                     }
+                    // M2: a consumed Ctrl-combo shortcut (Ctrl+R/K/B/F, …) still
+                    // gets a control char queued as WM_CHAR by TranslateMessage;
+                    // arm the latch so it can't double-fire into the shell (e.g.
+                    // Ctrl+R also triggering reverse-i-search).
+                    (*state_ptr).swallow_next_char = true;
                     return LRESULT(0);
                 }
             }
@@ -2117,6 +2285,14 @@ unsafe extern "system" fn wnd_proc(
             // wparam is a UTF-16 code unit. We collect surrogates if needed and
             // encode to UTF-8 before forwarding to the PTY.
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+            // M2: swallow exactly one code unit — the control char TranslateMessage
+            // queued for a WM_KEYDOWN we already consumed (paste / UI shortcut).
+            // Returning LRESULT(0) from that keydown cannot un-queue this WM_CHAR,
+            // so the latch drops it here instead of leaking it to the PTY.
+            if !state_ptr.is_null() && (*state_ptr).swallow_next_char {
+                (*state_ptr).swallow_next_char = false;
+                return LRESULT(0);
+            }
             let pty_id = if !state_ptr.is_null() {
                 (*state_ptr).pty_id
             } else {
@@ -2797,28 +2973,77 @@ const VK_MENU_RAW: u32 = 0x12; // Alt
 /// If the keystroke matches a React-side UI shortcut, return the
 /// `(KeyboardEvent.key, KeyboardEvent.code)` pair to synthesize on the JS
 /// side. Returning `Some` causes WM_KEYDOWN to skip PTY forwarding and emit
-/// `key_down_preview` instead. Keep this list aligned with the Ctrl/Alt
-/// shortcuts in `src/App.tsx`'s global keydown handler — items here are the
-/// ones the user explicitly asked to keep working when the native pane
-/// has keyboard focus.
+/// `key_down_preview` instead (the `shift` flag rides along in the DTO, so the
+/// synthetic keydown App.tsx replays carries the right modifier state).
+///
+/// MUST stay aligned with `src/App.tsx`'s global keydown handler (S5/S6). The
+/// forwarded set is exactly the app-chrome combos a focused pane should drive
+/// (US-layout `key` values chosen to match App.tsx's `switch (e.key)` cases):
+///   * Plain Ctrl (no Shift/Alt): K, B, F, R, `/`, `,`, 1/2/3 (new panes),
+///     Tab (next tab), font-zoom `=`/`-`/numpad `+`/`-`, and 0/numpad-0
+///     (reset zoom — new App.tsx handler).
+///   * Ctrl+Shift: T, N, F, W, D, P, E, G, `[`/`]` (focus prev/next pane),
+///     1/2/3 (h-split panes → `!`/`@`/`#`), Tab (prev tab).
+///   * Alt+digit 1..9 (no Ctrl): tab switch — App.tsx reads `e.code` here, so
+///     the Digit* codes are exact.
+///
+/// DELIBERATELY NOT forwarded — genuine terminal control chars kept with the
+/// shell: Ctrl+C (SIGINT), Ctrl+D (EOF), Ctrl+L (clear), Ctrl+W (kill-word).
+/// Ctrl+R IS forwarded because App.tsx demonstrably owns it (prompt-history
+/// search), matching the xterm pane where App's capture-phase handler
+/// intercepts Ctrl+R before the shell ever sees it.
 fn vk_to_ui_shortcut(
     vk: u32,
     ctrl: bool,
     alt: bool,
-    _shift: bool,
+    shift: bool,
 ) -> Option<(&'static str, &'static str)> {
-    // Ctrl combos
-    if ctrl && !alt {
+    // Ctrl+Shift combos (app chrome). Checked before plain-Ctrl so the shifted
+    // variants win; none collide with a C0 control char, so forwarding is safe.
+    if ctrl && shift && !alt {
         match vk {
-            0x4B => return Some(("k", "KeyK")), // Ctrl+K → palette
-            0x42 => return Some(("b", "KeyB")), // Ctrl+B → sidebar
-            0x46 => return Some(("f", "KeyF")), // Ctrl+F → search
-            0xBF => return Some(("/", "Slash")), // Ctrl+/ → shortcuts
-            0xBC => return Some((",", "Comma")), // Ctrl+, → settings
+            0x54 => return Some(("T", "KeyT")),        // Ctrl+Shift+T → new tab
+            0x4E => return Some(("N", "KeyN")),        // Ctrl+Shift+N → new project/tab
+            0x46 => return Some(("F", "KeyF")),        // Ctrl+Shift+F → code review
+            0x57 => return Some(("W", "KeyW")),        // Ctrl+Shift+W → close tab
+            0x44 => return Some(("D", "KeyD")),        // Ctrl+Shift+D → split horizontal
+            0x50 => return Some(("P", "KeyP")),        // Ctrl+Shift+P → command palette
+            0x45 => return Some(("E", "KeyE")),        // Ctrl+Shift+E → file explorer
+            0x47 => return Some(("G", "KeyG")),        // Ctrl+Shift+G → mini-games toggle
+            0xDB => return Some(("[", "BracketLeft")), // Ctrl+Shift+[ → focus prev pane
+            0xDD => return Some(("]", "BracketRight")),// Ctrl+Shift+] → focus next pane
+            0x31 => return Some(("!", "Digit1")),      // Ctrl+Shift+1 → Claude pane (h-split)
+            0x32 => return Some(("@", "Digit2")),      // Ctrl+Shift+2 → Codex pane (h-split)
+            0x33 => return Some(("#", "Digit3")),      // Ctrl+Shift+3 → Gemini pane (h-split)
+            0x09 => return Some(("Tab", "Tab")),       // Ctrl+Shift+Tab → prev tab
             _ => {}
         }
     }
-    // Alt+digit (without Ctrl)
+    // Plain Ctrl combos (no Shift, no Alt).
+    if ctrl && !alt && !shift {
+        match vk {
+            0x4B => return Some(("k", "KeyK")),   // Ctrl+K → command palette
+            0x42 => return Some(("b", "KeyB")),   // Ctrl+B → sidebar
+            0x46 => return Some(("f", "KeyF")),   // Ctrl+F → pane search
+            0x52 => return Some(("r", "KeyR")),   // Ctrl+R → prompt-history search (App owns)
+            0xBF => return Some(("/", "Slash")),  // Ctrl+/ → shortcuts overlay
+            0xBC => return Some((",", "Comma")),  // Ctrl+, → settings panel
+            0x31 => return Some(("1", "Digit1")), // Ctrl+1 → new Claude pane
+            0x32 => return Some(("2", "Digit2")), // Ctrl+2 → new Codex pane
+            0x33 => return Some(("3", "Digit3")), // Ctrl+3 → new Gemini pane
+            0x09 => return Some(("Tab", "Tab")),  // Ctrl+Tab → next tab
+            // S6 font-zoom: App.tsx turns Ctrl+= / Ctrl+- into made:font-zoom.
+            0xBB => return Some(("=", "Equal")),  // Ctrl+= → zoom in
+            0xBD => return Some(("-", "Minus")),  // Ctrl+- → zoom out
+            0x6B => return Some(("+", "NumpadAdd")),      // Ctrl+numpad+ → zoom in
+            0x6D => return Some(("-", "NumpadSubtract")), // Ctrl+numpad- → zoom out
+            0x30 => return Some(("0", "Digit0")), // Ctrl+0 → reset zoom (new App handler)
+            0x60 => return Some(("0", "Numpad0")),// Ctrl+numpad0 → reset zoom
+            _ => {}
+        }
+    }
+    // Alt+digit (without Ctrl) → tab switch by number. App.tsx reads e.code
+    // here, so Digit1..Digit9 must be exact.
     if alt && !ctrl {
         match vk {
             0x31 => return Some(("1", "Digit1")),
@@ -3032,6 +3257,92 @@ unsafe fn mouse_to_point(state: &ChildState, x_px: i32, y_px: i32) -> Option<Poi
     let col = col_raw.clamp(0, (cols as i32).saturating_sub(1)) as usize;
     let row = row_raw.clamp(0, (rows as i32).saturating_sub(1));
     Some(Point::new(Line(row - display_offset), Column(col)))
+}
+
+/// M2: does this keystroke request a clipboard paste? Ctrl+V (Shift allowed —
+/// covers Ctrl+Shift+V too, both are "paste" and neither should leak SYN) or
+/// Shift+Insert (VK_INSERT 0x2D). Alt disqualifies both (Ctrl+Alt+V and
+/// Alt+Insert are not paste). Kept a free fn so the WM_KEYDOWN arm reads cleanly.
+fn is_paste_shortcut(vk: u32, ctrl: bool, shift: bool, alt: bool) -> bool {
+    const VK_V: u32 = 0x56;
+    const VK_INSERT: u32 = 0x2D;
+    if alt {
+        return false;
+    }
+    (ctrl && vk == VK_V) || (shift && !ctrl && vk == VK_INSERT)
+}
+
+/// M2: is the attached Term in bracketed-paste mode (DECSET 2004)? A pasted
+/// payload is then wrapped in `ESC[200~ … ESC[201~` so the REPL treats it as
+/// one literal block instead of interpreting embedded newlines as commands.
+/// Brief term lock; false when detached (raw paste).
+unsafe fn paste_is_bracketed(state: &ChildState) -> bool {
+    let Some(term) = state.term.as_ref() else {
+        return false;
+    };
+    let t = term.lock().expect("term lock poisoned");
+    let on = t.mode().contains(TermMode::BRACKETED_PASTE);
+    drop(t);
+    on
+}
+
+/// M2: read CF_UNICODETEXT from the clipboard and return it with CRLF/CR
+/// normalized to LF (terminal input convention — a bare CR would move the
+/// cursor to column 0 mid-paste). Returns None when the clipboard holds no
+/// unicode text, is empty, or any Win32 step fails. CRITICAL: CloseClipboard
+/// runs on EVERY exit path — an un-closed clipboard hangs the whole desktop.
+/// The handle from GetClipboardData is owned by the clipboard, so we only
+/// GlobalUnlock our own lock and never free it.
+unsafe fn read_clipboard_text(owner: HWND) -> Option<String> {
+    if OpenClipboard(owner).is_err() {
+        return None;
+    }
+    let handle = match GetClipboardData(CF_UNICODETEXT) {
+        Ok(h) if !h.is_invalid() => h,
+        _ => {
+            let _ = CloseClipboard();
+            return None;
+        }
+    };
+    let hglobal = HGLOBAL(handle.0);
+    let ptr = GlobalLock(hglobal) as *const u16;
+    if ptr.is_null() {
+        let _ = CloseClipboard();
+        return None;
+    }
+    // Scan the NUL-terminated UTF-16 buffer. CF_UNICODETEXT is contractually
+    // NUL-terminated, but a malformed/truncated block from a buggy or hostile
+    // clipboard owner may have no NUL inside its allocation — walking past the
+    // GlobalAlloc region is UB and faults across the extern "system" wnd_proc
+    // boundary (a hardware exception, not a catchable panic). Clamp the scan to
+    // the real allocation via GlobalSize (bytes → u16 units), keeping the 64M
+    // ceiling as a secondary defensive bound.
+    const MAX_UNITS: isize = 64 * 1024 * 1024; // 64M code units ceiling
+    let alloc_units = (GlobalSize(hglobal) / 2) as isize; // bytes → u16 units
+    let scan_limit = alloc_units.min(MAX_UNITS);
+    let mut units: Vec<u16> = Vec::new();
+    let mut i: isize = 0;
+    while i < scan_limit {
+        let u = *ptr.offset(i);
+        if u == 0 {
+            break;
+        }
+        units.push(u);
+        i += 1;
+    }
+    // GlobalUnlock decrements the lock count; ignore the result (it reports
+    // FALSE with NO_ERROR once the count reaches 0 — the copy path does the
+    // same). Then release the clipboard BEFORE decoding.
+    let _ = GlobalUnlock(hglobal);
+    let _ = CloseClipboard();
+
+    if units.is_empty() {
+        return None;
+    }
+    let text = String::from_utf16_lossy(&units);
+    // CRLF first so a lone CR pass doesn't double-collapse it.
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    Some(normalized)
 }
 
 /// Copy a UTF-8 string to the Windows clipboard as CF_UNICODETEXT.

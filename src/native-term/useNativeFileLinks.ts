@@ -7,13 +7,20 @@
  * and `link_click` for OSC 8 hyperlinks. This hook bridges them:
  *
  *   • cell_hover  → fetch the line via nativeTermGetBufferLines, run the
- *                   file-path regex, and if the hovered col is inside a
- *                   match, set hover state so FileLinkTooltip can render a
- *                   positioned tooltip near the cell.
+ *                   URL + file-path regexes, and if the hovered col is inside
+ *                   a match, set hover state so FileLinkTooltip can render a
+ *                   positioned tooltip near the cell. URLs take precedence
+ *                   over file paths.
  *   • cell_hover_end → clear hover state (tooltip hides).
- *   • link_click  → dispatch the existing `made:open-file` event with the
- *                   resolved URI. File:// URIs are stripped; http(s)://
- *                   are forwarded to the OS shell.
+ *   • link_click  → Ctrl+Click. A NON-empty uri is an OSC 8 hyperlink cell:
+ *                   dispatch `made:open-file` for file:// URIs (stripped +
+ *                   resolved) and `made:open-url` for http(s):// URIs
+ *                   (forwarded to the OS shell by PaneGrid). An EMPTY uri is
+ *                   PLAIN-TEXT parity — Rust can't run the regexes, so it
+ *                   defers and we activate the live regex hover instead,
+ *                   mirroring the xterm file-link provider's `activate`. (No
+ *                   DOM click reaches JS over the native HWND, so this native
+ *                   event is the only Ctrl+Click signal available.)
  *
  * Buffer reads are cached per (termId, line) for ~200ms so cell_hover firing
  * column-by-column on a fast mouse move doesn't spam the Rust IPC channel.
@@ -35,10 +42,21 @@ interface UseNativeFileLinksOpts {
 }
 
 export interface FileLinkHover {
-  path: string;
+  /** Discriminates a plain-text file path from an http(s) URL. */
+  kind: "file" | "url";
+  path: string; // display text (full match). For URLs, the URL itself.
   line: number; // pane-local cell row (visible space)
   col: number; // pane-local cell col (start of match)
   matchLen: number; // chars
+  /**
+   * Ctrl/Cmd+Click activation payload:
+   *  - file: the raw (possibly relative) path, resolved against workingDir
+   *    at click time.
+   *  - url: the http(s) URL, opened via the OS shell.
+   */
+  href: string;
+  /** Parsed `:line` suffix for file matches (undefined for URLs). */
+  fileLine?: number;
 }
 
 export interface UseNativeFileLinksReturn {
@@ -58,6 +76,36 @@ function resolvePath(filePath: string, workingDir: string): string {
   return base + filePath;
 }
 
+// Plain-text http(s) URL matcher — mirrors findFilePathsInLine's approach so
+// bare URLs in terminal output become hoverable + Ctrl+Click clickable even
+// when the shell didn't wrap them in an OSC 8 hyperlink. The character class
+// stops at whitespace and closing brackets/quotes; trailing sentence
+// punctuation is trimmed so "see https://x.com/y." doesn't grab the period.
+const URL_RE = /https?:\/\/[^\s<>"'`)\]}]+/gi;
+
+interface UrlMatch {
+  url: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+function findUrlsInLine(lineText: string): UrlMatch[] {
+  const matches: UrlMatch[] = [];
+  URL_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = URL_RE.exec(lineText)) !== null) {
+    const raw = m[0];
+    const trimmed = raw.replace(/[.,;:!?]+$/, "");
+    if (!trimmed) continue;
+    matches.push({
+      url: trimmed,
+      startIndex: m.index,
+      endIndex: m.index + trimmed.length,
+    });
+  }
+  return matches;
+}
+
 export function useNativeFileLinks({
   termId,
   workingDir,
@@ -70,6 +118,18 @@ export function useNativeFileLinks({
 
   const [hover, setHover] = useState<FileLinkHover | null>(null);
 
+  // Mirror the live hover into a ref so the window click listener (registered
+  // once, below) reads the cell currently under the cursor without re-binding.
+  const hoverRef = useRef<FileLinkHover | null>(null);
+  useEffect(() => {
+    hoverRef.current = hover;
+  }, [hover]);
+
+  // S13/S12 plain-text parity is driven by the Rust `link_click` event with an
+  // EMPTY uri (emitted on Ctrl/Cmd+Click of a non-hyperlink cell), handled in
+  // the termId-scoped subscription below. A window "click" listener can't work
+  // here: clicks on the native terminal HWND are consumed by Rust and never
+  // surface as a DOM click, so the native event is the only signal available.
   useEffect(() => {
     if (termId == null) {
       setHover(null);
@@ -114,12 +174,35 @@ export function useNativeFileLinks({
             setHover(null);
             return;
           }
-          const matches = findFilePathsInLine(text);
-          if (matches.length === 0) {
-            setHover(null);
+          // URLs take precedence over file paths — a URL whose tail looks
+          // like a file (…/app.ts) should open in the browser, not the editor.
+          const urlHit = findUrlsInLine(text).find(
+            (m) => e.col >= m.startIndex && e.col < m.endIndex,
+          );
+          if (urlHit) {
+            setHover((prev) => {
+              if (
+                prev &&
+                prev.kind === "url" &&
+                prev.href === urlHit.url &&
+                prev.line === e.line &&
+                prev.col === urlHit.startIndex
+              ) {
+                return prev;
+              }
+              return {
+                kind: "url",
+                path: urlHit.url,
+                line: e.line,
+                col: urlHit.startIndex,
+                matchLen: urlHit.endIndex - urlHit.startIndex,
+                href: urlHit.url,
+              };
+            });
             return;
           }
-          const hit = matches.find(
+
+          const hit = findFilePathsInLine(text).find(
             (m) => e.col >= m.startIndex && e.col < m.endIndex,
           );
           if (!hit) {
@@ -131,6 +214,7 @@ export function useNativeFileLinks({
             // intra-match column step. Only update when path/line/col change.
             if (
               prev &&
+              prev.kind === "file" &&
               prev.path === hit.text &&
               prev.line === e.line &&
               prev.col === hit.startIndex
@@ -138,10 +222,13 @@ export function useNativeFileLinks({
               return prev;
             }
             return {
+              kind: "file",
               path: hit.text,
               line: e.line,
               col: hit.startIndex,
               matchLen: hit.endIndex - hit.startIndex,
+              href: hit.filePath,
+              fileLine: hit.line,
             };
           });
         })();
@@ -158,7 +245,30 @@ export function useNativeFileLinks({
       const uClick = await subscribeLinkClick(termId, (e) => {
         if (cancelled) return;
         const uri = e.uri;
-        if (!uri) return;
+        if (!uri) {
+          // S12/S13 plain-text parity: an empty uri means Ctrl/Cmd+Click landed
+          // on a NON-hyperlink cell. Rust can't run the URL/file-path regexes,
+          // so it defers to us: activate the regex link currently under the
+          // cursor (live hover), mirroring xterm's Ctrl+Click on plain text.
+          // Clicks on the native terminal HWND never produce a DOM `click`
+          // (Rust owns the mouse), so this native event — not a window click
+          // listener — is the only path that fires here.
+          const h = hoverRef.current;
+          if (!h) return;
+          if (h.kind === "url") {
+            window.dispatchEvent(
+              new CustomEvent("made:open-url", { detail: { url: h.href } }),
+            );
+          } else {
+            const resolved = resolvePath(h.href, workingDirRef.current);
+            window.dispatchEvent(
+              new CustomEvent("made:open-file", {
+                detail: { filePath: resolved, lineNumber: h.fileLine },
+              }),
+            );
+          }
+          return;
+        }
 
         // OSC 8 hyperlink — could be file://, http(s)://, or anything else.
         if (/^https?:\/\//i.test(uri)) {

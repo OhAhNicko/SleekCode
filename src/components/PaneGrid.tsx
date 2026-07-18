@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PaneLayout, GameType } from "../types";
 import {
   removePane,
@@ -139,6 +140,28 @@ export default function PaneGrid({
     window.addEventListener("made:open-file", handler);
     return () => window.removeEventListener("made:open-file", handler);
   }, [layout, onLayoutChange]);
+
+  // Open http(s) links from the native terminal (OSC 8 hyperlinks and
+  // plain-text URLs, both dispatched by useNativeFileLinks) in the system
+  // browser. Mirrors TerminalPaneXterm's WebLinksAddon, which routes through
+  // Tauri's opener plugin because window.open() is blocked in the WebView.
+  // openUrl is an UNSCOPED global side effect (unlike the sibling open-file /
+  // open-fileviewer handlers, which mutate each grid's own per-tab layout), so
+  // it MUST fire from exactly one grid. Every open project tab keeps its
+  // Workspace/PaneGrid mounted (inactive tabs are display:none, not unmounted),
+  // so an unguarded listener would openUrl once per open tab. The link click
+  // can only originate from the visible active tab, so gate on activeTabId ===
+  // tabId — matching Workspace's made:font-zoom guard.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if (useAppStore.getState().activeTabId !== tabId) return;
+      const url = (e as CustomEvent).detail?.url;
+      if (typeof url !== "string" || !url) return;
+      openUrl(url).catch(() => {});
+    };
+    window.addEventListener("made:open-url", handler);
+    return () => window.removeEventListener("made:open-url", handler);
+  }, [tabId]);
 
   // Toggle code review pane (open on right / close if already open)
   useEffect(() => {

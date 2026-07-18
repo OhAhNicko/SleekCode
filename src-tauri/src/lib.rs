@@ -181,7 +181,16 @@ mod win32_border {
         fn GetSystemMetricsForDpi(index: i32, dpi: u32) -> i32;
         fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
         fn ShowWindow(hwnd: *mut c_void, cmd_show: i32) -> i32;
+        fn SetTimer(
+            hwnd: *mut c_void,
+            id_event: usize,
+            elapse: u32,
+            timer_func: *const c_void,
+        ) -> usize;
+        fn KillTimer(hwnd: *mut c_void, id_event: usize) -> i32;
     }
+
+    const WM_TIMER: u32 = 0x0113;
 
     const SW_MINIMIZE: i32 = 6;
 
@@ -233,13 +242,30 @@ mod win32_border {
         }
     }
 
+    /// Delayed accent-frame retry timers. The posted recomposite below runs
+    /// right after the message burst — but a maximize→restore plays a DWM
+    /// ANIMATION that outlasts the burst, and DWM composites the stale accent
+    /// frame AFTER our nudge. Nothing retried, so the red line stuck until a
+    /// manual resize. Two staggered retries (post-animation, then a settle
+    /// margin) make the clear stick; the nudge is net-zero (+1/−1 px) and
+    /// invisible, so re-running it is free.
+    const NC_RETRY_TIMER_1: usize = 0x4E31; // 'N1'
+    const NC_RETRY_TIMER_2: usize = 0x4E32; // 'N2'
+    const NC_RETRY_1_MS: u32 = 450;
+    const NC_RETRY_2_MS: u32 = 900;
+
     /// Queue a deferred non-client recomposite. Posted (not synchronous) so it
     /// runs AFTER the current transition's message burst settles — re-applying
     /// the DWM attributes synchronously inside WM_SIZE/WM_EXITSIZEMOVE is too
     /// early; DWM composites the accent frame afterward and overwrites it.
     /// One-shot guarded by `recomposite_pending` to collapse duplicate queues.
+    /// Also arms the delayed retries (see NC_RETRY_TIMER_*): SetTimer with the
+    /// same id resets the countdown, so a burst of queues collapses into one
+    /// retry pair after the LAST transition.
     #[inline]
     unsafe fn queue_nc_recomposite(hwnd: *mut c_void, state: &mut BorderSubclassState) {
+        SetTimer(hwnd, NC_RETRY_TIMER_1, NC_RETRY_1_MS, std::ptr::null());
+        SetTimer(hwnd, NC_RETRY_TIMER_2, NC_RETRY_2_MS, std::ptr::null());
         if state.recomposite_pending {
             return;
         }
@@ -423,6 +449,18 @@ mod win32_border {
 
             if msg == WM_FORCE_NC_RECOMPOSITE {
                 state.recomposite_pending = false;
+                force_nc_recomposite(hwnd);
+                return 0;
+            }
+
+            // Delayed accent-frame retries (see NC_RETRY_TIMER_* docs): DWM's
+            // maximize→restore animation outlasts the posted recomposite, so
+            // the stale accent frame forms AFTER the first clear. These fire
+            // once each, after the animation has settled.
+            if msg == WM_TIMER
+                && (wparam == NC_RETRY_TIMER_1 || wparam == NC_RETRY_TIMER_2)
+            {
+                KillTimer(hwnd, wparam);
                 force_nc_recomposite(hwnd);
                 return 0;
             }
@@ -6582,7 +6620,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights])
         .setup(|app| {
             // Registry of active `ssh -N -L` port-forward processes for remote
             // dev servers (commands: ssh_forward_port_start / _stop).

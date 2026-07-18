@@ -89,7 +89,7 @@ export function autoAssignColor(existing: Record<string, ProjectColorId>): Proje
   return leastUsed[Math.floor(Math.random() * leastUsed.length)].id;
 }
 
-export const DEFAULT_CLI_FONT_SIZE = 15;
+export const DEFAULT_CLI_FONT_SIZE = 16;
 
 /** User-registered .md scaffold template (besides built-in CLAUDE/AGENTS/GEMINI). */
 export interface CustomScaffold {

@@ -19,6 +19,7 @@ import {
 } from "../lib/layout-utils";
 import { getPtyWrite } from "../store/terminalSlice";
 import { snapshotPane } from "../store/undoCloseStore";
+import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import type { CommandBlock } from "../lib/command-block-parser";
 import PaneGrid from "./PaneGrid";
 import BrowserPreview from "./BrowserPreview";
@@ -585,12 +586,19 @@ export default function Workspace({ tab }: WorkspaceProps) {
     const handler = (e: Event) => {
       if (useAppStore.getState().activeTabId !== tab.id) return;
       if (!activeTerminalId) return;
-      const delta = (e as CustomEvent).detail?.delta as number;
-      if (!delta) return;
-      const terminal = useAppStore.getState().terminals[activeTerminalId];
-      if (!terminal) return;
+      const detail = (e as CustomEvent).detail;
       const store = useAppStore.getState();
-      const currentSize = store.cliFontSizes[terminal.type] ?? 15;
+      const terminal = store.terminals[activeTerminalId];
+      if (!terminal) return;
+      // Ctrl+0 reset — restore the default CLI font size (works for both the
+      // xterm and native renderers; native forwards Ctrl+0 via App.tsx).
+      if (detail?.reset) {
+        store.setCliFontSize(terminal.type, DEFAULT_CLI_FONT_SIZE);
+        return;
+      }
+      const delta = detail?.delta as number;
+      if (!delta) return;
+      const currentSize = store.cliFontSizes[terminal.type] ?? DEFAULT_CLI_FONT_SIZE;
       const newSize = Math.min(30, Math.max(8, currentSize + delta));
       store.setCliFontSize(terminal.type, newSize);
     };

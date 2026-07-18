@@ -293,6 +293,7 @@ export type NativeTermCmd =
   | "native_term_set_font"
   | "native_term_set_cursor_style"
   | "native_term_set_focused"
+  | "native_term_set_copy_on_select"
   | "native_term_focus_keyboard"
   | "native_term_get_buffer_lines"
   | "native_term_get_viewport_state"
@@ -445,6 +446,17 @@ export function nativeTermSetFocused(
   focused: boolean,
 ): Promise<void> {
   return invoke<void>("native_term_set_focused", { id, focused });
+}
+
+// N-b copy-on-select: mirror the JS `copyOnSelect` store flag onto the pane.
+// When false (legacy default), a mouse-selection in the native pane emits its
+// `selection` event but does NOT auto-copy to the clipboard. Rust reads this
+// in WM_LBUTTONUP. Tauri maps the camelCase arg to the snake_case Rust param.
+export function nativeTermSetCopyOnSelect(
+  id: NativeTermId,
+  copyOnSelect: boolean,
+): Promise<void> {
+  return invoke<void>("native_term_set_copy_on_select", { id, copyOnSelect });
 }
 
 // P7b: route Win32 KEYBOARD focus to the pane's HWND — parity with the xterm

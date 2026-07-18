@@ -761,6 +761,14 @@ export default function App() {
             consume();
             window.dispatchEvent(new CustomEvent("made:font-zoom", { detail: { delta: -1 } }));
             return;
+          case "0":
+            // Ctrl+0 → Reset CLI font size to default. Dispatched through the
+            // same made:font-zoom channel (Workspace resolves the active
+            // terminal type), so it works for BOTH the xterm and native
+            // renderers — the native pane forwards Ctrl+0 via key_down_preview.
+            consume();
+            window.dispatchEvent(new CustomEvent("made:font-zoom", { detail: { reset: true } }));
+            return;
           case "Tab":
             // Ctrl+Tab → next project tab, wrapping at the end. Excludes ALL
             // system tabs (dev-server, servers, kanban, settings) so cycling
