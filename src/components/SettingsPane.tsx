@@ -25,6 +25,46 @@ import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 
 const SettingsSearchContext = createContext<{ query: string }>({ query: "" });
 
+// Repo hosting the GitHub releases the updater pulls from (mirrors the
+// updater endpoint in tauri.conf.json).
+const RELEASES_REPO = "OhAhNicko/SleekCode";
+
+// The ChangelogModal renders notes as pre-wrap PLAIN TEXT, so strip the
+// markdown the GitHub release body is written in (headings, emphasis, code,
+// links) — otherwise the modal shows literal `##`/`**` characters.
+function markdownToPlainText(md: string): string {
+  return md
+    .replace(/\r\n/g, "\n")
+    .replace(/^\s*#{1,6}\s+/gm, "") // headings -> text
+    .replace(/\*\*(.+?)\*\*/g, "$1") // bold -> text
+    .replace(/`([^`]+)`/g, "$1") // inline code -> text
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1: $2") // links -> "text: url"
+    .replace(/\n{3,}/g, "\n\n") // collapse blank runs
+    .trim();
+}
+
+// The Tauri updater's `Update.body` is sourced from latest.json's `notes`
+// field, which CI hardcodes to a placeholder ("See the assets below…"). The
+// real changelog lives in the GitHub *release body*, which the updater never
+// fetches. Pull it directly from the GitHub API (public repo, CSP allows
+// https: connect-src) so the ChangelogModal shows real notes. Returns null on
+// any failure so the caller can fall back to the updater body.
+async function fetchReleaseNotes(version: string): Promise<string | null> {
+  try {
+    const resp = await fetch(
+      `https://api.github.com/repos/${RELEASES_REPO}/releases/tags/v${version}`,
+      { headers: { Accept: "application/vnd.github+json" } },
+    );
+    if (!resp.ok) return null;
+    const data = (await resp.json()) as { body?: unknown };
+    if (typeof data.body !== "string") return null;
+    const plain = markdownToPlainText(data.body);
+    return plain.length > 0 ? plain : null;
+  } catch {
+    return null;
+  }
+}
+
 function ToggleSwitch({ checked, onChange, color }: { checked: boolean; onChange: (v: boolean) => void; color?: string }) {
   const bg = checked ? (color ?? "var(--ezy-accent)") : "transparent";
   return (
@@ -503,10 +543,17 @@ function UpdatesSection() {
         }
       });
       // Cache release notes for ChangelogModal to pick up post-relaunch.
-      if (pendingUpdate.body && pendingUpdate.body.trim().length > 0) {
+      // Prefer the real GitHub release body (fetched live) over the updater's
+      // `body`, which is only latest.json's placeholder `notes`. Fall back to
+      // the updater body if the fetch fails (offline / rate-limited).
+      const notes =
+        (await fetchReleaseNotes(pendingUpdate.version)) ??
+        pendingUpdate.body ??
+        "";
+      if (notes.trim().length > 0) {
         useAppStore.getState().setPendingChangelog({
           version: pendingUpdate.version,
-          notes: pendingUpdate.body,
+          notes,
         });
       }
       await relaunch();
