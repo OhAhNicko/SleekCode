@@ -90,6 +90,8 @@ mod win32_border {
     const SIZE_MAXIMIZED: usize = 2;
     const SIZE_RESTORED: usize = 0;
     const SWP_FRAMECHANGED: u32 = 0x0020;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
     const SWP_NOZORDER: u32 = 0x0004;
     const SWP_NOACTIVATE: u32 = 0x0010;
     const SWP_ASYNCWINDOWPOS: u32 = 0x4000;
@@ -173,7 +175,7 @@ mod win32_border {
         fn GetWindowRect(hwnd: *mut c_void, rect: *mut RECT) -> i32;
         fn IsZoomed(hwnd: *mut c_void) -> i32;
         fn IsIconic(hwnd: *mut c_void) -> i32;
-        fn MonitorFromWindow(hwnd: *mut c_void, flags: u32) -> *mut c_void;
+        fn MonitorFromRect(rect: *const RECT, flags: u32) -> *mut c_void;
         fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MONITORINFO) -> i32;
         fn GetDpiForWindow(hwnd: *mut c_void) -> u32;
         fn GetSystemMetricsForDpi(index: i32, dpi: u32) -> i32;
@@ -257,13 +259,27 @@ mod win32_border {
     /// recomposites are only queued from settling edges, never from WM_SIZE.
     #[inline]
     unsafe fn force_nc_recomposite(hwnd: *mut c_void) {
-        // Never nudge a maximized or minimized window — a size change would
-        // un-maximize it, and there's no visible frame to fix while iconic.
-        if IsIconic(hwnd) != 0 || IsZoomed(hwnd) != 0 {
+        // There's no visible frame to fix while iconic.
+        if IsIconic(hwnd) != 0 {
             return;
         }
 
         apply_border_suppression(hwnd);
+
+        // Never nudge a maximized window — a size change would un-maximize it.
+        // Instead, a pure frame-changed re-runs WM_NCCALCSIZE so the client rect
+        // snaps back to the (now fresh) monitor work area after DPI / display /
+        // work-area transitions; without this a stale overshooting client rect
+        // sticks until the user re-maximizes (content clipped at screen edges).
+        if IsZoomed(hwnd) != 0 {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0, 0, 0, 0,
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+            return;
+        }
 
         let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
         if GetWindowRect(hwnd, &mut r) == 0 {
@@ -489,7 +505,10 @@ mod win32_border {
 
         if msg == WM_NCCALCSIZE && wparam == 1 {
             let params = &mut *(lparam as *mut NCCALCSIZE_PARAMS);
-            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let r = &mut params.rgrc[0];
+            // Resolve the monitor from the PROPOSED rect, not the current window
+            // position — during maximize/display transitions they can disagree.
+            let monitor = MonitorFromRect(r as *const RECT, MONITOR_DEFAULTTONEAREST);
             let mut mi = MONITORINFO {
                 cb_size: std::mem::size_of::<MONITORINFO>() as u32,
                 rc_monitor: RECT { left: 0, top: 0, right: 0, bottom: 0 },
@@ -497,9 +516,17 @@ mod win32_border {
                 dw_flags: 0,
             };
             if GetMonitorInfoW(monitor, &mut mi) != 0 {
-                let r = &mut params.rgrc[0];
-                let (max_x, max_y) = frame_overshoot_limit(hwnd);
-                clamp_small_frame_overshoot(r, mi.rc_work, max_x, max_y);
+                if IsZoomed(hwnd) != 0 {
+                    // Maximized: Windows sizes a WS_THICKFRAME window to the work
+                    // area INFLATED by the frame width on every side. The client
+                    // rect must be exactly the work area or content renders
+                    // off-screen and clips at the edges (this is what tao's own
+                    // NCCALCSIZE handler does; our subclass bypasses it).
+                    *r = mi.rc_work;
+                } else {
+                    let (max_x, max_y) = frame_overshoot_limit(hwnd);
+                    clamp_small_frame_overshoot(r, mi.rc_work, max_x, max_y);
+                }
             }
             return 0;
         }
@@ -4501,22 +4528,35 @@ mkdir -p "$HOME/.made" 2>/dev/null
 echo "{b64}" | base64 -d > "$WRAPPER"
 chmod +x "$WRAPPER" 2>/dev/null || true
 
-# Save original statusline command as chain target (only if not already pointing to wrapper)
+# Chain + migration handling:
+#  - */.made/statusline-wrapper*: already installed — wrapper refreshed above, done.
+#  - other *statusline-wrapper*: STALE wrapper from a previous app identity
+#    (e.g. ~/.ezydev before the MADE rename). Never save it as the chain target
+#    (the wrapper fork-bomb guard would blank it and the user original
+#    statusline would be lost) — migrate the old dir chain target instead,
+#    then fall through so settings.json gets repointed at the ~/.made wrapper.
+#  - anything else: user own statusline command — save as chain target.
 case "$CURRENT" in
-  *statusline-wrapper*) ;;  # Already ours, don't overwrite chain
+  *"/.made/statusline-wrapper"*)
+    echo "UPDATED_WRAPPER"
+    exit 0
+    ;;
+  *statusline-wrapper*)
+    OLDEXP=$(eval echo "$CURRENT" 2>/dev/null || echo "$CURRENT")
+    OLDDIR=$(dirname "$OLDEXP")
+    if [ -f "$OLDDIR/statusline-chain" ]; then
+      OLDCHAIN=$(cat "$OLDDIR/statusline-chain" 2>/dev/null)
+      case "$OLDCHAIN" in
+        *statusline-wrapper*) ;;
+        *) [ -n "$OLDCHAIN" ] && echo "$OLDCHAIN" > "$CHAIN_FILE" ;;
+      esac
+    fi
+    ;;
   *)
     if [ -n "$CURRENT" ]; then
       EXPANDED=$(eval echo "$CURRENT" 2>/dev/null || echo "$CURRENT")
       echo "$EXPANDED" > "$CHAIN_FILE"
     fi
-    ;;
-esac
-
-# Update settings.json (only if not already pointing to wrapper)
-case "$CURRENT" in
-  *statusline-wrapper*)
-    echo "UPDATED_WRAPPER"
-    exit 0
     ;;
 esac
 
@@ -6417,7 +6457,11 @@ async fn get_gemini_session_id_ssh(
 
 /// Bundled wrapper version. Bumping this number forces a re-install on the
 /// remote on next call so wrapper drift is self-healing.
-const SSH_STATUSLINE_WRAPPER_VERSION: u32 = 2;
+/// v3: stale-wrapper migration — only /.made/ paths count as installed, and a
+/// previous app identity's chain file is carried over before repointing
+/// settings.json (the version gate exits before reading settings, so the
+/// repoint only re-runs on a bump).
+const SSH_STATUSLINE_WRAPPER_VERSION: u32 = 3;
 
 /// Install the MADE statusline wrapper on a remote SSH host. Idempotent:
 /// if `~/.made/statusline-wrapper.version` already matches the bundled
@@ -6469,18 +6513,26 @@ echo "{b64}" | base64 -d > "$WRAPPER"
 chmod +x "$WRAPPER" 2>/dev/null || true
 echo "{ver}" > "$VERSION_FILE"
 case "$CURRENT" in
-  *statusline-wrapper*) ;;
+  *"/.made/statusline-wrapper"*)
+    echo "UPDATED_WRAPPER"
+    exit 0
+    ;;
+  *statusline-wrapper*)
+    OLDEXP=$(eval echo "$CURRENT" 2>/dev/null || echo "$CURRENT")
+    OLDDIR=$(dirname "$OLDEXP")
+    if [ -f "$OLDDIR/statusline-chain" ]; then
+      OLDCHAIN=$(cat "$OLDDIR/statusline-chain" 2>/dev/null)
+      case "$OLDCHAIN" in
+        *statusline-wrapper*) ;;
+        *) [ -n "$OLDCHAIN" ] && echo "$OLDCHAIN" > "$CHAIN_FILE" ;;
+      esac
+    fi
+    ;;
   *)
     if [ -n "$CURRENT" ]; then
       EXPANDED=$(eval echo "$CURRENT" 2>/dev/null || echo "$CURRENT")
       echo "$EXPANDED" > "$CHAIN_FILE"
     fi
-    ;;
-esac
-case "$CURRENT" in
-  *statusline-wrapper*)
-    echo "UPDATED_WRAPPER"
-    exit 0
     ;;
 esac
 if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then

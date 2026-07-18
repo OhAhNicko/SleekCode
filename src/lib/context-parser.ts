@@ -51,6 +51,7 @@ export interface ContextInfo {
  */
 const MODEL_CONTEXT_WINDOWS: [string, number][] = [
   ["opus", 1_000_000],
+  ["fable", 1_000_000], // Fable 5 (claude-fable-5): 1M context
   // Sonnet/Haiku default to whatever the statusline reports (200K)
 ];
 

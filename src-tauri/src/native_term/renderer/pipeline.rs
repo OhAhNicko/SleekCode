@@ -174,6 +174,14 @@ pub struct Renderer {
     /// reconfigure-and-skip path deliberately leaves it (and the damage bits
     /// + `last_snapshot`) untouched so the retry frame stays dirty.
     force_render: bool,
+    /// True between the first WM_SIZE of a drag and the resize-settle
+    /// commit. While set, `desired_maximum_frame_latency` drops to 1 (D5):
+    /// still Fifo — presents stay vsync-phase-coherent with DWM's
+    /// composition of the window move (Mailbox/Immediate here was measured
+    /// FAST but JITTERY: content and window rect land out of phase) — but
+    /// the shallow queue caps the per-tick present block at ~one vsync
+    /// instead of the ~36ms two-deep drain measured with dml=2.
+    interactive_resize: bool,
     /// P3a: FrameSnapshot of the last successfully RENDERED frame. `None`
     /// until the first present so the first frame is always dirty.
     last_snapshot: Option<FrameSnapshot>,
@@ -377,6 +385,7 @@ impl Renderer {
             // yet). `last_snapshot: None` would catch it too — belt and
             // suspenders.
             force_render: true,
+            interactive_resize: false,
             last_snapshot: None,
             search_gen: 0,
             frames_rendered: 0,
@@ -385,6 +394,31 @@ impl Renderer {
             frame_cpu_ms_ewma: 0.0,
             configures: 0,
         })
+    }
+
+    /// D5: toggle the interactive-resize frame-latency. Entering (`true`)
+    /// is flag-only — the WM_SIZE that follows reconfigures the surface
+    /// anyway, so the shallow queue rides that configure for free. Leaving
+    /// (`false`) reconfigures immediately back to the steady-state depth
+    /// (no resize follows a settle) and forces the next frame. Present
+    /// mode stays Fifo in BOTH states: vsync phase-coherence with DWM's
+    /// composition of the window move is what keeps a drag smooth
+    /// (Mailbox/Immediate was measured fast but jittery here).
+    pub fn set_interactive_resize(&mut self, on: bool) {
+        if self.interactive_resize == on {
+            return;
+        }
+        self.interactive_resize = on;
+        let want: u32 = if on { 1 } else { 2 };
+        if self.config.desired_maximum_frame_latency == want {
+            return;
+        }
+        self.config.desired_maximum_frame_latency = want;
+        if !on {
+            self.surface.configure(&self.device, &self.config);
+            self.configures += 1;
+            self.force_render = true;
+        }
     }
 
     /// Current surface dimensions in PHYSICAL pixels, straight from the wgpu

@@ -1,33 +1,39 @@
-// Hole-cutting via Win32 SetWindowRgn. Each hole rect (pane-local logical px)
-// is scaled by DPR, expanded by 1 physical pixel per side to swallow subpixel
-// rendering on overlay edges (risk #5 — SetWindowRgn has no per-pixel alpha),
-// then subtracted from the full child-window rect via CombineRgn(RGN_DIFF).
+// Static-canvas clip region via Win32 SetWindowRgn. The child window is an
+// oversized fixed canvas (sized to the parent client area at creation, grown
+// only when a pane outgrows it); the VISIBLE pane is defined by the region:
+// rect(0, 0, pane_w, pane_h) minus the overlay hole rects. Win32 regions clip
+// BOTH painting and hit-testing, so everything outside the pane (the spare
+// canvas) is invisible AND input-inert — clicks there fall through to the
+// WebView2 sibling below. This is what lets splitter drags be pure window
+// MOVEs + region updates with zero surface reconfigures (the drag-jitter
+// rework: DWM never composits an old-size buffer into a new-size rect).
+//
+// Each hole rect (pane-local logical px) is scaled by DPR, expanded by 1
+// physical pixel per side to swallow subpixel rendering on overlay edges
+// (risk #5 — SetWindowRgn has no per-pixel alpha), then subtracted from the
+// pane rect via CombineRgn(RGN_DIFF).
 //
 // Non-Windows: not implemented (Phase 4).
 
 use super::window::Rect;
 
 #[cfg(target_os = "windows")]
-pub fn apply_region(hwnd: isize, child_size_px: (i32, i32), holes: &[Rect], dpr: f32) -> Result<(), String> {
+pub fn apply_region(hwnd: isize, pane_size_px: (i32, i32), holes: &[Rect], dpr: f32) -> Result<(), String> {
     use windows::Win32::Foundation::{BOOL, HWND};
     use windows::Win32::Graphics::Gdi::{
-        CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, HRGN, RGN_DIFF,
+        CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_DIFF,
     };
 
     let hwnd = HWND(hwnd as *mut _);
-
-    if holes.is_empty() {
-        // Canonical "no region" path — restores full-opaque rendering.
-        // Pass NULL HRGN; Windows takes ownership semantics don't apply when null.
-        unsafe {
-            let _ = SetWindowRgn(hwnd, HRGN(std::ptr::null_mut()), BOOL(1));
-        }
-        return Ok(());
-    }
-
-    let (w_px, h_px) = child_size_px;
+    let (w_px, h_px) = pane_size_px;
 
     unsafe {
+        // Base region = the PANE rect, not the window client rect — the
+        // canvas is deliberately larger than the pane. Applied even with
+        // ZERO holes: in the static-canvas model the pane region IS what
+        // sizes the visible pane, so the old "no holes → NULL region"
+        // shortcut would un-clip the whole oversized canvas and paint /
+        // hit-test across the entire parent.
         let full = CreateRectRgn(0, 0, w_px, h_px);
         if full.is_invalid() {
             return Err("CreateRectRgn (full) failed".to_string());
@@ -70,6 +76,6 @@ pub fn apply_region(hwnd: isize, child_size_px: (i32, i32), holes: &[Rect], dpr:
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn apply_region(_hwnd: isize, _child_size_px: (i32, i32), _holes: &[Rect], _dpr: f32) -> Result<(), String> {
+pub fn apply_region(_hwnd: isize, _pane_size_px: (i32, i32), _holes: &[Rect], _dpr: f32) -> Result<(), String> {
     Err("native_term::region: not implemented on this platform".to_string())
 }

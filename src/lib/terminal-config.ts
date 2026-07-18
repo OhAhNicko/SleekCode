@@ -25,19 +25,19 @@ export function getYoloFlag(type: TerminalType): string | null {
 const TERMINAL_CONFIGS_BASE: Record<TerminalType, TerminalConfig> = {
   claude: {
     command: "wsl.exe",
-    args: ["--", "bash", "-lic", "exec claude"],
+    args: ["--", "bash", "-lic", "export TERM=xterm-256color COLORTERM=truecolor; exec claude"],
     label: "Claude Code",
     description: "Anthropic's AI coding assistant",
   },
   codex: {
     command: "wsl.exe",
-    args: ["--", "bash", "-lic", "exec codex"],
+    args: ["--", "bash", "-lic", "export TERM=xterm-256color COLORTERM=truecolor; exec codex"],
     label: "Codex CLI",
     description: "OpenAI's coding CLI",
   },
   gemini: {
     command: "wsl.exe",
-    args: ["--", "bash", "-lic", "exec gemini"],
+    args: ["--", "bash", "-lic", "export TERM=xterm-256color COLORTERM=truecolor; exec gemini"],
     label: "Gemini CLI",
     description: "Google's AI coding CLI",
   },
@@ -49,7 +49,7 @@ const TERMINAL_CONFIGS_BASE: Record<TerminalType, TerminalConfig> = {
   },
   devserver: {
     command: "wsl.exe",
-    args: ["--", "bash", "-lic", "exec bash"],
+    args: ["--", "bash", "-lic", "export TERM=xterm-256color COLORTERM=truecolor; exec bash"],
     label: "Dev Server",
     description: "WSL bash for dev servers",
   },

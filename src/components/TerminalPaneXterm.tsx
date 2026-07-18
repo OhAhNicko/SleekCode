@@ -37,10 +37,13 @@ import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
 
 // Track session IDs already claimed by panes in this app instance.
 // Prevents multiple panes from claiming the same session file during disk lookup.
-const claimedSessionIds = new Set<string>();
+// Exported (with the dedup maps + lookup helper below) so TerminalPaneNative
+// joins the SAME claim/dedup universe — xterm and native panes must never
+// resolve session ownership against separate state.
+export const claimedSessionIds = new Set<string>();
 
 /** Atomically claim a session ID. Returns true if this caller won the claim. */
-function claimSessionId(id: string): boolean {
+export function claimSessionId(id: string): boolean {
   if (claimedSessionIds.has(id)) return false;
   claimedSessionIds.add(id);
   return true;
@@ -53,9 +56,9 @@ function claimSessionId(id: string): boolean {
 // by an older pane during the brief window before the new pane claims it. The
 // result is the header session/model/cost text swapping between the existing
 // pane and the freshly-added one (bodies/PTYs are unaffected).
-const paneSpawnMs = new Map<string, number>(); // terminalId -> first-seen (spawn) ms
-const panesWithLockedSession = new Set<string>(); // terminalIds that locked their own session
-const paneWorkingDir = new Map<string, string>(); // terminalId -> normalized workingDir
+export const paneSpawnMs = new Map<string, number>(); // terminalId -> first-seen (spawn) ms
+export const panesWithLockedSession = new Set<string>(); // terminalIds that locked their own session
+export const paneWorkingDir = new Map<string, string>(); // terminalId -> normalized workingDir
 
 /**
  * True when a resumable pane spawned AFTER `terminalId` still hasn't locked its
@@ -93,10 +96,10 @@ function otherResumablePaneSharesDir(terminalId: string, normalizedDir: string):
 // DevTools to trace every spawn-based lookup (inputs + result) and every dedup
 // adoption/defer decision — used to confirm in the field whether a residual
 // "not remembered" comes from clock skew, cwd casing, or the pane dedup race.
-function sessionDebugEnabled(): boolean {
+export function sessionDebugEnabled(): boolean {
   return typeof window !== "undefined" && !!(window as { __madeSessionDebug?: boolean }).__madeSessionDebug;
 }
-function sessionDebug(msg: string, extra?: Record<string, unknown>) {
+export function sessionDebug(msg: string, extra?: Record<string, unknown>) {
   if (!sessionDebugEnabled()) return;
   // eslint-disable-next-line no-console
   console.debug(`[SessionResume] ${msg}`, extra ?? {});
@@ -108,7 +111,7 @@ function sessionDebug(msg: string, extra?: Record<string, unknown>) {
  * WSL↔Windows clock skew, and a `debug` flag so the backend emits per-file
  * diagnostics. Returns the matched sessionId or null.
  */
-async function lookupClaudeBySpawn(
+export async function lookupClaudeBySpawn(
   backend: string | undefined,
   workingDir: string,
   minStartedAt: number,

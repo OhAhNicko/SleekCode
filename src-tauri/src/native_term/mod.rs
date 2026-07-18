@@ -206,7 +206,9 @@ pub fn native_term_frame_sync(entries: Vec<FrameSyncEntry>) -> Result<(), String
     }
 
     // --- Phase 2: hole regions, AFTER the moves so set_region reads the
-    // post-move client rect. Same wire semantics as native_term_set_region
+    // pane_px this frame's prepare_move just stamped (static-canvas: the
+    // region is built from pane_px + the stored holes, never from the window
+    // client rect). Same wire semantics as native_term_set_region
     // (dpr omitted → cached last_dpr).
     for e in &entries {
         if let Some(holes) = &e.holes {

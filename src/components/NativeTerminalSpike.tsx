@@ -292,7 +292,8 @@ export default function NativeTerminalSpike() {
           {stats.attached ? "attached" : "detached"} |{" "}
           {stats.visible ? "visible" : "hidden"} | cell{" "}
           {stats.cellWPx.toFixed(1)}x{stats.cellHPx.toFixed(1)}px | dpr{" "}
-          {stats.dpr} | surface {stats.surfaceW}x{stats.surfaceH}px
+          {stats.dpr} | surface {stats.surfaceW}x{stats.surfaceH}px | pane{" "}
+          {stats.paneW}x{stats.paneH}px
         </div>
       </div>
     )}

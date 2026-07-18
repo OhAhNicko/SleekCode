@@ -12,6 +12,15 @@
 //     every drag-resize tick and would shake the surface.
 //   * wgpu's Surface holds an unsafe borrow of the HWND. The Renderer is
 //     dropped before DestroyWindow is called in destroy().
+//   * Static-canvas geometry (drag-jitter rework): the child HWND is a
+//     FIXED-SIZE canvas sized to the parent client area (grown only when a
+//     pane outgrows it — `grow_target`). Pane geometry = window MOVE
+//     (SWP_NOSIZE) + clip region (pane rect minus holes) + `pane_px`.
+//     A splitter drag therefore performs ZERO surface reconfigures and
+//     ZERO buffer stretches by construction — DWM can never composit an
+//     old-size buffer into a new-size rect (the measured 30-40Hz
+//     stretch/snap oscillation this rework kills). `client_px` = surface
+//     truth (WM_SIZE mirror); `pane_px` = what the user sees.
 
 use raw_window_handle::{
     RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowsDisplayHandle,
@@ -207,10 +216,24 @@ struct ChildState {
     /// can convert physical → logical px without locking the outer struct.
     /// Updated on every resize.
     dpr: f32,
-    /// Client-area size in physical pixels (width, height). Mirrors WM_SIZE
-    /// so edge-band detection in WM_MOUSEMOVE doesn't need GetClientRect on
-    /// every move (which would be a syscall per event).
+    /// ACTUAL window/surface size in physical pixels (width, height).
+    /// Mirrors WM_SIZE. Static-canvas model: this is the oversized fixed
+    /// canvas (parent-client-sized at creation, grown only when a pane
+    /// outgrows it) — SURFACE consumers only (renderer reconfigure,
+    /// debug_stats surfaceW/H). Everything pane-shaped (grid dims, edge
+    /// band, clip region) reads `pane_px` instead.
     client_px: (i32, i32),
+    /// VISIBLE pane size in physical pixels — what the JS rect describes.
+    /// Set at creation from the requested rect and updated by every
+    /// resize/resize_deferred (`prepare_move`). The pane is anchored at the
+    /// window origin, so window-local coords are pane-local; only the far
+    /// edges differ from `client_px`. Metrics/cols/rows (commit_dims),
+    /// edge-band checks and clip-region building use THIS, never client_px.
+    pane_px: (i32, i32),
+    /// Last `set_region` hole rects (pane-local LOGICAL px, verbatim wire
+    /// values). Stored so pane-size changes can rebuild the clip region
+    /// (pane rect minus holes) without JS re-sending the holes.
+    last_holes: Vec<Rect>,
     /// Last emitted (x, y) for mouse_passthrough coalescing — round to integer
     /// logical px and skip emission when unchanged. Prevents flooding the JS
     /// side with sub-pixel jitter.
@@ -319,8 +342,17 @@ impl PlatformWindow {
         unsafe {
             ensure_class_registered()?;
 
-            // Physical-pixel rect for the SetWindowPos / CreateWindowExW call.
+            // Physical-pixel PANE rect. Static-canvas model: the window is
+            // created at the pane ORIGIN but sized to the PARENT CLIENT AREA
+            // (max(parent client, pane rect) per axis — the parent query can
+            // fail or race a parent resize, so the pane rect is the floor).
+            // Pane geometry = pane_px + the clip region; splitter drags then
+            // MOVE the window (atomic in DWM) without ever touching its
+            // size, so no surface reconfigure and no buffer-stretch jitter.
             let (x, y, w, h) = logical_rect_to_physical(rect, dpr);
+            let (parent_w, parent_h) = client_size_px(parent_hwnd);
+            let win_w = w.max(parent_w).max(1);
+            let win_h = h.max(parent_h).max(1);
 
             // Pre-allocate the state Box so WM_NCCREATE can find it.
             let state = Box::leak(Box::new(ChildState {
@@ -330,7 +362,9 @@ impl PlatformWindow {
                 app: None,
                 term_id: None,
                 dpr,
-                client_px: (w.max(1), h.max(1)),
+                client_px: (win_w, win_h),
+                pane_px: (w, h),
+                last_holes: Vec::new(),
                 last_passthrough: None,
                 term: None,
                 lbutton_down: false,
@@ -360,7 +394,7 @@ impl PlatformWindow {
                 PCWSTR(CLASS_NAME.as_ptr()),
                 PCWSTR(std::ptr::null()),
                 WS_CHILD | WS_CLIPSIBLINGS | WS_VISIBLE,
-                x, y, w, h,
+                x, y, win_w, win_h,
                 HWND(parent_hwnd as *mut _),
                 HMENU::default(),
                 HINSTANCE::default(),
@@ -379,6 +413,18 @@ impl PlatformWindow {
 
             (*state).hwnd = hwnd;
 
+            // Static-canvas: clip the oversized window to the pane rect from
+            // the start (region = pane, no holes yet) — BEFORE the (slow)
+            // Renderer construction below, so the un-clipped canvas can
+            // never paint or hit-test across the whole parent while the GPU
+            // device spins up. Best-effort: SetWindowRgn on a plain rect
+            // basically cannot fail, but a failure must not kill create.
+            if let Err(e) =
+                region::apply_region(hwnd.0 as isize, (*state).pane_px, &[], dpr)
+            {
+                eprintln!("[native_term] create: initial clip region failed: {e}");
+            }
+
             // Build the renderer now. We pass raw_window_handle's Win32 +
             // Windows display handles directly. The HWND will outlive the
             // Renderer (we drop the renderer in destroy() before DestroyWindow).
@@ -395,11 +441,15 @@ impl PlatformWindow {
             // metrics are already physical-px scaled + advance-quantized —
             // no separate set_scale seeding step (set_scale is now a no-op
             // on an unchanged dpr and a full font re-derivation otherwise).
+            // Static-canvas: the surface is WINDOW-sized (win_w/win_h), not
+            // pane-sized — render() clears the whole canvas with the theme
+            // background and draws content top-left, so pane growth exposes
+            // already-correct background pixels with no repaint.
             let renderer = super::super::renderer::Renderer::new(
                 rwh,
                 rdh,
-                w.max(1) as u32,
-                h.max(1) as u32,
+                win_w as u32,
+                win_h as u32,
                 dpr,
             )
             .map_err(|e| {
@@ -486,9 +536,18 @@ impl PlatformWindow {
     /// P4a/D3: pre-move bookkeeping shared by `resize` (plain SetWindowPos)
     /// and `resize_deferred` (DeferWindowPos batch). Stores the dpr on the
     /// outer struct + the ChildState mirror, refreshes the renderer's scale,
-    /// and returns the physical target rect. The MOVE itself is the caller's
-    /// job; the surface reconfigure + D1 synchronous repaint happen in
-    /// WM_SIZE when the move actually lands.
+    /// updates the STATIC-CANVAS pane geometry (pane_px + clip region +
+    /// settle timer), and returns the physical target PANE rect. The window
+    /// op itself is the caller's job (pure MOVE, or the rare GROW — see
+    /// `grow_target`).
+    ///
+    /// Static-canvas model: a pure pane change performs ZERO surface work
+    /// and NO repaint. render() clears the FULL canvas with the theme
+    /// background and draws content top-left, so a widening pane exposes
+    /// pixels that are already correct (background) and a narrowing pane is
+    /// simply clipped tighter by the region — nothing stale can ever show.
+    /// Content reflow (cols/rows) happens at the RESIZE_SETTLE commit,
+    /// exactly as before.
     fn prepare_move(&mut self, rect: Rect, dpr: f32) -> (i32, i32, i32, i32) {
         unsafe {
             // P5a: detect a REAL dpr change (monitor swap / zoom) before
@@ -508,6 +567,33 @@ impl PlatformWindow {
             // row-buffer rebuild + full damage + force_render) on a change.
             if let Some(r) = state.renderer.as_mut() {
                 r.set_scale(dpr);
+            }
+            // Static-canvas pane update — BEFORE the dpr fan-out below so a
+            // dpr-change commit_dims already sees the new pane size.
+            let (x, y, w, h) = logical_rect_to_physical(rect, dpr);
+            let pane_changed = state.pane_px != (w, h);
+            if pane_changed || dpr_changed {
+                state.pane_px = (w, h);
+                // Rebuild the clip region: pane rect minus the stored holes.
+                // The region is window-relative, so a pure MOVE never needs
+                // this — only pane-size (region bounds) or dpr (hole
+                // scaling) changes do.
+                if let Err(e) = region::apply_region(
+                    self.hwnd.0 as isize,
+                    state.pane_px,
+                    &state.last_holes,
+                    dpr,
+                ) {
+                    eprintln!("[native_term] prepare_move: clip region failed: {e}");
+                }
+            }
+            if pane_changed {
+                // The settle timer used to ride WM_SIZE; a pure pane change
+                // no longer produces WM_SIZE (the window op is a MOVE), so
+                // it arms HERE now. Same reset-on-rearm semantics: the
+                // commit fires exactly once, RESIZE_SETTLE_MS after the drag
+                // goes quiet, and reflows cols/rows from pane_px.
+                SetTimer(self.hwnd, RESIZE_SETTLE_TIMER_ID, RESIZE_SETTLE_MS, None);
             }
             if dpr_changed {
                 // P5a dpr-change fan-out, mirroring the set_font flow:
@@ -531,13 +617,83 @@ impl PlatformWindow {
                 //    when detached or unchanged);
                 commit_dims(state, self.hwnd);
                 // 4) repaint even if the grid dims happened to stay equal —
-                //    the glyphs themselves changed size. (The move that
-                //    usually accompanies a dpr change repaints synchronously
-                //    in WM_SIZE, but an equal-pixel-size move skips WM_SIZE.)
+                //    the glyphs themselves changed size. (Static-canvas:
+                //    pane moves never fire WM_SIZE anymore, so this
+                //    invalidation is the ONLY repaint on a dpr change unless
+                //    the pane also outgrew the canvas.)
                 let _ = InvalidateRect(self.hwnd, None, BOOL(0));
             }
+            (x, y, w, h)
         }
-        logical_rect_to_physical(rect, dpr)
+    }
+
+    /// Static-canvas GROW decision. Returns `Some((win_w, win_h))` when the
+    /// new pane exceeds the current window size in EITHER axis — the rare
+    /// path that actually resizes the window (WM_SIZE → surface reconfigure
+    /// + sync render). New size = max(parent client re-queried, pane) per
+    /// axis, so one growth usually sizes the canvas for every future pane
+    /// layout inside the current parent. Returns `None` (pure move)
+    /// otherwise — resize() NEVER shrinks the window; an axis can only
+    /// shrink implicitly through this same max() math on a later growth
+    /// after the parent got smaller. Canvas memory stays bounded by the
+    /// parent client size (plus the transient pane, which lives inside it).
+    fn grow_target(&self, pane_w: i32, pane_h: i32) -> Option<(i32, i32)> {
+        let (cur_w, cur_h) = unsafe { self.state.as_ref().client_px };
+        if pane_w <= cur_w && pane_h <= cur_h {
+            return None;
+        }
+        // A failed/zero parent query must NOT shrink the canvas: fall back
+        // to the CURRENT window size as the floor so the never-shrinks
+        // invariant documented above holds (a SUCCESSFUL smaller-parent
+        // query still allows the implicit shrink on this growth).
+        let (parent_w, parent_h) = super::super::registry::parent_hwnd()
+            .map(client_size_px)
+            .filter(|&(w, h)| w > 0 && h > 0)
+            .unwrap_or((cur_w, cur_h));
+        Some((pane_w.max(parent_w).max(1), pane_h.max(parent_h).max(1)))
+    }
+}
+
+/// GetClientRect in physical px for an HWND expressed as isize (the registry
+/// convention). `(0, 0)` on failure — `new()` folds that through max() so
+/// the pane rect becomes the floor; `grow_target` filters the zero pair out
+/// and falls back to the current canvas size instead (never-shrink
+/// invariant).
+fn client_size_px(hwnd: isize) -> (i32, i32) {
+    unsafe {
+        let mut r = RECT::default();
+        if GetClientRect(HWND(hwnd as *mut _), &mut r).is_ok() {
+            ((r.right - r.left).max(0), (r.bottom - r.top).max(0))
+        } else {
+            (0, 0)
+        }
+    }
+}
+
+/// Static-canvas: translate a `grow_target` verdict into the SetWindowPos /
+/// DeferWindowPos `(cx, cy, flags)` triple shared by `resize` and
+/// `resize_deferred`.
+///
+/// * `None` → pure MOVE: SWP_NOSIZE (cx/cy ignored — pass 0). This is the
+///   splitter-drag steady state: DWM repositions the window's visual
+///   atomically, the swapchain buffer is never involved, so there is no
+///   old-size-buffer-in-new-rect stretch (the measured jitter root cause).
+///   SWP_NOCOPYBITS is deliberately DROPPED here: with an unchanged size
+///   there are no stale bits to re-blit (the client content moves verbatim
+///   with the window), and forcing a client invalidation would only queue a
+///   wasted WM_PAINT per drag tick.
+/// * `Some` → GROW the canvas (rare reconfigure path): real size change, so
+///   WM_SIZE fires (surface reconfigure + D5 interactive switch + D1 sync
+///   render) and the P4a/D2 SWP_NOCOPYBITS rationale still applies — never
+///   blit old pixels into the new rect.
+fn window_op(grow: Option<(i32, i32)>) -> (i32, i32, SET_WINDOW_POS_FLAGS) {
+    match grow {
+        Some((win_w, win_h)) => (
+            win_w,
+            win_h,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
+        ),
+        None => (0, 0, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSIZE),
     }
 }
 
@@ -573,43 +729,39 @@ pub(crate) fn end_move_batch(batch: isize) -> Result<(), String> {
 impl NativeTermWindow for PlatformWindow {
     fn resize(&mut self, rect: Rect, dpr: f32) -> Result<(), String> {
         // P4a: bookkeeping split into `prepare_move` so `resize_deferred`
-        // shares it. The singular resize path deliberately stays plain
-        // SetWindowPos (no single-entry defer batch) — one window can't
-        // shear against itself, and the HDWP round-trip would buy nothing.
+        // shares it (static-canvas: pane_px + clip region + settle timer
+        // all update in there). The singular resize path deliberately stays
+        // plain SetWindowPos (no single-entry defer batch) — one window
+        // can't shear against itself, and the HDWP round-trip buys nothing.
         let (x, y, w, h) = self.prepare_move(rect, dpr);
+        let (op_w, op_h, flags) = window_op(self.grow_target(w, h));
         unsafe {
-            SetWindowPos(
-                self.hwnd,
-                HWND::default(),
-                x, y, w, h,
-                // P4a/D2: SWP_NOCOPYBITS stops Windows blitting the OLD
-                // client pixels into the new rect (the drag smear). The D1
-                // synchronous repaint in WM_SIZE draws real content in the
-                // same pump turn, so nothing stale is ever composited.
-                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
-            )
-            .map_err(|e| format!("SetWindowPos: {e}"))?;
-            // WM_SIZE fires inside SetWindowPos: the subclass reconfigures
-            // the surface AND presents a fresh frame synchronously (D1).
+            SetWindowPos(self.hwnd, HWND::default(), x, y, op_w, op_h, flags)
+                .map_err(|e| format!("SetWindowPos: {e}"))?;
+            // Pure MOVE (the drag steady state): no WM_SIZE, no surface
+            // work — DWM repositions the visual atomically. GROW (rare):
+            // WM_SIZE fires inside SetWindowPos and the subclass
+            // reconfigures the surface AND presents synchronously (D1).
             Ok(())
         }
     }
 
     fn resize_deferred(&mut self, rect: Rect, dpr: f32, batch: isize) -> Result<isize, String> {
-        // P4a/D3: same bookkeeping as `resize`, but the window move is
+        // P4a/D3: same bookkeeping as `resize`, but the window op is
         // DEFERRED into the caller's DeferWindowPos transaction so all
         // panes in a frame_sync batch reposition atomically at
         // EndDeferWindowPos. `batch == 0` means "no active transaction" —
-        // apply immediately.
+        // apply immediately. Same MOVE-vs-GROW decision as `resize`.
         let (x, y, w, h) = self.prepare_move(rect, dpr);
+        let (op_w, op_h, flags) = window_op(self.grow_target(w, h));
         unsafe {
             if batch != 0 {
                 match DeferWindowPos(
                     HDWP(batch as *mut _),
                     self.hwnd,
                     HWND::default(),
-                    x, y, w, h,
-                    SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
+                    x, y, op_w, op_h,
+                    flags,
                 ) {
                     // Success: hand back the (possibly reallocated) handle.
                     Ok(next) if !next.0.is_null() => return Ok(next.0 as isize),
@@ -625,13 +777,8 @@ impl NativeTermWindow for PlatformWindow {
                     _ => {}
                 }
             }
-            SetWindowPos(
-                self.hwnd,
-                HWND::default(),
-                x, y, w, h,
-                SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS,
-            )
-            .map_err(|e| format!("SetWindowPos: {e}"))?;
+            SetWindowPos(self.hwnd, HWND::default(), x, y, op_w, op_h, flags)
+                .map_err(|e| format!("SetWindowPos: {e}"))?;
         }
         Ok(0)
     }
@@ -673,10 +820,14 @@ impl NativeTermWindow for PlatformWindow {
             // mod.rs passes 0.0 — the locked wire format omits dpr from
             // set_region. We use the cached last_dpr instead.
             let dpr = if dpr_arg > 0.0 { dpr_arg } else { self.last_dpr };
-            let mut r = RECT::default();
-            let _ = GetClientRect(self.hwnd, &mut r);
-            let size_px = (r.right - r.left, r.bottom - r.top);
-            region::apply_region(self.hwnd.0 as isize, size_px, holes, dpr)
+            // Static-canvas: clip to the PANE rect (pane_px), never the
+            // window client rect — the window is an oversized canvas and
+            // the region is what sizes the visible pane. Store the holes so
+            // resize/resize_deferred can rebuild the region on pane-size
+            // changes without JS re-sending them.
+            let state = self.state.as_mut();
+            state.last_holes = holes.to_vec();
+            region::apply_region(self.hwnd.0 as isize, state.pane_px, holes, dpr)
         }
     }
 
@@ -863,6 +1014,13 @@ impl NativeTermWindow for PlatformWindow {
             let state = self.state.as_mut();
             if let Some(r) = state.renderer.as_mut() {
                 r.detach_term();
+                // D6: the RESIZE_SETTLE KillTimer above may have cancelled a
+                // pending settle commit — the only other place the
+                // interactive (shallow-queue) frame latency is restored.
+                // Restore it here so a surviving, re-attachable pane never
+                // idles in interactive mode. No-op when already off; the
+                // InvalidateRect below flushes the forced frame otherwise.
+                r.set_interactive_resize(false);
             }
             state.pty_id = None;
             state.term = None;
@@ -1115,6 +1273,11 @@ impl NativeTermWindow for PlatformWindow {
             out.cell_w_px = state.cell_w_px;
             out.cell_h_px = state.cell_h_px;
             out.dpr = state.dpr;
+            // Static-canvas: surface_w/h above stay CANVAS-sized (straight
+            // from the wgpu SurfaceConfiguration); pane_w/h report the
+            // VISIBLE pane so the spike HUD can show both.
+            out.pane_w = state.pane_px.0.max(0) as u32;
+            out.pane_h = state.pane_px.1.max(0) as u32;
             out
         }
     }
@@ -1256,12 +1419,14 @@ unsafe fn snap_to_bottom_on_input(state: &mut ChildState, hwnd: HWND) {
     }
 }
 
-/// P1b resize-commit: recompute cols/rows from the live client rect and cell
-/// metrics, then commit them through the whole chain — alacritty grid →
+/// P1b resize-commit: recompute cols/rows from the live PANE rect (pane_px —
+/// static-canvas: the visible pane, NOT the oversized window/surface) and
+/// cell metrics, then commit them through the whole chain — alacritty grid →
 /// renderer CellGrid → PTY → `resized` Tauri event. Fired from the
-/// resize-settle timer (WM_TIMER / RESIZE_SETTLE_TIMER_ID) and once at the
-/// end of `attach_pty`. Whole-chain no-op when the grid already matches, so
-/// re-fires are cheap and attach-time drift correction is exact.
+/// resize-settle timer (WM_TIMER / RESIZE_SETTLE_TIMER_ID, armed by
+/// `prepare_move` on pane changes and by WM_SIZE on window growth) and once
+/// at the end of `attach_pty`. Whole-chain no-op when the grid already
+/// matches, so re-fires are cheap and attach-time drift correction is exact.
 ///
 /// Locking discipline: the Term mutex is held ONLY for the compare +
 /// `Term::resize` (idempotent — alacritty no-ops on unchanged dims) and is
@@ -1269,10 +1434,10 @@ unsafe fn snap_to_bottom_on_input(state: &mut ChildState, hwnd: HWND) {
 /// so the parser worker is never blocked on a broadcast. NEVER touches the
 /// registry mutex — everything it needs lives on ChildState mirrors.
 unsafe fn commit_dims(state: &mut ChildState, hwnd: HWND) {
-    // Guard: zero-area client (minimised / mid-teardown) or no attached term
-    // → nothing to commit.
-    let (client_w, client_h) = state.client_px;
-    if client_w <= 0 || client_h <= 0 {
+    // Guard: zero-area pane (degenerate rect / mid-teardown) or no attached
+    // term → nothing to commit.
+    let (pane_w, pane_h) = state.pane_px;
+    if pane_w <= 0 || pane_h <= 0 {
         return;
     }
     let term = match state.term.as_ref() {
@@ -1280,15 +1445,15 @@ unsafe fn commit_dims(state: &mut ChildState, hwnd: HWND) {
         None => return,
     };
 
-    // Same formula + floors as `propose_dimensions`: physical client px ÷
+    // Same formula + floors as `propose_dimensions`: physical pane px ÷
     // physical cell metrics, floored to whole cells, min 20 cols
     // (narrow-pane guard) / 1 row.
     let cell_w = state.cell_w_px.max(0.001);
     let cell_h = state.cell_h_px.max(0.001);
     // Upper clamp guards the `as u16` PTY cast and Term allocation against a
     // degenerate cell metric (the 0.001 floor above).
-    let cols = ((client_w as f32 / cell_w).floor() as usize).clamp(20, 4096);
-    let rows = ((client_h as f32 / cell_h).floor() as usize).clamp(1, 4096);
+    let cols = ((pane_w as f32 / cell_w).floor() as usize).clamp(20, 4096);
+    let rows = ((pane_h as f32 / cell_h).floor() as usize).clamp(1, 4096);
 
     let changed = {
         let mut t = term.lock().expect("term lock poisoned");
@@ -1399,15 +1564,23 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_SIZE => {
+            // Static-canvas: this arm now fires only for REAL window-size
+            // changes — creation and the rare `grow_target` growth path
+            // (pane outgrew the canvas / parent-driven relayout). Splitter
+            // drags are pure MOVEs (SWP_NOSIZE) + region updates and never
+            // land here — that absence IS the drag-jitter fix.
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
             if !state_ptr.is_null() {
                 let w = (lparam.0 & 0xFFFF) as u32;
                 let h = ((lparam.0 >> 16) & 0xFFFF) as u32;
-                // Mirror the physical client-area size into ChildState so the
-                // WM_MOUSEMOVE edge-band check doesn't need GetClientRect on
-                // every mouse move (cheap syscall, but it adds up).
+                // Mirror the physical window/surface size into ChildState —
+                // SURFACE consumers only (pane geometry lives in pane_px).
                 (*state_ptr).client_px = (w as i32, h as i32);
                 if let Some(r) = (*state_ptr).renderer.as_mut() {
+                    // D5: shallow present queue while the resize storm lasts
+                    // (flag-only here — the resize() below reconfigures and
+                    // applies it). The settle arm restores the steady depth.
+                    r.set_interactive_resize(true);
                     r.resize(w, h);
                 }
                 // P1b resize-settle: (re-)arm the settle timer. SetTimer with
@@ -1542,7 +1715,27 @@ unsafe extern "system" fn wnd_proc(
                     let state_ptr =
                         GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
                     if !state_ptr.is_null() {
+                        // D6: drag is over — back to vsynced Fifo before the
+                        // commit.
+                        if let Some(r) = (*state_ptr).renderer.as_mut() {
+                            r.set_interactive_resize(false);
+                        }
                         commit_dims(&mut *state_ptr, hwnd);
+                        // Repaint UNCONDITIONALLY. commit_dims invalidates
+                        // only when cols/rows actually CHANGED (and not at
+                        // all when no Term is attached), but the D6 restore
+                        // above may have RECONFIGURED the swapchain (latency
+                        // 1→2 changes the DXGI buffer count, so ResizeBuffers
+                        // discards every buffer's contents) — after that the
+                        // window is undefined until the next present. A drag
+                        // that grew the canvas but settled at unchanged dims
+                        // on an unfocused idle pane (no blink timer, no PTY
+                        // output, watchdog no-ops) would otherwise never
+                        // repaint and could sit blank indefinitely. Cheap
+                        // when redundant: the reconfigure armed force_render
+                        // so exactly one frame lands; with no reconfigure the
+                        // clean-frame early-out eats the paint.
+                        let _ = InvalidateRect(hwnd, None, BOOL(0));
                     }
                     LRESULT(0)
                 }
@@ -2291,7 +2484,12 @@ unsafe extern "system" fn wnd_proc(
                         }
                     }
                 }
-                let (w_px, h_px) = (*state_ptr).client_px;
+                // Static-canvas: the band hugs the VISIBLE pane edges
+                // (pane_px), never the oversized window (client_px). The
+                // pane is anchored at the window origin, so window-local
+                // coords are pane-local already — only the far edges differ,
+                // and the clip region already rejects input outside the pane.
+                let (w_px, h_px) = (*state_ptr).pane_px;
                 let dpr = (*state_ptr).dpr.max(0.0001);
                 let edge_px = (SPLITTER_EDGE_BAND_LOGICAL_PX * dpr).round() as i32;
                 let near_left = x_px <= edge_px;

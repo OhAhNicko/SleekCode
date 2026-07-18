@@ -90,6 +90,11 @@ pub struct DebugStats {
     pub dpr: f32,
     pub surface_w: u32,
     pub surface_h: u32,
+    /// Static-canvas: the VISIBLE pane size in physical px (`pane_px`).
+    /// `surface_w`/`surface_h` report the oversized fixed canvas the wgpu
+    /// surface actually spans; these report what the user sees.
+    pub pane_w: u32,
+    pub pane_h: u32,
 }
 
 pub trait NativeTermWindow: Send {

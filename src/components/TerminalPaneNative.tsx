@@ -51,6 +51,23 @@ import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-reg
 import { getTheme } from "../lib/themes";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
+import { invoke } from "@tauri-apps/api/core";
+import { supportsSessionResume } from "../lib/session-resume";
+import { toWslPath } from "../lib/terminal-config";
+import { readSessionContext, type ContextInfo } from "../lib/context-parser";
+import { readSessionFirstPrompt, slugify } from "../lib/sessions-index";
+// Session-detection state + helpers shared with the xterm pane. MUST come
+// from TerminalPaneXterm so both renderers resolve claims/dedup against ONE
+// universe — a separate copy here would let an xterm pane and a native pane
+// claim the same Claude session (header/session steal class of bugs).
+import {
+  claimedSessionIds,
+  claimSessionId,
+  paneSpawnMs,
+  panesWithLockedSession,
+  paneWorkingDir,
+  lookupClaudeBySpawn,
+} from "./TerminalPaneXterm";
 
 // Until `store/index.ts` (M-list) registers `createNativeRendererSlice`,
 // these fields aren't visible on AppStore at the type level. Cast through
@@ -168,7 +185,7 @@ export default function TerminalPaneNative({
   hideChrome,
   serverId,
   sessionResumeId,
-  onSessionResumeId: _onSessionResumeId,
+  onSessionResumeId,
   onSwitchSession,
   paneCount: _paneCount = 1,
   backend,
@@ -181,6 +198,153 @@ export default function TerminalPaneNative({
   const [cols, setCols] = useState(80);
   const [rows, setRows] = useState(24);
   const [ptyReady, setPtyReady] = useState(false);
+  // Bumped to force usePtyNative to kill + respawn the PTY (session switch).
+  // Same mechanism as TerminalPaneXterm's restartKey — the spawn effect is
+  // keyed on it, so a bump detaches the native term, kills the old PTY and
+  // spawns a fresh one that reads the (eagerly updated) resume session ID.
+  const [restartKey, setRestartKey] = useState(0);
+
+  // ── Session remember (parity with TerminalPaneXterm) ─────────────────
+  // Seed claimed set with persisted IDs so new panes don't steal them.
+  if (sessionResumeId) claimedSessionIds.add(sessionResumeId);
+
+  // Trusted = restored from persist or explicit switch; disk-detected
+  // sessions become trusted once atomically claimed.
+  const [sessionTrusted, setSessionTrusted] = useState(!!sessionResumeId);
+  const [contextInfo, setContextInfo] = useState<ContextInfo | null>(null);
+  const sessionLookupDone = useRef(false);
+  const sessionRetryCancelRef = useRef<(() => void) | null>(null);
+  // First-PTY-data timestamp (minus 2s cushion) — the floor for spawn-based
+  // detection; session files started before it belong to another pane.
+  const ptySpawnTimeRef = useRef<number>(0);
+  const sessionResumeIdPropRef = useRef(sessionResumeId);
+  sessionResumeIdPropRef.current = sessionResumeId;
+  const onSessionResumeIdRef = useRef(onSessionResumeId);
+  onSessionResumeIdRef.current = onSessionResumeId;
+  const terminalTypeRef = useRef(terminalType);
+  terminalTypeRef.current = terminalType;
+  const workingDirRef = useRef(workingDir);
+  workingDirRef.current = workingDir;
+  const backendRef = useRef(backend);
+  backendRef.current = backend;
+  const serverIdRef = useRef(serverId);
+  serverIdRef.current = serverId;
+
+  // Register persisted/detected sessions in the per-project registry AND kick
+  // off auto-naming from the session's first user prompt (xterm parity).
+  // Retries every 5s until a name is set or the session is renamed.
+  const registeredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (sessionResumeId && registeredRef.current !== sessionResumeId) {
+      registeredRef.current = sessionResumeId;
+      useAppStore.getState().registerProjectSession(workingDir, {
+        id: sessionResumeId,
+        name: "",
+        type: terminalType,
+        createdAt: Date.now(),
+        isRenamed: false,
+      });
+    }
+    if (!sessionResumeId || !supportsSessionResume(terminalType)) return;
+    const sid = sessionResumeId;
+    const wd = workingDir;
+    let cancelled = false;
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+
+    const tryFetch = async (): Promise<boolean> => {
+      const store = useAppStore.getState();
+      const key = wd.replace(/\\/g, "/");
+      const existing = (store.projectSessions[key] ?? []).find((s) => s.id === sid);
+      if (existing?.isRenamed) return true;
+      if (existing?.name) return true;
+      const isSsh = !!serverId;
+      const effectiveBackend = isSsh
+        ? "ssh"
+        : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
+      // WSL backend needs a Unix path; SSH wd is already remote Unix.
+      const pathForBackend = effectiveBackend === "wsl" ? toWslPath(wd) : wd;
+      try {
+        const prompt = await readSessionFirstPrompt(pathForBackend, effectiveBackend, sid, serverId);
+        if (prompt) {
+          const slug = slugify(prompt);
+          if (slug) {
+            store.updateProjectSessionAutoName(wd, sid, slug);
+            return true;
+          }
+        }
+      } catch { /* silent */ }
+      return false;
+    };
+
+    const start = setTimeout(async () => {
+      if (cancelled) return;
+      if (await tryFetch()) return;
+      intervalId = setInterval(async () => {
+        if (cancelled) return;
+        if (await tryFetch()) {
+          if (intervalId) { clearInterval(intervalId); intervalId = undefined; }
+        }
+      }, 5000);
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(start);
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [sessionResumeId, workingDir, terminalType, serverId]);
+
+  // Register this resumable pane's spawn ordering + locked state so older
+  // panes (xterm OR native — shared maps) don't steal a newly-added pane's
+  // session (see newerResumablePaneStillResolving in TerminalPaneXterm).
+  useEffect(() => {
+    if (supportsSessionResume(terminalType)) {
+      if (!paneSpawnMs.has(terminalId)) paneSpawnMs.set(terminalId, Date.now());
+      paneWorkingDir.set(terminalId, workingDir.replace(/\\/g, "/"));
+    } else {
+      paneSpawnMs.delete(terminalId);
+      paneWorkingDir.delete(terminalId);
+    }
+  }, [terminalId, terminalType, workingDir]);
+  useEffect(() => {
+    if (sessionResumeId) panesWithLockedSession.add(terminalId);
+    else panesWithLockedSession.delete(terminalId);
+  }, [sessionResumeId, terminalId]);
+  useEffect(() => () => {
+    paneSpawnMs.delete(terminalId);
+    panesWithLockedSession.delete(terminalId);
+    paneWorkingDir.delete(terminalId);
+  }, [terminalId]);
+
+  // Context/header info poll. Deliberately ONLY when this pane has locked its
+  // own session — the "__latest__" fallback the xterm pane uses is ambiguous
+  // when panes share a working dir (another pane's session/model/cost would
+  // show here); an unlocked native pane just shows nothing until detection
+  // locks. Mirrors the xterm poll call signature + 5s cadence.
+  useEffect(() => {
+    if (!sessionResumeId || !supportsSessionResume(terminalType)) {
+      setContextInfo(null);
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      const isSsh = !!serverIdRef.current;
+      const info = await readSessionContext(
+        terminalType,
+        sessionResumeId,
+        backend,
+        serverIdRef.current,
+        isSsh ? workingDirRef.current : undefined,
+      );
+      if (!cancelled && info) setContextInfo(info);
+    };
+    void poll();
+    const intervalId = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [sessionResumeId, terminalType, backend]);
 
   // ── Overlay state (parity with TerminalPaneXterm) ────────────────────
   const [composerOpen, setComposerOpen] = useState(false);
@@ -652,12 +816,160 @@ export default function TerminalPaneNative({
   // branch in pty.rs. The JS-side onData channel stays live during rollout
   // (plan hard requirement) — we just don't write into a JS renderer.
   const handlePtyData = useCallback((_data: Uint8Array) => {
-    // No-op: native side consumes bytes directly via the attached pty_id.
-    // Phase 2 may surface bytes here for log/recording features.
+    // Native side consumes bytes directly via the attached pty_id (no JS
+    // renderer write). This channel is still the "PTY is alive" signal:
+    // on first data from a resumable CLI, look up the session ID from disk —
+    // mirrors TerminalPaneXterm's initial detection (same floor, atomic
+    // claim, and retry semantics; do not diverge from the xterm guards).
+    if (!sessionLookupDone.current && supportsSessionResume(terminalTypeRef.current) && !sessionResumeIdPropRef.current) {
+      sessionLookupDone.current = true;
+      // Session files with startedAt < this belong to a DIFFERENT pane or
+      // instance. 2s cushion for clock skew + early sidecar write.
+      ptySpawnTimeRef.current = Date.now() - 2000;
+
+      // IDs that failed atomic claim (another pane claimed between invoke
+      // and claim) — excluded on retries so the backend returns new results.
+      const skippedIds = new Set<string>();
+
+      const lookupSession = async (): Promise<boolean> => {
+        try {
+          const sshServerId = serverIdRef.current;
+          const isSsh = !!sshServerId;
+          const backendNow = isSsh
+            ? "ssh"
+            : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
+          const type = terminalTypeRef.current;
+          const excludeIds = [...claimedSessionIds, ...skippedIds];
+          let id: string | null = null;
+
+          // Precise spawn-based detection for Claude via ~/.claude/sessions
+          // sidecars (cwd + startedAt). Only sessions started AFTER this
+          // pane spawned. Skipped for SSH (sidecars aren't mirrored remotely).
+          if (type === "claude" && !isSsh) {
+            try {
+              id = await lookupClaudeBySpawn(backendNow, workingDirRef.current, ptySpawnTimeRef.current, excludeIds, "initial-native");
+              if (id) {
+                console.log(`[SessionResume] native precise (spawn-based) match: ${id.slice(0, 8)}`);
+              }
+            } catch (e) {
+              console.warn("[SessionResume] native spawn-based lookup failed, falling back:", e);
+            }
+            if (id) {
+              if (!claimSessionId(id)) {
+                skippedIds.add(id);
+                id = null;
+              } else {
+                setSessionTrusted(true);
+                sessionResumeIdPropRef.current = id;
+                onSessionResumeIdRef.current?.(id);
+                return true;
+              }
+            }
+          }
+
+          // Fallback: mtime-based lookup. Claude limited to sessions touched
+          // within the last 2 minutes so old sessions are never claimed.
+          const claudeMaxAge = type === "claude" ? 120 : undefined;
+
+          if (isSsh) {
+            const server = useAppStore.getState().servers.find((s) => s.id === sshServerId);
+            const remoteCwd = workingDirRef.current;
+            if (!server || !remoteCwd) return false;
+            if (server.authMethod !== "ssh-key" || !server.sshKeyPath) return false;
+            const sshArgs = {
+              host: server.host,
+              username: server.username,
+              identityFile: server.sshKeyPath,
+              remoteProjectPath: remoteCwd,
+              excludeIds,
+            };
+            if (type === "claude") {
+              id = await invoke<string | null>("get_claude_session_id_ssh", { ...sshArgs, maxAgeSecs: claudeMaxAge });
+            } else if (type === "codex") {
+              id = await invoke<string | null>("get_codex_session_id_ssh", { ...sshArgs, maxAgeSecs: null });
+            } else if (type === "gemini") {
+              id = await invoke<string | null>("get_gemini_session_id_ssh", { ...sshArgs, maxAgeSecs: null });
+            }
+          } else if (backendNow === "native") {
+            const nativeCwd = workingDirRef.current;
+            if (!nativeCwd) return false;
+            if (type === "claude") {
+              id = await invoke<string | null>("get_claude_session_id_native", { projectPath: nativeCwd, excludeIds, maxAgeSecs: claudeMaxAge });
+            } else if (type === "codex") {
+              id = await invoke<string | null>("get_codex_session_id_native", { projectPath: nativeCwd, excludeIds });
+            } else if (type === "gemini") {
+              id = await invoke<string | null>("get_gemini_session_id_native", { projectPath: nativeCwd, excludeIds });
+            }
+          } else if (backendNow === "windows") {
+            const winCwd = workingDirRef.current;
+            if (!winCwd) return false;
+            if (type === "claude") {
+              id = await invoke<string | null>("get_claude_session_id_windows", { projectPath: winCwd, excludeIds, maxAgeSecs: claudeMaxAge });
+            } else if (type === "codex") {
+              id = await invoke<string | null>("get_codex_session_id_windows", { projectPath: winCwd, excludeIds });
+            } else if (type === "gemini") {
+              id = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: winCwd, excludeIds });
+            }
+          } else {
+            const wslCwd = toWslPath(workingDirRef.current);
+            if (!wslCwd) return false;
+            if (type === "claude") {
+              id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds, maxAgeSecs: claudeMaxAge });
+            } else if (type === "codex") {
+              id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
+            } else if (type === "gemini") {
+              id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+            }
+          }
+
+          console.log(`[SessionResume] native ${type} lookup result: id=${id}`);
+          if (id) {
+            if (!claimSessionId(id)) {
+              console.log(`[SessionResume] ${id.slice(0, 8)} already claimed by another pane`);
+              skippedIds.add(id);
+              return false;
+            }
+            setSessionTrusted(true);
+            // Eagerly update the ref so a re-render before the persisted
+            // prop lands doesn't re-arm detection.
+            sessionResumeIdPropRef.current = id;
+            onSessionResumeIdRef.current?.(id);
+            return true;
+          }
+        } catch (e) {
+          console.error(`[SessionResume] native disk lookup failed:`, e);
+        }
+        return false;
+      };
+
+      // Retry schedule mirrors xterm: 5s, 20s, then 60s × 10 (~10.5 min).
+      const RETRY_DELAYS_MS = [5_000, 20_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000, 60_000];
+      let attempt = 0;
+      let timerId: ReturnType<typeof setTimeout> | null = null;
+      const scheduleNext = () => {
+        if (attempt >= RETRY_DELAYS_MS.length) return;
+        const delay = RETRY_DELAYS_MS[attempt++];
+        timerId = setTimeout(async () => {
+          timerId = null;
+          if (await lookupSession()) return;
+          scheduleNext();
+        }, delay);
+      };
+      sessionRetryCancelRef.current?.();
+      sessionRetryCancelRef.current = () => {
+        if (timerId !== null) {
+          clearTimeout(timerId);
+          timerId = null;
+        }
+        attempt = RETRY_DELAYS_MS.length;
+      };
+      scheduleNext();
+    }
   }, []);
 
   const handlePtyExit = useCallback(
     (code: number) => {
+      sessionRetryCancelRef.current?.();
       onPtyExit?.(code);
     },
     [onPtyExit],
@@ -674,6 +986,7 @@ export default function TerminalPaneNative({
     serverId,
     sessionResumeId,
     ready: termId != null,
+    restartKey,
     backend,
     attachTo: termId,
   });
@@ -801,10 +1114,9 @@ export default function TerminalPaneNative({
   }, [pastedImage, dismissPreview]);
 
   // ── TerminalHeader props ──────────────────────────────────────────────
-  // Native pane doesn't yet have OSC 133 buffer parsing (R3), so the
-  // context-derived props are stubbed: no context bar, no prompt history.
-  // The header still renders correctly with the tab/title/picker/close
-  // controls — those don't depend on buffer content.
+  // Context bar (model / context % / cost) is fed by the session poll above
+  // once this pane locks its own session; prompt history comes from the
+  // OSC 133 prompt-line cache below.
   const handleClose = useCallback(() => onClose(), [onClose]);
   const handleRestart = useCallback(() => {
     // Restart not yet implemented for native panes — would tear down the PTY
@@ -813,7 +1125,35 @@ export default function TerminalPaneNative({
   }, [onClose]);
   const handleSwitchSession = useCallback(
     (sid: string | undefined) => {
+      // Claim bookkeeping parity with TerminalPaneXterm.handleSwitchSession:
+      // an explicit switch is trusted; release the old claim, then either
+      // claim the new ID or re-arm auto-detection for a fresh session.
+      setSessionTrusted(!!sid);
+      if (sessionResumeIdPropRef.current) {
+        claimedSessionIds.delete(sessionResumeIdPropRef.current);
+      }
+      if (sid) {
+        claimedSessionIds.add(sid);
+        sessionRetryCancelRef.current?.();
+        sessionLookupDone.current = true;
+      } else {
+        sessionRetryCancelRef.current?.();
+        sessionLookupDone.current = false;
+      }
+      setContextInfo(null);
       onSwitchSession?.(sid);
+      // Eagerly update the ref so the PTY spawn reads the correct session ID
+      // before React delivers the prop update.
+      sessionResumeIdPropRef.current = sid;
+      // Run E review fix: actually respawn the PTY (xterm parity). Without
+      // this the claim/trust bookkeeping above changes the header while the
+      // running CLI stays on the OLD session — prompts would go to a session
+      // the header no longer shows, and the released old ID becomes
+      // stealable by other panes while still live. The bump re-runs
+      // usePtyNative's spawn effect: cleanup detaches the native term +
+      // kills the old PTY, then a fresh spawn (with the new --resume flag)
+      // re-attaches — Rust creates a new Term, so old buffer content drops.
+      setRestartKey((k) => k + 1);
     },
     [onSwitchSession],
   );
@@ -953,11 +1293,11 @@ export default function TerminalPaneNative({
           onSwapPane={onSwapPane}
           serverId={serverId}
           isYolo={false}
-          contextInfo={null}
+          contextInfo={contextInfo}
           workingDir={workingDir}
           backend={backend}
           sessionResumeId={sessionResumeId}
-          sessionTrusted={false}
+          sessionTrusted={sessionTrusted}
           onSwitchSession={handleSwitchSession}
           getPromptEntries={getPromptEntries}
           onScrollToPromptLine={handleScrollToPromptLine}

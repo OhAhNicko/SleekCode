@@ -561,6 +561,11 @@ export interface DebugStats {
   dpr: number;
   surfaceW: number;
   surfaceH: number;
+  // Static-canvas geometry: surfaceW/H report the oversized fixed canvas the
+  // wgpu surface spans (parent-client-sized); paneW/H report the VISIBLE
+  // pane (physical px) — what the JS rect describes.
+  paneW: number;
+  paneH: number;
 }
 
 export function nativeTermDebugStats(id: NativeTermId): Promise<DebugStats> {
