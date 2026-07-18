@@ -467,7 +467,12 @@ impl CellGrid {
         let len = snapshot.len().min(self.rows);
         for (y, row) in snapshot.into_iter().enumerate().take(len) {
             let RowSnapshot { runs, bg, decor, block } = row;
-            if !offset_changed
+            // Skip re-shaping only when the slot is VALID (not newly-exposed
+            // by a rotation / init / theme-swap) AND its content is byte-for-
+            // byte unchanged. `row_valid[y] == false` forces a re-shape even
+            // on an identity match — the aliasing guard documented on the
+            // `row_valid` field.
+            if self.row_valid[y]
                 && self.row_runs[y] == runs
                 && self.row_bg_matches(y, &bg)
                 && self.row_decor_matches(y, &decor)
@@ -514,6 +519,7 @@ impl CellGrid {
             self.row_bg[y] = bg;
             self.row_decor[y] = decor;
             self.row_block[y] = block;
+            self.row_valid[y] = true;
             self.damage.mark_row(y);
         }
         info
