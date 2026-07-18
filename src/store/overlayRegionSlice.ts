@@ -77,30 +77,39 @@ export function useOverlayPublisher(
     // loop unconditionally and the tick re-reads `overlayRef.current` each
     // frame, so it picks up the ref once the conditional renders.
     let raf = 0;
-    let lastJson = "";
 
+    // Dedupe against the STORE's current entry, not a local lastJson: with
+    // a per-instance cache, a second same-key instance publishing null
+    // (e.g. a conditionally-hidden duplicate) deletes the open popup's rect
+    // and the open instance never republishes because ITS cache is
+    // unchanged — the hole is lost until the popup moves. Store-compare
+    // self-heals any clobber on the next frame. publishOverlayRect already
+    // no-ops on identical rects, so this stays write-free when stable.
     const tick = () => {
       raf = requestAnimationFrame(tick);
+      const stored =
+        (useAppStore.getState() as StoreWithThisSlice).overlayRects.get(key) ??
+        null;
       const el = overlayRef.current;
       if (!el) {
-        if (lastJson !== "null") {
-          lastJson = "null";
-          publish(key, null);
-        }
+        if (stored !== null) publish(key, null);
         return;
       }
       const r = el.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) {
-        if (lastJson !== "null") {
-          lastJson = "null";
-          publish(key, null);
-        }
+        if (stored !== null) publish(key, null);
         return;
       }
       const rect: Rect = { x: r.left, y: r.top, width: r.width, height: r.height };
-      const json = `${rect.x},${rect.y},${rect.width},${rect.height}`;
-      if (json === lastJson) return;
-      lastJson = json;
+      if (
+        stored &&
+        stored.x === rect.x &&
+        stored.y === rect.y &&
+        stored.width === rect.width &&
+        stored.height === rect.height
+      ) {
+        return;
+      }
       publish(key, rect);
     };
     raf = requestAnimationFrame(tick);

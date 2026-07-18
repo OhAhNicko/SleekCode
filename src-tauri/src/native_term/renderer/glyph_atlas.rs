@@ -248,8 +248,20 @@ impl GlyphStack {
             font_px_raw,
             line_h_raw,
         );
-        let advance_int = advance_raw.round().max(1.0);
-        let scale = (advance_int / advance_raw).clamp(0.95, 1.05);
+        let advance_int = {
+            let rounded = advance_raw.round().max(1.0);
+            // Warp-parity bias: never quantize the font DOWN — shrinking to
+            // reach a lower integer advance thins strokes (verified thinner
+            // than Warp side-by-side). If rounding would shrink, take the
+            // next integer UP instead; the verify below still guards faces
+            // that don't scale linearly (falls back to raw + fractional).
+            if rounded < advance_raw {
+                rounded + 1.0
+            } else {
+                rounded
+            }
+        };
+        let scale = (advance_int / advance_raw).clamp(1.0, 1.06);
         let font_px = font_px_raw * scale;
         let line_h_scaled = (font_px * 1.2).ceil();
         let advance_check = measure_cell_advance(

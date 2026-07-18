@@ -189,7 +189,10 @@ export default function PromptComposer({
   const [previewImage, setPreviewImage] = useState<{ dataUri: string; winPath: string } | null>(null);
   const [imgCtxMenu, setImgCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
   const imgCtxMenuRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('prompt-composer-image-menu', imgCtxMenuRef);
+  // Key MUST be per-instance: this hook runs in EVERY mounted composer, and
+  // with a shared key a second composer's null publish clobbers the open
+  // menu's rect (hole lost over native panes).
+  useOverlayPublisher(`prompt-composer-image-menu-${terminalId}`, imgCtxMenuRef);
   const [consoleSnippet, setConsoleSnippet] = useState<{ tag: string; formatted: string } | null>(null);
   const consoleTagRef = useRef<string | null>(null); // current tag text in textarea
   const browserPreviewOpen = useBrowserConsoleStore((s) => s.active);
@@ -2356,6 +2359,7 @@ export default function PromptComposer({
       <ImagePreviewModal
         dataUri={previewImage.dataUri}
         winPath={previewImage.winPath}
+        overlayKey={`image-preview-composer-${terminalId}`}
         onDelete={() => {
           setLocalImages((prev) => prev.filter((im) => im.winPath !== previewImage.winPath));
           setPreviewImage(null);

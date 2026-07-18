@@ -216,6 +216,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
         <ImagePreviewModal
           dataUri={previewImage.dataUri}
           winPath={previewImage.winPath}
+          overlayKey="image-preview-strip"
           onInsert={() => {
             if (composerEnabled) {
               const img = images.find((i) => i.winPath === previewImage.winPath);

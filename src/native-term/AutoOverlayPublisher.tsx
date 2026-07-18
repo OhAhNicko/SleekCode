@@ -9,9 +9,12 @@
 // popup) is harmless: overlayRegionSlice's same-rect dedupe makes the second
 // publish a no-op.
 //
-// Skips elements inside [data-pane-id] / [data-terminal-id] — those are in-
-// pane overlays (ImeCompositionPopup, PaneSearchBar) and cutting a hole for
-// them would punch through our own pane.
+// Skips elements inside [data-pane-id] / [data-terminal-id] — in-pane
+// overlays (ImeCompositionPopup, PaneSearchBar) publish EXPLICITLY with
+// per-pane keys instead: over native GPU panes they NEED a hole to be
+// visible at all (the old "would punch through our own pane" rationale was
+// inverted for the native renderer), and explicit keys avoid this poller's
+// generic keying.
 //
 // Mounted once in App.tsx near NativePaneVisibilityCoordinator.
 import { useEffect } from "react";

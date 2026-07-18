@@ -281,7 +281,13 @@ impl Renderer {
             &wgpu::DeviceDescriptor {
                 label: Some("native_term R1 device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults(),
+                // downlevel_defaults caps textures at 2048px — a maximized
+                // parent-sized canvas on a 2560-wide monitor exceeded that
+                // and aborted the process inside Surface::configure.
+                // using_resolution raises the texture caps to the adapter's
+                // real maximum while keeping the downlevel floor elsewhere.
+                required_limits: wgpu::Limits::downlevel_defaults()
+                    .using_resolution(adapter.limits()),
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
@@ -306,11 +312,17 @@ impl Renderer {
         .find(|f| caps.formats.contains(f))
         .unwrap_or(caps.formats[0]);
 
+        // Surface::configure PANICS (validation) beyond the device texture
+        // limit, and a panic in this call stack crosses the wnd_proc FFI
+        // boundary → process abort. Clamp every configure defensively; a
+        // hypothetical monitor wider than the adapter max letterboxes
+        // instead of killing the app.
+        let max_texture_dim = device.limits().max_texture_dimension_2d;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: width_px.max(1),
-            height: height_px.max(1),
+            width: width_px.clamp(1, max_texture_dim),
+            height: height_px.clamp(1, max_texture_dim),
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
             alpha_mode: caps.alpha_modes[0],
@@ -624,8 +636,13 @@ impl Renderer {
         if width_px == 0 || height_px == 0 {
             return;
         }
-        self.config.width = width_px;
-        self.config.height = height_px;
+        // Same clamp as construction: configure beyond the device texture
+        // limit is a validation PANIC that aborts through the wnd_proc FFI
+        // boundary (hit live: maximized 2560px canvas vs the old 2048
+        // downlevel limit).
+        let max_dim = self.device.limits().max_texture_dimension_2d;
+        self.config.width = width_px.clamp(1, max_dim);
+        self.config.height = height_px.clamp(1, max_dim);
         self.surface.configure(&self.device, &self.config);
         self.configures += 1;
         self.glyph.resize(&self.queue, width_px, height_px);

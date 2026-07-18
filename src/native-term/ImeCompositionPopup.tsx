@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import {
   type NativeTermId,
   subscribeImeComposition,
@@ -31,6 +32,13 @@ export default function ImeCompositionPopup({
   paneRef,
 }: ImeCompositionPopupProps) {
   const [composition, setComposition] = useState<CompositionState | null>(null);
+  // Publish the popup's rect so the native HWND cuts a hole — without this
+  // the pre-edit popup is INVISIBLE over the GPU pane (the old "would punch
+  // through our own pane" skip-rationale was inverted for native panes).
+  // Hook runs unconditionally (before the early return below); a null/absent
+  // root publishes null, which is a no-op.
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useOverlayPublisher(`ime-composition-${termId}`, rootRef);
   // Cursor cache. A ref because we don't want every cursor move to re-render
   // the popup — we read it lazily when composition state changes.
   const cursorRef = useRef<{ x: number; y: number; h: number } | null>(null);
@@ -98,6 +106,7 @@ export default function ImeCompositionPopup({
 
   return (
     <div
+      ref={rootRef}
       aria-hidden
       style={{
         position: "absolute",

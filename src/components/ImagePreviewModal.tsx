@@ -8,17 +8,23 @@ interface ImagePreviewModalProps {
   onInsert?: () => void;
   onClose: () => void;
   onDelete?: () => void;
+  /** Unique per mounting parent (see useOverlayPublisher note below). */
+  overlayKey?: string;
 }
 
 export default function ImagePreviewModal({
   dataUri,
   winPath,
+  overlayKey,
   onInsert,
   onClose,
   onDelete,
 }: ImagePreviewModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('image-preview', overlayRef);
+  // overlayKey must be unique per mounting parent (ClipboardImageStrip AND
+  // PromptComposer both render this modal) — a shared key lets one parent's
+  // null publish clobber the other's open hole.
+  useOverlayPublisher(overlayKey ?? 'image-preview', overlayRef);
   const fileName = winPath.split(/[\\/]/).pop() ?? winPath;
 
   return (

@@ -264,20 +264,23 @@ pub struct CellGrid {
     /// Per-row block-element cells (U+2580..=U+259F), rendered as grid-aligned
     /// quads by `build_block_quads` instead of as font glyphs.
     row_block: Vec<Vec<BlockCell>>,
+    /// Per-row cache validity. `false` forces a re-shape regardless of the
+    /// identity check — the ONLY safe way to invalidate a slot whose Buffer
+    /// may hold stale glyphs, because a cleared runs-cache compares EQUAL to
+    /// a genuinely-blank incoming row and would skip `set_rich_text` on a
+    /// Buffer still holding old content (the P6a aliasing trap).
+    row_valid: Vec<bool>,
     /// Shared theme palette. Owned by Renderer; cloned into CellGrid so
     /// snapshot_rows / sync_from_term can resolve named/indexed ansi colors
     /// against the current theme. Updated atomically by `Renderer::set_theme`.
     theme: Arc<RwLock<ThemeColors>>,
     /// P6a scrollback: `display_offset` of the most recent `sync_from_term`.
     /// The per-row caches above are keyed by ROW SLOT (viewport position),
-    /// not by grid line — when the offset changes, every slot now shows a
-    /// different grid line, so the sync loop bypasses the per-row identity
-    /// short-circuit and re-shapes the whole viewport (simple, always
-    /// correct: one screenful of re-shaping per offset change).
-    /// TODO(P6a-rotate): rotate the caches by the offset delta instead
-    /// (clear only the newly-exposed rows, |delta| >= rows → clear all).
-    /// Deferred: a wrong rotation shows wrong pixels transiently and this
-    /// change shipped without live-GUI verification.
+    /// not by grid line — when the offset changes, `rotate_for_offset_delta`
+    /// shifts the caches so unchanged content keeps skipping the shaper and
+    /// only the |delta| newly-exposed slots re-shape. (The original
+    /// re-shape-everything fallback made wheel scrolling unusably slow: a
+    /// full screenful of cosmic-text shaping per wheel notch.)
     last_display_offset: usize,
     pub damage: DamageTracker,
     pub cols: usize,
@@ -302,11 +305,60 @@ impl CellGrid {
             row_bg,
             row_decor,
             row_block,
+            row_valid: vec![false; rows],
             theme,
             last_display_offset: 0,
             damage: DamageTracker::new(rows),
             cols,
             rows,
+        }
+    }
+
+    /// P6a-rotate: the display offset moved by `d` rows — cached content is
+    /// still valid, just at a shifted viewport slot (slot y shows grid line
+    /// `y - offset`, so content moves to slot `old_slot + d`). Rotate every
+    /// per-row cache so the identity check keeps skipping unmoved rows;
+    /// only the |d| newly-exposed slots (wrapped-around entries holding
+    /// stale buffers) are invalidated via `row_valid` and re-shape.
+    fn rotate_for_offset_delta(&mut self, d: i64) {
+        let rows = self.rows;
+        if rows == 0 || d == 0 {
+            return;
+        }
+        let ad = d.unsigned_abs() as usize;
+        if ad >= rows {
+            for v in self.row_valid.iter_mut() {
+                *v = false;
+            }
+            for y in 0..rows {
+                self.damage.mark_row(y);
+            }
+            return;
+        }
+        if d > 0 {
+            // Scrolled toward history: content shifts DOWN; new rows at top.
+            self.row_buffers.rotate_right(ad);
+            self.row_runs.rotate_right(ad);
+            self.row_bg.rotate_right(ad);
+            self.row_decor.rotate_right(ad);
+            self.row_block.rotate_right(ad);
+            self.row_valid.rotate_right(ad);
+            for y in 0..ad {
+                self.row_valid[y] = false;
+                self.damage.mark_row(y);
+            }
+        } else {
+            // Scrolled toward bottom: content shifts UP; new rows at bottom.
+            self.row_buffers.rotate_left(ad);
+            self.row_runs.rotate_left(ad);
+            self.row_bg.rotate_left(ad);
+            self.row_decor.rotate_left(ad);
+            self.row_block.rotate_left(ad);
+            self.row_valid.rotate_left(ad);
+            for y in rows - ad..rows {
+                self.row_valid[y] = false;
+                self.damage.mark_row(y);
+            }
         }
     }
 
@@ -316,6 +368,9 @@ impl CellGrid {
     /// check would short-circuit when the underlying glyph text hasn't
     /// changed even though the resolved color did.
     pub fn invalidate_for_theme_swap(&mut self) {
+        for v in self.row_valid.iter_mut() {
+            *v = false;
+        }
         for runs in self.row_runs.iter_mut() {
             runs.clear();
         }
@@ -347,6 +402,7 @@ impl CellGrid {
         self.row_bg = vec![Vec::new(); rows];
         self.row_decor = vec![Vec::new(); rows];
         self.row_block = vec![Vec::new(); rows];
+        self.row_valid = vec![false; rows];
         self.damage.resize(rows);
         self.cols = cols;
         self.rows = rows;
@@ -359,6 +415,9 @@ impl CellGrid {
     /// re-shapes every row instead of short-circuiting on stale identity.
     pub fn rebuild_buffers(&mut self, glyph: &mut GlyphStack) {
         self.row_buffers = (0..self.rows).map(|_| glyph.make_buffer()).collect();
+        for v in self.row_valid.iter_mut() {
+            *v = false;
+        }
         for runs in self.row_runs.iter_mut() {
             runs.clear();
         }
@@ -387,15 +446,15 @@ impl CellGrid {
     ) -> TermFrameInfo {
         let (snapshot, info) = self.snapshot_rows(term);
 
-        // P6a scrollback fallback invalidation (see `last_display_offset`
-        // docs): ANY offset change re-shapes every row slot. Implemented as
-        // an identity-check bypass rather than a literal cache clear — a
-        // cleared (empty) cache entry compares EQUAL to a genuinely-blank
-        // incoming row, which would skip `set_rich_text` on a Buffer still
-        // holding the pre-scroll glyphs. Bypassing the short-circuit keeps
-        // the "clear-all + mark_all" semantics without that aliasing trap.
-        let offset_changed = info.display_offset != self.last_display_offset;
-        self.last_display_offset = info.display_offset;
+        // P6a-rotate: shift the slot-keyed caches by the offset delta so
+        // scrolling only re-shapes the newly-exposed rows (the fallback
+        // re-shaped the whole viewport per wheel notch — unusably slow).
+        if info.display_offset != self.last_display_offset {
+            self.rotate_for_offset_delta(
+                info.display_offset as i64 - self.last_display_offset as i64,
+            );
+            self.last_display_offset = info.display_offset;
+        }
 
         // P5b: shape with the pane's ACTUAL font family. One clone per sync
         // keeps the borrow simple (`set_rich_text` needs `&mut glyph` while
