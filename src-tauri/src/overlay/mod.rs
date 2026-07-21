@@ -24,14 +24,17 @@ pub struct Rect {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    /// Corner radius (logical px) for the rounded clip region. 0 = sharp.
+    #[serde(default)]
+    pub radius: f64,
 }
 
-/// Set the overlay's paint/hit-test region to the UNION of `rects`. Empty vec
-/// => empty region => the overlay is fully click-through (all clicks reach the
-/// native panes below). Rects are converted logical->physical using the
-/// overlay's scale factor (== the main window's monitor scale), with `floor` on
-/// the top-left and `ceil` on the bottom-right so the region never undercuts a
-/// popup's footprint — the same convention as `native_term::region`.
+/// Clip the overlay to the union of currently-open popup rects (rounded to each
+/// popup's corner radius). Inside a popup the overlay is hit-testable so the
+/// DOM gets the click; everywhere else the overlay is not part of the window and
+/// the click falls through to the native pane. Empty vec => fully click-through.
+/// Rects convert logical->physical via the overlay's scale factor (rounded to
+/// the nearest physical px so the clip tracks the popup's opaque edge).
 #[tauri::command]
 pub fn overlay_set_region(app: tauri::AppHandle, rects: Vec<Rect>) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -42,14 +45,20 @@ pub fn overlay_set_region(app: tauri::AppHandle, rects: Vec<Rect>) -> Result<(),
             .ok_or_else(|| "overlay window not found".to_string())?;
         let hwnd = overlay.hwnd().map_err(|e| e.to_string())?.0 as isize;
         let scale = overlay.scale_factor().map_err(|e| e.to_string())?;
-        let px: Vec<(i32, i32, i32, i32)> = rects
+        let px: Vec<(i32, i32, i32, i32, i32)> = rects
             .iter()
             .map(|r| {
+                let diam = if r.radius > 0.0 {
+                    ((r.radius * scale).round() as i32 * 2).max(2)
+                } else {
+                    0
+                };
                 (
-                    (r.x * scale).floor() as i32,
-                    (r.y * scale).floor() as i32,
-                    ((r.x + r.width) * scale).ceil() as i32,
-                    ((r.y + r.height) * scale).ceil() as i32,
+                    (r.x * scale).round() as i32,
+                    (r.y * scale).round() as i32,
+                    ((r.x + r.width) * scale).round() as i32,
+                    ((r.y + r.height) * scale).round() as i32,
+                    diam,
                 )
             })
             .collect();

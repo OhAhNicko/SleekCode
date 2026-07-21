@@ -28,7 +28,13 @@ import { invoke } from "@tauri-apps/api/core";
  * which is why we mirror the box rect into the region on every layout.
  */
 
-type PopupRect = { x: number; y: number; width: number; height: number };
+type PopupRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  radius?: number;
+};
 
 const BOX_W = 300;
 const BOX_H = 180;
@@ -62,7 +68,11 @@ export function OverlayRoot() {
       return;
     }
     const r = el.getBoundingClientRect();
-    publishRegion([{ x: r.left, y: r.top, width: r.width, height: r.height }]);
+    // Send the CSS corner radius so the clip region rounds to match the popup.
+    const radius = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
+    publishRegion([
+      { x: r.left, y: r.top, width: r.width, height: r.height, radius },
+    ]);
   }, [publishRegion]);
 
   useLayoutEffect(() => {
@@ -175,8 +185,9 @@ const boxStyle: CSSProperties = {
   padding: 16,
   borderRadius: 14,
   background: "#171b22",
-  border: "1px solid rgba(255,255,255,0.12)",
-  boxShadow: "0 18px 50px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.4)",
+  // Inset ring instead of an outer border: it renders cleanly INSIDE the 1-bit
+  // clip (an outer border/shadow would be chopped by the hard clip edge).
+  boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.10)",
   color: "#e6edf3",
   fontFamily: "Inter, system-ui, sans-serif",
   userSelect: "none",
@@ -202,13 +213,12 @@ const pipStyle: CSSProperties = {
   top: 12,
   left: 12,
   pointerEvents: "auto",
-  border: "1px solid rgba(255,255,255,0.14)",
   background: "#171b22",
+  boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.10)",
   color: "#e6edf3",
   borderRadius: 10,
   padding: "8px 12px",
   fontSize: 12,
   fontFamily: "Inter, system-ui, sans-serif",
-  boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
   cursor: "pointer",
 };

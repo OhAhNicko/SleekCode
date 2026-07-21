@@ -6770,57 +6770,38 @@ pub fn run() {
                 // iteration adds the WebView2 controller DefaultBackgroundColor
                 // fix. Overlay-creation failure must NOT take down the app, so
                 // we log and continue.
+                // #12450 workaround: creating the overlay transparent WITH a
+                // parent/owner breaks WebView2 transparency on Windows — the
+                // transparent areas composite to BLACK (so a popup's rounded /
+                // shadowed edges render square + dark). wry's transparency path
+                // works fine on a plain top-level window, so we build it
+                // parent-LESS, then set `main` as the OWNER post-hoc via
+                // GWLP_HWNDPARENT — restoring owned-window z-order (always above
+                // the owner AND its child HWNDs, i.e. the native panes) without
+                // re-breaking the transparency established at creation.
                 let overlay_res = tauri::WebviewWindowBuilder::new(
                     app,
                     "overlay",
                     tauri::WebviewUrl::App("overlay.html".into()),
                 )
-                .parent(&window)
-                .and_then(|b| {
-                    b.transparent(true)
-                        .decorations(false)
-                        .shadow(false)
-                        .resizable(false)
-                        .skip_taskbar(true)
-                        .focused(false)
-                        .visible(false)
-                        .inner_size(1.0, 1.0)
-                        .build()
-                });
+                .transparent(true)
+                .decorations(false)
+                .shadow(false)
+                .resizable(false)
+                .skip_taskbar(true)
+                .focused(false)
+                .visible(false)
+                .inner_size(1.0, 1.0)
+                .build();
                 match overlay_res {
                     Ok(overlay) => {
                         let overlay_hwnd = overlay.hwnd().map(|h| h.0 as isize).unwrap_or(0);
-
-                        // Transparency: force the WebView2 default background to
-                        // fully transparent (alpha 0) so anti-aliased popup edges
-                        // and drop shadows composite against the terminal, not a
-                        // black backing (otherwise: a dark fringe on rounded
-                        // corners). webview2-com 0.38.2 has no safe wrapper, so
-                        // QueryInterface the controller for
-                        // ICoreWebView2Controller2 and call SetDefaultBackgroundColor.
-                        let _ = overlay.with_webview(|webview| {
-                            use webview2_com::Microsoft::Web::WebView2::Win32::{
-                                ICoreWebView2Controller2, COREWEBVIEW2_COLOR,
-                            };
-                            use windows_webview2::core::Interface;
-                            if let Ok(c2) =
-                                webview.controller().cast::<ICoreWebView2Controller2>()
-                            {
-                                unsafe {
-                                    let _ = c2.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR {
-                                        A: 0,
-                                        R: 0,
-                                        G: 0,
-                                        B: 0,
-                                    });
-                                }
-                            }
-                        });
-
                         if overlay_hwnd != 0 {
+                            // Owner FIRST (z-order above the panes), then
+                            // ex-styles, then cover main's client area BEFORE
+                            // showing so the overlay never flashes at (0,0)/1x1.
+                            overlay::win32::set_owner(overlay_hwnd, hwnd_raw);
                             overlay::win32::apply_ex_styles(overlay_hwnd);
-                            // Cover main's client area BEFORE showing so the
-                            // overlay never flashes at (0,0)/1x1.
                             overlay::win32::sync_geometry(hwnd_raw, overlay_hwnd);
                         }
                         let _ = overlay.show();
