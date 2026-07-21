@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MADE Overlay</title>
+    <style>
+      /* The overlay webview is transparent; only actual popup pixels paint.
+         Keep every layer see-through so the native terminal panes below show. */
+      html,
+      body,
+      #overlay-root {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        background: transparent !important;
+        overflow: hidden;
+      }
+      /* Root passes clicks through by default; each visible popup sets
+         pointer-events:auto on itself. The Win32 region (driven by
+         overlay_set_region) is what actually routes off-popup clicks to the
+         terminal below — CSS pointer-events only governs within this webview. */
+      #overlay-root {
+        pointer-events: none;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="overlay-root"></div>
+    <script type="module" src="/src/overlay-main.tsx"></script>
+  </body>
+</html>

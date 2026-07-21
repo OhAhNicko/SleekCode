@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -12,6 +13,17 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
   clearScreen: false,
+  // Multi-page build: the main app (index.html → main.tsx) plus the transparent
+  // overlay webview (overlay.html → overlay-main.tsx). The overlay has its own
+  // entry so it never runs main.tsx's import-time side effects.
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("./index.html", import.meta.url)),
+        overlay: fileURLToPath(new URL("./overlay.html", import.meta.url)),
+      },
+    },
+  },
   server: {
     port: 5420,
     strictPort: true,

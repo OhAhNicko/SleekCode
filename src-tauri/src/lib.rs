@@ -1,6 +1,7 @@
 mod preview_proxy;
 mod pty;
 mod native_term;
+mod overlay;
 
 use std::process::{Child, Command};
 use std::sync::Mutex;
@@ -6695,7 +6696,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, overlay::overlay_set_region])
         .setup(|app| {
             // Registry of active `ssh -N -L` port-forward processes for remote
             // dev servers (commands: ssh_forward_port_start / _stop).
@@ -6754,6 +6755,72 @@ pub fn run() {
                         win32_border::remove_border(hwnd_raw as *mut _, webview.controller());
                     })
                     .expect("failed to configure Windows frameless window");
+
+                // --- Overlay webview (Phase 0 de-risk prototype) ----------
+                // A transparent, OWNED, always-above second WebView2 for
+                // floating popups. `parent(&window)` sets `window` as the OWNER
+                // on Windows, so the overlay is always above the owner AND its
+                // child HWNDs (the native-term wgpu panes) in z-order (MSDN
+                // owned-window rules) — we never fight the pane z-order. It does
+                // NOT get win32_border (that is main-window-specific).
+                //
+                // Transparency: build #1 uses `.transparent(true)` alone. Tauri
+                // 2.10.x is far newer than the #12450 (transparent + parent =>
+                // black) report; if it renders black on hardware, the next
+                // iteration adds the WebView2 controller DefaultBackgroundColor
+                // fix. Overlay-creation failure must NOT take down the app, so
+                // we log and continue.
+                let overlay_res = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "overlay",
+                    tauri::WebviewUrl::App("overlay.html".into()),
+                )
+                .parent(&window)
+                .and_then(|b| {
+                    b.transparent(true)
+                        .decorations(false)
+                        .shadow(false)
+                        .resizable(false)
+                        .skip_taskbar(true)
+                        .focused(false)
+                        .visible(false)
+                        .inner_size(1.0, 1.0)
+                        .build()
+                });
+                match overlay_res {
+                    Ok(overlay) => {
+                        let overlay_hwnd = overlay.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+                        if overlay_hwnd != 0 {
+                            overlay::win32::apply_ex_styles(overlay_hwnd);
+                            // Cover main's client area BEFORE showing so the
+                            // overlay never flashes at (0,0)/1x1.
+                            overlay::win32::sync_geometry(hwnd_raw, overlay_hwnd);
+                        }
+                        let _ = overlay.show();
+
+                        // Keep the overlay covering main's CLIENT area on every
+                        // move / resize / maximize / DPI change. Capture only
+                        // isize HWNDs (Copy + Send).
+                        let main_isize = hwnd_raw;
+                        let ov_isize = overlay_hwnd;
+                        window.on_window_event(move |ev| {
+                            if ov_isize == 0 {
+                                return;
+                            }
+                            match ev {
+                                tauri::WindowEvent::Moved(_)
+                                | tauri::WindowEvent::Resized(_)
+                                | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                                    overlay::win32::sync_geometry(main_isize, ov_isize);
+                                }
+                                _ => {}
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!("[made] overlay window creation failed: {e}");
+                    }
+                }
 
                 // Keep a persistent WSL process alive — boots the WSL VM and
                 // keeps it warm so subsequent wsl.exe calls are fast.
