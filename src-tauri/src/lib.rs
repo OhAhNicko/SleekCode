@@ -69,6 +69,14 @@ mod win32_border {
     /// CSS-shadow approach (transparency caused drag lag + a double edge here).
     const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
     const WM_NCCALCSIZE: u32 = 0x0083;
+    const WM_NCPAINT: u32 = 0x0085;
+    const WM_NCACTIVATE: u32 = 0x0086;
+    const WM_SETTEXT: u32 = 0x000C;
+    const WM_SETICON: u32 = 0x0080;
+    /// Undocumented "user apphack" messages the theme engine sends to draw the
+    /// themed caption/frame; classic borderless windows swallow them.
+    const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
+    const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
     const WM_SIZE: u32 = 0x0005;
     const WM_MOVE: u32 = 0x0003;
     const WM_ACTIVATE: u32 = 0x0006;
@@ -100,6 +108,8 @@ mod win32_border {
     const SM_CXSIZEFRAME: i32 = 32;
     const SM_CYSIZEFRAME: i32 = 33;
     const SM_CXPADDEDBORDER: i32 = 92;
+    const GWL_STYLE: i32 = -16;
+    const WS_VISIBLE: isize = 0x1000_0000;
     const FRAME_CLAMP_TOLERANCE_PX: i32 = 3;
 
     #[repr(C)]
@@ -178,6 +188,8 @@ mod win32_border {
         fn MonitorFromRect(rect: *const RECT, flags: u32) -> *mut c_void;
         fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MONITORINFO) -> i32;
         fn GetDpiForWindow(hwnd: *mut c_void) -> u32;
+        fn GetWindowLongPtrW(hwnd: *mut c_void, index: i32) -> isize;
+        fn SetWindowLongPtrW(hwnd: *mut c_void, index: i32, value: isize) -> isize;
         fn GetSystemMetricsForDpi(index: i32, dpi: u32) -> i32;
         fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
         fn ShowWindow(hwnd: *mut c_void, cmd_show: i32) -> i32;
@@ -228,6 +240,37 @@ mod win32_border {
             &no_border as *const u32 as *const c_void,
             std::mem::size_of::<u32>() as u32,
         );
+    }
+
+    /// Chromium's ScopedRedrawLock (ui/views/win/hwnd_message_handler.cc):
+    /// Windows paints default non-client chrome INSIDE the default handlers of
+    /// certain messages (WM_NCACTIVATE, WM_SETTEXT, WM_SETICON, ...), which no
+    /// amount of WM_NCPAINT blocking or DWM attributes can intercept. Clearing
+    /// WS_VISIBLE via SetWindowLongPtr (which does NOT hide or repaint the
+    /// window on screen) for the duration of the DefSubclassProc call makes GDI
+    /// treat the window as invisible, so that internal paint can never reach
+    /// the screen. The style is restored immediately afterwards.
+    #[inline]
+    unsafe fn def_subclass_proc_with_redraw_lock(
+        hwnd: *mut c_void,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let was_visible = style & WS_VISIBLE != 0;
+        if was_visible {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, style & !WS_VISIBLE);
+        }
+        let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+        if was_visible {
+            SetWindowLongPtrW(
+                hwnd,
+                GWL_STYLE,
+                GetWindowLongPtrW(hwnd, GWL_STYLE) | WS_VISIBLE,
+            );
+        }
+        result
     }
 
     #[inline]
@@ -424,6 +467,37 @@ mod win32_border {
             return DefSubclassProc(hwnd, msg, wparam, lparam);
         }
 
+        // ---- Structural suppression of ALL default non-client rendering ----
+        // (Chromium HWNDMessageHandler pattern — the mechanism VS Code/Discord
+        // windows use; DWM border attributes alone are not what keeps their
+        // accent border off.) The window draws 100% of its own frame, so no
+        // default NC paint path may ever run:
+        //
+        // 1) WM_NCPAINT + the undocumented theme-engine draw messages are
+        //    swallowed outright. There is no NC area (WM_NCCALCSIZE claims the
+        //    full rect), so there is nothing legitimate for them to draw.
+        //    Blocking WM_NCPAINT does NOT affect DWMWCP_ROUND corners —
+        //    Chromium does both.
+        if msg == WM_NCPAINT || msg == WM_NCUAHDRAWCAPTION || msg == WM_NCUAHDRAWFRAME {
+            return 0;
+        }
+        //
+        // 2) WM_NCACTIVATE fires on every focus gain/loss and its DEFAULT
+        //    handler paints system chrome ("can draw an incorrect title bar
+        //    and cause visual corruption" — Chromium OnNCActivate). It must
+        //    still reach tao's handler (it drives Tauri focus events), so it
+        //    is forwarded under a redraw lock instead of being swallowed.
+        //    WM_SETTEXT/WM_SETICON default handlers likewise paint NC chrome
+        //    internally. (WM_NCLBUTTONDOWN is deliberately NOT locked: its
+        //    default handling can enter a modal move loop, and with a zero NC
+        //    area it never fires here.)
+        if msg == WM_NCACTIVATE || msg == WM_SETTEXT || msg == WM_SETICON {
+            if msg == WM_NCACTIVATE {
+                apply_border_suppression(hwnd);
+            }
+            return def_subclass_proc_with_redraw_lock(hwnd, msg, wparam, lparam);
+        }
+
         // Re-apply DWMWA_COLOR_NONE + immersive dark on every window state
         // change. Windows can reset DWMWA_BORDER_COLOR during transitions
         // (drag-resize, maximize, minimize, activate, snap, theme change), so
@@ -568,9 +642,10 @@ mod win32_border {
             }
             return 0;
         }
-        // NC paint is intentionally NOT blocked: DWM needs non-client rendering
-        // enabled to composite the drop shadow + rounded corners. The accent
-        // border line is suppressed via DWMWA_COLOR_NONE instead.
+        // Default NC rendering is suppressed structurally above (WM_NCPAINT /
+        // WM_NCACTIVATE / UAH messages); DWMWA_COLOR_NONE stays applied as the
+        // documented belt-and-suspenders layer. DWMWCP_ROUND corners are a DWM
+        // composition feature and are unaffected by any of it.
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
