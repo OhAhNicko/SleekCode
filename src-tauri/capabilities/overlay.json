@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay",
+  "description": "Capability for the transparent overlay window: cross-window events (overlay:popup / overlay:action) for popup state sync. Custom app commands (e.g. overlay_set_region) are allowed by default and need no entry here.",
+  "windows": ["overlay"],
+  "permissions": ["core:event:default"]
+}

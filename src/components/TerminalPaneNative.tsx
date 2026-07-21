@@ -40,6 +40,7 @@ import type { NativeRendererSlice } from "../store/nativeRendererSlice";
 import ImeCompositionPopup from "../native-term/ImeCompositionPopup";
 import FileLinkTooltip from "../native-term/FileLinkTooltip";
 import { useNativePaneRegion } from "../native-term/useNativePaneRegion";
+import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { queueGeom } from "../native-term/frameSync";
 import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
@@ -457,12 +458,16 @@ export default function TerminalPaneNative({
   // buffer to write the banner into (the way TerminalPaneXterm does at
   // ~:610), so it's a DOM overlay instead.
   const [exited, setExited] = useState(false);
-  // The banner floats over the native-HWND-covered terminal area, so — like
-  // the jump-to-bottom button above — its rect is published for the hole-cut
-  // driver or the native surface would paint straight over it. Publishes
-  // null automatically while unmounted (ref null → zero-size rect).
-  const exitBannerRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher(`native-exit-banner-${terminalId}`, exitBannerRef);
+  // Phase 1 overlay migration: the "[Process exited]" banner now renders in the
+  // transparent OVERLAY webview (above the native panes — no hole cut). We emit
+  // the pane anchor rect while `exited` so the overlay draws the banner at the
+  // pane's bottom-center. `exited` still gates clipboard paste below.
+  useOverlayPopupAnchor({
+    id: `exit-banner-${terminalId}`,
+    kind: "exit-banner",
+    open: exited,
+    anchorRef: terminalDivRef,
+  });
 
   const registerNativeTerm = useAppStore(
     (s) => (s as AppStoreWithNative).registerNativeTerm,
@@ -1648,36 +1653,9 @@ export default function TerminalPaneNative({
           suppressAutoFocus={false}
         />
       )}
-      {/* Process-exited banner (S15) — subtle grey pill shown over the
-          terminal after the PTY dies. xterm writes "[Process exited]" into
-          its buffer; the native pane has no JS buffer, so this is a DOM
-          overlay whose rect is published (via useOverlayPublisher above) so
-          the native HWND cuts a hole and it isn't painted over. Display-only
-          (pointer-events:none). */}
-      {exited && (
-        <div
-          ref={exitBannerRef}
-          style={{
-            position: "absolute",
-            left: "50%",
-            bottom: 12,
-            transform: "translateX(-50%)",
-            padding: "3px 10px",
-            borderRadius: 4,
-            backgroundColor: "var(--ezy-surface-raised)",
-            border: "1px solid var(--ezy-border)",
-            color: "var(--ezy-text-muted)",
-            fontSize: 12,
-            lineHeight: 1.4,
-            letterSpacing: 0.2,
-            pointerEvents: "none",
-            userSelect: "none",
-            zIndex: 10,
-          }}
-        >
-          [Process exited]
-        </div>
-      )}
+      {/* Process-exited banner — migrated to the overlay webview (Phase 1).
+          Emitted via useOverlayPopupAnchor above; drawn by OverlayRoot's
+          "exit-banner" renderer over the native pane (no hole cut). */}
       {/* Jump-to-bottom — appears while scrolled into history (driven by
           `scroll` events). Anchored bottom-right; its rect is published via
           useOverlayPublisher above so the native HWND cuts a hole for it. */}
