@@ -6790,6 +6790,33 @@ pub fn run() {
                 match overlay_res {
                     Ok(overlay) => {
                         let overlay_hwnd = overlay.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+
+                        // Transparency: force the WebView2 default background to
+                        // fully transparent (alpha 0) so anti-aliased popup edges
+                        // and drop shadows composite against the terminal, not a
+                        // black backing (otherwise: a dark fringe on rounded
+                        // corners). webview2-com 0.38.2 has no safe wrapper, so
+                        // QueryInterface the controller for
+                        // ICoreWebView2Controller2 and call SetDefaultBackgroundColor.
+                        let _ = overlay.with_webview(|webview| {
+                            use webview2_com::Microsoft::Web::WebView2::Win32::{
+                                ICoreWebView2Controller2, COREWEBVIEW2_COLOR,
+                            };
+                            use windows_webview2::core::Interface;
+                            if let Ok(c2) =
+                                webview.controller().cast::<ICoreWebView2Controller2>()
+                            {
+                                unsafe {
+                                    let _ = c2.SetDefaultBackgroundColor(COREWEBVIEW2_COLOR {
+                                        A: 0,
+                                        R: 0,
+                                        G: 0,
+                                        B: 0,
+                                    });
+                                }
+                            }
+                        });
+
                         if overlay_hwnd != 0 {
                             overlay::win32::apply_ex_styles(overlay_hwnd);
                             // Cover main's client area BEFORE showing so the

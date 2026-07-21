@@ -39,6 +39,12 @@ export function OverlayRoot() {
   const [visible, setVisible] = useState(true);
   const interactiveRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ dx: number; dy: number } | null>(null);
+  // True while the box is being dragged. During a drag we widen the Win32
+  // region to the whole overlay so fast pointer moves never outrun the region
+  // (async IPC lag) and fall through to the terminal — which would stall the
+  // drag ("box lags the cursor"). Real popups never drag, so this only matters
+  // for the prototype test box.
+  const draggingRef = useRef(false);
 
   const publishRegion = useCallback((rects: PopupRect[]) => {
     invoke("overlay_set_region", { rects }).catch((e) =>
@@ -46,10 +52,10 @@ export function OverlayRoot() {
     );
   }, []);
 
-  // After every layout, set the Win32 click-through region to exactly the
-  // bounding rect of whatever interactive element is showing (box or pip).
-  // Everything outside it stays click-through to the terminal below.
-  useLayoutEffect(() => {
+  // Set the Win32 click-through region to exactly the bounding rect of whatever
+  // interactive element is showing (box or pip). Everything outside it stays
+  // click-through to the terminal below.
+  const publishActiveElementRegion = useCallback(() => {
     const el = interactiveRef.current;
     if (!el) {
       publishRegion([]);
@@ -57,12 +63,25 @@ export function OverlayRoot() {
     }
     const r = el.getBoundingClientRect();
     publishRegion([{ x: r.left, y: r.top, width: r.width, height: r.height }]);
-  }, [pos, visible, hits, publishRegion]);
+  }, [publishRegion]);
+
+  useLayoutEffect(() => {
+    // During a drag the region is held wide (set on pointer-down); don't fight
+    // it per-frame. On drag end it is restored from pointer-up.
+    if (draggingRef.current) return;
+    publishActiveElementRegion();
+  }, [pos, visible, hits, publishActiveElementRegion]);
 
   const onPointerDown = (e: RPointerEvent<HTMLDivElement>) => {
     // Don't start a drag from the buttons.
     if ((e.target as HTMLElement).tagName === "BUTTON") return;
     dragRef.current = { dx: e.clientX - pos.x, dy: e.clientY - pos.y };
+    draggingRef.current = true;
+    // Widen the region to the whole overlay so every pointer-move reaches us,
+    // keeping the drag snappy regardless of region-update IPC latency.
+    publishRegion([
+      { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
+    ]);
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
   const onPointerMove = (e: RPointerEvent<HTMLDivElement>) => {
@@ -74,11 +93,14 @@ export function OverlayRoot() {
   };
   const onPointerUp = (e: RPointerEvent<HTMLDivElement>) => {
     dragRef.current = null;
+    draggingRef.current = false;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {
       /* pointer may not be captured — ignore */
     }
+    // Restore the region to the box's final rect (click-through resumes).
+    publishActiveElementRegion();
   };
 
   if (!visible) {
