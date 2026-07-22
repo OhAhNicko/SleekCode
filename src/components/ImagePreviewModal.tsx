@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 
 interface ImagePreviewModalProps {
   dataUri: string;
@@ -24,7 +24,7 @@ export default function ImagePreviewModal({
   // overlayKey must be unique per mounting parent (ClipboardImageStrip AND
   // PromptComposer both render this modal) — a shared key lets one parent's
   // null publish clobber the other's open hole.
-  useOverlayPublisher(overlayKey ?? 'image-preview', overlayRef);
+  useModal(overlayKey ?? "image-preview");
   const fileName = winPath.split(/[\\/]/).pop() ?? winPath;
 
   return (

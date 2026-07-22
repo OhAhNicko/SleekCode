@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 
 interface PromptHistorySearchProps {
   onClose: () => void;
@@ -9,7 +9,7 @@ interface PromptHistorySearchProps {
 
 export default function PromptHistorySearch({ onClose, onSelect }: PromptHistorySearchProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('prompt-history-search', overlayRef);
+  useModal("prompt-history-search");
   const globalHistory = useAppStore((s) => s.globalPromptHistory);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);

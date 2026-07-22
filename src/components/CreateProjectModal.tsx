@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 
 interface CreateProjectModalProps {
   onCreated: (name: string, dir: string) => void;
@@ -40,7 +40,7 @@ function basename(path: string): string {
 
 export default function CreateProjectModal({ onCreated, onClose }: CreateProjectModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('create-project', overlayRef);
+  useModal("create-project");
   const projectsDir = useAppStore((s) => s.projectsDir);
   const defaultClaudeMdPath = useAppStore((s) => s.defaultClaudeMdPath);
   const defaultAgentsMdPath = useAppStore((s) => s.defaultAgentsMdPath);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FaXmark } from "react-icons/fa6";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 
 interface ChangelogModalProps {
   version: string;
@@ -11,7 +11,7 @@ interface ChangelogModalProps {
 
 export default function ChangelogModal({ version, notes, onClose }: ChangelogModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('changelog', overlayRef);
+  useModal("changelog");
   const showChangelogOnUpdate = useAppStore((s) => s.showChangelogOnUpdate);
   const setShowChangelogOnUpdate = useAppStore((s) => s.setShowChangelogOnUpdate);
 

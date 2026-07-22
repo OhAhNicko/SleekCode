@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 
 const PERSIST_KEY = "made-storage";
 
@@ -149,7 +149,7 @@ interface ClearDataModalProps {
 
 export default function ClearDataModal({ onClose }: ClearDataModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('clear-data', overlayRef);
+  useModal("clear-data");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [wiping, setWiping] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);

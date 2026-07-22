@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 
 interface KeyboardShortcutsModalProps {
   onClose: () => void;
@@ -89,7 +89,7 @@ const sections: ShortcutSection[] = [
 
 export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('keyboard-shortcuts', overlayRef);
+  useModal("keyboard-shortcuts");
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {

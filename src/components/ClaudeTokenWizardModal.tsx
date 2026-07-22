@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 import { getClaudeSetupTokenCommand } from "../lib/terminal-config";
 
 interface ClaudeTokenWizardModalProps {
@@ -33,7 +33,7 @@ function cleanOutput(s: string): string {
 
 export default function ClaudeTokenWizardModal({ server, onToken, onClose }: ClaudeTokenWizardModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher("claude-token-wizard", overlayRef);
+  useModal("claude-token-wizard");
 
   const [phase, setPhase] = useState<Phase>("connecting");
   const [url, setUrl] = useState("");

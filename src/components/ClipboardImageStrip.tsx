@@ -7,6 +7,7 @@ import { useClipboardImageStore } from "../store/clipboardImageStore";
 import { insertImagePath, resolveImagePath } from "../lib/clipboard-insert";
 import { useAppStore } from "../store";
 import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModalWhen } from "../store/modalCoordinationSlice";
 import ImagePreviewModal from "./ImagePreviewModal";
 
 interface ClipboardImageStripProps {
@@ -38,7 +39,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
   const galleryCtxMenuRef = useRef<HTMLDivElement>(null);
   useOverlayPublisher('clipboard-image-strip-ctx-menu', ctxMenuRef);
   useOverlayPublisher('clipboard-image-strip-snip-ctx-menu', snipCtxMenuRef);
-  useOverlayPublisher('clipboard-image-strip-gallery', galleryRef);
+  useModalWhen('clipboard-image-strip-gallery', showGallery);
   useOverlayPublisher('clipboard-image-strip-gallery-ctx-menu', galleryCtxMenuRef);
 
   const latestThumbnails = images.slice(0, isVertical ? 4 : 5);

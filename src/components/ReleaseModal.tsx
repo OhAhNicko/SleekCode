@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitFileStatus, GitBranchInfo, GitAheadBehind } from "../types";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 
 type BumpLevel = "patch" | "minor" | "major";
 
@@ -85,7 +85,7 @@ export default function ReleaseModal({
 
   const modalRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('release', overlayRef);
+  useModal("release");
 
   // Probe git + manifests in parallel.
   const probe = useCallback(async () => {

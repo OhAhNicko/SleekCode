@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 import { THEMES, getTheme } from "../lib/themes";
 import { isWindows } from "../lib/platform";
 import { FaCheck } from "react-icons/fa";
@@ -86,7 +86,7 @@ interface WelcomeModalProps {
 
 export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('welcome', overlayRef);
+  useModal("welcome");
   // Read current store values as initial selections
   const storeThemeId = useAppStore((s) => s.themeId);
   const storeComposerEnabled = useAppStore((s) => s.promptComposerEnabled);

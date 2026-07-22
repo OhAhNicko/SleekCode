@@ -9,6 +9,7 @@ import { isTerminalActive } from "../lib/terminal-activity";
 import { isWindows, detectBackendForPath } from "../lib/platform";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
 import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModalWhen } from "../store/modalCoordinationSlice";
 import type { RemoteServer, TerminalType, TerminalBackend } from "../types";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import CreateProjectModal from "./CreateProjectModal";
@@ -89,7 +90,7 @@ export default function TabBar() {
   useOverlayPublisher("tabbar-new-tab-menu", menuRef);
   useOverlayPublisher("tabbar-recent-menu", recentMenuRef);
   useOverlayPublisher("tabbar-color-picker", colorPickerRef);
-  useOverlayPublisher("tabbar-quit-confirm", quitConfirmRef);
+  useModalWhen("tabbar-quit-confirm", showQuitConfirm);
   useOverlayPublisher("tabbar-path-tooltip", pathTooltipRef);
   const dragStartRef = useRef<{ tabId: string; offsetX: number; startX: number; startY: number; tabWidth: number; tabTop: number } | null>(null);
   const didDragRef = useRef(false);

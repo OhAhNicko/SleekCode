@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModalWhen } from "../store/modalCoordinationSlice";
 import { THEMES } from "../lib/themes";
 
 export interface PaletteAction {
@@ -23,7 +23,7 @@ export default function CommandPalette({
   extraActions = [],
 }: CommandPaletteProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('command-palette', overlayRef);
+  useModalWhen("command-palette", open);
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);

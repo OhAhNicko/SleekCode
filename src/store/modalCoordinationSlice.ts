@@ -1,42 +1,89 @@
-// NO-OP slice — kept so existing `useModal('key')` / `useModalWhen('key', open)`
-// call sites continue to compile and run while popups are migrated to the
-// per-popup hole-cut model (`useOverlayPublisher` from overlayRegionSlice).
+// Fullscreen-modal coordination for the native terminal renderer.
 //
-// The previous "hide every native pane while any modal is open" behaviour
-// was rejected by user feedback (2026-05-24) — terminal content must remain
-// visible at all times. The pane-visibility broadcaster is now a no-op
-// (see NativePaneVisibilityCoordinator.tsx) and these hooks are inert.
+// REVIVED 2026-07-23 (was a no-op while popups used per-popup hole-cutting).
+// User mandate from the overlay-webview rework: "There should be NO
+// hole-cutting in the whole application." Fullscreen modals live in the MAIN
+// webview (they need real keyboard focus — palette/search inputs — which the
+// WS_EX_NOACTIVATE overlay webview cannot provide), so the way they get above
+// the native GPU panes without a hole is: the panes are HIDDEN while any
+// fullscreen modal is open (they are covered by the modal + dim backdrop
+// anyway) and re-shown on close. `NativePaneVisibilityCoordinator` consumes
+// `openFullscreenModals` and drives native_term_hide/show.
 //
-// Migration target per popup:
-//   1. Add a ref to the popup's root element.
-//   2. Call `useOverlayPublisher(key, ref)` instead of `useModal(key)` so the
-//      native pane region cuts a hole at the popup's actual rect.
-//   3. Delete the `useModal`/`useModalWhen` call + import.
-//
-// Once all popups are migrated this file can be deleted.
+// Scope guard: ONLY register modals whose backdrop covers the whole window.
+// Small anchored popups (menus, toasts, tooltips) belong to the overlay
+// webview instead (src/overlay/OverlayRoot.tsx).
+import { useEffect } from "react";
 import type { StateCreator } from "zustand";
+import { useAppStore } from "./index";
 
 export interface ModalCoordinationSlice {
-  // Empty by design — fields removed when the hide model was retired.
-  // Kept as an interface so `store/index.ts`'s intersection types compile.
-  _modalCoordinationSliceVersion?: 2;
+  /** Keys of currently-open fullscreen modals (copy-on-write set). */
+  openFullscreenModals: ReadonlySet<string>;
+  registerFullscreenModal: (key: string) => void;
+  unregisterFullscreenModal: (key: string) => void;
 }
+
+const EMPTY_OPEN: ReadonlySet<string> = new Set();
 
 export const createModalCoordinationSlice: StateCreator<
   ModalCoordinationSlice,
   [],
   [],
   ModalCoordinationSlice
-> = () => ({});
+> = (set, get) => ({
+  openFullscreenModals: EMPTY_OPEN,
 
-export function useModal(_key: string): void {
-  // intentional no-op
+  registerFullscreenModal: (key) => {
+    const prev = get().openFullscreenModals;
+    if (prev.has(key)) return;
+    const next = new Set(prev);
+    next.add(key);
+    set({ openFullscreenModals: next });
+  },
+
+  unregisterFullscreenModal: (key) => {
+    const prev = get().openFullscreenModals;
+    if (!prev.has(key)) return;
+    const next = new Set(prev);
+    next.delete(key);
+    set({ openFullscreenModals: next });
+  },
+});
+
+type StoreWithThisSlice = ReturnType<typeof useAppStore.getState> &
+  ModalCoordinationSlice;
+
+/** Register a fullscreen modal for the whole lifetime of the component.
+ * Use in modals that unmount when closed (the common pattern here). */
+export function useModal(key: string): void {
+  useEffect(() => {
+    const s = useAppStore.getState() as StoreWithThisSlice;
+    s.registerFullscreenModal(key);
+    return () => {
+      (useAppStore.getState() as StoreWithThisSlice).unregisterFullscreenModal(
+        key,
+      );
+    };
+  }, [key]);
 }
 
-export function useModalWhen(_key: string, _active: boolean): void {
-  // intentional no-op
+/** Register while `active` — for modals that stay mounted when closed. */
+export function useModalWhen(key: string, active: boolean): void {
+  useEffect(() => {
+    if (!active) return;
+    const s = useAppStore.getState() as StoreWithThisSlice;
+    s.registerFullscreenModal(key);
+    return () => {
+      (useAppStore.getState() as StoreWithThisSlice).unregisterFullscreenModal(
+        key,
+      );
+    };
+  }, [key, active]);
 }
 
 export function useAnyModalOpen(): boolean {
-  return false;
+  return useAppStore(
+    (s) => (s as StoreWithThisSlice).openFullscreenModals.size > 0,
+  );
 }
