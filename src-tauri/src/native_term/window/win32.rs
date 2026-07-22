@@ -2363,32 +2363,32 @@ unsafe extern "system" fn wnd_proc(
                     return LRESULT(0);
                 }
 
-                let dpr = (*state_ptr).dpr.max(0.0001);
-                let x = x_px as f32 / dpr;
-                let y = y_px as f32 / dpr;
-                if let (Some(app), Some(tid)) =
-                    ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
-                {
-                    emit_r_button(app, tid, RButton { x, y });
-                }
+                // Outside mouse mode the press is swallowed; `r_button` (→ the
+                // React context menu) is emitted on WM_RBUTTONUP instead. The
+                // Windows convention is menus-on-release, and emitting on press
+                // raced the overlay webview: its full-window dismiss region
+                // arrived before the user released, so the release landed on
+                // the overlay backdrop (Chromium fires `contextmenu` on
+                // button-UP) and instantly dismissed the just-opened menu.
             }
             LRESULT(0)
         }
         WM_RBUTTONUP => {
             // R4-mouse: forward right-button release when mouse mode is on.
-            // No legacy behaviour to preserve — WM_RBUTTONDOWN previously
-            // handled the entire context-menu interaction. Outside mouse mode
-            // we just swallow the event (DefWindowProc would synthesize
-            // WM_CONTEXTMENU, which we already suppressed on press).
+            // Outside mouse mode this is where `r_button` (→ the React context
+            // menu) fires — on RELEASE, the Windows menu convention. Emitting
+            // on press raced the overlay webview's full-window dismiss region
+            // (see WM_RBUTTONDOWN). We still never call DefWindowProc, so no
+            // WM_CONTEXTMENU is synthesized.
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
             if !state_ptr.is_null() {
                 let shift = (GetKeyState(VK_SHIFT_RAW as i32) as u16 & 0x8000) != 0;
                 let ctrl = (GetKeyState(VK_CONTROL_RAW as i32) as u16 & 0x8000) != 0;
                 let alt = (GetKeyState(VK_MENU_RAW as i32) as u16 & 0x8000) != 0;
                 let modes = read_mouse_modes(&*state_ptr);
+                let x_px = (lparam.0 as i16) as i32;
+                let y_px = ((lparam.0 >> 16) as i16) as i32;
                 if modes.clicks_enabled && !shift {
-                    let x_px = (lparam.0 as i16) as i32;
-                    let y_px = ((lparam.0 >> 16) as i16) as i32;
                     let (x_cell, y_cell) = px_to_cell_1based(x_px, y_px, (*state_ptr).cell_w_px, (*state_ptr).cell_h_px);
                     let fmt = mouse_format(modes);
                     let btn = if fmt == MouseFormat::Sgr { 2 } else { 3 };
@@ -2398,6 +2398,15 @@ unsafe extern "system" fn wnd_proc(
                         if let Some(pid) = (*state_ptr).pty_id {
                             let _ = crate::pty::write_to_pty_sync(pid, &bytes);
                         }
+                    }
+                } else {
+                    let dpr = (*state_ptr).dpr.max(0.0001);
+                    let x = x_px as f32 / dpr;
+                    let y = y_px as f32 / dpr;
+                    if let (Some(app), Some(tid)) =
+                        ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                    {
+                        emit_r_button(app, tid, RButton { x, y });
                     }
                 }
             }
