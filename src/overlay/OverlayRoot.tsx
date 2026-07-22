@@ -10,7 +10,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   emitOverlayAction,
+  emitOverlayReady,
   listenOverlayPopup,
+  listenOverlayTheme,
   type OverlayPopupMsg,
 } from "../lib/overlay-bridge";
 import {
@@ -18,6 +20,7 @@ import {
   CTX_MENU_WIDTH,
   type CtxMenuSection,
 } from "../lib/context-menu-model";
+import type { OverlayToastPayload } from "../lib/useOverlayToast";
 
 type PopupRect = {
   x: number;
@@ -26,6 +29,15 @@ type PopupRect = {
   height: number;
   radius?: number;
 };
+
+/**
+ * Popup kinds that dismiss on outside click. While one is open the region is
+ * the WHOLE overlay (so the outside click can be caught) — and because there
+ * is no tight clip in that mode, webview transparency is intact and these
+ * popups CAN carry a real drop shadow. Everything else is an ambient popup
+ * (tight 1-bit clip → flat, crisp corners, no soft shadow).
+ */
+const BACKDROP_KINDS = new Set(["context-menu"]);
 
 /**
  * The overlay webview's popup host.
@@ -68,10 +80,35 @@ export function OverlayRoot() {
     };
   }, []);
 
+  // Theme: adopt the main webview's --ezy-* vars so popup renderers use the
+  // same tokens as the app. The listener is registered BEFORE `overlay:ready`
+  // is announced so the theme re-emit it triggers is never missed.
+  useEffect(() => {
+    let un: UnlistenFn | undefined;
+    let disposed = false;
+    listenOverlayTheme((vars) => {
+      const root = document.documentElement;
+      for (const [name, value] of Object.entries(vars)) {
+        root.style.setProperty(name, value);
+      }
+    }).then((u) => {
+      if (disposed) {
+        u();
+        return;
+      }
+      un = u;
+      emitOverlayReady();
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, []);
+
   // Re-clip whenever the open popups (or their anchor rects → new msgs) change.
   useLayoutEffect(() => {
-    const needsBackdrop = Array.from(popups.values()).some(
-      (m) => m.kind === "context-menu",
+    const needsBackdrop = Array.from(popups.values()).some((m) =>
+      BACKDROP_KINDS.has(m.kind),
     );
     let rects: PopupRect[];
     if (needsBackdrop) {
@@ -124,6 +161,8 @@ function OverlayPopup({
       return <ExitBanner msg={msg} registerEl={registerEl} />;
     case "context-menu":
       return <ContextMenu msg={msg} registerEl={registerEl} />;
+    case "toast":
+      return <Toast msg={msg} registerEl={registerEl} />;
     default:
       return null;
   }
@@ -131,8 +170,9 @@ function OverlayPopup({
 
 /**
  * "[Process exited]" pill at bottom-center of the pane rect. Display-only.
- * Flat (ambient popup → tight 1-bit clip, no soft shadow). Theme vars don't
- * exist in the overlay document, so colors are inlined.
+ * Flat (ambient popup → tight 1-bit clip, no soft shadow). Theme vars arrive
+ * over the `overlay:theme` bridge; the fallbacks match the default theme so
+ * the popup still renders sanely if a var is missing.
  */
 function ExitBanner({
   msg,
@@ -154,9 +194,9 @@ function ExitBanner({
     pointerEvents: "none",
     padding: "3px 10px",
     borderRadius: 4,
-    background: "#1c2128",
-    boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.12)",
-    color: "rgba(230,237,243,0.65)",
+    background: "var(--ezy-surface-raised, #1c2128)",
+    boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
+    color: "var(--ezy-text-muted, rgba(230,237,243,0.65))",
     fontFamily: "Inter, system-ui, sans-serif",
     fontSize: 12,
     lineHeight: 1.4,
@@ -230,10 +270,10 @@ function ContextMenu({
           minWidth: CTX_MENU_WIDTH,
           padding: "4px 0",
           borderRadius: 8,
-          background: "#1c2128",
-          border: "1px solid rgba(255,255,255,0.08)",
+          background: "var(--ezy-surface-raised, #1c2128)",
+          border: "1px solid var(--ezy-border, rgba(255,255,255,0.08))",
           boxShadow: "0 10px 30px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.35)",
-          color: "#e6edf3",
+          color: "var(--ezy-text, #e6edf3)",
           fontFamily: "Inter, system-ui, sans-serif",
         }}
         onClick={(e) => e.stopPropagation()}
@@ -244,7 +284,7 @@ function ContextMenu({
               <div
                 style={{
                   height: 1,
-                  background: "rgba(255,255,255,0.06)",
+                  background: "var(--ezy-border-subtle, rgba(255,255,255,0.06))",
                   margin: "4px 0",
                 }}
               />
@@ -264,7 +304,8 @@ function ContextMenu({
                   cursor: "pointer",
                 }}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+                  e.currentTarget.style.background =
+                    "var(--ezy-surface, rgba(255,255,255,0.06))";
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.background = "transparent";
@@ -274,7 +315,7 @@ function ContextMenu({
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    color: "rgba(230,237,243,0.6)",
+                    color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
                     flexShrink: 0,
                   }}
                 >
@@ -283,7 +324,7 @@ function ContextMenu({
                 <span style={{ flex: 1 }}>{item.label}</span>
                 <span
                   style={{
-                    color: "rgba(230,237,243,0.45)",
+                    color: "var(--ezy-text-muted, rgba(230,237,243,0.45))",
                     fontSize: 11,
                     flexShrink: 0,
                   }}
@@ -295,6 +336,164 @@ function ContextMenu({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Generic floating toast (undo-close / undo-clear / image-insert-undo /
+ * upload-error / dev-server-restore). Ambient popup → tight 1-bit clip: flat,
+ * no drop shadow (it would be cropped by the region anyway), border drawn as
+ * an inset ring so the clip edge stays crisp. Viewport-anchored — positions
+ * itself from `payload.placement`, ignores the msg rect. Button/dismiss round-
+ * trip to the main webview via overlay:action; keyboard shortcuts stay there.
+ */
+function Toast({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as OverlayToastPayload;
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const act = (action: string) => emitOverlayAction({ id: msg.id, action });
+
+  const placement: CSSProperties =
+    p.placement === "bottom-right"
+      ? { position: "fixed", bottom: 16, right: 16 }
+      : {
+          position: "fixed",
+          bottom: 16,
+          left: "50%",
+          transform: "translateX(-50%)",
+        };
+
+  if (p.variant === "solid") {
+    return (
+      <div
+        ref={ref}
+        style={{
+          ...placement,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+          padding: "10px 14px",
+          borderRadius: 6,
+          background: p.bg ?? "#404040",
+          color: "#ffffff",
+          maxWidth: 420,
+          fontFamily: "Inter, system-ui, sans-serif",
+          pointerEvents: "auto",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: "-0.01em" }}>
+            {p.title}
+          </span>
+          {p.dismissable && (
+            <svg
+              onClick={() => act("dismiss")}
+              role="button"
+              aria-label="Dismiss"
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              style={{ cursor: "pointer", opacity: 0.8, flexShrink: 0 }}
+            >
+              <path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z" />
+            </svg>
+          )}
+        </div>
+        {p.detail && (
+          <span
+            style={{
+              fontSize: 11,
+              opacity: 0.95,
+              lineHeight: 1.45,
+              fontVariantNumeric: "tabular-nums",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {p.detail}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        ...placement,
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "8px 12px",
+        borderRadius: 8,
+        background: "var(--ezy-surface-raised, #1c2128)",
+        boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
+        fontFamily: "Inter, system-ui, sans-serif",
+        pointerEvents: "auto",
+      }}
+    >
+      <span
+        style={{
+          fontSize: 12,
+          color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+          maxWidth: 260,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+        title={p.detail ?? undefined}
+      >
+        {p.title}
+      </span>
+      {p.button && (
+        <button
+          onClick={() => act(p.button!.action)}
+          style={{
+            fontSize: 12,
+            fontWeight: 500,
+            padding: "4px 10px",
+            borderRadius: 4,
+            background: "var(--ezy-accent, #10a37f)",
+            color: "#fff",
+            border: "none",
+            cursor: "pointer",
+            flexShrink: 0,
+            whiteSpace: "nowrap",
+            fontFamily: "inherit",
+          }}
+        >
+          {p.button.label}
+        </button>
+      )}
+      {p.shortcutHint && (
+        <span
+          style={{
+            fontSize: 10,
+            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            flexShrink: 0,
+          }}
+        >
+          {p.shortcutHint}
+        </span>
+      )}
     </div>
   );
 }

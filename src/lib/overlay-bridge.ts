@@ -34,8 +34,13 @@ export type OverlayActionMsg = {
   data?: unknown;
 };
 
+/** main -> overlay: the app theme as CSS custom properties (`--ezy-*` -> value). */
+export type OverlayThemeMsg = Record<string, string>;
+
 export const OVERLAY_POPUP_EVENT = "overlay:popup";
 export const OVERLAY_ACTION_EVENT = "overlay:action";
+export const OVERLAY_THEME_EVENT = "overlay:theme";
+export const OVERLAY_READY_EVENT = "overlay:ready";
 
 // ---- main side --------------------------------------------------------------
 
@@ -49,6 +54,15 @@ export function listenOverlayAction(
   return listen<OverlayActionMsg>(OVERLAY_ACTION_EVENT, (e) => cb(e.payload));
 }
 
+export function emitOverlayTheme(vars: OverlayThemeMsg): void {
+  void emit(OVERLAY_THEME_EVENT, vars);
+}
+
+/** The overlay announces it (re)loaded — re-emit the current theme on this. */
+export function listenOverlayReady(cb: () => void): Promise<UnlistenFn> {
+  return listen(OVERLAY_READY_EVENT, () => cb());
+}
+
 // ---- overlay side -----------------------------------------------------------
 
 export function listenOverlayPopup(
@@ -59,4 +73,14 @@ export function listenOverlayPopup(
 
 export function emitOverlayAction(msg: OverlayActionMsg): void {
   void emit(OVERLAY_ACTION_EVENT, msg);
+}
+
+export function listenOverlayTheme(
+  cb: (vars: OverlayThemeMsg) => void,
+): Promise<UnlistenFn> {
+  return listen<OverlayThemeMsg>(OVERLAY_THEME_EVENT, (e) => cb(e.payload));
+}
+
+export function emitOverlayReady(): void {
+  void emit(OVERLAY_READY_EVENT, null);
 }

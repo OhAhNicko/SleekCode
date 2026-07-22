@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useAppStore } from "./store";
 import { getTheme } from "./lib/themes";
 import TabBar from "./components/TabBar";
@@ -50,6 +50,8 @@ import { VOICE_ENABLED } from "./lib/voice/feature-flag";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { getVersion } from "@tauri-apps/api/app";
 import { getActivePaneSearchOpener } from "./lib/pane-search-registry";
+import { emitOverlayTheme, listenOverlayReady } from "./lib/overlay-bridge";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export default function App() {
   const tabs = useAppStore((s) => s.tabs);
@@ -560,26 +562,53 @@ export default function App() {
   // Auto-update checker
   const updateState = useUpdateChecker();
 
-  // Inject theme CSS variables into :root
+  // Inject theme CSS variables into :root, and mirror them to the overlay
+  // webview (a separate document with no access to this :root — its popups
+  // read the same --ezy-* vars so they always match the app theme).
+  const themeVarsRef = useRef<Record<string, string> | null>(null);
   useEffect(() => {
-    const root = document.documentElement;
     const s = theme.surface;
-    root.style.setProperty("--ezy-bg", s.bg);
-    root.style.setProperty("--ezy-surface", s.surface);
-    root.style.setProperty("--ezy-surface-raised", s.surfaceRaised);
-    root.style.setProperty("--ezy-border", s.border);
-    root.style.setProperty("--ezy-border-subtle", s.borderSubtle);
-    root.style.setProperty("--ezy-border-light", s.borderLight);
-    root.style.setProperty("--ezy-text", s.text);
-    root.style.setProperty("--ezy-text-secondary", s.textSecondary);
-    root.style.setProperty("--ezy-text-muted", s.textMuted);
-    root.style.setProperty("--ezy-accent", s.accent);
-    root.style.setProperty("--ezy-accent-hover", s.accentHover);
-    root.style.setProperty("--ezy-accent-dim", s.accentDim);
-    root.style.setProperty("--ezy-accent-glow", s.accentGlow);
-    root.style.setProperty("--ezy-red", s.red);
-    root.style.setProperty("--ezy-cyan", s.cyan);
+    const vars: Record<string, string> = {
+      "--ezy-bg": s.bg,
+      "--ezy-surface": s.surface,
+      "--ezy-surface-raised": s.surfaceRaised,
+      "--ezy-border": s.border,
+      "--ezy-border-subtle": s.borderSubtle,
+      "--ezy-border-light": s.borderLight,
+      "--ezy-text": s.text,
+      "--ezy-text-secondary": s.textSecondary,
+      "--ezy-text-muted": s.textMuted,
+      "--ezy-accent": s.accent,
+      "--ezy-accent-hover": s.accentHover,
+      "--ezy-accent-dim": s.accentDim,
+      "--ezy-accent-glow": s.accentGlow,
+      "--ezy-red": s.red,
+      "--ezy-cyan": s.cyan,
+    };
+    const root = document.documentElement;
+    for (const [name, value] of Object.entries(vars)) {
+      root.style.setProperty(name, value);
+    }
+    themeVarsRef.current = vars;
+    emitOverlayTheme(vars);
   }, [theme]);
+
+  // The overlay may finish loading after the first theme emit — re-emit when
+  // it announces itself ready (also covers overlay reloads in dev).
+  useEffect(() => {
+    let un: UnlistenFn | undefined;
+    let disposed = false;
+    listenOverlayReady(() => {
+      if (themeVarsRef.current) emitOverlayTheme(themeVarsRef.current);
+    }).then((u) => {
+      if (disposed) u();
+      else un = u;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, []);
 
   // Listen for snippet panel open events from TerminalHeader
   useEffect(() => {
