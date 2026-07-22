@@ -14,13 +14,45 @@
 pub fn apply_ex_styles(hwnd: isize) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
+        SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+        WS_CAPTION, WS_EX_NOACTIVATE, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU,
+        WS_THICKFRAME,
     };
     unsafe {
         let hwnd = HWND(hwnd as *mut _);
         let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         // NOACTIVATE: never steal focus from the React UI.
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | (WS_EX_NOACTIVATE.0 as isize));
+
+        // Strip EVERY caption/frame style. Tauri's "frameless" windows keep
+        // WS_CAPTION and merely suppress its rendering — but a window carrying a
+        // SetWindowRgn region falls back to CLASSIC (non-DWM) non-client
+        // painting, which paints the suppressed caption back as an old-style
+        // "Tauri App" title bar the moment the region is applied. A pure
+        // WS_POPUP window has no non-client area, so there is nothing for the
+        // classic path to paint — and window origin == client origin, so the
+        // region coordinates line up exactly.
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let cleaned = (style
+            & !(WS_CAPTION.0 as isize)
+            & !(WS_THICKFRAME.0 as isize)
+            & !(WS_SYSMENU.0 as isize)
+            & !(WS_MINIMIZEBOX.0 as isize)
+            & !(WS_MAXIMIZEBOX.0 as isize))
+            | (WS_POPUP.0 as isize);
+        if cleaned != style {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, cleaned);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND::default(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
     }
 }
 
