@@ -2,15 +2,13 @@
  * FileLinkTooltip — positioned tooltip for hovered file-path links in the
  * native terminal pane.
  *
- * The native pane is a Win32 child window over WebView2, so React-rendered
- * overlays inside the pane container are HIDDEN beneath the HWND. To make
- * the tooltip visible we publish its rect via `useOverlayPublisher`; the
- * hole-cut driver (`useNativePaneRegion`) carves a hole in the HWND under
- * the tooltip so WebView2 paints through.
+ * Overlay-migrated: this component no longer renders DOM (which sat invisible
+ * beneath the native HWND and needed a hole cut). It computes the pane-LOCAL
+ * position + text here and emits them to the overlay webview, which draws the
+ * tooltip above the pane (kind "file-link-tooltip", display-only).
  *
  * Click-to-open is handled by the existing Rust-side OSC 8 / Ctrl+click
- * path (see useNativeFileLinks `link_click` subscription) — this component
- * is display-only and uses `pointer-events: none`.
+ * path (see useNativeFileLinks `link_click` subscription).
  *
  * Cell metrics: mirrored from the Rust renderer (currently hardcoded to
  * 14px Hack, ~8.4 logical px wide and ~17 logical px tall per cell).
@@ -18,9 +16,8 @@
  * rather than hardcoding.
  */
 
-import { useRef } from "react";
 import type { NativeTermId } from "../lib/native-term-bridge";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useOverlayPopupAnchor } from "./useOverlayPopupAnchor";
 import type { FileLinkHover } from "./useNativeFileLinks";
 
 // Logical-pixel cell metrics. Mirror of the Rust renderer's current
@@ -46,68 +43,28 @@ export default function FileLinkTooltip({
   hover,
   paneRef,
 }: FileLinkTooltipProps) {
-  const overlayRef = useRef<HTMLDivElement | null>(null);
+  let top = 0;
+  let left = 0;
+  if (hover) {
+    top = (hover.line + 1) * CELL_H_LOGICAL + 4;
+    left = hover.col * CELL_W_LOGICAL;
 
-  // Publish this tooltip's viewport rect so the native HWND cuts a hole and
-  // the React-painted tooltip becomes visible above the WebView2 pane.
-  useOverlayPublisher(`file-link-tooltip-${termId}`, overlayRef);
-
-  if (!hover) return null;
-
-  const top = (hover.line + 1) * CELL_H_LOGICAL + 4;
-  let left = hover.col * CELL_W_LOGICAL;
-
-  // Clamp to pane bounds. Rough estimate of tooltip width: chip + path text.
-  const paneWidth = paneRef.current?.clientWidth ?? 0;
-  const approxTextChars = PREFIX_LABEL.length + 1 + hover.path.length;
-  const approxWidth = approxTextChars * 7 + TOOLTIP_HPADDING; // 7px ≈ system 12px avg
-  if (paneWidth > 0 && left + approxWidth > paneWidth - 8) {
-    left = Math.max(0, paneWidth - approxWidth - 8);
+    // Clamp to pane bounds. Rough estimate of tooltip width: chip + path text.
+    const paneWidth = paneRef.current?.clientWidth ?? 0;
+    const approxTextChars = PREFIX_LABEL.length + 1 + hover.path.length;
+    const approxWidth = approxTextChars * 7 + TOOLTIP_HPADDING; // 7px ≈ system 12px avg
+    if (paneWidth > 0 && left + approxWidth > paneWidth - 8) {
+      left = Math.max(0, paneWidth - approxWidth - 8);
+    }
   }
 
-  return (
-    <div
-      ref={overlayRef}
-      aria-hidden
-      style={{
-        position: "absolute",
-        top,
-        left,
-        zIndex: 60,
-        pointerEvents: "none",
-        padding: "4px 8px",
-        background: "rgb(20,20,24)",
-        color: "#ffffff",
-        border: "1px solid rgba(255,255,255,0.18)",
-        borderRadius: 4,
-        fontSize: 12,
-        lineHeight: 1.3,
-        whiteSpace: "nowrap",
-        maxWidth: "calc(100% - 32px)",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-      }}
-    >
-      <span
-        style={{
-          color: "rgba(255,255,255,0.62)",
-          fontSize: 11,
-          letterSpacing: 0.2,
-        }}
-      >
-        {PREFIX_LABEL}
-      </span>
-      <span
-        style={{
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-        {hover.path}
-      </span>
-    </div>
-  );
+  useOverlayPopupAnchor({
+    id: `file-link-tooltip-${termId}`,
+    kind: "file-link-tooltip",
+    open: !!hover,
+    anchorRef: paneRef,
+    payload: hover ? { top, left, prefix: PREFIX_LABEL, path: hover.path } : null,
+  });
+
+  return null;
 }

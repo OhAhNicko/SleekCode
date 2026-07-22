@@ -1,27 +1,19 @@
-import { useRef } from "react";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
-
+// Xterm panes only — DOM naturally renders above the canvas there. Native
+// panes use the overlay webview instead (kind "clipboard-image-preview" in
+// OverlayRoot, emitted from TerminalPaneNative), so no hole-cut publisher.
 interface ClipboardImagePreviewProps {
   thumbnailUrl: string;
   filePath: string;
   onDismiss: () => void;
-  /** Unique per pane instance — publishes the toast's rect so native GPU
-   * panes cut a hole for it (without this the toast is fully occluded on
-   * the native renderer). */
-  overlayKey: string;
 }
 
 export default function ClipboardImagePreview({
   thumbnailUrl,
   filePath,
   onDismiss,
-  overlayKey,
 }: ClipboardImagePreviewProps) {
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  useOverlayPublisher(overlayKey, rootRef);
   return (
     <div
-      ref={rootRef}
       className="absolute bottom-3 right-3 flex items-center gap-2.5 rounded-lg px-3 py-2 shadow-lg"
       style={{
         backgroundColor: "var(--ezy-surface-raised)",

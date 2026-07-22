@@ -1,5 +1,6 @@
-import { useEffect } from "react";
-import { emitOverlayPopup } from "../lib/overlay-bridge";
+import { useEffect, useRef } from "react";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { emitOverlayPopup, listenOverlayAction } from "../lib/overlay-bridge";
 
 /**
  * Emit a pane/element-anchored popup's live state to the overlay webview while
@@ -20,10 +21,32 @@ export function useOverlayPopupAnchor(opts: {
   anchorRef: { current: HTMLElement | null };
   /** Kind-specific data forwarded to the overlay renderer (must be JSON-safe). */
   payload?: unknown;
+  /** Called with actions the overlay popup bounces back (interactive popups). */
+  onAction?: (action: string) => void;
 }): void {
   const { id, kind, open, anchorRef } = opts;
   // Serialize so a new inline object each render doesn't restart the effect.
   const payloadJson = JSON.stringify(opts.payload ?? null);
+  // Ref so a new inline closure each render doesn't resubscribe the listener.
+  const onActionRef = useRef(opts.onAction);
+  onActionRef.current = opts.onAction;
+
+  useEffect(() => {
+    if (!open) return;
+    let un: UnlistenFn | undefined;
+    let disposed = false;
+    listenOverlayAction((msg) => {
+      if (msg.id !== id) return;
+      onActionRef.current?.(msg.action);
+    }).then((u) => {
+      if (disposed) u();
+      else un = u;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, [id, open]);
 
   useEffect(() => {
     if (!open) {

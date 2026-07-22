@@ -186,6 +186,14 @@ function OverlayPopup({
       );
     case "toast":
       return <Toast msg={msg} registerEl={registerEl} />;
+    case "file-link-tooltip":
+      return <FileLinkTip msg={msg} registerEl={registerEl} />;
+    case "ime-composition":
+      return <ImeComposition msg={msg} registerEl={registerEl} />;
+    case "jump-btn":
+      return <JumpButton msg={msg} registerEl={registerEl} />;
+    case "clipboard-image-preview":
+      return <ClipboardPreview msg={msg} registerEl={registerEl} />;
     default:
       return null;
   }
@@ -533,6 +541,297 @@ function Toast({
           {p.shortcutHint}
         </span>
       )}
+    </div>
+  );
+}
+
+/**
+ * Hovered file-path tooltip (native pane). Display-only; positioned at a
+ * pane-LOCAL offset computed by the main webview (payload.top/left) plus the
+ * live pane rect. Being in the region makes its pixels visible but also
+ * click-dead — acceptable for a hover tooltip. Colors are the component's
+ * original untthemed values.
+ */
+function FileLinkTip({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as {
+    top?: number;
+    left?: number;
+    prefix?: string;
+    path?: string;
+  };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const rect = msg.rect!;
+  return (
+    <div
+      ref={ref}
+      aria-hidden
+      style={{
+        position: "fixed",
+        top: rect.y + (p.top ?? 0),
+        left: rect.x + (p.left ?? 0),
+        pointerEvents: "none",
+        padding: "4px 8px",
+        background: "rgb(20,20,24)",
+        color: "#ffffff",
+        border: "1px solid rgba(255,255,255,0.18)",
+        borderRadius: 4,
+        fontSize: 12,
+        lineHeight: 1.3,
+        whiteSpace: "nowrap",
+        maxWidth: Math.max(80, rect.width - 32),
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        fontFamily: "Inter, system-ui, sans-serif",
+      }}
+    >
+      <span
+        style={{
+          color: "rgba(255,255,255,0.62)",
+          fontSize: 11,
+          letterSpacing: 0.2,
+        }}
+      >
+        {p.prefix ?? "Ctrl+click"}
+      </span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+        {p.path ?? ""}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * IME pre-edit popup (native pane). Display-only; pane-local caret offset from
+ * the main webview + live pane rect. Caret split rendered as a 1px bar.
+ */
+function ImeComposition({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as {
+    top?: number;
+    left?: number;
+    before?: string;
+    after?: string;
+  };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const rect = msg.rect!;
+  return (
+    <div
+      ref={ref}
+      aria-hidden
+      style={{
+        position: "fixed",
+        top: rect.y + (p.top ?? 0),
+        left: rect.x + (p.left ?? 0),
+        pointerEvents: "none",
+        padding: "4px 8px",
+        background: "rgb(20,20,24)",
+        color: "#ffffff",
+        border: "1px solid rgba(255,255,255,0.15)",
+        borderRadius: 4,
+        fontSize: 14,
+        lineHeight: 1.2,
+        whiteSpace: "nowrap",
+        maxWidth: Math.max(80, rect.width - 32),
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        fontFamily: "Inter, system-ui, sans-serif",
+      }}
+    >
+      <span>{p.before ?? ""}</span>
+      <span
+        style={{
+          display: "inline-block",
+          width: 1,
+          height: "1em",
+          background: "#ffffff",
+          verticalAlign: "text-bottom",
+          margin: "0 1px",
+        }}
+      />
+      <span>{p.after ?? ""}</span>
+    </div>
+  );
+}
+
+/**
+ * Jump-to-bottom button (native pane, bottom-right). Interactive ambient
+ * popup: click bounces "jump" to the main webview, which scrolls the pane.
+ */
+function JumpButton({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const rect = msg.rect!;
+  return (
+    <div
+      ref={ref}
+      title="Jump to bottom"
+      onClick={() => emitOverlayAction({ id: msg.id, action: "jump" })}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.opacity = "1";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.opacity = "0.85";
+      }}
+      style={{
+        position: "fixed",
+        left: rect.x + rect.width - 12 - 22,
+        top: rect.y + rect.height - 12 - 22,
+        width: 22,
+        height: 22,
+        borderRadius: 4,
+        background: "var(--ezy-surface-raised, #1c2128)",
+        boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        opacity: 0.85,
+        transition: "opacity 120ms ease",
+        pointerEvents: "auto",
+      }}
+    >
+      <svg
+        width="12"
+        height="12"
+        viewBox="0 0 12 12"
+        fill="none"
+        stroke="var(--ezy-text-muted, rgba(230,237,243,0.6))"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <polyline points="2,3 6,7 10,3" />
+        <line x1="3" y1="9.5" x2="9" y2="9.5" />
+      </svg>
+    </div>
+  );
+}
+
+/**
+ * "Image pasted" preview card (native pane, bottom-right). Thumbnail is a
+ * data: URI so it crosses the event bus. X bounces "dismiss" back to main.
+ */
+function ClipboardPreview({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as { thumbnailUrl?: string; filePath?: string };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const rect = msg.rect!;
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "fixed",
+        // Anchor the card's bottom-right corner 12px inside the pane's
+        // bottom-right corner (intrinsic width → translate(-100%,-100%)).
+        left: rect.x + rect.width - 12,
+        top: rect.y + rect.height - 12,
+        transform: "translate(-100%, -100%)",
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        borderRadius: 8,
+        padding: "8px 12px",
+        background: "var(--ezy-surface-raised, #1c2128)",
+        boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
+        maxWidth: 320,
+        fontFamily: "Inter, system-ui, sans-serif",
+        pointerEvents: "auto",
+      }}
+    >
+      {p.thumbnailUrl && (
+        <img
+          src={p.thumbnailUrl}
+          alt="Pasted image"
+          style={{
+            width: 48,
+            height: 48,
+            objectFit: "cover",
+            borderRadius: 4,
+            flexShrink: 0,
+          }}
+        />
+      )}
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 500,
+            color: "var(--ezy-text, #e6edf3)",
+          }}
+        >
+          Image pasted
+        </div>
+        <div
+          title={p.filePath}
+          style={{
+            fontSize: 11,
+            marginTop: 2,
+            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {p.filePath ?? ""}
+        </div>
+      </div>
+      <svg
+        role="button"
+        aria-label="Dismiss"
+        onClick={() => emitOverlayAction({ id: msg.id, action: "dismiss" })}
+        width="12"
+        height="12"
+        viewBox="0 0 12 12"
+        fill="none"
+        style={{
+          cursor: "pointer",
+          color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+          flexShrink: 0,
+        }}
+      >
+        <path
+          d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        />
+      </svg>
     </div>
   );
 }

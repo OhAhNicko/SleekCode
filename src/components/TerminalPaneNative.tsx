@@ -42,11 +42,9 @@ import FileLinkTooltip from "../native-term/FileLinkTooltip";
 import { useNativePaneRegion } from "../native-term/useNativePaneRegion";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { queueGeom } from "../native-term/frameSync";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
 import PromptComposer from "./PromptComposer";
 import PaneSearchBar from "./PaneSearchBar";
-import ClipboardImagePreview from "./ClipboardImagePreview";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import {
@@ -442,13 +440,10 @@ export default function TerminalPaneNative({
   // viewportY is negative when scrolled up into scrollback; 3-line tolerance
   // (per repo memory feedback_viewport_at_bottom_tolerance.md) prevents
   // race-condition flicker during rapid output.
-  const jumpBtnRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  // D-review: the button floats over the native-HWND-covered area, so it
-  // must publish its rect for the hole-cut driver or it renders occluded
-  // and click-dead under the native surface. Publishes null automatically
-  // while hidden (display:none → zero-size rect).
-  useOverlayPublisher(`native-jump-btn-${terminalId}`, jumpBtnRef);
+  // Overlay-migrated: the button renders in the overlay webview above the
+  // native pane (kind "jump-btn", anchored to the terminal rect below, next
+  // to the exit-banner hook); its click bounces back as the "jump" action.
 
   // ── Process-exit feedback (S15, xterm parity) ────────────────────────
   // `exited` flips true when the attached PTY dies. It (a) gates clipboard
@@ -467,6 +462,19 @@ export default function TerminalPaneNative({
     kind: "exit-banner",
     open: exited,
     anchorRef: terminalDivRef,
+  });
+
+  // Jump-to-bottom button (overlay-rendered) — appears while scrolled into
+  // history; the overlay bounces "jump" back and we scroll the native pane.
+  useOverlayPopupAnchor({
+    id: `jump-btn-${terminalId}`,
+    kind: "jump-btn",
+    open: !isAtBottom,
+    anchorRef: terminalDivRef,
+    onAction: (action) => {
+      if (action !== "jump" || termId == null) return;
+      void nativeTermScrollToBottom(termId).catch(() => {});
+    },
   });
 
   const registerNativeTerm = useAppStore(
@@ -1376,6 +1384,24 @@ export default function TerminalPaneNative({
     return () => clearTimeout(timer);
   }, [pastedImage, dismissPreview]);
 
+  // "Image pasted" preview card — overlay-rendered above the native pane
+  // (kind "clipboard-image-preview"; thumbnail crosses the bus as data: URI).
+  useOverlayPopupAnchor({
+    id: `clipboard-image-preview-${terminalId}`,
+    kind: "clipboard-image-preview",
+    open: !!pastedImage,
+    anchorRef: terminalDivRef,
+    payload: pastedImage
+      ? {
+          thumbnailUrl: pastedImage.thumbnailUrl,
+          filePath: pastedImage.filePath,
+        }
+      : null,
+    onAction: (action) => {
+      if (action === "dismiss") dismissPreview();
+    },
+  });
+
   // ── TerminalHeader props ──────────────────────────────────────────────
   // Context bar (model / context % / cost) is fed by the session poll above
   // once this pane locks its own session; prompt history comes from the
@@ -1619,15 +1645,7 @@ export default function TerminalPaneNative({
           overlayKey={`pane-search-${terminalId}`}
         />
       )}
-      {/* ClipboardImagePreview — floats bottom-right when an image is pasted. */}
-      {pastedImage && (
-        <ClipboardImagePreview
-          thumbnailUrl={pastedImage.thumbnailUrl}
-          filePath={pastedImage.filePath}
-          onDismiss={dismissPreview}
-          overlayKey={`clipboard-image-preview-${terminalId}`}
-        />
-      )}
+      {/* ClipboardImagePreview — overlay-rendered (hook below the paste hook). */}
       {/* PromptComposer — AI CLI prompt input. Internal effects guard on
           null terminal; cursor/buffer-dependent features are inert until
           R3 surfaces a Rust-backed terminal shim. */}
@@ -1653,44 +1671,9 @@ export default function TerminalPaneNative({
           suppressAutoFocus={false}
         />
       )}
-      {/* Process-exited banner — migrated to the overlay webview (Phase 1).
-          Emitted via useOverlayPopupAnchor above; drawn by OverlayRoot's
-          "exit-banner" renderer over the native pane (no hole cut). */}
-      {/* Jump-to-bottom — appears while scrolled into history (driven by
-          `scroll` events). Anchored bottom-right; its rect is published via
-          useOverlayPublisher above so the native HWND cuts a hole for it. */}
-      <div
-        ref={jumpBtnRef}
-        style={{
-          display: isAtBottom ? "none" : "flex",
-          position: "absolute",
-          right: 12,
-          bottom: 12,
-          width: 22,
-          height: 22,
-          borderRadius: 4,
-          backgroundColor: "var(--ezy-surface-raised)",
-          border: "1px solid var(--ezy-border)",
-          alignItems: "center",
-          justifyContent: "center",
-          cursor: "pointer",
-          zIndex: 10,
-          opacity: 0.85,
-          transition: "opacity 120ms ease",
-        }}
-        onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.85"; }}
-        onClick={() => {
-          if (termId == null) return;
-          void nativeTermScrollToBottom(termId).catch(() => {});
-        }}
-        title="Jump to bottom"
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="2,3 6,7 10,3" />
-          <line x1="3" y1="9.5" x2="9" y2="9.5" />
-        </svg>
-      </div>
+      {/* Process-exited banner, jump-to-bottom button and clipboard-image
+          preview are overlay-rendered (useOverlayPopupAnchor hooks above) —
+          no DOM here, no hole cut. */}
     </div>
   );
 }

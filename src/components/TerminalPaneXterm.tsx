@@ -2228,7 +2228,6 @@ export default function TerminalPane({
             thumbnailUrl={pastedImage.thumbnailUrl}
             filePath={pastedImage.filePath}
             onDismiss={dismissPreview}
-            overlayKey={`clipboard-image-preview-${terminalId}`}
           />
         )}
         {composerOpen && !hideChrome && (
