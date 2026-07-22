@@ -139,10 +139,30 @@ export function OverlayRoot() {
     else els.current.delete(id);
   }, []);
 
+  // Optimistic local close for backdrop popups. Dismissal must restore the
+  // click-through region SYNCHRONOUSLY (same React commit → useLayoutEffect →
+  // overlay_set_region), not after the overlay→main→overlay round-trip —
+  // otherwise the user's next click still lands on a click-dead overlay (the
+  // "dragging the topbar needs 2-3 clicks" bug). Main is still notified via
+  // overlay:action; its open:false echo is a no-op by the time it arrives.
+  const closeLocal = useCallback((id: string) => {
+    setPopups((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Map(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
   return (
     <>
       {Array.from(popups.values()).map((msg) => (
-        <OverlayPopup key={msg.id} msg={msg} registerEl={registerEl} />
+        <OverlayPopup
+          key={msg.id}
+          msg={msg}
+          registerEl={registerEl}
+          closeLocal={closeLocal}
+        />
       ))}
     </>
   );
@@ -151,15 +171,19 @@ export function OverlayRoot() {
 function OverlayPopup({
   msg,
   registerEl,
+  closeLocal,
 }: {
   msg: OverlayPopupMsg;
   registerEl: (id: string, el: HTMLElement | null) => void;
+  closeLocal: (id: string) => void;
 }) {
   switch (msg.kind) {
     case "exit-banner":
       return <ExitBanner msg={msg} registerEl={registerEl} />;
     case "context-menu":
-      return <ContextMenu msg={msg} registerEl={registerEl} />;
+      return (
+        <ContextMenu msg={msg} registerEl={registerEl} closeLocal={closeLocal} />
+      );
     case "toast":
       return <Toast msg={msg} registerEl={registerEl} />;
     default:
@@ -219,9 +243,11 @@ function ExitBanner({
 function ContextMenu({
   msg,
   registerEl,
+  closeLocal,
 }: {
   msg: OverlayPopupMsg;
   registerEl: (id: string, el: HTMLElement | null) => void;
+  closeLocal: (id: string) => void;
 }) {
   const sections =
     (msg.payload as { sections?: CtxMenuSection[] } | undefined)?.sections ?? [];
@@ -240,7 +266,15 @@ function ContextMenu({
     [registerEl, msg.id],
   );
 
-  const dismiss = () => emitOverlayAction({ id: msg.id, action: "__dismiss__" });
+  // Close locally first (region restored this frame), then tell main.
+  const dismiss = () => {
+    closeLocal(msg.id);
+    emitOverlayAction({ id: msg.id, action: "__dismiss__" });
+  };
+  const runItem = (actionId: string) => {
+    closeLocal(msg.id);
+    emitOverlayAction({ id: msg.id, action: actionId });
+  };
 
   const ax = msg.rect?.x ?? 0;
   const ay = msg.rect?.y ?? 0;
@@ -254,10 +288,15 @@ function ContextMenu({
   return (
     <div
       style={{ position: "fixed", inset: 0, pointerEvents: "auto" }}
-      onClick={dismiss}
+      // Dismiss on pointer-DOWN (native menu semantics): a press-and-drag on
+      // the topbar closes the menu on the press instead of dangling until the
+      // release, and the synchronous local close means the NEXT press already
+      // reaches the app. A right-click press falls through here too, so the
+      // follow-up contextmenu (fired on release, now over the app) reopens
+      // the menu at the new spot — reposition works in one gesture.
+      onPointerDown={dismiss}
       onContextMenu={(e) => {
         e.preventDefault();
-        dismiss();
       }}
     >
       <div
@@ -275,6 +314,9 @@ function ContextMenu({
           color: "var(--ezy-text, #e6edf3)",
           fontFamily: "Inter, system-ui, sans-serif",
         }}
+        // Keep presses inside the menu from reaching the backdrop's
+        // pointer-down dismiss — items activate on click (release).
+        onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
         {sections.map((section, si) => (
@@ -291,9 +333,7 @@ function ContextMenu({
             {section.items.map((item) => (
               <div
                 key={item.actionId}
-                onClick={() =>
-                  emitOverlayAction({ id: msg.id, action: item.actionId })
-                }
+                onClick={() => runItem(item.actionId)}
                 style={{
                   display: "flex",
                   alignItems: "center",
