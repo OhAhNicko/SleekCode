@@ -35,8 +35,17 @@ pub struct Rect {
 /// the click falls through to the native pane. Empty vec => fully click-through.
 /// Rects convert logical->physical via the overlay's scale factor (rounded to
 /// the nearest physical px so the clip tracks the popup's opaque edge).
+///
+/// `backdrop: true` (dismiss-on-outside-click popups) REMOVES the region
+/// instead: a regionless window is DWM-composed (no classic-NC fallback, real
+/// shadows) and fully hit-testable — every click lands in the overlay, which
+/// is what a backdrop popup needs. `rects` is ignored in that mode.
 #[tauri::command]
-pub fn overlay_set_region(app: tauri::AppHandle, rects: Vec<Rect>) -> Result<(), String> {
+pub fn overlay_set_region(
+    app: tauri::AppHandle,
+    rects: Vec<Rect>,
+    backdrop: Option<bool>,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use tauri::Manager;
@@ -44,6 +53,9 @@ pub fn overlay_set_region(app: tauri::AppHandle, rects: Vec<Rect>) -> Result<(),
             .get_webview_window("overlay")
             .ok_or_else(|| "overlay window not found".to_string())?;
         let hwnd = overlay.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        if backdrop.unwrap_or(false) {
+            return win32::clear_region(hwnd);
+        }
         let scale = overlay.scale_factor().map_err(|e| e.to_string())?;
         let px: Vec<(i32, i32, i32, i32, i32)> = rects
             .iter()
@@ -67,7 +79,7 @@ pub fn overlay_set_region(app: tauri::AppHandle, rects: Vec<Rect>) -> Result<(),
     #[cfg(not(target_os = "windows"))]
     {
         // Overlay window is Windows-only for now; no-op elsewhere.
-        let _ = (app, rects);
+        let _ = (app, rects, backdrop);
         Ok(())
     }
 }

@@ -110,13 +110,12 @@ export function OverlayRoot() {
     const needsBackdrop = Array.from(popups.values()).some((m) =>
       BACKDROP_KINDS.has(m.kind),
     );
-    let rects: PopupRect[];
-    if (needsBackdrop) {
-      rects = [
-        { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
-      ];
-    } else {
-      rects = [];
+    // Backdrop mode passes NO region at all (SetWindowRgn NULL): the window
+    // stays DWM-composed (a region forces the classic-NC fallback renderer —
+    // the "Tauri App" caption bug) and every pixel is hit-testable, which a
+    // dismiss-on-outside-click popup needs anyway.
+    const rects: PopupRect[] = [];
+    if (!needsBackdrop) {
       for (const el of els.current.values()) {
         const r = el.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
@@ -130,7 +129,7 @@ export function OverlayRoot() {
         });
       }
     }
-    invoke("overlay_set_region", { rects }).catch((e) =>
+    invoke("overlay_set_region", { rects, backdrop: needsBackdrop }).catch((e) =>
       console.error("[overlay] overlay_set_region failed", e),
     );
   }, [popups]);

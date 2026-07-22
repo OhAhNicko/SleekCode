@@ -143,10 +143,32 @@ pub fn set_region(hwnd: isize, rects_px: &[(i32, i32, i32, i32, i32)]) -> Result
     Ok(())
 }
 
+/// Remove the window region entirely (backdrop popups). With NO region the
+/// window is composed by DWM again — the classic-NC fallback that a region
+/// forces can never run — and the whole overlay is hit-testable, which is
+/// exactly what a backdrop popup wants (it must catch the outside click that
+/// dismisses it). Transparency + real drop shadows render on this path.
+#[cfg(target_os = "windows")]
+pub fn clear_region(hwnd: isize) -> Result<(), String> {
+    use windows::Win32::Foundation::{BOOL, HWND};
+    use windows::Win32::Graphics::Gdi::{SetWindowRgn, HRGN};
+    unsafe {
+        if SetWindowRgn(HWND(hwnd as *mut _), HRGN::default(), BOOL(1)) == 0 {
+            return Err("SetWindowRgn (clear) failed".to_string());
+        }
+    }
+    Ok(())
+}
+
 // --- Non-Windows stubs (keep macOS/Linux CI compiling) -------------------
 
 #[cfg(not(target_os = "windows"))]
 pub fn apply_ex_styles(_hwnd: isize) {}
+
+#[cfg(not(target_os = "windows"))]
+pub fn clear_region(_hwnd: isize) -> Result<(), String> {
+    Ok(())
+}
 
 #[cfg(not(target_os = "windows"))]
 pub fn set_owner(_overlay_hwnd: isize, _owner_hwnd: isize) {}
