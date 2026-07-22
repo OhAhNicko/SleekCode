@@ -6811,6 +6811,10 @@ pub fn run() {
                             // showing so the overlay never flashes at (0,0)/1x1.
                             overlay::win32::set_owner(overlay_hwnd, hwnd_raw);
                             overlay::win32::apply_ex_styles(overlay_hwnd);
+                            // Persistent subclass — the style strip above does
+                            // NOT survive tao's own GWL_STYLE rewrites; this
+                            // removes the NC area structurally instead.
+                            overlay::win32::install_nc_guard(overlay_hwnd);
                             overlay::win32::sync_geometry(hwnd_raw, overlay_hwnd);
                         }
                         let _ = overlay.show();

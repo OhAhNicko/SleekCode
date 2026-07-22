@@ -143,6 +143,111 @@ pub fn set_region(hwnd: isize, rects_px: &[(i32, i32, i32, i32, i32)]) -> Result
     Ok(())
 }
 
+/// STRUCTURAL non-client kill for the overlay, same philosophy as the main
+/// window's accent-border subclass: styles are a losing battle (tao rewrites
+/// GWL_STYLE from its cached WindowFlags on show()/focus/etc., which is why the
+/// one-shot strip in `apply_ex_styles` did NOT hold on hardware — the probe
+/// showed WS_CAPTION|WS_SYSMENU back on the live window). A subclass is
+/// persistent: WM_NCCALCSIZE hands the ENTIRE window rect to the client area,
+/// so no matter which styles tao restores or which composition path is active
+/// (DWM or the classic fallback a SetWindowRgn region forces), there is never
+/// a non-client area to paint a caption into, and never an HTCAPTION strip to
+/// pop the OS system menu from.
+#[cfg(target_os = "windows")]
+pub fn install_nc_guard(hwnd: isize) {
+    use std::ffi::c_void;
+
+    const WM_NCCALCSIZE: u32 = 0x0083;
+    const WM_NCPAINT: u32 = 0x0085;
+    const WM_NCACTIVATE: u32 = 0x0086;
+    const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
+    const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
+    const WM_NCRBUTTONDOWN: u32 = 0x00A4;
+    const WM_NCRBUTTONUP: u32 = 0x00A5;
+    const WM_CONTEXTMENU: u32 = 0x007B;
+    const WM_NCDESTROY: u32 = 0x0082;
+    const SWP_FRAMECHANGED: u32 = 0x0020;
+    const SWP_NOSIZE: u32 = 0x0001;
+    const SWP_NOMOVE: u32 = 0x0002;
+    const SWP_NOZORDER: u32 = 0x0004;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SUBCLASS_ID: usize = 0x4E43; // "NC"
+
+    extern "system" {
+        fn SetWindowSubclass(
+            hwnd: *mut c_void,
+            pfn_subclass: Option<
+                unsafe extern "system" fn(*mut c_void, u32, usize, isize, usize, usize) -> isize,
+            >,
+            uid_subclass: usize,
+            ref_data: usize,
+        ) -> i32;
+        fn RemoveWindowSubclass(
+            hwnd: *mut c_void,
+            pfn_subclass: Option<
+                unsafe extern "system" fn(*mut c_void, u32, usize, isize, usize, usize) -> isize,
+            >,
+            uid_subclass: usize,
+        ) -> i32;
+        fn DefSubclassProc(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize;
+        fn SetWindowPos(
+            hwnd: *mut c_void,
+            insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+    }
+
+    unsafe extern "system" fn nc_guard_proc(
+        hwnd: *mut c_void,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+        _uid: usize,
+        _ref_data: usize,
+    ) -> isize {
+        match msg {
+            // Client area == window rect. Returning 0 for both wparam cases
+            // removes the NC area entirely — nothing can ever be drawn there.
+            WM_NCCALCSIZE => 0,
+            // No NC area should exist, but swallow every NC draw path anyway
+            // (theme-engine UAH draws included) — belt and suspenders.
+            WM_NCPAINT | WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME => 0,
+            // Claim "handled, keep looking active" without letting
+            // DefWindowProc repaint a frame on activation changes.
+            WM_NCACTIVATE => 1,
+            // Never let a non-client right-click reach DefWindowProc (that is
+            // the path that pops the OS system menu).
+            WM_NCRBUTTONDOWN | WM_NCRBUTTONUP | WM_CONTEXTMENU => 0,
+            WM_NCDESTROY => {
+                RemoveWindowSubclass(hwnd, Some(nc_guard_proc), SUBCLASS_ID);
+                DefSubclassProc(hwnd, msg, wparam, lparam)
+            }
+            _ => DefSubclassProc(hwnd, msg, wparam, lparam),
+        }
+    }
+
+    unsafe {
+        let hwnd = hwnd as *mut c_void;
+        if SetWindowSubclass(hwnd, Some(nc_guard_proc), SUBCLASS_ID, 0) != 0 {
+            // Force an immediate WM_NCCALCSIZE pass so the NC area vanishes
+            // now, not on the next incidental frame change.
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
 /// Remove the window region entirely (backdrop popups). With NO region the
 /// window is composed by DWM again — the classic-NC fallback that a region
 /// forces can never run — and the whole overlay is hit-testable, which is
@@ -169,6 +274,9 @@ pub fn apply_ex_styles(_hwnd: isize) {}
 pub fn clear_region(_hwnd: isize) -> Result<(), String> {
     Ok(())
 }
+
+#[cfg(not(target_os = "windows"))]
+pub fn install_nc_guard(_hwnd: isize) {}
 
 #[cfg(not(target_os = "windows"))]
 pub fn set_owner(_overlay_hwnd: isize, _owner_hwnd: isize) {}
