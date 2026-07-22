@@ -722,7 +722,12 @@ export default function TerminalPaneNative({
           bubbles: true,
           cancelable: true,
         });
-        window.dispatchEvent(ev);
+        // Dispatch on the terminal ANCHOR (bubbles to window, so app-level
+        // shortcut listeners behave exactly as before) instead of window
+        // directly: container-scoped hooks — useClipboardImagePaste's Ctrl+V
+        // image-paste path — never saw the replay when it targeted window,
+        // which is why image paste was dead on native panes.
+        (terminalDivRef.current ?? window).dispatchEvent(ev);
       });
       unlistens.push(u5);
 
@@ -1610,7 +1615,10 @@ export default function TerminalPaneNative({
       {/* IME pre-edit overlay. Subscribes to ime_composition + cursor
           directly so cursor moves don't re-render the whole pane. */}
       {termId != null && (
-        <ImeCompositionPopup termId={termId} paneRef={paneDivRef} />
+        // terminalDivRef, NOT paneDivRef: caret coords are grid-relative and
+        // the native HWND covers the anchor div (paneDivRef adds the 30px
+        // in-flow header — same off-by-header trap as the hole-cut driver).
+        <ImeCompositionPopup termId={termId} paneRef={terminalDivRef} />
       )}
       {/* File-link tooltip — shown on cell_hover when the hovered text
           matches a file path. Publishes its rect via useOverlayPublisher
@@ -1618,10 +1626,11 @@ export default function TerminalPaneNative({
           WebView2. Click-to-open uses the existing Rust-side Ctrl+click
           flow on OSC 8 hyperlinks; this tooltip is display-only. */}
       {termId != null && (
+        // terminalDivRef for the same grid-origin reason as the IME popup.
         <FileLinkTooltip
           termId={termId}
           hover={fileLinkHover}
-          paneRef={paneDivRef}
+          paneRef={terminalDivRef}
         />
       )}
       {/* PaneSearchBar — Ctrl+F overlay. Search backend (native_term_search)

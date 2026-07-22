@@ -2202,6 +2202,7 @@ unsafe extern "system" fn wnd_proc(
             // 0x16 SYN as a WM_CHAR, so we arm swallow_next_char (below) to drop
             // it. Handled before vk_to_ui_shortcut / vk_to_bytes.
             if !state_ptr.is_null() && is_paste_shortcut(vk, ctrl, shift, alt) {
+                let mut pasted_text = false;
                 if let Some(text) = read_clipboard_text(hwnd) {
                     if !text.is_empty() {
                         // A paste is input headed for the PTY — snap a
@@ -2221,6 +2222,35 @@ unsafe extern "system" fn wnd_proc(
                         if let Some(pid) = (*state_ptr).pty_id {
                             let _ = crate::pty::write_to_pty_sync(pid, &bytes);
                         }
+                        pasted_text = true;
+                    }
+                }
+                // No clipboard TEXT (e.g. a screenshot: image-only). We used to
+                // consume the event silently, which killed image paste on
+                // native panes entirely — JS owns the clipboard-image insert
+                // flow (path resolve + [Image #N] + preview card) and never
+                // heard about the keypress. Forward it as a key_down_preview
+                // ("v"+ctrl — the shape useClipboardImagePaste matches) so the
+                // JS flow runs; the event stays consumed either way.
+                if !pasted_text {
+                    if let (Some(app), Some(tid)) =
+                        ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                    {
+                        emit_key_down_preview(
+                            app,
+                            tid,
+                            KeyDownPreview {
+                                ev: KeyEventDto {
+                                    code: "KeyV".to_string(),
+                                    key: "v".to_string(),
+                                    ctrl: true,
+                                    shift: false,
+                                    alt: false,
+                                    meta: false,
+                                    repeat: false,
+                                },
+                            },
+                        );
                     }
                 }
                 // M2: drop the 0x16 SYN that TranslateMessage queued for this

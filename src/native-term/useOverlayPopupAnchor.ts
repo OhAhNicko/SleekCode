@@ -53,6 +53,12 @@ export function useOverlayPopupAnchor(opts: {
       emitOverlayPopup({ id, kind, open: false, rect: null });
       return;
     }
+    if (import.meta.env.DEV) {
+      // Diagnostic seam: if this logs but nothing renders, the overlay side
+      // is broken; if a popup's trigger fires and this never logs, the
+      // trigger→open wiring in the calling component is broken.
+      console.debug("[overlay-anchor] open", id);
+    }
     let raf = 0;
     let lastJson = "";
     const tick = () => {
