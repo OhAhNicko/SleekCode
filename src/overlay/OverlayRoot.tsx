@@ -10,6 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   emitOverlayAction,
+  emitOverlayFocus,
   emitOverlayReady,
   listenOverlayPopup,
   listenOverlayTheme,
@@ -111,6 +112,21 @@ export function OverlayRoot() {
     };
   }, []);
 
+  // Report OS focus to main: focus-handoff popups (pane search) make this
+  // window the foreground window; main folds the flag into appWindowFocused
+  // so the app never renders "unfocused" while the user types in the overlay.
+  useEffect(() => {
+    const onFocus = () => emitOverlayFocus(true);
+    const onBlur = () => emitOverlayFocus(false);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("blur", onBlur);
+      emitOverlayFocus(false);
+    };
+  }, []);
+
   // Re-clip whenever the open popups (or their anchor rects → new msgs) change.
   useLayoutEffect(() => {
     const needsBackdrop = Array.from(popups.values()).some((m) =>
@@ -206,6 +222,8 @@ function OverlayPopup({
       );
     case "voice-hud":
       return <VoiceHudCard msg={msg} registerEl={registerEl} />;
+    case "pane-search":
+      return <PaneSearch msg={msg} registerEl={registerEl} />;
     case "tooltip":
       return <Tooltip msg={msg} registerEl={registerEl} />;
     case "swatch-menu":
@@ -1907,6 +1925,343 @@ function RecentMenu({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Pane search bar (kind "pane-search") — the FIRST focus-handoff popup: it
+ * hosts a real <input>, so while open the overlay window is made focusable
+ * (overlay_set_focusable) and takes the foreground; on unmount it restores
+ * WS_EX_NOACTIVATE and hands focus back (main then re-focuses the pane).
+ * Ambient region: only the bar is hit-testable — the terminal stays visible
+ * and clickable around it (clicking the pane de-focuses the bar but keeps it
+ * open; clicking the bar re-activates the overlay). 1:1 port of
+ * PaneSearchBar's design (xterm/native parity rule). The input TEXT lives
+ * here (typing stays local + latency-free); every change bounces the "query"
+ * action with { q } so the main webview drives the Rust search backend.
+ */
+function PaneSearch({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as {
+    caseSensitive?: boolean;
+    regex?: boolean;
+    wholeWord?: boolean;
+    matchIndex?: number;
+    matchCount?: number;
+    hasMatchInfo?: boolean;
+    focusBump?: number;
+    placeholder?: string;
+  };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [query, setQuery] = useState("");
+  const act = (action: string, data?: unknown) =>
+    emitOverlayAction({ id: msg.id, action, data });
+
+  // Focus handoff lifecycle: focusable while mounted; focus the input once
+  // the window can take the foreground. Restore NOACTIVATE on unmount.
+  useEffect(() => {
+    let disposed = false;
+    invoke("overlay_set_focusable", { focusable: true })
+      .then(() => {
+        if (disposed) return;
+        requestAnimationFrame(() => {
+          inputRef.current?.focus();
+          inputRef.current?.select();
+        });
+      })
+      .catch((e) => console.error("[overlay] set_focusable(true) failed", e));
+    return () => {
+      disposed = true;
+      invoke("overlay_set_focusable", { focusable: false }).catch((e) =>
+        console.error("[overlay] set_focusable(false) failed", e),
+      );
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-pressed Ctrl+F in main bumps focusBump — refocus + select.
+  useEffect(() => {
+    if (p.focusBump !== undefined && p.focusBump > 0) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.focusBump]);
+
+  const rect = msg.rect!;
+  const matchInfo = p.hasMatchInfo
+    ? { index: p.matchIndex ?? 0, count: p.matchCount ?? 0 }
+    : null;
+  const matchDisplay = query
+    ? matchInfo
+      ? matchInfo.count > 0
+        ? `${matchInfo.index + 1} of ${matchInfo.count}`
+        : "No results"
+      : null
+    : null;
+  const noResults = matchInfo !== null && matchInfo.count === 0 && query.length > 0;
+
+  const sep = (
+    <div
+      style={{
+        width: 1,
+        height: 16,
+        background: "var(--ezy-border, rgba(255,255,255,0.12))",
+        margin: "0 2px",
+        flexShrink: 0,
+      }}
+    />
+  );
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "fixed",
+        left: rect.x + rect.width - 6,
+        top: rect.y + 6,
+        transform: "translateX(-100%)",
+        display: "flex",
+        alignItems: "center",
+        gap: 1,
+        background: "var(--ezy-surface-raised, #1c2128)",
+        boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
+        borderRadius: 6,
+        padding: "3px 4px",
+        fontFamily: "system-ui, -apple-system, sans-serif",
+        fontSize: 12,
+        pointerEvents: "auto",
+      }}
+    >
+      <div style={{ padding: "0 4px", display: "flex", alignItems: "center" }}>
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <circle cx="7" cy="7" r="5" />
+          <line x1="11" y1="11" x2="14.5" y2="14.5" />
+        </svg>
+      </div>
+      <input
+        ref={inputRef}
+        type="text"
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          act("query", { q: e.target.value });
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            act("close");
+            return;
+          }
+          if (e.key === "Enter") {
+            e.preventDefault();
+            act(e.shiftKey ? "prev" : "next");
+          }
+        }}
+        placeholder={p.placeholder ?? "Find"}
+        spellCheck={false}
+        autoComplete="off"
+        style={{
+          width: 140,
+          height: 24,
+          background: "var(--ezy-surface, #161b22)",
+          border: `1px solid ${
+            noResults
+              ? "var(--ezy-red, #f85149)"
+              : "var(--ezy-border, rgba(255,255,255,0.12))"
+          }`,
+          borderRadius: 4,
+          padding: "0 6px",
+          color: "var(--ezy-text, #e6edf3)",
+          fontSize: 12,
+          outline: "none",
+          caretColor: "var(--ezy-accent, #10a37f)",
+          transition: "border-color 120ms ease",
+        }}
+      />
+      {matchDisplay && (
+        <span
+          style={{
+            fontSize: 11,
+            color: noResults
+              ? "var(--ezy-red, #f85149)"
+              : "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            padding: "0 4px",
+            whiteSpace: "nowrap",
+            minWidth: 48,
+            textAlign: "center",
+            userSelect: "none",
+          }}
+        >
+          {matchDisplay}
+        </span>
+      )}
+      {sep}
+      <OvNavButton
+        title="Previous match (Shift+Enter)"
+        onClick={() => act("prev")}
+        disabled={!query}
+      >
+        <polyline points="4,9 8,5 12,9" />
+      </OvNavButton>
+      <OvNavButton
+        title="Next match (Enter)"
+        onClick={() => act("next")}
+        disabled={!query}
+      >
+        <polyline points="4,7 8,11 12,7" />
+      </OvNavButton>
+      {sep}
+      <OvToggleButton
+        active={!!p.caseSensitive}
+        onClick={() => act("toggle-case")}
+        title="Match case"
+        label="Aa"
+      />
+      <OvToggleButton
+        active={!!p.regex}
+        onClick={() => act("toggle-regex")}
+        title="Use regular expression"
+        label=".*"
+      />
+      <OvToggleButton
+        active={!!p.wholeWord}
+        onClick={() => act("toggle-word")}
+        title="Match whole word"
+        label="W"
+        underline
+      />
+      {sep}
+      <OvNavButton title="Close (Escape)" onClick={() => act("close")}>
+        <line x1="5" y1="5" x2="11" y2="11" />
+        <line x1="11" y1="5" x2="5" y2="11" />
+      </OvNavButton>
+    </div>
+  );
+}
+
+function OvNavButton({
+  title,
+  onClick,
+  disabled,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      title={title}
+      onClick={disabled ? undefined : onClick}
+      style={{
+        width: 24,
+        height: 24,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 4,
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.35 : 0.8,
+        transition: "opacity 100ms ease, background-color 100ms ease",
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) {
+          e.currentTarget.style.opacity = "1";
+          e.currentTarget.style.backgroundColor =
+            "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+        }
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.opacity = disabled ? "0.35" : "0.8";
+        e.currentTarget.style.backgroundColor = "transparent";
+      }}
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {children}
+      </svg>
+    </div>
+  );
+}
+
+function OvToggleButton({
+  active,
+  onClick,
+  title,
+  label,
+  underline,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  label: string;
+  underline?: boolean;
+}) {
+  return (
+    <div
+      title={title}
+      onClick={onClick}
+      style={{
+        height: 24,
+        minWidth: 24,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 4,
+        padding: "0 4px",
+        cursor: "pointer",
+        fontSize: 11,
+        fontWeight: 600,
+        letterSpacing: "0.01em",
+        backgroundColor: active
+          ? "var(--ezy-accent-dim, rgba(16,185,129,0.5))"
+          : "transparent",
+        color: active ? "#fff" : "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+        textDecoration: underline ? "underline" : "none",
+        textDecorationThickness: "1.5px",
+        textUnderlineOffset: "2px",
+        transition: "background-color 100ms ease, color 100ms ease",
+        userSelect: "none",
+      }}
+      onMouseEnter={(e) => {
+        if (!active)
+          e.currentTarget.style.backgroundColor =
+            "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+      }}
+      onMouseLeave={(e) => {
+        if (!active) e.currentTarget.style.backgroundColor = "transparent";
+      }}
+    >
+      {label}
     </div>
   );
 }

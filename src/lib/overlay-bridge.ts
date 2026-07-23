@@ -41,6 +41,7 @@ export const OVERLAY_POPUP_EVENT = "overlay:popup";
 export const OVERLAY_ACTION_EVENT = "overlay:action";
 export const OVERLAY_THEME_EVENT = "overlay:theme";
 export const OVERLAY_READY_EVENT = "overlay:ready";
+export const OVERLAY_FOCUS_EVENT = "overlay:focus";
 
 // ---- main side --------------------------------------------------------------
 
@@ -63,6 +64,17 @@ export function listenOverlayReady(cb: () => void): Promise<UnlistenFn> {
   return listen(OVERLAY_READY_EVENT, () => cb());
 }
 
+/** overlay -> main: the overlay window gained/lost OS focus (focus-handoff
+ * popups like pane search take real keyboard focus). Main folds this into
+ * appWindowFocused so the app never LOOKS unfocused mid-search. */
+export function listenOverlayFocus(
+  cb: (focused: boolean) => void,
+): Promise<UnlistenFn> {
+  return listen<{ focused: boolean }>(OVERLAY_FOCUS_EVENT, (e) =>
+    cb(e.payload.focused),
+  );
+}
+
 // ---- overlay side -----------------------------------------------------------
 
 export function listenOverlayPopup(
@@ -83,4 +95,8 @@ export function listenOverlayTheme(
 
 export function emitOverlayReady(): void {
   void emit(OVERLAY_READY_EVENT, null);
+}
+
+export function emitOverlayFocus(focused: boolean): void {
+  void emit(OVERLAY_FOCUS_EVENT, { focused });
 }

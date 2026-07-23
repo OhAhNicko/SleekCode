@@ -36,6 +36,9 @@ export interface NativeRendererSlice {
   // fields are intentionally excluded (stale focus across launches is wrong).
   webviewFocused: boolean;
   nativePaneFocused: boolean;
+  /** The overlay webview holds OS focus (focus-handoff popups: pane search).
+   * Folded into appWindowFocused so search doesn't dim the app. */
+  overlayFocused: boolean;
   appWindowFocused: boolean;
 
   setUseNativeTerminalRenderer: (v: boolean) => void;
@@ -45,6 +48,7 @@ export interface NativeRendererSlice {
   unregisterNativeTerm: (id: NativeTermId) => void;
   setWebviewFocused: (focused: boolean) => void;
   setNativePaneFocused: (focused: boolean) => void;
+  setOverlayFocused: (focused: boolean) => void;
 }
 
 const EMPTY_LIVE: ReadonlySet<NativeTermId> = new Set();
@@ -61,6 +65,7 @@ export const createNativeRendererSlice: StateCreator<
   liveNativeTerms: EMPTY_LIVE,
   webviewFocused: true,
   nativePaneFocused: false,
+  overlayFocused: false,
   appWindowFocused: true,
 
   setUseNativeTerminalRenderer: (v) => set({ useNativeTerminalRenderer: v }),
@@ -77,7 +82,7 @@ export const createNativeRendererSlice: StateCreator<
     set({
       webviewFocused: focused,
       nativePaneFocused,
-      appWindowFocused: focused || nativePaneFocused,
+      appWindowFocused: focused || nativePaneFocused || s.overlayFocused,
     });
   },
 
@@ -86,7 +91,16 @@ export const createNativeRendererSlice: StateCreator<
     if (s.nativePaneFocused === focused) return;
     set({
       nativePaneFocused: focused,
-      appWindowFocused: s.webviewFocused || focused,
+      appWindowFocused: s.webviewFocused || focused || s.overlayFocused,
+    });
+  },
+
+  setOverlayFocused: (focused) => {
+    const s = get();
+    if (s.overlayFocused === focused) return;
+    set({
+      overlayFocused: focused,
+      appWindowFocused: s.webviewFocused || s.nativePaneFocused || focused,
     });
   },
 

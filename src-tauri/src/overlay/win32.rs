@@ -248,6 +248,41 @@ pub fn install_nc_guard(hwnd: isize) {
     }
 }
 
+/// Focus handoff for text-input popups (pane search). The overlay is
+/// WS_EX_NOACTIVATE so ordinary popups never steal focus — but an <input>
+/// in the overlay can only receive keystrokes while the overlay window is
+/// the foreground window. `focusable(true)` clears NOACTIVATE and brings the
+/// overlay to the foreground; `focusable(false)` restores NOACTIVATE and
+/// hands the foreground back to the main window (the caller then re-focuses
+/// the pane HWND via the existing native_term_focus_keyboard path).
+#[cfg(target_os = "windows")]
+pub fn set_focusable(overlay_hwnd: isize, main_hwnd: isize, focusable: bool) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowLongPtrW, SetForegroundWindow, SetWindowLongPtrW,
+        GWL_EXSTYLE, WS_EX_NOACTIVATE,
+    };
+    unsafe {
+        let overlay = HWND(overlay_hwnd as *mut _);
+        let ex = GetWindowLongPtrW(overlay, GWL_EXSTYLE);
+        if focusable {
+            SetWindowLongPtrW(overlay, GWL_EXSTYLE, ex & !(WS_EX_NOACTIVATE.0 as isize));
+            let _ = SetForegroundWindow(overlay);
+        } else {
+            SetWindowLongPtrW(overlay, GWL_EXSTYLE, ex | (WS_EX_NOACTIVATE.0 as isize));
+            // Only hand the foreground to main if WE still hold it — if the
+            // user alt-tabbed away while the popup was open, yanking focus
+            // from their current app would be hostile focus theft.
+            if GetForegroundWindow() == overlay {
+                let _ = SetForegroundWindow(HWND(main_hwnd as *mut _));
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn set_focusable(_overlay_hwnd: isize, _main_hwnd: isize, _focusable: bool) {}
+
 /// Remove the window region entirely (backdrop popups). With NO region the
 /// window is composed by DWM again — the classic-NC fallback that a region
 /// forces can never run — and the whole overlay is hit-testable, which is

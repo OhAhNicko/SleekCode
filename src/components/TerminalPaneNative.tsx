@@ -44,7 +44,6 @@ import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { queueGeom } from "../native-term/frameSync";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
 import PromptComposer from "./PromptComposer";
-import PaneSearchBar from "./PaneSearchBar";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import {
@@ -1368,6 +1367,60 @@ export default function TerminalPaneNative({
     [searchResult],
   );
 
+  // Pane search — overlay-rendered (kind "pane-search", focus handoff). The
+  // input lives in the OVERLAY (it needs real keyboard focus, which the
+  // NOACTIVATE overlay only takes while this popup is open); search state +
+  // the Rust search backend stay here. Query text streams back as the
+  // "query" action; toggles/nav bounce as actions and update the payload.
+  useOverlayPopupAnchor({
+    id: `pane-search-${terminalId}`,
+    kind: "pane-search",
+    open: searchOpen,
+    anchorRef: terminalDivRef,
+    payload: searchOpen
+      ? {
+          caseSensitive: searchCaseSensitive,
+          regex: searchRegex,
+          wholeWord: searchWholeWord,
+          hasMatchInfo: searchMatchInfo != null,
+          matchIndex: searchMatchInfo?.index ?? 0,
+          matchCount: searchMatchInfo?.count ?? 0,
+          focusBump: searchFocusBump,
+        }
+      : null,
+    onAction: (action, data) => {
+      switch (action) {
+        case "query":
+          setSearchQuery(((data as { q?: string } | undefined)?.q ?? ""));
+          break;
+        case "next":
+          onSearchNext();
+          break;
+        case "prev":
+          onSearchPrev();
+          break;
+        case "toggle-case":
+          setSearchCaseSensitive((v) => !v);
+          break;
+        case "toggle-regex":
+          setSearchRegex((v) => !v);
+          break;
+        case "toggle-word":
+          setSearchWholeWord((v) => !v);
+          break;
+        case "close":
+          handleSearchClose();
+          // Focus handoff back: the overlay just released the foreground;
+          // return the keyboard to this pane (guarded by isActive per the
+          // background-focus-theft rule).
+          if (isActive && termId != null) {
+            void nativeTermFocusKeyboard(termId).catch(() => {});
+          }
+          break;
+      }
+    },
+  });
+
   // Register this pane's "open search" callback so the central Ctrl+F handler
   // in App.tsx can reach us (matches xterm pane behavior).
   useEffect(() => {
@@ -1644,27 +1697,9 @@ export default function TerminalPaneNative({
           cellH={cellMetrics?.h}
         />
       )}
-      {/* PaneSearchBar — Ctrl+F overlay. Search backend (native_term_search)
-          lands in R3; for now onNext/onPrev are no-ops. */}
-      {searchOpen && (
-        <PaneSearchBar
-          query={searchQuery}
-          setQuery={setSearchQuery}
-          caseSensitive={searchCaseSensitive}
-          setCaseSensitive={setSearchCaseSensitive}
-          regex={searchRegex}
-          setRegex={setSearchRegex}
-          wholeWord={searchWholeWord}
-          setWholeWord={setSearchWholeWord}
-          matchInfo={searchMatchInfo}
-          onNext={onSearchNext}
-          onPrev={onSearchPrev}
-          onClose={handleSearchClose}
-          isActive={isActive}
-          focusBump={searchFocusBump}
-          overlayKey={`pane-search-${terminalId}`}
-        />
-      )}
+      {/* Pane search — overlay-rendered with FOCUS HANDOFF (the overlay
+          becomes focusable while the bar hosts the input; see the
+          "pane-search" kind hook above). The last hole-cut user is gone. */}
       {/* ClipboardImagePreview — overlay-rendered (hook below the paste hook). */}
       {/* PromptComposer — AI CLI prompt input. Internal effects guard on
           null terminal; cursor/buffer-dependent features are inert until

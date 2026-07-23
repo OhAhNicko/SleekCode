@@ -50,7 +50,7 @@ import { VOICE_ENABLED } from "./lib/voice/feature-flag";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { getVersion } from "@tauri-apps/api/app";
 import { getActivePaneSearchOpener } from "./lib/pane-search-registry";
-import { emitOverlayTheme, listenOverlayReady } from "./lib/overlay-bridge";
+import { emitOverlayTheme, listenOverlayFocus, listenOverlayReady } from "./lib/overlay-bridge";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export default function App() {
@@ -600,6 +600,24 @@ export default function App() {
     let disposed = false;
     listenOverlayReady(() => {
       if (themeVarsRef.current) emitOverlayTheme(themeVarsRef.current);
+    }).then((u) => {
+      if (disposed) u();
+      else un = u;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, []);
+
+  // Focus-handoff popups (pane search) make the OVERLAY the foreground
+  // window; fold its focus into appWindowFocused so the app doesn't render
+  // "unfocused" (dimmed headers, hollow cursors) while the user types there.
+  useEffect(() => {
+    let un: UnlistenFn | undefined;
+    let disposed = false;
+    listenOverlayFocus((focused) => {
+      useAppStore.getState().setOverlayFocused(focused);
     }).then((u) => {
       if (disposed) u();
       else un = u;

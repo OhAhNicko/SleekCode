@@ -22,7 +22,7 @@ export function useOverlayPopupAnchor(opts: {
   /** Kind-specific data forwarded to the overlay renderer (must be JSON-safe). */
   payload?: unknown;
   /** Called with actions the overlay popup bounces back (interactive popups). */
-  onAction?: (action: string) => void;
+  onAction?: (action: string, data?: unknown) => void;
 }): void {
   const { id, kind, open, anchorRef } = opts;
   // Serialize so a new inline object each render doesn't restart the effect.
@@ -37,7 +37,7 @@ export function useOverlayPopupAnchor(opts: {
     let disposed = false;
     listenOverlayAction((msg) => {
       if (msg.id !== id) return;
-      onActionRef.current?.(msg.action);
+      onActionRef.current?.(msg.action, msg.data);
     }).then((u) => {
       if (disposed) u();
       else un = u;

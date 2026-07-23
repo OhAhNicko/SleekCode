@@ -1,9 +1,7 @@
 import { useRef, useEffect } from "react";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
 
-// Fallback publisher keys for call sites that don't pass overlayKey (xterm
-// panes — where the hole system is irrelevant but the hook must still run).
-let nextAutoKey = 0;
+// Xterm panes only — DOM is naturally visible there. Native panes render the
+// overlay "pane-search" kind (OverlayRoot) with focus handoff instead.
 
 export interface PaneSearchBarProps {
   query: string;
@@ -23,10 +21,6 @@ export interface PaneSearchBarProps {
   placeholder?: string;
   /** Increment from the parent on every Ctrl+F press to refocus + select the input. */
   focusBump?: number;
-  /** Per-pane publisher key — REQUIRED over native GPU panes: without a
-   * published rect the native HWND covers the search bar below the header
-   * band. Harmless (no-op holes) on xterm panes. */
-  overlayKey?: string;
 }
 
 export default function PaneSearchBar({
@@ -46,15 +40,9 @@ export default function PaneSearchBar({
   disableWholeWord,
   placeholder = "Find",
   focusBump,
-  overlayKey,
 }: PaneSearchBarProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-  const autoKeyRef = useRef<string | null>(null);
-  if (autoKeyRef.current === null) {
-    autoKeyRef.current = `pane-search-auto-${nextAutoKey++}`;
-  }
-  useOverlayPublisher(overlayKey ?? autoKeyRef.current, rootRef);
 
   // Auto-focus on mount and on every focusBump change (re-pressed Ctrl+F refocuses the input).
   // Guarded by isActive to prevent background focus theft.

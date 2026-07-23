@@ -83,3 +83,29 @@ pub fn overlay_set_region(
         Ok(())
     }
 }
+
+/// Focus handoff for text-input popups (pane search): while `focusable` the
+/// overlay may take the foreground so its <input> receives keystrokes; off
+/// restores WS_EX_NOACTIVATE and returns the foreground to the main window.
+#[tauri::command]
+pub fn overlay_set_focusable(app: tauri::AppHandle, focusable: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+        let overlay = app
+            .get_webview_window("overlay")
+            .ok_or_else(|| "overlay window not found".to_string())?;
+        let main = app
+            .get_webview_window("main")
+            .ok_or_else(|| "main window not found".to_string())?;
+        let overlay_hwnd = overlay.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        let main_hwnd = main.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        win32::set_focusable(overlay_hwnd, main_hwnd, focusable);
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (app, focusable);
+        Ok(())
+    }
+}
