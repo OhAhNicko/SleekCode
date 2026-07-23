@@ -48,6 +48,9 @@ export interface FileLinkHover {
   path: string; // display text (full match). For URLs, the URL itself.
   line: number; // pane-local cell row (visible space)
   col: number; // pane-local cell col (start of match)
+  /** The cell column currently under the mouse — the tooltip anchors HERE
+   * (xterm parity: its tooltip sits at the pointer, not the match start). */
+  pointerCol: number;
   matchLen: number; // chars
   /**
    * Ctrl/Cmd+Click activation payload:
@@ -222,13 +225,18 @@ export function useNativeFileLinks({
                 prev.line === e.line &&
                 prev.col === urlHit.startIndex
               ) {
-                return prev;
+                // Same match — only the pointer cell moved; keep identity
+                // unless it actually changed (tooltip follows the cursor).
+                return prev.pointerCol === e.col
+                  ? prev
+                  : { ...prev, pointerCol: e.col };
               }
               return {
                 kind: "url",
                 path: urlHit.url,
                 line: e.line,
                 col: urlHit.startIndex,
+                pointerCol: e.col,
                 matchLen: urlHit.endIndex - urlHit.startIndex,
                 href: urlHit.url,
               };
@@ -246,7 +254,8 @@ export function useNativeFileLinks({
           cancelClear();
           setHover((prev) => {
             // Avoid setState churn when the same hit is re-reported on each
-            // intra-match column step. Only update when path/line/col change.
+            // intra-match column step — but DO track the pointer cell so the
+            // tooltip follows the cursor (xterm parity).
             if (
               prev &&
               prev.kind === "file" &&
@@ -254,13 +263,16 @@ export function useNativeFileLinks({
               prev.line === e.line &&
               prev.col === hit.startIndex
             ) {
-              return prev;
+              return prev.pointerCol === e.col
+                ? prev
+                : { ...prev, pointerCol: e.col };
             }
             return {
               kind: "file",
               path: hit.text,
               line: e.line,
               col: hit.startIndex,
+              pointerCol: e.col,
               matchLen: hit.endIndex - hit.startIndex,
               href: hit.filePath,
               fileLine: hit.line,

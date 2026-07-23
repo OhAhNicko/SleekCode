@@ -60,7 +60,9 @@ export default function FileLinkTooltip({
     // px from the real glyph grid, and any extra gap reads as "disconnected".
     // The line's leading is empty space, so a small overlap never covers text.
     top = above ? hover.line * ch + 2 : (hover.line + 1) * ch + 4;
-    left = hover.col * cw;
+    // Anchor at the cell under the POINTER, not the match start — xterm's
+    // tooltip sits at the mouse position (left = clientX).
+    left = (hover.pointerCol ?? hover.col) * cw;
 
     // Clamp to pane bounds. The tooltip now has fixed content (the xterm
     // design: "Open in MADE" + Ctrl+Click chip) — ~170px wide.
