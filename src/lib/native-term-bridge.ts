@@ -298,6 +298,7 @@ export type NativeTermCmd =
   | "native_term_set_cursor_style"
   | "native_term_set_focused"
   | "native_term_set_hover_link"
+  | "native_term_get_metrics"
   | "native_term_set_copy_on_select"
   | "native_term_focus_keyboard"
   | "native_term_get_buffer_lines"
@@ -456,6 +457,12 @@ export function nativeTermSetFocused(
 /** Mirror the JS regex-link hover state onto the pane (hand cursor on Ctrl). */
 export function nativeTermSetHoverLink(id: NativeTermId, active: boolean): Promise<void> {
   return invoke<void>("native_term_set_hover_link", { id, active });
+}
+
+/** Pull the pane's real glyph metrics (logical px) — the first `resized`
+ * event races the JS subscription, so grid-positioned popups query once. */
+export function nativeTermGetMetrics(id: NativeTermId): Promise<[number, number]> {
+  return invoke<[number, number]>("native_term_get_metrics", { id });
 }
 
 // N-b copy-on-select: mirror the JS `copyOnSelect` store flag onto the pane.

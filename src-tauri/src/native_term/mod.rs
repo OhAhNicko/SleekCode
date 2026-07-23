@@ -301,6 +301,18 @@ pub fn native_term_set_hover_link(id: u32, active: bool) -> Result<(), String> {
     registry::with_window(id, |w| w.set_hover_link(active))
 }
 
+/// Pull the pane's real glyph metrics (logical px). See the trait note:
+/// the first `resized` event can race the JS subscription.
+#[tauri::command]
+pub fn native_term_get_metrics(id: u32) -> Result<(f32, f32), String> {
+    let mut out = (0.0f32, 0.0f32);
+    registry::with_window(id, |w| {
+        out = w.metrics()?;
+        Ok(())
+    })?;
+    Ok(out)
+}
+
 /// N-b copy-on-select: mirror the JS `copyOnSelect` store flag onto the pane
 /// so WM_LBUTTONUP knows whether a finalized selection should auto-copy to the
 /// clipboard (legacy default false). Pushed from the TerminalPaneNative effect

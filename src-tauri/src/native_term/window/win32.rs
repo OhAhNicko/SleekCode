@@ -1171,6 +1171,17 @@ impl NativeTermWindow for PlatformWindow {
         Ok(())
     }
 
+    fn metrics(&mut self) -> Result<(f32, f32), String> {
+        unsafe {
+            let state = self.state.as_ref();
+            let dpr = state.dpr.max(0.0001);
+            Ok((
+                state.cell_w_px.max(0.001) / dpr,
+                state.cell_h_px.max(0.001) / dpr,
+            ))
+        }
+    }
+
     fn set_hover_link(&mut self, active: bool) -> Result<(), String> {
         // Flag only — WM_SETCURSOR reads it on the next mouse move; no
         // repaint needed (the mouse cursor is not part of the framebuffer).

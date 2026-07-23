@@ -162,6 +162,15 @@ pub trait NativeTermWindow: Send {
         Ok(())
     }
 
+    /// Real glyph-grid cell metrics in LOGICAL px (cell_w, cell_h). Pull
+    /// variant of the `resized` event's cellW/cellH — the pane's FIRST
+    /// resize fires before the JS listener attaches, so subscribers can
+    /// miss it; grid-positioned popups query this once at hookup instead.
+    /// Default zeros keep the macOS/Linux stubs compiling.
+    fn metrics(&mut self) -> Result<(f32, f32), String> {
+        Ok((0.0, 0.0))
+    }
+
     /// S12/S13 hand-cursor affordance: JS mirrors "a regex link is under the
     /// cursor"; Win32's WM_SETCURSOR shows IDC_HAND while Ctrl is held.
     /// Default no-op keeps the macOS/Linux stubs compiling.

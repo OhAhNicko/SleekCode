@@ -19,6 +19,7 @@ import {
   nativeTermCreate,
   nativeTermDestroy,
   nativeTermSetFocused,
+  nativeTermGetMetrics,
   nativeTermFocusKeyboard,
   nativeTermScrollToBottom,
   nativeTermScrollToLine,
@@ -210,6 +211,25 @@ export default function TerminalPaneNative({
   const [cols, setCols] = useState(80);
   const [rows, setRows] = useState(24);
   const [cellMetrics, setCellMetrics] = useState<{ w: number; h: number } | null>(null);
+  // Pull the metrics once the PTY attaches — the pane's FIRST resized event
+  // fires before the subscription below attaches, so without this pull the
+  // hardcoded 8.4x17 fallbacks stayed live forever (tooltip anchored with
+  // 14px-font math under a larger real font).
+  useEffect(() => {
+    if (termId == null) return;
+    let cancelled = false;
+    void nativeTermGetMetrics(termId)
+      .then(([w, h]) => {
+        if (cancelled || w <= 0.01 || h <= 0.01) return;
+        setCellMetrics((prev) =>
+          prev && prev.w === w && prev.h === h ? prev : { w, h },
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [termId]);
   const [ptyReady, setPtyReady] = useState(false);
   // Bumped to force usePtyNative to kill + respawn the PTY (session switch).
   // Same mechanism as TerminalPaneXterm's restartKey — the spawn effect is
