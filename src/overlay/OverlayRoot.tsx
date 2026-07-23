@@ -112,21 +112,6 @@ export function OverlayRoot() {
     };
   }, []);
 
-  // Report OS focus to main: focus-handoff popups (pane search) make this
-  // window the foreground window; main folds the flag into appWindowFocused
-  // so the app never renders "unfocused" while the user types in the overlay.
-  useEffect(() => {
-    const onFocus = () => emitOverlayFocus(true);
-    const onBlur = () => emitOverlayFocus(false);
-    window.addEventListener("focus", onFocus);
-    window.addEventListener("blur", onBlur);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      window.removeEventListener("blur", onBlur);
-      emitOverlayFocus(false);
-    };
-  }, []);
-
   // Re-clip whenever the open popups (or their anchor rects → new msgs) change.
   useLayoutEffect(() => {
     const needsBackdrop = Array.from(popups.values()).some((m) =>
@@ -1982,6 +1967,7 @@ function PaneSearch({
       .catch((e) => console.error("[overlay] set_focusable(true) failed", e));
     return () => {
       disposed = true;
+      emitOverlayFocus(false);
       invoke("overlay_set_focusable", { focusable: false }).catch((e) =>
         console.error("[overlay] set_focusable(false) failed", e),
       );
@@ -2066,6 +2052,12 @@ function PaneSearch({
           setQuery(e.target.value);
           act("query", { q: e.target.value });
         }}
+        // overlayFocused tracks the INPUT, not the window: Chromium gives the
+        // overlay window a focus event whenever ANY popup is clicked (even
+        // without activation) and no paired blur — a window-level emitter got
+        // the flag stuck true and every pane cursor went permanently hollow.
+        onFocus={() => emitOverlayFocus(true)}
+        onBlur={() => emitOverlayFocus(false)}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
             e.preventDefault();
@@ -2075,6 +2067,13 @@ function PaneSearch({
           if (e.key === "Enter") {
             e.preventDefault();
             act(e.shiftKey ? "prev" : "next");
+            return;
+          }
+          if (e.key === "f" && (e.ctrlKey || e.metaKey)) {
+            // Re-pressed Ctrl+F while searching: select-all (xterm parity) —
+            // and NEVER let it fall through to WebView2's built-in Find bar.
+            e.preventDefault();
+            e.currentTarget.select();
           }
         }}
         placeholder={p.placeholder ?? "Find"}

@@ -200,6 +200,7 @@ pub fn install_nc_guard(hwnd: isize) {
     const WM_NCRBUTTONUP: u32 = 0x00A5;
     const WM_CONTEXTMENU: u32 = 0x007B;
     const WM_NCDESTROY: u32 = 0x0082;
+    const WM_ERASEBKGND: u32 = 0x0014;
     const SWP_FRAMECHANGED: u32 = 0x0020;
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOMOVE: u32 = 0x0002;
@@ -256,6 +257,13 @@ pub fn install_nc_guard(hwnd: isize) {
             // Never let a non-client right-click reach DefWindowProc (that is
             // the path that pops the OS system menu).
             WM_NCRBUTTONDOWN | WM_NCRBUTTONUP | WM_CONTEXTMENU => 0,
+            // NEVER erase the background: region changes invalidate the host
+            // window, and the default erase fills the WHOLE (now full-window)
+            // region with the class brush for one frame before Chromium's next
+            // present — the "entire app flashes when opening/closing a popup"
+            // bug. Claim "erased" and let the transparent webview own every
+            // pixel.
+            WM_ERASEBKGND => 1,
             WM_NCDESTROY => {
                 RemoveWindowSubclass(hwnd, Some(nc_guard_proc), SUBCLASS_ID);
                 DefSubclassProc(hwnd, msg, wparam, lparam)
