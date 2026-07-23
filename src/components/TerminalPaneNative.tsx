@@ -909,6 +909,14 @@ export default function TerminalPaneNative({
   useEffect(() => {
     if (termId == null || !isActive || !appWindowFocused) return;
     if (document.activeElement !== document.body) return;
+    // Focus-handoff popups (overlay pane search): while the OVERLAY webview
+    // legitimately holds OS focus, appWindowFocused stays true via
+    // overlayFocused — but the activeElement guard above only sees THIS
+    // document, not the overlay's focused <input>. Without this check the
+    // appWindowFocused dip-and-recover (webview blur → overlay:focus lands
+    // over the bus) re-ran this effect and yanked Win32 focus back to the
+    // pane the instant the search bar opened.
+    if (useAppStore.getState().overlayFocused) return;
     void nativeTermFocusKeyboard(termId).catch(() => {});
   }, [termId, isActive, appWindowFocused]);
 
