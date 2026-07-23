@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useId } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitBranchInfo, GitDiffStats, GitAheadBehind } from "../types";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
+import { validateBranchName } from "../lib/git-branch-validate";
 
 interface Props {
   workingDir: string;
@@ -22,25 +23,19 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
   const [diffStats, setDiffStats] = useState<GitDiffStats | null>(null);
   const [aheadBehind, setAheadBehind] = useState<GitAheadBehind | null>(null);
   const [showDropdown, setShowDropdown] = useState(false);
-  const [branchSearch, setBranchSearch] = useState("");
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState("");
   const [pulling, setPulling] = useState(false);
   const [pullToast, setPullToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
   const pullWithRebase = useAppStore((s) => s.pullWithRebase);
 
-  // Branch creation (inline form in the dropdown)
-  const [creatingBranchOpen, setCreatingBranchOpen] = useState(false);
-  const [newBranchName, setNewBranchName] = useState("");
-  const [newBranchSwitch, setNewBranchSwitch] = useState(true);
+  // Branch creation busy/error (form itself renders in the overlay)
   const [creatingBranchBusy, setCreatingBranchBusy] = useState(false);
   const [createBranchError, setCreateBranchError] = useState("");
-  const newBranchInputRef = useRef<HTMLInputElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('git-status-bar-dropdown', dropdownRef);
   const triggerRef = useRef<HTMLDivElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
   const errorTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // Unique per mount — GitStatusBar mounts in both TabBar and VerticalTabBar.
+  const menuId = `git-branch-menu-${useId()}`;
 
   // Sequential poll: wait for completion before scheduling next poll.
   // Prevents stacking when WSL git commands are slow.
@@ -95,50 +90,14 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
     };
   }, [fetchAll, schedulePoll]);
 
-  // Close dropdown on outside click
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (
-        dropdownRef.current && !dropdownRef.current.contains(e.target as Node) &&
-        triggerRef.current && !triggerRef.current.contains(e.target as Node)
-      ) {
-        setShowDropdown(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  // Close dropdown on Escape
-  useEffect(() => {
-    if (!showDropdown) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setShowDropdown(false);
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [showDropdown]);
-
-  // Auto-focus search when dropdown opens
+  // Reset errors when the dropdown opens (the overlay menu owns search text,
+  // the create form, outside-click dismiss, Escape and input focus).
   useEffect(() => {
     if (showDropdown) {
-      setBranchSearch("");
       setSwitchError("");
-      setTimeout(() => searchRef.current?.focus(), 0);
-    } else {
-      // Reset branch-create form so next open starts clean
-      setCreatingBranchOpen(false);
-      setNewBranchName("");
       setCreateBranchError("");
     }
   }, [showDropdown]);
-
-  // Auto-focus name input when the create row expands
-  useEffect(() => {
-    if (creatingBranchOpen) {
-      setTimeout(() => newBranchInputRef.current?.focus(), 0);
-    }
-  }, [creatingBranchOpen]);
 
   const handlePull = useCallback(async () => {
     if (pulling || !workingDir) return;
@@ -170,45 +129,33 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
     }
   }, [pulling, workingDir, pullWithRebase]);
 
-  const validateBranchName = (n: string): string | null => {
-    const t = n.trim();
-    if (!t) return null; // empty: disable submit without showing error
-    if (/\s/.test(t)) return "No spaces allowed";
-    // Reject a curated set of characters git also refuses. Server-side check
-    // (git check-ref-format) is the source of truth; this just avoids the
-    // round-trip for obvious cases.
-    if (/[~^:?*\[\\]/.test(t)) return "Invalid characters";
-    if (t.startsWith("-") || t.startsWith("/") || t.endsWith("/")) return "Invalid placement";
-    if (t.includes("..") || t.includes("//")) return "Invalid sequence";
-    return null;
-  };
-
-  const handleCreateBranch = useCallback(async () => {
-    const trimmed = newBranchName.trim();
-    const err = validateBranchName(trimmed);
-    if (!trimmed || err || creatingBranchBusy) {
-      if (err) setCreateBranchError(err);
-      return;
-    }
-    setCreatingBranchBusy(true);
-    setCreateBranchError("");
-    try {
-      await invoke("git_create_branch", {
-        directory: workingDir,
-        name: trimmed,
-        fromRef: null,
-        switch: newBranchSwitch,
-      });
-      setNewBranchName("");
-      setCreatingBranchOpen(false);
-      setShowDropdown(false);
-      fetchAll();
-    } catch (e) {
-      setCreateBranchError(typeof e === "string" ? e : (e as Error).message || "Failed to create branch");
-    } finally {
-      setCreatingBranchBusy(false);
-    }
-  }, [newBranchName, newBranchSwitch, creatingBranchBusy, workingDir, fetchAll]);
+  const handleCreateBranch = useCallback(
+    async (name: string, switchAfter: boolean) => {
+      const trimmed = name.trim();
+      const err = validateBranchName(trimmed);
+      if (!trimmed || err || creatingBranchBusy) {
+        if (err) setCreateBranchError(err);
+        return;
+      }
+      setCreatingBranchBusy(true);
+      setCreateBranchError("");
+      try {
+        await invoke("git_create_branch", {
+          directory: workingDir,
+          name: trimmed,
+          fromRef: null,
+          switch: switchAfter,
+        });
+        setShowDropdown(false);
+        fetchAll();
+      } catch (e) {
+        setCreateBranchError(typeof e === "string" ? e : (e as Error).message || "Failed to create branch");
+      } finally {
+        setCreatingBranchBusy(false);
+      }
+    },
+    [creatingBranchBusy, workingDir, fetchAll],
+  );
 
   const handleSwitch = async (branch: string) => {
     if (switching) return;
@@ -228,14 +175,50 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
     }
   };
 
+  // Branch dropdown — overlay-rendered with focus handoff (search + create
+  // inputs live in the overlay; data/busy/errors stream from here).
+  useOverlayPopupAnchor({
+    id: menuId,
+    kind: "git-branch-menu",
+    open: showDropdown && !!branches,
+    anchorRef: triggerRef,
+    payload:
+      showDropdown && branches
+        ? {
+            branches: branches.branches,
+            current: branches.current,
+            creatingBusy: creatingBranchBusy,
+            createError: createBranchError,
+            switchError,
+          }
+        : null,
+    onAction: (action, data) => {
+      switch (action) {
+        case "__dismiss__":
+          setShowDropdown(false);
+          break;
+        case "switch": {
+          const branch = (data as { branch?: string } | undefined)?.branch;
+          if (branch) void handleSwitch(branch);
+          setShowDropdown(false);
+          break;
+        }
+        case "create": {
+          const d = data as { name?: string; switchAfter?: boolean } | undefined;
+          if (d?.name) void handleCreateBranch(d.name, d.switchAfter ?? true);
+          break;
+        }
+        case "create-error-clear":
+          setCreateBranchError("");
+          break;
+      }
+    },
+  });
+
   if (!isGitRepo || !branches) return null;
 
   const stats = diffStats ?? { filesChanged: 0, insertions: 0, deletions: 0 };
   const isDetached = branches.current === "HEAD";
-
-  const filtered = branches.branches.filter(
-    (b) => b.toLowerCase().includes(branchSearch.toLowerCase())
-  );
 
   // Warp-exact: [branch-icon] main  [file-icon] 15186  •  +121819  -195
   return (
@@ -405,307 +388,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
         }}
       />
 
-      {showDropdown && (
-        <div
-          ref={dropdownRef}
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            left: 0,
-            width: 260,
-            maxHeight: 300,
-            overflowY: "auto",
-            backgroundColor: "var(--ezy-surface-raised)",
-            border: "1px solid var(--ezy-border)",
-            borderRadius: 8,
-            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-            zIndex: 100,
-          }}
-        >
-          {/* Search */}
-          <div style={{ padding: "6px 6px 4px" }}>
-            <input
-              ref={searchRef}
-              value={branchSearch}
-              onChange={(e) => setBranchSearch(e.target.value)}
-              placeholder="Search branches..."
-              style={{
-                width: "100%",
-                background: "var(--ezy-bg)",
-                border: "1px solid var(--ezy-border)",
-                borderRadius: 4,
-                padding: "5px 8px",
-                fontSize: 12,
-                color: "var(--ezy-text-secondary)",
-                outline: "none",
-              }}
-              onFocus={(e) => (e.currentTarget.style.borderColor = "var(--ezy-accent)")}
-              onBlur={(e) => (e.currentTarget.style.borderColor = "var(--ezy-border)")}
-            />
-          </div>
-
-          {/* + New branch row (pinned top) */}
-          <div style={{ padding: "2px 4px 0" }}>
-            {!creatingBranchOpen ? (
-              <div
-                onClick={() => {
-                  setCreatingBranchOpen(true);
-                  setCreateBranchError("");
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "5px 8px",
-                  borderRadius: 4,
-                  cursor: "pointer",
-                  backgroundColor: "transparent",
-                  transition: "background-color 100ms ease",
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}
-                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-                  <path
-                    d="M8 3v10M3 8h10"
-                    stroke="var(--ezy-text-muted)"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                  />
-                </svg>
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
-                  New branch from {branches.current}
-                </span>
-              </div>
-            ) : (
-              <div
-                style={{
-                  padding: "6px 8px 8px",
-                  backgroundColor: "var(--ezy-surface)",
-                  borderRadius: 4,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                }}
-              >
-                <input
-                  ref={newBranchInputRef}
-                  value={newBranchName}
-                  onChange={(e) => {
-                    setNewBranchName(e.target.value);
-                    if (createBranchError) setCreateBranchError("");
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleCreateBranch();
-                    } else if (e.key === "Escape") {
-                      e.preventDefault();
-                      setCreatingBranchOpen(false);
-                    }
-                  }}
-                  placeholder="new-branch-name"
-                  spellCheck={false}
-                  style={{
-                    width: "100%",
-                    boxSizing: "border-box",
-                    background: "var(--ezy-bg)",
-                    border: "1px solid var(--ezy-border)",
-                    borderRadius: 4,
-                    padding: "5px 8px",
-                    fontSize: 12,
-                    color: "var(--ezy-text)",
-                    outline: "none",
-                    fontFamily: "inherit",
-                  }}
-                />
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div
-                    role="checkbox"
-                    aria-checked={newBranchSwitch}
-                    tabIndex={0}
-                    onClick={() => setNewBranchSwitch((v) => !v)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        setNewBranchSwitch((v) => !v);
-                      }
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                      cursor: "pointer",
-                      userSelect: "none",
-                      flex: 1,
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: 14,
-                        height: 14,
-                        borderRadius: 3,
-                        border: newBranchSwitch ? "none" : "1px solid var(--ezy-border-light)",
-                        backgroundColor: newBranchSwitch ? "var(--ezy-accent)" : "transparent",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                        transition: "background-color 120ms ease",
-                      }}
-                    >
-                      {newBranchSwitch && (
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                          <path
-                            d="M1.5 5.2 4 7.5 8.5 2.5"
-                            stroke="#0d1117"
-                            strokeWidth="1.8"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      )}
-                    </div>
-                    <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>
-                      Switch after create
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => setCreatingBranchOpen(false)}
-                    disabled={creatingBranchBusy}
-                    style={{
-                      height: 24,
-                      padding: "0 8px",
-                      borderRadius: 4,
-                      border: "1px solid var(--ezy-border)",
-                      background: "transparent",
-                      color: "var(--ezy-text-muted)",
-                      fontSize: 11,
-                      cursor: creatingBranchBusy ? "not-allowed" : "pointer",
-                      fontFamily: "inherit",
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleCreateBranch}
-                    disabled={
-                      creatingBranchBusy ||
-                      !newBranchName.trim() ||
-                      !!validateBranchName(newBranchName)
-                    }
-                    style={{
-                      height: 24,
-                      padding: "0 10px",
-                      borderRadius: 4,
-                      border: "none",
-                      background: "var(--ezy-accent)",
-                      color: "#0d1117",
-                      fontSize: 11,
-                      fontWeight: 600,
-                      cursor:
-                        creatingBranchBusy ||
-                        !newBranchName.trim() ||
-                        !!validateBranchName(newBranchName)
-                          ? "not-allowed"
-                          : "pointer",
-                      opacity:
-                        creatingBranchBusy ||
-                        !newBranchName.trim() ||
-                        !!validateBranchName(newBranchName)
-                          ? 0.5
-                          : 1,
-                      fontFamily: "inherit",
-                    }}
-                  >
-                    {creatingBranchBusy ? "Creating…" : "Create"}
-                  </button>
-                </div>
-                {createBranchError && (
-                  <div style={{ fontSize: 11, color: "var(--ezy-red)", wordBreak: "break-word" }}>
-                    {createBranchError}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Branch list */}
-          <div style={{ padding: "2px 4px 4px" }}>
-            {filtered.length === 0 && (
-              <div style={{ padding: "8px 12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>
-                No branches found
-              </div>
-            )}
-            {filtered.map((b) => {
-              const isCurrent = b === branches.current;
-              return (
-                <div
-                  key={b}
-                  onClick={() => !isCurrent && handleSwitch(b)}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "5px 8px",
-                    borderRadius: 4,
-                    cursor: isCurrent ? "default" : "pointer",
-                    backgroundColor: isCurrent ? "var(--ezy-accent)" : "transparent",
-                    transition: "background-color 100ms ease",
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!isCurrent) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!isCurrent) e.currentTarget.style.backgroundColor = isCurrent ? "var(--ezy-accent)" : "transparent";
-                  }}
-                >
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-                    <path
-                      d="M5 3.25a2.25 2.25 0 114.5 0 2.25 2.25 0 01-4.5 0zM7.25 1.75a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM4 12.75a2.25 2.25 0 114.5 0 2.25 2.25 0 01-4.5 0zM6.25 11.5a1.25 1.25 0 100 2.5 1.25 1.25 0 000-2.5z"
-                      fill={isCurrent ? "white" : "var(--ezy-text-muted)"}
-                    />
-                    <path
-                      d="M7.25 5.5v5.25"
-                      stroke={isCurrent ? "white" : "var(--ezy-text-muted)"}
-                      strokeWidth="1.5"
-                    />
-                  </svg>
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: isCurrent ? "white" : "var(--ezy-text-secondary)",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                      flex: 1,
-                      fontWeight: isCurrent ? 500 : 400,
-                    }}
-                  >
-                    {b}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Switch error */}
-          {switchError && (
-            <div
-              style={{
-                padding: "6px 12px",
-                fontSize: 11,
-                color: "var(--ezy-red)",
-                borderTop: "1px solid var(--ezy-border)",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-              }}
-            >
-              {switchError}
-            </div>
-          )}
-        </div>
-      )}
+      {/* Branch dropdown — overlay-rendered (kind "git-branch-menu", hook above). */}
 
       {/* Pull toast */}
       {pullToast && (

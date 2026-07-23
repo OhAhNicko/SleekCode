@@ -23,6 +23,7 @@ import {
 } from "../lib/context-menu-model";
 import type { OverlayToastPayload } from "../lib/useOverlayToast";
 import type { OverlayMenuPayload } from "../lib/overlay-menu-model";
+import { validateBranchName } from "../lib/git-branch-validate";
 
 type PopupRect = {
   x: number;
@@ -44,6 +45,7 @@ const BACKDROP_KINDS = new Set([
   "anchored-menu",
   "swatch-menu",
   "recent-menu",
+  "git-branch-menu",
 ]);
 
 /**
@@ -238,6 +240,10 @@ function OverlayPopup({
       return <VoiceHudCard msg={msg} registerEl={registerEl} />;
     case "pane-search":
       return <PaneSearch msg={msg} registerEl={registerEl} />;
+    case "git-branch-menu":
+      return (
+        <GitBranchMenu msg={msg} registerEl={registerEl} closeLocal={closeLocal} />
+      );
     case "tooltip":
       return <Tooltip msg={msg} registerEl={registerEl} />;
     case "swatch-menu":
@@ -2290,6 +2296,431 @@ function OvToggleButton({
       }}
     >
       {label}
+    </div>
+  );
+}
+
+/**
+ * Git branch dropdown (kind "git-branch-menu") — the second focus-handoff
+ * popup: hosts the branch-search input and the inline new-branch form.
+ * Backdrop popup (outside press dismisses, real shadow). Search text +
+ * create-form state live HERE; branch data / busy flags / errors come from
+ * the main webview's payload (live re-emits), and switch/create bounce back
+ * as actions. 1:1 port of GitStatusBar's dropdown design.
+ */
+function GitBranchMenu({
+  msg,
+  registerEl,
+  closeLocal,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (el: string, e: HTMLElement | null) => void;
+  closeLocal: (id: string) => void;
+}) {
+  const p = (msg.payload ?? {}) as {
+    branches?: string[];
+    current?: string;
+    creatingBusy?: boolean;
+    createError?: string;
+    switchError?: string;
+  };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const searchRef = useRef<HTMLInputElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const [search, setSearch] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [switchAfter, setSwitchAfter] = useState(true);
+
+  const act = (action: string, data?: unknown) =>
+    emitOverlayAction({ id: msg.id, action, data });
+  const dismiss = () => {
+    closeLocal(msg.id);
+    act("__dismiss__");
+  };
+
+  // Focus handoff: focusable while mounted; search input autofocus (parity
+  // with the old dropdown's setTimeout(focus, 0)).
+  useEffect(() => {
+    let disposed = false;
+    invoke("overlay_set_focusable", { focusable: true })
+      .then(() => {
+        if (disposed) return;
+        requestAnimationFrame(() => searchRef.current?.focus());
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      emitOverlayFocus(false);
+      invoke("overlay_set_focusable", { focusable: false }).catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Create-row expand → autofocus the name input.
+  useEffect(() => {
+    if (createOpen) requestAnimationFrame(() => nameRef.current?.focus());
+  }, [createOpen]);
+
+  // Escape closes even when no input has focus (the overlay window is the
+  // foreground window while this popup is open).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        dismiss();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const anchor = msg.rect!;
+  const current = p.current ?? "";
+  const branches = p.branches ?? [];
+  const filtered = branches.filter((b) =>
+    b.toLowerCase().includes(search.toLowerCase()),
+  );
+  const nameErr = validateBranchName(newName);
+  const createDisabled = !!p.creatingBusy || !newName.trim() || !!nameErr;
+
+  const top = anchor.y + anchor.height + 4;
+  const left = Math.max(8, Math.min(anchor.x, window.innerWidth - 260 - 8));
+  const maxHeight = Math.min(300, window.innerHeight - top - 8);
+
+  const inputStyle: CSSProperties = {
+    width: "100%",
+    boxSizing: "border-box",
+    background: "var(--ezy-bg, #0d1117)",
+    border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+    borderRadius: 4,
+    padding: "5px 8px",
+    fontSize: 12,
+    color: "var(--ezy-text, #e6edf3)",
+    outline: "none",
+    fontFamily: "inherit",
+  };
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, pointerEvents: "auto" }}
+      onPointerDown={dismiss}
+      onContextMenu={(e) => {
+        e.preventDefault();
+      }}
+    >
+      <div
+        ref={ref}
+        onPointerDown={(e) => e.stopPropagation()}
+        style={{
+          position: "absolute",
+          top,
+          left,
+          width: 260,
+          maxHeight,
+          overflowY: "auto",
+          background: "var(--ezy-surface-raised, #1c2128)",
+          border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+          borderRadius: 8,
+          boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+          fontFamily: "system-ui, -apple-system, sans-serif",
+        }}
+      >
+        <div style={{ padding: "6px 6px 4px" }}>
+          <input
+            ref={searchRef}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onFocus={(e) => {
+              emitOverlayFocus(true);
+              e.currentTarget.style.borderColor = "var(--ezy-accent, #10a37f)";
+            }}
+            onBlur={(e) => {
+              emitOverlayFocus(false);
+              e.currentTarget.style.borderColor =
+                "var(--ezy-border, rgba(255,255,255,0.12))";
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                dismiss();
+              }
+            }}
+            placeholder="Search branches..."
+            spellCheck={false}
+            style={{ ...inputStyle, color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))" }}
+          />
+        </div>
+        <div style={{ padding: "2px 4px 0" }}>
+          {!createOpen ? (
+            <div
+              onClick={() => setCreateOpen(true)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "5px 8px",
+                borderRadius: 4,
+                cursor: "pointer",
+              }}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.backgroundColor =
+                  "var(--ezy-surface, #161b22)")
+              }
+              onMouseLeave={(e) =>
+                (e.currentTarget.style.backgroundColor = "transparent")
+              }
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                <path
+                  d="M8 3v10M3 8h10"
+                  stroke="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <span
+                style={{
+                  fontSize: 12,
+                  color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+                }}
+              >
+                New branch from {current}
+              </span>
+            </div>
+          ) : (
+            <div
+              style={{
+                padding: "6px 8px 8px",
+                backgroundColor: "var(--ezy-surface, #161b22)",
+                borderRadius: 4,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              <input
+                ref={nameRef}
+                value={newName}
+                onChange={(e) => {
+                  setNewName(e.target.value);
+                  if (p.createError) act("create-error-clear");
+                }}
+                onFocus={() => emitOverlayFocus(true)}
+                onBlur={() => emitOverlayFocus(false)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    if (!createDisabled)
+                      act("create", { name: newName.trim(), switchAfter });
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setCreateOpen(false);
+                  }
+                }}
+                placeholder="new-branch-name"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div
+                  role="checkbox"
+                  aria-checked={switchAfter}
+                  onClick={() => setSwitchAfter((v) => !v)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    cursor: "pointer",
+                    userSelect: "none",
+                    flex: 1,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 14,
+                      height: 14,
+                      borderRadius: 3,
+                      border: switchAfter
+                        ? "none"
+                        : "1px solid var(--ezy-border-light, rgba(255,255,255,0.25))",
+                      backgroundColor: switchAfter
+                        ? "var(--ezy-accent, #10a37f)"
+                        : "transparent",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {switchAfter && (
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                        <path
+                          d="M1.5 5.2 4 7.5 8.5 2.5"
+                          stroke="#0d1117"
+                          strokeWidth="1.8"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    )}
+                  </div>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                    }}
+                  >
+                    Switch after create
+                  </span>
+                </div>
+                <button
+                  onClick={() => setCreateOpen(false)}
+                  disabled={!!p.creatingBusy}
+                  style={{
+                    height: 24,
+                    padding: "0 8px",
+                    borderRadius: 4,
+                    border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+                    background: "transparent",
+                    color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                    fontSize: 11,
+                    cursor: p.creatingBusy ? "not-allowed" : "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() =>
+                    !createDisabled &&
+                    act("create", { name: newName.trim(), switchAfter })
+                  }
+                  disabled={createDisabled}
+                  style={{
+                    height: 24,
+                    padding: "0 10px",
+                    borderRadius: 4,
+                    border: "none",
+                    background: "var(--ezy-accent, #10a37f)",
+                    color: "#0d1117",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    cursor: createDisabled ? "not-allowed" : "pointer",
+                    opacity: createDisabled ? 0.5 : 1,
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {p.creatingBusy ? "Creating…" : "Create"}
+                </button>
+              </div>
+              {(p.createError || nameErr) && (
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--ezy-red, #f85149)",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {p.createError || nameErr}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div style={{ padding: "2px 4px 4px" }}>
+          {filtered.length === 0 && (
+            <div
+              style={{
+                padding: "8px 12px",
+                fontSize: 12,
+                color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+              }}
+            >
+              No branches found
+            </div>
+          )}
+          {filtered.map((b) => {
+            const isCurrent = b === current;
+            return (
+              <div
+                key={b}
+                onClick={() => {
+                  if (!isCurrent) {
+                    closeLocal(msg.id);
+                    act("switch", { branch: b });
+                  }
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "5px 8px",
+                  borderRadius: 4,
+                  cursor: isCurrent ? "default" : "pointer",
+                  backgroundColor: isCurrent
+                    ? "var(--ezy-accent, #10a37f)"
+                    : "transparent",
+                }}
+                onMouseEnter={(e) => {
+                  if (!isCurrent)
+                    e.currentTarget.style.backgroundColor =
+                      "var(--ezy-surface, #161b22)";
+                }}
+                onMouseLeave={(e) => {
+                  if (!isCurrent)
+                    e.currentTarget.style.backgroundColor = "transparent";
+                }}
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+                  <path
+                    d="M5 3.25a2.25 2.25 0 114.5 0 2.25 2.25 0 01-4.5 0zM7.25 1.75a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM4 12.75a2.25 2.25 0 114.5 0 2.25 2.25 0 01-4.5 0zM6.25 11.5a1.25 1.25 0 100 2.5 1.25 1.25 0 000-2.5z"
+                    fill={isCurrent ? "white" : "var(--ezy-text-muted, rgba(230,237,243,0.5))"}
+                  />
+                  <path
+                    d="M7.25 5.5v5.25"
+                    stroke={isCurrent ? "white" : "var(--ezy-text-muted, rgba(230,237,243,0.5))"}
+                    strokeWidth="1.5"
+                  />
+                </svg>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: isCurrent
+                      ? "white"
+                      : "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    flex: 1,
+                    fontWeight: isCurrent ? 500 : 400,
+                  }}
+                >
+                  {b}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        {p.switchError && (
+          <div
+            style={{
+              padding: "6px 12px",
+              fontSize: 11,
+              color: "var(--ezy-red, #f85149)",
+              borderTop: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {p.switchError}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
