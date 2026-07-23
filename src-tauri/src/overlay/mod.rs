@@ -54,7 +54,9 @@ pub fn overlay_set_region(
             .ok_or_else(|| "overlay window not found".to_string())?;
         let hwnd = overlay.hwnd().map_err(|e| e.to_string())?.0 as isize;
         if backdrop.unwrap_or(false) {
-            return win32::clear_region(hwnd);
+            // Full-window REGION, not region-removal — see set_full_region's
+            // note on the DWM/classic composition-flip flicker.
+            return win32::set_full_region(hwnd);
         }
         let scale = overlay.scale_factor().map_err(|e| e.to_string())?;
         let px: Vec<(i32, i32, i32, i32, i32)> = rects

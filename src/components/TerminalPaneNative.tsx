@@ -408,6 +408,7 @@ export default function TerminalPaneNative({
   // only (composer/search inputs take webview focus while the pane stays
   // active and must keep blinking).
   const appWindowFocused = useAppStore((s) => s.appWindowFocused);
+  const overlayFocused = useAppStore((s) => s.overlayFocused);
   // Mirror isActive + the pane-activation callback into refs so the
   // focus_gained subscription (registered in the event effect below) can
   // read the latest values without growing that effect's dep array —
@@ -888,8 +889,15 @@ export default function TerminalPaneNative({
   // are benign races (pane tearing down mid-invoke).
   useEffect(() => {
     if (termId == null) return;
-    void nativeTermSetFocused(termId, isActive && appWindowFocused).catch(() => {});
-  }, [termId, isActive, appWindowFocused]);
+    // !overlayFocused: while the overlay's search input owns the keyboard,
+    // the pane cursor must render UNFOCUSED (hollow, no blink) — xterm parity
+    // (its cursor hollows when the DOM search input takes focus). Without
+    // this both carets blinked at once.
+    void nativeTermSetFocused(
+      termId,
+      isActive && appWindowFocused && !overlayFocused,
+    ).catch(() => {});
+  }, [termId, isActive, appWindowFocused, overlayFocused]);
 
   // ── Win32 keyboard-focus routing (P7b) ────────────────────────────────
   // Parity with the xterm pane, which calls term.focus() when it becomes

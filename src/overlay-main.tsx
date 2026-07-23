@@ -10,6 +10,11 @@ import { OverlayRoot } from "./overlay/OverlayRoot";
 // this tree tiny and isolated. That is the whole reason it has its own HTML
 // entry (overlay.html) instead of reusing index.html.
 
+// The overlay must NEVER show WebView2's default context menu (Back/Reload/
+// Save as/Print/Inspect) — right-clicking any popup surface (search bar,
+// toasts) reached it because only the backdrop divs preventDefault'ed.
+document.addEventListener("contextmenu", (e) => e.preventDefault());
+
 ReactDOM.createRoot(document.getElementById("overlay-root") as HTMLElement).render(
   <React.StrictMode>
     <OverlayRoot />

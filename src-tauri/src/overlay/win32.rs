@@ -134,8 +134,42 @@ pub fn set_region(hwnd: isize, rects_px: &[(i32, i32, i32, i32, i32)]) -> Result
                 return Err("CombineRgn failed".to_string());
             }
         }
-        // SetWindowRgn takes ownership of the HRGN on success.
-        if SetWindowRgn(hwnd, rgn, BOOL(1)) == 0 {
+        // SetWindowRgn takes ownership of the HRGN on success. bRedraw=FALSE:
+        // Chromium repaints the overlay continuously and DWM re-composites on
+        // region change anyway — the forced invalidation only added a visible
+        // flash over the whole app on popup open/close.
+        if SetWindowRgn(hwnd, rgn, BOOL(0)) == 0 {
+            let _ = DeleteObject(rgn);
+            return Err("SetWindowRgn failed".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Full-window region for backdrop popups. A REGION (not region-removal):
+/// clearing the region entirely flipped the overlay between DWM composition
+/// (no region) and the classic path (region) on every backdrop open/close,
+/// and that composition flip repainted the overlay surface over the whole
+/// app — the "app flickers when closing the menu" bug. With the NC-guard
+/// subclass the classic path has no non-client area to paint (the old
+/// "Tauri App" caption can't come back), so staying regioned at ALL times is
+/// safe and transition-free: empty region <-> full region, same path.
+#[cfg(target_os = "windows")]
+pub fn set_full_region(hwnd: isize) -> Result<(), String> {
+    use windows::Win32::Foundation::{BOOL, HWND, RECT};
+    use windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    unsafe {
+        let hwnd = HWND(hwnd as *mut _);
+        let mut rc = RECT::default();
+        if GetWindowRect(hwnd, &mut rc).is_err() {
+            return Err("GetWindowRect failed".to_string());
+        }
+        let rgn = CreateRectRgn(0, 0, rc.right - rc.left, rc.bottom - rc.top);
+        if rgn.is_invalid() {
+            return Err("CreateRectRgn failed".to_string());
+        }
+        if SetWindowRgn(hwnd, rgn, BOOL(0)) == 0 {
             let _ = DeleteObject(rgn);
             return Err("SetWindowRgn failed".to_string());
         }
@@ -289,6 +323,7 @@ pub fn set_focusable(_overlay_hwnd: isize, _main_hwnd: isize, _focusable: bool) 
 /// exactly what a backdrop popup wants (it must catch the outside click that
 /// dismisses it). Transparency + real drop shadows render on this path.
 #[cfg(target_os = "windows")]
+#[allow(dead_code)] // kept: the region-removal primitive, unused since backdrop went full-region
 pub fn clear_region(hwnd: isize) -> Result<(), String> {
     use windows::Win32::Foundation::{BOOL, HWND};
     use windows::Win32::Graphics::Gdi::{SetWindowRgn, HRGN};
@@ -306,6 +341,7 @@ pub fn clear_region(hwnd: isize) -> Result<(), String> {
 pub fn apply_ex_styles(_hwnd: isize) {}
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
 pub fn clear_region(_hwnd: isize) -> Result<(), String> {
     Ok(())
 }
