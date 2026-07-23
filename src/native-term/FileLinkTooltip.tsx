@@ -36,13 +36,21 @@ interface FileLinkTooltipProps {
   termId: NativeTermId;
   hover: FileLinkHover | null;
   paneRef: React.RefObject<HTMLDivElement | null>;
+  /** Real glyph metrics (logical px) from the Rust `resized` event — the
+   * hardcoded 14px-Hack fallbacks drift as soon as the font size differs. */
+  cellW?: number;
+  cellH?: number;
 }
 
 export default function FileLinkTooltip({
   termId,
   hover,
   paneRef,
+  cellW,
+  cellH,
 }: FileLinkTooltipProps) {
+  const cw = cellW && cellW > 0 ? cellW : CELL_W_LOGICAL;
+  const ch = cellH && cellH > 0 ? cellH : CELL_H_LOGICAL;
   let top = 0;
   let left = 0;
   // ABOVE the hovered line (bottom-anchored in the renderer): the tooltip
@@ -56,10 +64,8 @@ export default function FileLinkTooltip({
     // tooltip visually hugs the link — the mirrored cell metrics drift a few
     // px from the real glyph grid, and any extra gap reads as "disconnected".
     // The line's leading is empty space, so a small overlap never covers text.
-    top = above
-      ? hover.line * CELL_H_LOGICAL + 6
-      : (hover.line + 1) * CELL_H_LOGICAL + 4;
-    left = hover.col * CELL_W_LOGICAL;
+    top = above ? hover.line * ch + 2 : (hover.line + 1) * ch + 4;
+    left = hover.col * cw;
 
     // Clamp to pane bounds. Rough estimate of tooltip width: chip + path text.
     const paneWidth = paneRef.current?.clientWidth ?? 0;

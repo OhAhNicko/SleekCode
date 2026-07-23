@@ -1530,6 +1530,8 @@ unsafe fn commit_dims(state: &mut ChildState, hwnd: HWND) {
                 rows: rows as u32,
                 // Internal/settle-driven resize — no originating JS invoke.
                 correlation_id: None,
+                cell_w: state.cell_w_px.max(0.001) / state.dpr.max(0.0001),
+                cell_h: state.cell_h_px.max(0.001) / state.dpr.max(0.0001),
             },
         );
     }

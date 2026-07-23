@@ -173,6 +173,10 @@ export interface ResizedEvent {
   // Echoes correlationId from native_term_resize; null if the resize
   // originated from a non-JS source (parent WM_SIZE) or wasn't passed.
   correlationId: number | null;
+  // Real glyph-grid cell metrics in LOGICAL px — grid-positioned popups
+  // (file-link tooltip) must use these, not hardcoded 14px-Hack mirrors.
+  cellW: number;
+  cellH: number;
 }
 
 export interface DataRateEvent {

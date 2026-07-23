@@ -210,6 +210,7 @@ export default function TerminalPaneNative({
   const [termId, setTermId] = useState<NativeTermId | null>(null);
   const [cols, setCols] = useState(80);
   const [rows, setRows] = useState(24);
+  const [cellMetrics, setCellMetrics] = useState<{ w: number; h: number } | null>(null);
   const [ptyReady, setPtyReady] = useState(false);
   // Bumped to force usePtyNative to kill + respawn the PTY (session switch).
   // Same mechanism as TerminalPaneXterm's restartKey — the spawn effect is
@@ -638,6 +639,14 @@ export default function TerminalPaneNative({
         recordTerminalResize(terminalId);
         setCols(p.cols);
         setRows(p.rows);
+        // Real glyph metrics (logical px) for grid-positioned popups.
+        if (p.cellW > 0 && p.cellH > 0) {
+          setCellMetrics((prev) =>
+            prev && prev.w === p.cellW && prev.h === p.cellH
+              ? prev
+              : { w: p.cellW, h: p.cellH },
+          );
+        }
       });
       unlistens.push(u1);
 
@@ -1631,6 +1640,8 @@ export default function TerminalPaneNative({
           termId={termId}
           hover={fileLinkHover}
           paneRef={terminalDivRef}
+          cellW={cellMetrics?.w}
+          cellH={cellMetrics?.h}
         />
       )}
       {/* PaneSearchBar — Ctrl+F overlay. Search backend (native_term_search)

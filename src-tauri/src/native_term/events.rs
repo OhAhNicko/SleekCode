@@ -21,6 +21,12 @@ pub struct Resized {
     /// (e.g. an internal/synthetic resize from a DPR change). Locked with O
     /// for the coordinator's modal-close ordering — see her plan section O1.
     pub correlation_id: Option<u64>,
+    /// Real glyph-grid cell metrics in LOGICAL px (physical / dpr). JS
+    /// popups that position against the grid (file-link tooltip) use these
+    /// instead of mirroring hardcoded 14px-Hack constants, which drift as
+    /// soon as the user's terminal font size differs.
+    pub cell_w: f32,
+    pub cell_h: f32,
 }
 
 pub fn emit_resized(app: &AppHandle, term_id: u32, payload: Resized) {
