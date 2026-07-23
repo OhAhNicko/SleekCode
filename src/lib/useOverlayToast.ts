@@ -60,13 +60,18 @@ export function useOverlayViewportPopup(opts: {
 
   useEffect(() => {
     if (!open) return;
-    emitOverlayPopup({
-      id,
-      kind,
-      open: true,
-      rect: { x: 0, y: 0, width: 0, height: 0 },
-      payload: JSON.parse(payloadJson),
-    });
+    const send = () =>
+      emitOverlayPopup({
+        id,
+        kind,
+        open: true,
+        rect: { x: 0, y: 0, width: 0, height: 0 },
+        payload: JSON.parse(payloadJson),
+      });
+    send();
+    // Keepalive for the overlay's ghost-sweep (the bus is fire-and-forget).
+    const iv = setInterval(send, 750);
+    return () => clearInterval(iv);
   }, [id, kind, open, payloadJson]);
 
   useEffect(() => {

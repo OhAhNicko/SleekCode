@@ -67,10 +67,15 @@ export function OverlayRoot() {
   );
   const els = useRef<Map<string, HTMLElement>>(new Map());
 
+  // Stamp of the last message per popup id — feeds the ghost sweep below.
+  const lastSeen = useRef<Map<string, number>>(new Map());
+
   useEffect(() => {
     let un: UnlistenFn | undefined;
     let disposed = false;
     listenOverlayPopup((msg) => {
+      if (msg.open && msg.rect) lastSeen.current.set(msg.id, Date.now());
+      else lastSeen.current.delete(msg.id);
       setPopups((prev) => {
         const next = new Map(prev);
         if (msg.open && msg.rect) next.set(msg.id, msg);
@@ -85,6 +90,30 @@ export function OverlayRoot() {
       disposed = true;
       un?.();
     };
+  }, []);
+
+  // GHOST SWEEP: the popup bus is fire-and-forget — if a close event is ever
+  // lost (focus-handoff churn, webview reload), a popup would linger here
+  // forever with no owner listening for its actions (observed on hardware:
+  // an unclosable stale search bar). Every main-side popup hook re-emits a
+  // keepalive at ~750ms while open, so anything not refreshed within 2.5s
+  // has no living owner and is dropped.
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const cutoff = Date.now() - 2500;
+      const stale: string[] = [];
+      for (const [id, ts] of lastSeen.current) {
+        if (ts < cutoff) stale.push(id);
+      }
+      if (stale.length === 0) return;
+      for (const id of stale) lastSeen.current.delete(id);
+      setPopups((prev) => {
+        const next = new Map(prev);
+        for (const id of stale) next.delete(id);
+        return next;
+      });
+    }, 1000);
+    return () => clearInterval(iv);
   }, []);
 
   // Theme: adopt the main webview's --ezy-* vars so popup renderers use the

@@ -74,8 +74,13 @@ export function useOverlayPopupAnchor(opts: {
     if (!open) return;
     let raf = 0;
     let lastJson = "";
+    let frame = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
+      // Keepalive: the event bus is fire-and-forget — a missed message must
+      // not orphan a popup forever. Re-emit periodically so the overlay's
+      // ghost-sweep (OverlayRoot) can drop popups whose owner went silent.
+      if (++frame % 45 === 0) lastJson = "";
       const el = anchorRef.current;
       if (!el) return;
       const b = el.getBoundingClientRect();

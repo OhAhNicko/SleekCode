@@ -60,19 +60,24 @@ export function useOverlayMenu(opts: {
       height: number;
     } | null;
     if (point) {
-      emitOverlayPopup({
-        id,
-        kind: "anchored-menu",
-        open: true,
-        rect: point,
-        payload: JSON.parse(payloadJson),
-      });
-      return;
+      const send = () =>
+        emitOverlayPopup({
+          id,
+          kind: "anchored-menu",
+          open: true,
+          rect: point,
+          payload: JSON.parse(payloadJson),
+        });
+      send();
+      const iv = setInterval(send, 750);
+      return () => clearInterval(iv);
     }
     let raf = 0;
     let lastJson = "";
+    let frame = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
+      if (++frame % 45 === 0) lastJson = "";
       const el = anchorRef?.current;
       if (!el) return;
       const b = el.getBoundingClientRect();
