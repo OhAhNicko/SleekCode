@@ -45,8 +45,16 @@ export default function FileLinkTooltip({
 }: FileLinkTooltipProps) {
   let top = 0;
   let left = 0;
+  // ABOVE the hovered line (bottom-anchored in the renderer): the tooltip
+  // must never sit under the cursor — its pixels belong to the overlay
+  // window, so hovering it steals the mouse from the pane, hover ends, the
+  // tooltip closes, the mouse returns... an open/close oscillation. Below
+  // only for the top rows where above would clip.
+  const above = !!hover && hover.line >= 2;
   if (hover) {
-    top = (hover.line + 1) * CELL_H_LOGICAL + 4;
+    top = above
+      ? hover.line * CELL_H_LOGICAL - 4
+      : (hover.line + 1) * CELL_H_LOGICAL + 4;
     left = hover.col * CELL_W_LOGICAL;
 
     // Clamp to pane bounds. Rough estimate of tooltip width: chip + path text.
@@ -63,7 +71,9 @@ export default function FileLinkTooltip({
     kind: "file-link-tooltip",
     open: !!hover,
     anchorRef: paneRef,
-    payload: hover ? { top, left, prefix: PREFIX_LABEL, path: hover.path } : null,
+    payload: hover
+      ? { top, left, above, prefix: PREFIX_LABEL, path: hover.path }
+      : null,
   });
 
   return null;

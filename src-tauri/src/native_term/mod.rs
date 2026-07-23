@@ -294,6 +294,13 @@ pub fn native_term_set_focused(id: u32, focused: bool) -> Result<(), String> {
     registry::with_window(id, |w| w.set_focused(focused))
 }
 
+/// S12/S13: mirror the JS regex-link hover state onto the pane so
+/// WM_SETCURSOR can show the hand cursor while Ctrl is held over a link.
+#[tauri::command]
+pub fn native_term_set_hover_link(id: u32, active: bool) -> Result<(), String> {
+    registry::with_window(id, |w| w.set_hover_link(active))
+}
+
 /// N-b copy-on-select: mirror the JS `copyOnSelect` store flag onto the pane
 /// so WM_LBUTTONUP knows whether a finalized selection should auto-copy to the
 /// clipboard (legacy default false). Pushed from the TerminalPaneNative effect

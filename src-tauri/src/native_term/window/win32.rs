@@ -281,6 +281,10 @@ struct ChildState {
     /// wnd_proc's BLINK arm can guard against a stale WM_TIMER that was
     /// already posted when focus was lost (timer killed, message in flight).
     focused: bool,
+    /// S12/S13: JS-authoritative "a link is under the cursor" flag (the URL /
+    /// file-path regexes run in React). WM_SETCURSOR shows IDC_HAND while
+    /// this is set AND Ctrl is held — the Ctrl+Click affordance.
+    hover_link_active: bool,
     /// P3b: shared render-wake handle for the event-driven scheduler.
     /// Created per-attach in `attach_pty` (hwnd pre-set), a clone goes to
     /// the DETACHED parser worker; this copy serves the wnd_proc
@@ -393,6 +397,7 @@ impl PlatformWindow {
                 cell_w_px: CELL_W_PX,
                 cell_h_px: CELL_H_PX,
                 focused: false,
+                hover_link_active: false,
                 wake: None,
                 last_seen_batches: 0,
                 last_scroll_emitted_offset: None,
@@ -1162,6 +1167,15 @@ impl NativeTermWindow for PlatformWindow {
             }
             update_blink_timer(state, self.hwnd);
             let _ = InvalidateRect(self.hwnd, None, BOOL(0));
+        }
+        Ok(())
+    }
+
+    fn set_hover_link(&mut self, active: bool) -> Result<(), String> {
+        // Flag only — WM_SETCURSOR reads it on the next mouse move; no
+        // repaint needed (the mouse cursor is not part of the framebuffer).
+        unsafe {
+            self.state.as_mut().hover_link_active = active;
         }
         Ok(())
     }
@@ -2350,6 +2364,19 @@ unsafe extern "system" fn wnd_proc(
                 }
             }
             LRESULT(0)
+        }
+        WM_SETCURSOR => {
+            // Ctrl over a JS-detected link => hand cursor (Ctrl+Click opens).
+            // Everything else falls through to the class cursor (arrow).
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+            if !state_ptr.is_null() && (*state_ptr).hover_link_active {
+                let ctrl = (GetKeyState(VK_CONTROL_RAW as i32) as u16 & 0x8000) != 0;
+                if ctrl {
+                    SetCursor(LoadCursorW(HINSTANCE::default(), IDC_HAND).unwrap_or_default());
+                    return LRESULT(1);
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_ERASEBKGND => {
             // Return non-zero to tell DefWindowProc we've handled erasing.

@@ -32,6 +32,7 @@ import {
   subscribeCellHoverEnd,
   subscribeLinkClick,
   nativeTermGetBufferLines,
+  nativeTermSetHoverLink,
   type NativeTermId,
 } from "../lib/native-term-bridge";
 import { findFilePathsInLine } from "../lib/file-link-provider";
@@ -124,6 +125,18 @@ export function useNativeFileLinks({
   useEffect(() => {
     hoverRef.current = hover;
   }, [hover]);
+
+  // Mirror "a link is hovered" to Rust so WM_SETCURSOR can show the hand
+  // cursor while Ctrl is held (the Ctrl+Click affordance). Boolean-keyed so
+  // intra-link movement doesn't spam the command.
+  const hoverActive = hover != null;
+  useEffect(() => {
+    if (termId == null) return;
+    nativeTermSetHoverLink(termId, hoverActive).catch(() => {});
+    return () => {
+      if (hoverActive) nativeTermSetHoverLink(termId, false).catch(() => {});
+    };
+  }, [termId, hoverActive]);
 
   // S13/S12 plain-text parity is driven by the Rust `link_click` event with an
   // EMPTY uri (emitted on Ctrl/Cmd+Click of a non-hyperlink cell), handled in

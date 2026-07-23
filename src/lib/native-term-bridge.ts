@@ -293,6 +293,7 @@ export type NativeTermCmd =
   | "native_term_set_font"
   | "native_term_set_cursor_style"
   | "native_term_set_focused"
+  | "native_term_set_hover_link"
   | "native_term_set_copy_on_select"
   | "native_term_focus_keyboard"
   | "native_term_get_buffer_lines"
@@ -446,6 +447,11 @@ export function nativeTermSetFocused(
   focused: boolean,
 ): Promise<void> {
   return invoke<void>("native_term_set_focused", { id, focused });
+}
+
+/** Mirror the JS regex-link hover state onto the pane (hand cursor on Ctrl). */
+export function nativeTermSetHoverLink(id: NativeTermId, active: boolean): Promise<void> {
+  return invoke<void>("native_term_set_hover_link", { id, active });
 }
 
 // N-b copy-on-select: mirror the JS `copyOnSelect` store flag onto the pane.

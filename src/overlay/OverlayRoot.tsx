@@ -584,6 +584,7 @@ function FileLinkTip({
   const p = (msg.payload ?? {}) as {
     top?: number;
     left?: number;
+    above?: boolean;
     prefix?: string;
     path?: string;
   };
@@ -600,6 +601,9 @@ function FileLinkTip({
         position: "fixed",
         top: rect.y + (p.top ?? 0),
         left: rect.x + (p.left ?? 0),
+        // `above`: p.top is the hovered line's top — anchor the tooltip's
+        // BOTTOM there so it sits above the line, clear of the cursor.
+        transform: p.above ? "translateY(-100%)" : undefined,
         pointerEvents: "none",
         padding: "4px 8px",
         background: "rgb(20,20,24)",

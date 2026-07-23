@@ -162,6 +162,13 @@ pub trait NativeTermWindow: Send {
         Ok(())
     }
 
+    /// S12/S13 hand-cursor affordance: JS mirrors "a regex link is under the
+    /// cursor"; Win32's WM_SETCURSOR shows IDC_HAND while Ctrl is held.
+    /// Default no-op keeps the macOS/Linux stubs compiling.
+    fn set_hover_link(&mut self, _active: bool) -> Result<(), String> {
+        Ok(())
+    }
+
     /// N-b copy-on-select: mirror the JS `copyOnSelect` store flag. When true,
     /// a finalized text selection auto-copies to the clipboard on mouse-up
     /// (legacy default false — selection still emits, but does not copy).
