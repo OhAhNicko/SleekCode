@@ -26,11 +26,6 @@ import type { FileLinkHover } from "./useNativeFileLinks";
 const CELL_W_LOGICAL = 8.4;
 const CELL_H_LOGICAL = 17;
 
-// Rough average glyph width for the tooltip body (matches the system font
-// fallback we render with). Used only to pre-clamp left position; final
-// width comes from the browser layout.
-const TOOLTIP_HPADDING = 16; // padding 4px left + right + chip margin
-const PREFIX_LABEL = "Ctrl+click";
 
 interface FileLinkTooltipProps {
   termId: NativeTermId;
@@ -67,10 +62,10 @@ export default function FileLinkTooltip({
     top = above ? hover.line * ch + 2 : (hover.line + 1) * ch + 4;
     left = hover.col * cw;
 
-    // Clamp to pane bounds. Rough estimate of tooltip width: chip + path text.
+    // Clamp to pane bounds. The tooltip now has fixed content (the xterm
+    // design: "Open in MADE" + Ctrl+Click chip) — ~170px wide.
     const paneWidth = paneRef.current?.clientWidth ?? 0;
-    const approxTextChars = PREFIX_LABEL.length + 1 + hover.path.length;
-    const approxWidth = approxTextChars * 7 + TOOLTIP_HPADDING; // 7px ≈ system 12px avg
+    const approxWidth = 170;
     if (paneWidth > 0 && left + approxWidth > paneWidth - 8) {
       left = Math.max(0, paneWidth - approxWidth - 8);
     }
@@ -81,9 +76,7 @@ export default function FileLinkTooltip({
     kind: "file-link-tooltip",
     open: !!hover,
     anchorRef: paneRef,
-    payload: hover
-      ? { top, left, above, prefix: PREFIX_LABEL, path: hover.path }
-      : null,
+    payload: hover ? { top, left, above } : null,
   });
 
   return null;

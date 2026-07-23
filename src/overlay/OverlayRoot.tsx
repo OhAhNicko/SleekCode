@@ -585,8 +585,6 @@ function FileLinkTip({
     top?: number;
     left?: number;
     above?: boolean;
-    prefix?: string;
-    path?: string;
   };
   const ref = useCallback(
     (el: HTMLElement | null) => registerEl(msg.id, el),
@@ -605,34 +603,36 @@ function FileLinkTip({
         // BOTTOM there so it sits above the line, clear of the cursor.
         transform: p.above ? "translateY(-100%)" : undefined,
         pointerEvents: "none",
-        padding: "4px 8px",
-        background: "rgb(20,20,24)",
-        color: "#ffffff",
-        border: "1px solid rgba(255,255,255,0.18)",
-        borderRadius: 4,
-        fontSize: 12,
-        lineHeight: 1.3,
-        whiteSpace: "nowrap",
-        maxWidth: Math.max(80, rect.width - 32),
-        overflow: "hidden",
-        textOverflow: "ellipsis",
         display: "inline-flex",
         alignItems: "center",
         gap: 8,
-        fontFamily: "Inter, system-ui, sans-serif",
+        padding: "4px 10px",
+        background: "var(--ezy-surface-raised, #1c2128)",
+        boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
+        borderRadius: 6,
+        whiteSpace: "nowrap",
+        fontFamily: "system-ui, -apple-system, sans-serif",
       }}
     >
       <span
         style={{
-          color: "rgba(255,255,255,0.62)",
-          fontSize: 11,
-          letterSpacing: 0.2,
+          fontSize: 12,
+          color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
         }}
       >
-        {p.prefix ?? "Ctrl+click"}
+        Open in MADE
       </span>
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-        {p.path ?? ""}
+      <span
+        style={{
+          fontSize: 11,
+          padding: "1px 5px",
+          background: "var(--ezy-surface, #161b22)",
+          boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
+          borderRadius: 3,
+          color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+        }}
+      >
+        Ctrl+Click
       </span>
     </div>
   );
