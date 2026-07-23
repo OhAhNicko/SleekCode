@@ -140,6 +140,26 @@ export function useNativeFileLinks({
     const lineCache = new Map<number, LineCacheEntry>();
     let lastHoverSeq = 0;
 
+    // Clear-hysteresis: at a link's cell boundary, hover match / no-match
+    // alternate every couple of pixels. Clearing instantly made the tooltip
+    // strobe AND randomly broke Ctrl+Click (the empty-uri link_click consumer
+    // reads hoverRef, which was null half the time). A short grace before
+    // clearing keeps both stable; any fresh match cancels the pending clear.
+    let clearTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelClear = () => {
+      if (clearTimer) {
+        clearTimeout(clearTimer);
+        clearTimer = null;
+      }
+    };
+    const scheduleClear = () => {
+      if (clearTimer) return;
+      clearTimer = setTimeout(() => {
+        clearTimer = null;
+        if (!cancelled) setHover(null);
+      }, 150);
+    };
+
     async function fetchLine(line: number): Promise<string | null> {
       const now = Date.now();
       const cached = lineCache.get(line);
@@ -171,7 +191,7 @@ export function useNativeFileLinks({
           const text = await fetchLine(e.line);
           if (cancelled || seq !== lastHoverSeq) return;
           if (!text) {
-            setHover(null);
+            scheduleClear();
             return;
           }
           // URLs take precedence over file paths — a URL whose tail looks
@@ -180,6 +200,7 @@ export function useNativeFileLinks({
             (m) => e.col >= m.startIndex && e.col < m.endIndex,
           );
           if (urlHit) {
+            cancelClear();
             setHover((prev) => {
               if (
                 prev &&
@@ -206,9 +227,10 @@ export function useNativeFileLinks({
             (m) => e.col >= m.startIndex && e.col < m.endIndex,
           );
           if (!hit) {
-            setHover(null);
+            scheduleClear();
             return;
           }
+          cancelClear();
           setHover((prev) => {
             // Avoid setState churn when the same hit is re-reported on each
             // intra-match column step. Only update when path/line/col change.
@@ -238,7 +260,7 @@ export function useNativeFileLinks({
       const uEnd = await subscribeCellHoverEnd(termId, () => {
         if (cancelled) return;
         lastHoverSeq++;
-        setHover(null);
+        scheduleClear();
       });
       unlistens.push(uEnd);
 
@@ -297,6 +319,7 @@ export function useNativeFileLinks({
 
     return () => {
       cancelled = true;
+      cancelClear();
       for (const u of unlistens) u();
       lineCache.clear();
       setHover(null);

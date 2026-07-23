@@ -39,11 +39,20 @@ export function useOverlayMenu(opts: {
   const onCloseRef = useRef(opts.onClose);
   onCloseRef.current = opts.onClose;
 
+  // Close only on open→false / unmount (payload/point deliberately excluded —
+  // payload updates must overwrite the menu in place, not close/reopen it).
   useEffect(() => {
     if (!open) {
       emitOverlayPopup({ id, kind: "anchored-menu", open: false, rect: null });
       return;
     }
+    return () => {
+      emitOverlayPopup({ id, kind: "anchored-menu", open: false, rect: null });
+    };
+  }, [id, open]);
+
+  useEffect(() => {
+    if (!open) return;
     const point = JSON.parse(pointJson) as {
       x: number;
       y: number;
@@ -58,9 +67,7 @@ export function useOverlayMenu(opts: {
         rect: point,
         payload: JSON.parse(payloadJson),
       });
-      return () => {
-        emitOverlayPopup({ id, kind: "anchored-menu", open: false, rect: null });
-      };
+      return;
     }
     let raf = 0;
     let lastJson = "";
@@ -85,7 +92,6 @@ export function useOverlayMenu(opts: {
     raf = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(raf);
-      emitOverlayPopup({ id, kind: "anchored-menu", open: false, rect: null });
     };
   }, [id, open, anchorRef, payloadJson, pointJson]);
 

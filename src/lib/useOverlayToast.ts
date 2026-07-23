@@ -46,11 +46,20 @@ export function useOverlayViewportPopup(opts: {
   const onActionRef = useRef(opts.onAction);
   onActionRef.current = opts.onAction;
 
+  // Close only on open→false / unmount (payloadJson deliberately excluded —
+  // payload updates must overwrite the popup in place, not close/reopen it).
   useEffect(() => {
     if (!open) {
       emitOverlayPopup({ id, kind, open: false, rect: null });
       return;
     }
+    return () => {
+      emitOverlayPopup({ id, kind, open: false, rect: null });
+    };
+  }, [id, kind, open]);
+
+  useEffect(() => {
+    if (!open) return;
     emitOverlayPopup({
       id,
       kind,
@@ -58,9 +67,6 @@ export function useOverlayViewportPopup(opts: {
       rect: { x: 0, y: 0, width: 0, height: 0 },
       payload: JSON.parse(payloadJson),
     });
-    return () => {
-      emitOverlayPopup({ id, kind, open: false, rect: null });
-    };
   }, [id, kind, open, payloadJson]);
 
   useEffect(() => {

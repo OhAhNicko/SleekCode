@@ -48,6 +48,12 @@ export function useOverlayPopupAnchor(opts: {
     };
   }, [id, open]);
 
+  // Close ONLY when `open` flips false or the caller unmounts — never on a
+  // payload change. This effect deliberately excludes payloadJson: with it in
+  // the emit effect's cleanup, every payload update tore the popup down and
+  // recreated it over the event bus (visible as a close/open FLICKER on the
+  // recent-menu toggles and the file-link tooltip). Payload changes now
+  // restart only the emit loop below, which overwrites the popup in place.
   useEffect(() => {
     if (!open) {
       emitOverlayPopup({ id, kind, open: false, rect: null });
@@ -59,6 +65,13 @@ export function useOverlayPopupAnchor(opts: {
       // trigger→open wiring in the calling component is broken.
       console.debug("[overlay-anchor] open", id);
     }
+    return () => {
+      emitOverlayPopup({ id, kind, open: false, rect: null });
+    };
+  }, [id, kind, open]);
+
+  useEffect(() => {
+    if (!open) return;
     let raf = 0;
     let lastJson = "";
     const tick = () => {
@@ -82,7 +95,6 @@ export function useOverlayPopupAnchor(opts: {
     raf = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(raf);
-      emitOverlayPopup({ id, kind, open: false, rect: null });
     };
   }, [id, kind, open, anchorRef, payloadJson]);
 }
