@@ -1,15 +1,15 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
+import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import type { TerminalType, TerminalBackend, ProjectSession, SessionIndexEntry } from "../types";
 import type { ContextInfo } from "../lib/context-parser";
 import { TERMINAL_CONFIGS, toWslPath } from "../lib/terminal-config";
 import { supportsSessionResume } from "../lib/session-resume";
 import { readSessionsIndex, resolveSessionName, readSessionFirstPrompt, slugify } from "../lib/sessions-index";
 import { useAppStore } from "../store";
-import { FaChevronDown, FaCheck, FaPen } from "react-icons/fa";
-import { FaXmark, FaGripVertical, FaPlus } from "react-icons/fa6";
+import { FaChevronDown } from "react-icons/fa";
+import { FaXmark, FaGripVertical } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
 import PaneExpandButton from "./PaneExpandButton";
 
@@ -217,9 +217,6 @@ function SessionPicker({
   onNew: () => void;
   onClose: () => void;
 }) {
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
   const [indexEntries, setIndexEntries] = useState<SessionIndexEntry[]>([]);
   // Fallback slugs from direct JSONL reads, for sessions with no index entry.
   const [fallbackSlugs, setFallbackSlugs] = useState<Record<string, string>>({});
@@ -321,253 +318,48 @@ function SessionPicker({
     return merged;
   }, [sessions, indexEntries, currentSessionId, contextSessionName, fallbackSlugs]);
 
-  // Position dropdown below the anchor element using fixed positioning
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
-  useEffect(() => {
-    if (anchorRef?.current) {
-      const rect = anchorRef.current.getBoundingClientRect();
-      setPos({ top: rect.bottom + 2, left: Math.max(8, rect.right - 260) });
-    }
-  }, [anchorRef]);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (editingId) {
-          setEditingId(null);
-        } else {
+  // Overlay-rendered (kind "session-picker", focus handoff for the inline
+  // rename input). All data logic above stays here; the overlay renders the
+  // rows and bounces pick/rename/new back.
+  useOverlayPopupAnchor({
+    id: "terminal-header-session-picker",
+    kind: "session-picker",
+    open: true, // component only mounts while the picker is open
+    anchorRef: anchorRef ?? { current: null },
+    payload: {
+      sessions: mergedSessions.map((m) => ({
+        id: m.id,
+        name: m.name,
+        isFromStore: m.isFromStore,
+        isCurrent: m.isCurrent,
+        timeLabel: m.modified ? formatRelativeTime(m.modified) : undefined,
+      })),
+    },
+    onAction: (action, data) => {
+      switch (action) {
+        case "__dismiss__":
           onClose();
+          break;
+        case "pick": {
+          const id = (data as { id?: string } | undefined)?.id;
+          if (id) onSelect(id);
+          onClose();
+          break;
         }
+        case "rename": {
+          const d = data as { id?: string; name?: string } | undefined;
+          if (d?.id && d?.name) onRename(d.id, d.name);
+          break;
+        }
+        case "new":
+          onNew();
+          onClose();
+          break;
       }
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [onClose, editingId]);
+    },
+  });
 
-  useEffect(() => {
-    if (editingId && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
-    }
-  }, [editingId]);
-
-  const submitRename = () => {
-    if (editingId && editValue.trim()) {
-      onRename(editingId, editValue.trim());
-    }
-    setEditingId(null);
-  };
-
-  const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('terminal-header-session-picker', overlayRef);
-
-  if (!pos) return null;
-
-  return (
-    <>
-      <div
-        style={{ position: "fixed", inset: 0, zIndex: 199 }}
-        onMouseDown={onClose}
-      />
-      <div
-        ref={overlayRef}
-        className="dropdown-enter"
-        style={{
-          position: "fixed",
-          top: pos.top,
-          left: pos.left,
-          width: 260,
-          backgroundColor: "var(--ezy-surface-raised)",
-          border: "1px solid var(--ezy-border)",
-          borderRadius: 8,
-          overflow: "hidden",
-          boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
-          zIndex: 200,
-          maxHeight: 340,
-        }}
-      >
-        <div style={{ overflowY: "auto", maxHeight: 296 }}>
-          {mergedSessions.length === 0 && (
-            <div
-              style={{
-                padding: "8px 10px",
-                fontSize: 11,
-                color: "var(--ezy-text-muted)",
-                opacity: 0.6,
-              }}
-            >
-              No saved sessions
-            </div>
-          )}
-          {mergedSessions.map((session) => {
-            const isEditing = editingId === session.id;
-            return (
-              <div
-                key={session.id}
-                className="group/session"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                  padding: "0 4px 0 0",
-                  backgroundColor: session.isCurrent ? "var(--ezy-accent-glow)" : "transparent",
-                }}
-                onMouseEnter={(e) => {
-                  if (!session.isCurrent) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
-                }}
-                onMouseLeave={(e) => {
-                  if (!session.isCurrent) e.currentTarget.style.backgroundColor = "transparent";
-                }}
-              >
-                {isEditing ? (
-                  <input
-                    ref={inputRef}
-                    value={editValue}
-                    onChange={(e) => setEditValue(e.target.value)}
-                    onBlur={submitRename}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") submitRename();
-                      if (e.key === "Escape") setEditingId(null);
-                      e.stopPropagation();
-                    }}
-                    style={{
-                      flex: 1,
-                      padding: "5px 10px",
-                      fontSize: 12,
-                      fontFamily: "inherit",
-                      backgroundColor: "var(--ezy-bg)",
-                      border: "1px solid var(--ezy-accent)",
-                      borderRadius: 4,
-                      color: "var(--ezy-text)",
-                      outline: "none",
-                      margin: "2px 0",
-                    }}
-                  />
-                ) : (
-                  <>
-                    <button
-                      className="w-full text-left"
-                      style={{
-                        flex: 1,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        padding: "6px 10px",
-                        backgroundColor: "transparent",
-                        border: "none",
-                        cursor: "pointer",
-                        fontSize: 12,
-                        fontWeight: session.isCurrent ? 600 : 400,
-                        color: session.isCurrent ? "var(--ezy-text)" : session.isFromStore ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
-                        fontFamily: "inherit",
-                        overflow: "hidden",
-                      }}
-                      onClick={() => {
-                        if (!session.isCurrent) onSelect(session.id);
-                        onClose();
-                      }}
-                    >
-                      {/* Green dot for store sessions, dimmer dot for historical */}
-                      <span
-                        title={session.isFromStore ? "Session saved" : "Historical session"}
-                        style={{
-                          width: 5,
-                          height: 5,
-                          borderRadius: "50%",
-                          backgroundColor: session.isFromStore ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-                          flexShrink: 0,
-                          opacity: session.isFromStore ? 0.7 : 0.4,
-                        }}
-                      />
-                      <span
-                        style={{
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                          flex: 1,
-                        }}
-                        title={session.name}
-                      >
-                        {session.name}
-                      </span>
-                      {/* Relative time — last updated */}
-                      {session.modified && (
-                        <span
-                          style={{
-                            fontSize: 10,
-                            color: "var(--ezy-text-muted)",
-                            opacity: 0.6,
-                            flexShrink: 0,
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {formatRelativeTime(session.modified)}
-                        </span>
-                      )}
-                      {session.isCurrent && (
-                        <FaCheck size={10} color="var(--ezy-accent)" style={{ flexShrink: 0 }} />
-                      )}
-                    </button>
-                    {session.isFromStore && (
-                      <div
-                        role="button"
-                        className="opacity-0 group-hover/session:opacity-100 transition-opacity"
-                        style={{
-                          cursor: "pointer",
-                          padding: 4,
-                          borderRadius: 4,
-                          flexShrink: 0,
-                          display: "flex",
-                          alignItems: "center",
-                        }}
-                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
-                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setEditingId(session.id);
-                          setEditValue(session.name);
-                        }}
-                        title="Rename session"
-                      >
-                        <FaPen size={9} color="var(--ezy-text-muted)" />
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {/* Divider + New Session */}
-        <div style={{ borderTop: "1px solid var(--ezy-border)" }}>
-          <button
-            className="w-full text-left"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "6px 10px",
-              backgroundColor: "transparent",
-              border: "none",
-              cursor: "pointer",
-              fontSize: 12,
-              color: "var(--ezy-text-secondary)",
-              fontFamily: "inherit",
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-            onClick={() => {
-              onNew();
-              onClose();
-            }}
-          >
-            <FaPlus size={10} color="var(--ezy-text-muted)" />
-            <span>New session</span>
-          </button>
-        </div>
-      </div>
-    </>
-  );
+  return null;
 }
 
 /** Format Gemini model ID into human-readable name, e.g. "gemini-2.5-pro-preview-05-06" → "Gemini 2.5 Pro Preview" */

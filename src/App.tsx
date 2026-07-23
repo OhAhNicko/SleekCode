@@ -20,7 +20,6 @@ import CommandHistory from "./components/CommandHistory";
 import Sidebar from "./components/Sidebar";
 import WindowResizeHandles from "./components/WindowResizeHandles";
 import { NativePaneVisibilityCoordinator } from "./native-term/NativePaneVisibilityCoordinator";
-import { AutoOverlayPublisher } from "./native-term/AutoOverlayPublisher";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
@@ -981,7 +980,6 @@ export default function App() {
     <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
       <WindowResizeHandles />
       <NativePaneVisibilityCoordinator />
-      <AutoOverlayPublisher />
       {!isVertical && <TabBar />}
       <UpdateBanner {...updateState} />
       <div className="flex-1 min-h-0 flex">

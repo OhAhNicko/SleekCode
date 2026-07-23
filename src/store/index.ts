@@ -18,10 +18,9 @@ import { createLayoutSlice, type LayoutSlice } from "./layoutSlice";
 import { createVoiceSlice, type VoiceSlice } from "./voiceSlice";
 import { createNativeRendererSlice, type NativeRendererSlice } from "./nativeRendererSlice";
 import { createModalCoordinationSlice, type ModalCoordinationSlice } from "./modalCoordinationSlice";
-import { createOverlayRegionSlice, type OverlayRegionSlice } from "./overlayRegionSlice";
 import type { Tab } from "../types";
 
-export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice & VoiceSlice & NativeRendererSlice & ModalCoordinationSlice & OverlayRegionSlice;
+export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice & VoiceSlice & NativeRendererSlice & ModalCoordinationSlice;
 
 function isSystemTab(tab: Tab): boolean {
   return !!(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab);
@@ -48,7 +47,6 @@ export const useAppStore = create<AppStore>()(
       ...createVoiceSlice(...a),
       ...createNativeRendererSlice(...a),
       ...createModalCoordinationSlice(...a),
-      ...createOverlayRegionSlice(...a),
     }),
     {
       name: "made-storage",

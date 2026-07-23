@@ -40,7 +40,6 @@ import { usePtyNative } from "../hooks/usePtyNative";
 import type { NativeRendererSlice } from "../store/nativeRendererSlice";
 import ImeCompositionPopup from "../native-term/ImeCompositionPopup";
 import FileLinkTooltip from "../native-term/FileLinkTooltip";
-import { useNativePaneRegion } from "../native-term/useNativePaneRegion";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { queueGeom } from "../native-term/frameSync";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
@@ -689,6 +688,7 @@ export default function TerminalPaneNative({
       // "isTerminal" branch (Clear / Split / Close Pane items) lights up.
       const u3 = await subscribeRButton(termId, (p) => {
         if (cancelled) return;
+        if (import.meta.env.DEV) console.debug("[rbtn] event", termId, p.x, p.y);
         const paneEl = paneDivRef.current;
         if (!paneEl) return;
         const r = paneEl.getBoundingClientRect();
@@ -1176,17 +1176,8 @@ export default function TerminalPaneNative({
     return () => unregisterTerminalFocus(terminalId);
   }, [terminalId, termId]);
 
-  // ── Hole-cut driver ───────────────────────────────────────────────────
-  // Reads globally-published overlay rects from `overlayRegionSlice`,
-  // intersects each with this pane's bounding rect, and emits pane-local
-  // holes via `native_term_set_region` every rAF (with no-change skip).
-  // Slice-sourced variant: no overlayRefs prop drilling needed.
-  // MUST be the ANCHOR div (terminalDivRef), not the outer paneDivRef: the
-  // native HWND is positioned over the anchor's rect, and Rust interprets
-  // holes relative to the WINDOW origin. Converting against paneDivRef
-  // (which includes the 30px in-flow header) shifted every hole 30px down —
-  // popups lost their top band behind terminal pixels.
-  useNativePaneRegion({ termId: termId ?? 0, paneRef: terminalDivRef });
+  // Hole-cut driver DELETED (Phase 3) — every popup renders in the overlay
+  // webview or hides the panes; nothing cuts holes in the HWND anymore.
 
   // ── Focus delegation ──────────────────────────────────────────────────
   const onPaneClick = useCallback(() => {

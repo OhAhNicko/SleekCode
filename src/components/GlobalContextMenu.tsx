@@ -71,6 +71,8 @@ export default function GlobalContextMenu() {
   // Open on right-click (bubble phase; skip if another handler claimed it).
   useEffect(() => {
     const handler = (e: MouseEvent) => {
+      if (import.meta.env.DEV)
+        console.debug("[ctxmenu] window handler", e.clientX, e.clientY, e.defaultPrevented);
       if (e.defaultPrevented) return;
       e.preventDefault();
       const target = e.target as HTMLElement;
