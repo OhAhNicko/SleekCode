@@ -21,6 +21,7 @@ import {
   type CtxMenuSection,
 } from "../lib/context-menu-model";
 import type { OverlayToastPayload } from "../lib/useOverlayToast";
+import type { OverlayMenuPayload } from "../lib/overlay-menu-model";
 
 type PopupRect = {
   x: number;
@@ -37,7 +38,12 @@ type PopupRect = {
  * popups CAN carry a real drop shadow. Everything else is an ambient popup
  * (tight 1-bit clip → flat, crisp corners, no soft shadow).
  */
-const BACKDROP_KINDS = new Set(["context-menu"]);
+const BACKDROP_KINDS = new Set([
+  "context-menu",
+  "anchored-menu",
+  "swatch-menu",
+  "recent-menu",
+]);
 
 /**
  * The overlay webview's popup host.
@@ -194,6 +200,22 @@ function OverlayPopup({
       return <JumpButton msg={msg} registerEl={registerEl} />;
     case "clipboard-image-preview":
       return <ClipboardPreview msg={msg} registerEl={registerEl} />;
+    case "anchored-menu":
+      return (
+        <AnchoredMenu msg={msg} registerEl={registerEl} closeLocal={closeLocal} />
+      );
+    case "voice-hud":
+      return <VoiceHudCard msg={msg} registerEl={registerEl} />;
+    case "tooltip":
+      return <Tooltip msg={msg} registerEl={registerEl} />;
+    case "swatch-menu":
+      return (
+        <SwatchMenu msg={msg} registerEl={registerEl} closeLocal={closeLocal} />
+      );
+    case "recent-menu":
+      return (
+        <RecentMenu msg={msg} registerEl={registerEl} closeLocal={closeLocal} />
+      );
     default:
       return null;
   }
@@ -832,6 +854,1055 @@ function ClipboardPreview({
           strokeLinecap="round"
         />
       </svg>
+    </div>
+  );
+}
+
+/**
+ * Generic anchored dropdown menu (kind "anchored-menu") — tabbar menus, header
+ * pickers, git dropdown, tool selector, etc. Backdrop popup: full-overlay
+ * hit-test while open (outside press dismisses, transparency intact => real
+ * shadow). The menu positions itself against the streamed anchor rect using
+ * payload.placement, clamped to the viewport. Items bounce their actionId to
+ * the main webview, which owns the closures.
+ */
+function AnchoredMenu({
+  msg,
+  registerEl,
+  closeLocal,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+  closeLocal: (id: string) => void;
+}) {
+  const p = (msg.payload ?? {}) as Partial<OverlayMenuPayload>;
+  const sections = p.sections ?? [];
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menuSize, setMenuSize] = useState<{ w: number; h: number }>({
+    w: 0,
+    h: 0,
+  });
+
+  useLayoutEffect(() => {
+    if (menuRef.current) {
+      setMenuSize({
+        w: menuRef.current.offsetWidth,
+        h: menuRef.current.offsetHeight,
+      });
+    }
+  }, [msg]);
+
+  const setRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      menuRef.current = el;
+      registerEl(msg.id, el);
+    },
+    [registerEl, msg.id],
+  );
+
+  const dismiss = () => {
+    closeLocal(msg.id);
+    emitOverlayAction({ id: msg.id, action: "__dismiss__" });
+  };
+  // Modifier state rides along (Chromium fills MouseEvent modifiers from the
+  // OS message even though this NOACTIVATE window never has keyboard focus) —
+  // the URL popover uses ctrl-click for open-in-external-browser.
+  const runItem = (actionId: string, e?: { ctrlKey: boolean; metaKey: boolean }) => {
+    closeLocal(msg.id);
+    emitOverlayAction({
+      id: msg.id,
+      action: actionId,
+      data: { ctrl: !!e && (e.ctrlKey || e.metaKey) },
+    });
+  };
+
+  const anchor = msg.rect!;
+  const gap = p.gap ?? 4;
+  const placement = p.placement ?? "below-start";
+  let top: number;
+  if (placement.startsWith("below")) {
+    top = anchor.y + anchor.height + gap;
+    if (menuSize.h > 0 && top + menuSize.h > window.innerHeight - 8) {
+      top = Math.max(8, anchor.y - gap - menuSize.h);
+    }
+  } else {
+    top = anchor.y - gap - menuSize.h;
+    if (top < 8) top = Math.min(anchor.y + anchor.height + gap, window.innerHeight - 8 - menuSize.h);
+  }
+  let left: number;
+  if (placement.endsWith("start")) {
+    left = anchor.x;
+  } else {
+    left = anchor.x + anchor.width - menuSize.w;
+  }
+  left = Math.max(8, Math.min(left, window.innerWidth - menuSize.w - 8));
+  top = Math.max(8, top);
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, pointerEvents: "auto" }}
+      onPointerDown={dismiss}
+      onContextMenu={(e) => {
+        e.preventDefault();
+      }}
+    >
+      <div
+        ref={setRef}
+        style={{
+          position: "absolute",
+          top,
+          left,
+          // Until measured, render invisibly at the anchor so the first
+          // frame doesn't flash the menu in a wrong corner.
+          visibility: menuSize.h === 0 ? "hidden" : "visible",
+          width: p.width,
+          minWidth: p.width ? undefined : 200,
+          maxHeight: p.maxHeight,
+          overflowY: p.maxHeight ? "auto" : undefined,
+          padding: "4px 0",
+          borderRadius: 8,
+          background: "var(--ezy-surface-raised, #1c2128)",
+          border: "1px solid var(--ezy-border, rgba(255,255,255,0.08))",
+          boxShadow: "0 10px 30px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.35)",
+          color: "var(--ezy-text, #e6edf3)",
+          fontFamily: "Inter, system-ui, sans-serif",
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {sections.map((section, si) => (
+          <div key={si}>
+            {si > 0 && (
+              <div
+                style={{
+                  height: 1,
+                  background: "var(--ezy-border-subtle, rgba(255,255,255,0.06))",
+                  margin: "4px 0",
+                }}
+              />
+            )}
+            {section.title && (
+              <div
+                style={{
+                  padding: "4px 12px 2px",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  letterSpacing: 0.4,
+                  textTransform: "uppercase",
+                  color: "var(--ezy-text-muted, rgba(230,237,243,0.45))",
+                  userSelect: "none",
+                }}
+              >
+                {section.title}
+              </div>
+            )}
+            {section.items.map((item) => (
+              <div
+                key={item.actionId}
+                onClick={
+                  item.disabled ? undefined : (e) => runItem(item.actionId, e)
+                }
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "6px 12px",
+                  fontSize: 12,
+                  cursor: item.disabled ? "default" : "pointer",
+                  opacity: item.disabled ? 0.4 : 1,
+                  color: item.danger
+                    ? "var(--ezy-red, #f85149)"
+                    : "var(--ezy-text, #e6edf3)",
+                }}
+                onMouseEnter={(e) => {
+                  if (!item.disabled)
+                    e.currentTarget.style.background =
+                      "var(--ezy-surface, rgba(255,255,255,0.06))";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                }}
+              >
+                {item.swatch && (
+                  <span
+                    style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: 3,
+                      background: item.swatch,
+                      flexShrink: 0,
+                    }}
+                  />
+                )}
+                {item.iconId && CTX_ICONS[item.iconId] && (
+                  <span
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
+                      flexShrink: 0,
+                    }}
+                  >
+                    {CTX_ICONS[item.iconId]}
+                  </span>
+                )}
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span
+                    style={{
+                      display: "block",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {item.label}
+                  </span>
+                  {item.sublabel && (
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 10,
+                        marginTop: 1,
+                        color: "var(--ezy-text-muted, rgba(230,237,243,0.45))",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {item.sublabel}
+                    </span>
+                  )}
+                </span>
+                {item.checked && (
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 16 16"
+                    fill="currentColor"
+                    style={{
+                      color: "var(--ezy-accent, #10a37f)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z" />
+                  </svg>
+                )}
+                {item.shortcut && (
+                  <span
+                    style={{
+                      color: "var(--ezy-text-muted, rgba(230,237,243,0.45))",
+                      fontSize: 11,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {item.shortcut}
+                  </span>
+                )}
+                {item.badge && (
+                  <span
+                    style={{
+                      background: "var(--ezy-red, #f85149)",
+                      color: "#fff",
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing: 0.4,
+                      padding: "1px 5px",
+                      borderRadius: 3,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {item.badge}
+                  </span>
+                )}
+                {item.trailing && (
+                  <span
+                    title={item.trailing.title}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      runItem(item.trailing!.actionId, e);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 24,
+                      height: 24,
+                      borderRadius: 4,
+                      color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
+                      flexShrink: 0,
+                      cursor: "pointer",
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background =
+                        "var(--ezy-surface-raised, rgba(255,255,255,0.1))";
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = "transparent";
+                    }}
+                  >
+                    {CTX_ICONS[item.trailing.iconId]}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Voice agent HUD (kind "voice-hud") — bottom-left status card, interactive
+ * ambient popup (tight clip: flat, inset-ring border). All voice state lives
+ * in the main webview; buttons bounce clarify-cancel / confirm-run /
+ * confirm-cancel back over overlay:action.
+ */
+function VoiceHudCard({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as {
+    state?: string;
+    title?: string;
+    transcript?: string;
+    tool?: string;
+    error?: string;
+    clarifyQuestion?: string;
+    confirmSummary?: string;
+  };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const act = (action: string) => emitOverlayAction({ id: msg.id, action });
+  const isError = p.state === "error";
+  const active = p.state !== "idle" && !isError;
+
+  const smallBtn: CSSProperties = {
+    fontSize: 11,
+    color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+    background: "transparent",
+    boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.15))",
+    border: "none",
+    borderRadius: 4,
+    padding: "4px 10px",
+    cursor: "pointer",
+    fontFamily: "inherit",
+  };
+
+  return (
+    <div
+      ref={ref}
+      role="status"
+      aria-live="polite"
+      style={{
+        position: "fixed",
+        bottom: 16,
+        left: 16,
+        minWidth: 240,
+        maxWidth: 360,
+        background: "var(--ezy-surface-raised, #1c2128)",
+        boxShadow: `inset 0 0 0 1px ${
+          isError
+            ? "var(--ezy-red, #f85149)"
+            : "var(--ezy-border, rgba(255,255,255,0.12))"
+        }`,
+        borderRadius: 8,
+        padding: "10px 12px",
+        color: "var(--ezy-text, #e6edf3)",
+        fontSize: 12,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+        fontFamily: "Inter, system-ui, sans-serif",
+        pointerEvents: "auto",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: 8,
+            background: active
+              ? "var(--ezy-accent, #10a37f)"
+              : "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            opacity: active ? 1 : 0.4,
+            flexShrink: 0,
+            transition: "opacity 200ms ease",
+          }}
+        />
+        <span style={{ fontWeight: 600 }}>{p.title ?? "Voice"}</span>
+        {!isError && p.state && (
+          <span
+            style={{
+              marginLeft: "auto",
+              fontSize: 10,
+              color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            }}
+          >
+            {p.state}
+          </span>
+        )}
+      </div>
+      {p.transcript && (
+        <div
+          style={{
+            color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+            fontStyle: "italic",
+          }}
+        >
+          "{p.transcript}"
+        </div>
+      )}
+      {p.tool && (
+        <div
+          style={{
+            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            fontSize: 11,
+          }}
+        >
+          {p.tool}
+        </div>
+      )}
+      {p.error && (
+        <div
+          style={{
+            color: "var(--ezy-red, #f85149)",
+            fontSize: 11,
+            lineHeight: 1.4,
+          }}
+        >
+          {p.error}
+        </div>
+      )}
+      {p.clarifyQuestion && (
+        <div
+          style={{
+            borderTop: "1px solid var(--ezy-border-subtle, rgba(255,255,255,0.06))",
+            paddingTop: 8,
+            marginTop: 2,
+          }}
+        >
+          <div
+            style={{
+              color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+              marginBottom: 6,
+            }}
+          >
+            {p.clarifyQuestion}
+          </div>
+          <button onClick={() => act("clarify-cancel")} style={smallBtn}>
+            Cancel
+          </button>
+        </div>
+      )}
+      {p.confirmSummary && (
+        <div
+          style={{
+            borderTop: "1px solid var(--ezy-border-subtle, rgba(255,255,255,0.06))",
+            paddingTop: 8,
+            marginTop: 2,
+          }}
+        >
+          <div
+            style={{
+              color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+              marginBottom: 8,
+            }}
+          >
+            {p.confirmSummary}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={() => act("confirm-run")}
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                color: "#fff",
+                background: "var(--ezy-red, #f85149)",
+                border: "none",
+                borderRadius: 4,
+                padding: "4px 10px",
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Confirm
+            </button>
+            <button onClick={() => act("confirm-cancel")} style={smallBtn}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Generic display-only tooltip (kind "tooltip") — payload { x, y, text },
+ * anchored top-center at the given point (tab-path hover tooltip).
+ */
+function Tooltip({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as { x?: number; y?: number; text?: string };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "fixed",
+        left: p.x ?? 0,
+        top: p.y ?? 0,
+        transform: "translateX(-50%)",
+        background: "var(--ezy-surface-raised, #1c2128)",
+        boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
+        borderRadius: 6,
+        padding: "4px 8px",
+        fontSize: 11,
+        color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+        whiteSpace: "nowrap",
+        pointerEvents: "none",
+        fontFamily: "Inter, system-ui, sans-serif",
+      }}
+    >
+      {p.text ?? ""}
+    </div>
+  );
+}
+
+/**
+ * Tab color swatch grid (kind "swatch-menu", backdrop). Payload:
+ * { x, y, title, selected, swatches: [{id,label,color}] }. Bounces
+ * "color:none" / "color:<id>".
+ */
+function SwatchMenu({
+  msg,
+  registerEl,
+  closeLocal,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+  closeLocal: (id: string) => void;
+}) {
+  const p = (msg.payload ?? {}) as {
+    x?: number;
+    y?: number;
+    title?: string;
+    selected?: string | null;
+    swatches?: Array<{ id: string; label: string; color: string }>;
+  };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const act = (action: string) => {
+    closeLocal(msg.id);
+    emitOverlayAction({ id: msg.id, action });
+  };
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, pointerEvents: "auto" }}
+      onPointerDown={() => act("__dismiss__")}
+      onContextMenu={(e) => {
+        e.preventDefault();
+      }}
+    >
+      <div
+        ref={ref}
+        onPointerDown={(e) => e.stopPropagation()}
+        style={{
+          position: "absolute",
+          left: Math.min(p.x ?? 0, window.innerWidth - 170),
+          top: Math.min(p.y ?? 0, window.innerHeight - 120),
+          background: "var(--ezy-surface-raised, #1c2128)",
+          border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+          borderRadius: 8,
+          padding: 8,
+          boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
+          fontFamily: "Inter, system-ui, sans-serif",
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10,
+            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            marginBottom: 6,
+            fontWeight: 500,
+            letterSpacing: "0.04em",
+          }}
+        >
+          {p.title ?? "TAB COLOR"}
+        </div>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxWidth: 140 }}>
+          <div
+            title="None"
+            onClick={() => act("color:none")}
+            style={{
+              width: 20,
+              height: 20,
+              borderRadius: 4,
+              background: "var(--ezy-surface, #161b22)",
+              border:
+                p.selected == null
+                  ? "2px solid var(--ezy-text, #e6edf3)"
+                  : "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 10,
+              color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            }}
+          >
+            ×
+          </div>
+          {(p.swatches ?? []).map((sw) => (
+            <div
+              key={sw.id}
+              title={sw.label}
+              onClick={() => act(`color:${sw.id}`)}
+              style={{
+                width: 20,
+                height: 20,
+                borderRadius: 4,
+                background: sw.color,
+                border:
+                  p.selected === sw.id
+                    ? "2px solid #fff"
+                    : "1px solid transparent",
+                cursor: "pointer",
+              }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Payload row for the recent-projects menu (kind "recent-menu"). */
+type RecentMenuProject = {
+  key: string;
+  name: string;
+  subtitle: string;
+  tooltip: string;
+  disabled: boolean;
+  badge?: string;
+  badgeMuted?: boolean;
+  showFresh: boolean;
+  showQuick: boolean;
+  quickOn: boolean;
+  paneCount: string;
+  backendLabel?: string;
+};
+
+/**
+ * Recent-projects dropdown (kind "recent-menu", backdrop). Rich rows with up
+ * to four per-row buttons; quick/backend/remove actions keep the menu open —
+ * the main webview re-emits the payload and the rows update in place.
+ */
+function RecentMenu({
+  msg,
+  registerEl,
+  closeLocal,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+  closeLocal: (id: string) => void;
+}) {
+  const p = (msg.payload ?? {}) as {
+    projects?: RecentMenuProject[];
+    canCreate?: boolean;
+    servers?: Array<{ id: string; name: string }>;
+  };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const anchor = msg.rect!;
+  const dismiss = () => {
+    closeLocal(msg.id);
+    emitOverlayAction({ id: msg.id, action: "__dismiss__" });
+  };
+  // Closing actions remove the popup locally; row-level toggles keep it open
+  // (main re-emits fresh payload).
+  const act = (action: string, closes: boolean) => {
+    if (closes) closeLocal(msg.id);
+    emitOverlayAction({ id: msg.id, action });
+  };
+
+  const headerStyle: CSSProperties = {
+    padding: "6px 12px",
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+  };
+  const rowBtn: CSSProperties = {
+    flexShrink: 0,
+    display: "flex",
+    alignItems: "center",
+    padding: "2px 6px",
+    border: "1px solid var(--ezy-border, rgba(255,255,255,0.15))",
+    borderRadius: 4,
+    background: "transparent",
+    color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+    fontSize: 10,
+    fontWeight: 600,
+    cursor: "pointer",
+    lineHeight: 1,
+    fontFamily: "inherit",
+  };
+
+  const left = Math.max(8, Math.min(anchor.x, window.innerWidth - 300 - 8));
+  const top = anchor.y + anchor.height + 2;
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, pointerEvents: "auto" }}
+      onPointerDown={dismiss}
+      onContextMenu={(e) => {
+        e.preventDefault();
+      }}
+    >
+      <div
+        ref={ref}
+        onPointerDown={(e) => e.stopPropagation()}
+        style={{
+          position: "absolute",
+          top,
+          left,
+          width: 300,
+          maxHeight: Math.max(120, window.innerHeight - top - 8),
+          overflowY: "auto",
+          background: "var(--ezy-surface-raised, #1c2128)",
+          border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+          borderRadius: 8,
+          boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+          color: "var(--ezy-text, #e6edf3)",
+          fontFamily: "Inter, system-ui, sans-serif",
+        }}
+      >
+        <div
+          style={{
+            ...headerStyle,
+            borderBottom: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+          }}
+        >
+          Recent Projects
+        </div>
+        {(p.projects ?? []).map((project) => (
+          <div
+            key={project.key}
+            title={project.tooltip}
+            onClick={() => {
+              if (!project.disabled) act(`open:${project.key}`, true);
+            }}
+            onMouseEnter={(e) => {
+              if (!project.disabled)
+                e.currentTarget.style.background =
+                  "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "transparent";
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "7px 12px",
+              cursor: project.disabled ? "not-allowed" : "pointer",
+              fontSize: 13,
+              opacity: project.disabled ? 0.5 : 1,
+            }}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+              style={{ flexShrink: 0 }}
+            >
+              <path d="M1.75 1h4.19c.51 0 .99.23 1.31.62l1 1.22c.09.12.24.16.38.16h5.62c.97 0 1.75.78 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75C0 1.78.78 1 1.75 1Z" />
+            </svg>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div
+                style={{
+                  fontWeight: 500,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  overflow: "hidden",
+                }}
+              >
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {project.name}
+                </span>
+                {project.badge && (
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      fontSize: 9,
+                      fontWeight: 600,
+                      padding: "1px 6px",
+                      borderRadius: 3,
+                      background: project.badgeMuted
+                        ? "var(--ezy-surface, #161b22)"
+                        : "var(--ezy-neutral-700, #404040)",
+                      color: project.badgeMuted
+                        ? "var(--ezy-text-muted, rgba(230,237,243,0.5))"
+                        : "#ffffff",
+                      letterSpacing: "0.02em",
+                      textTransform: "uppercase",
+                      border: project.badgeMuted
+                        ? "1px solid var(--ezy-border, rgba(255,255,255,0.15))"
+                        : "none",
+                    }}
+                  >
+                    {project.badge}
+                  </span>
+                )}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {project.subtitle}
+              </div>
+            </div>
+            {project.showFresh && (
+              <button
+                title="Start fresh — same layout, new sessions"
+                style={rowBtn}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  act(`fresh:${project.key}`, true);
+                }}
+              >
+                <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 3a5 5 0 1 0 4.546 2.914.75.75 0 0 1 1.364-.626A6.5 6.5 0 1 1 8 1.5v-1a.25.25 0 0 1 .41-.192l2.36 1.966a.25.25 0 0 1 0 .384L8.41 4.624A.25.25 0 0 1 8 4.432V3Z" />
+                </svg>
+              </button>
+            )}
+            {project.showQuick && (
+              <button
+                title={
+                  project.quickOn
+                    ? `Quick open ON (${project.paneCount} panes) — click to disable`
+                    : `Quick open OFF — click to enable (reuse last ${project.paneCount}-pane layout)`
+                }
+                style={{
+                  ...rowBtn,
+                  gap: 4,
+                  borderColor: project.quickOn
+                    ? "var(--ezy-accent, #10b981)"
+                    : "var(--ezy-border, rgba(255,255,255,0.15))",
+                  background: project.quickOn
+                    ? "var(--ezy-accent-glow, rgba(16,185,129,0.12))"
+                    : "transparent",
+                  color: project.quickOn
+                    ? "var(--ezy-accent, #10b981)"
+                    : "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  act(`quick:${project.key}`, false);
+                }}
+              >
+                <svg width="10" height="10" viewBox="0 0 448 512" fill="currentColor">
+                  <path d="M349.4 44.6c5.9-13.7 1.5-29.7-10.6-38.5s-28.6-8-39.9 1.8l-256 224c-10 8.8-13.6 22.9-8.9 35.3S50.7 288 64 288h111.5L98.6 467.4c-5.9 13.7-1.5 29.7 10.6 38.5s28.6 8 39.9-1.8l256-224c10-8.8 13.6-22.9 8.9-35.3s-16.6-20.7-30-20.7H272.5L349.4 44.6z" />
+                </svg>
+                {project.paneCount}
+              </button>
+            )}
+            {project.backendLabel && (
+              <button
+                title={`Backend: ${project.backendLabel} — click to switch`}
+                style={{ ...rowBtn, letterSpacing: "0.04em" }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  act(`backend:${project.key}`, false);
+                }}
+              >
+                {project.backendLabel}
+              </button>
+            )}
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 384 512"
+              fill="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+              style={{ flexShrink: 0, cursor: "pointer", opacity: 0.5 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                act(`remove:${project.key}`, false);
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.opacity = "1";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.opacity = "0.5";
+              }}
+            >
+              <path d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3l105.4 105.3c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256l105.3-105.4z" />
+            </svg>
+          </div>
+        ))}
+        <div
+          style={{
+            height: 1,
+            background: "var(--ezy-border, rgba(255,255,255,0.12))",
+            margin: "2px 0",
+          }}
+        />
+        <div
+          onClick={() => {
+            if (p.canCreate) act("create", true);
+          }}
+          onMouseEnter={(e) => {
+            if (p.canCreate)
+              e.currentTarget.style.background =
+                "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 12px",
+            cursor: p.canCreate ? "pointer" : "not-allowed",
+            fontSize: 13,
+            color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+            opacity: p.canCreate ? 1 : 0.45,
+          }}
+          title={
+            p.canCreate
+              ? "Create a new project folder"
+              : "Set a projects directory in Settings first"
+          }
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+          >
+            <path d="M1.75 1h4.19c.51 0 .99.23 1.31.62l1 1.22c.09.12.24.16.38.16h5.62c.97 0 1.75.78 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75C0 1.78.78 1 1.75 1Z" />
+          </svg>
+          Create New Project
+        </div>
+        <div
+          onClick={() => act("browse", true)}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background =
+              "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 12px",
+            cursor: "pointer",
+            fontSize: 13,
+            color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 448 512"
+            fill="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+          >
+            <path d="M256 80c0-17.7-14.3-32-32-32s-32 14.3-32 32V224H48c-17.7 0-32 14.3-32 32s14.3 32 32 32H192V432c0 17.7 14.3 32 32 32s32-14.3 32-32V288H400c17.7 0 32-14.3 32-32s-14.3-32-32-32H256V80z" />
+          </svg>
+          Browse for Folder...
+        </div>
+        {(p.servers ?? []).length > 0 && (
+          <>
+            <div
+              style={{
+                height: 1,
+                background: "var(--ezy-border, rgba(255,255,255,0.12))",
+                margin: "2px 0",
+              }}
+            />
+            <div style={headerStyle}>Remote Servers</div>
+            {(p.servers ?? []).map((server) => (
+              <div
+                key={server.id}
+                onClick={() => act(`server:${server.id}`, true)}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background =
+                    "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                  fontSize: 13,
+                  color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+                }}
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 512 512"
+                  fill="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+                >
+                  <path d="M64 32C28.7 32 0 60.7 0 96v64c0 35.3 28.7 64 64 64H448c35.3 0 64-28.7 64-64V96c0-35.3-28.7-64-64-64H64zm280 72a24 24 0 1 1 0 48 24 24 0 1 1 0-48zm48 24a24 24 0 1 1 48 0 24 24 0 1 1-48 0zM64 288c-35.3 0-64 28.7-64 64v64c0 35.3 28.7 64 64 64H448c35.3 0 64-28.7 64-64V352c0-35.3-28.7-64-64-64H64zm280 72a24 24 0 1 1 0 48 24 24 0 1 1 0-48zm56 24a24 24 0 1 1 48 0 24 24 0 1 1-48 0z" />
+                </svg>
+                <span
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Open folder on {server.name}…
+                </span>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
     </div>
   );
 }

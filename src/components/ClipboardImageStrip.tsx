@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { BiScreenshot } from "react-icons/bi";
@@ -6,7 +6,7 @@ import { FaExpand } from "react-icons/fa";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import { insertImagePath, resolveImagePath } from "../lib/clipboard-insert";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useOverlayMenu } from "../lib/useOverlayMenu";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import ImagePreviewModal from "./ImagePreviewModal";
 
@@ -33,14 +33,11 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
   const [galleryCtxMenu, setGalleryCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
   const [previewFromGallery, setPreviewFromGallery] = useState(false);
 
-  const ctxMenuRef = useRef<HTMLDivElement>(null);
-  const snipCtxMenuRef = useRef<HTMLDivElement>(null);
-  const galleryRef = useRef<HTMLDivElement>(null);
-  const galleryCtxMenuRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('clipboard-image-strip-ctx-menu', ctxMenuRef);
-  useOverlayPublisher('clipboard-image-strip-snip-ctx-menu', snipCtxMenuRef);
+  // Strip context menus are overlay-rendered (kind "anchored-menu") — the
+  // hooks live below, after the handlers they need. The gallery's own
+  // context menu stays DOM: it only ever opens over the gallery modal, and
+  // the panes are hidden while that modal is open (useModalWhen).
   useModalWhen('clipboard-image-strip-gallery', showGallery);
-  useOverlayPublisher('clipboard-image-strip-gallery-ctx-menu', galleryCtxMenuRef);
 
   const latestThumbnails = images.slice(0, isVertical ? 4 : 5);
 
@@ -66,6 +63,90 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
       insertImagePath(img.winPath);
     }
   };
+
+  // Thumbnail right-click menu — overlay-rendered at the cursor.
+  useOverlayMenu({
+    id: "clipboard-strip-ctx-menu",
+    open: !!ctxMenu,
+    anchorPoint: ctxMenu ? { x: ctxMenu.x, y: ctxMenu.y } : null,
+    payload: ctxMenu
+      ? {
+          placement: "below-start",
+          width: 160,
+          sections: [
+            {
+              items: [
+                { actionId: "expand", label: "Expand" },
+                { actionId: "copy", label: "Copy" },
+                { actionId: "copy-path", label: "Copy filepath" },
+                { actionId: "open-path", label: "Open screenshot filepath" },
+                { actionId: "attach", label: "Attach to prompt" },
+                { actionId: "delete", label: "Delete", danger: true },
+              ],
+            },
+          ],
+        }
+      : null,
+    onAction: (actionId) => {
+      const img = ctxMenu ? images.find((im) => im.id === ctxMenu.imgId) : null;
+      if (!img) return;
+      switch (actionId) {
+        case "expand":
+          setPreviewImage({ dataUri: img.dataUri, winPath: img.winPath });
+          break;
+        case "copy":
+          void invoke("copy_image_to_clipboard", { path: img.winPath }).catch(
+            () => {},
+          );
+          break;
+        case "copy-path":
+          void resolveImagePath(img.winPath, "clipboard").then((p) => {
+            if (p) navigator.clipboard.writeText(p).catch(() => {});
+          });
+          break;
+        case "open-path":
+          void invoke("reveal_in_explorer", { path: img.winPath }).catch(
+            () => {},
+          );
+          break;
+        case "attach":
+          attachToPrompt(img.id);
+          break;
+        case "delete":
+          removeImage(img.id);
+          break;
+      }
+    },
+    onClose: () => setCtxMenu(null),
+  });
+
+  // Snip-button right-click menu — overlay-rendered at the cursor.
+  useOverlayMenu({
+    id: "clipboard-strip-snip-menu",
+    open: !!snipCtxMenu,
+    anchorPoint: snipCtxMenu,
+    payload: snipCtxMenu
+      ? {
+          placement: "below-start",
+          width: 160,
+          sections: [
+            {
+              items: [
+                {
+                  actionId: "open-gallery",
+                  label: "View all screenshots",
+                  disabled: images.length === 0,
+                },
+              ],
+            },
+          ],
+        }
+      : null,
+    onAction: (actionId) => {
+      if (actionId === "open-gallery") setShowGallery(true);
+    },
+    onClose: () => setSnipCtxMenu(null),
+  });
 
   return (
     <>
@@ -242,143 +323,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
         />
       )}
 
-      {/* Right-click context menu — portaled to body */}
-      {ctxMenu && (() => {
-        const ctxImg = images.find((im) => im.id === ctxMenu.imgId);
-        if (!ctxImg) return null;
-        const items: { label: string; action: () => void; color?: string }[] = [
-          {
-            label: "Expand",
-            action: () => {
-              setPreviewImage({ dataUri: ctxImg.dataUri, winPath: ctxImg.winPath });
-              setCtxMenu(null);
-            },
-          },
-          {
-            label: "Copy",
-            action: () => {
-              void invoke("copy_image_to_clipboard", { path: ctxImg.winPath }).catch(() => {});
-              setCtxMenu(null);
-            },
-          },
-          {
-            label: "Copy filepath",
-            action: () => {
-              void resolveImagePath(ctxImg.winPath, "clipboard").then((p) => {
-                if (p) navigator.clipboard.writeText(p).catch(() => {});
-              });
-              setCtxMenu(null);
-            },
-          },
-          {
-            label: "Open screenshot filepath",
-            action: () => {
-              void invoke("reveal_in_explorer", { path: ctxImg.winPath }).catch(() => {});
-              setCtxMenu(null);
-            },
-          },
-          {
-            label: "Attach to prompt",
-            action: () => {
-              attachToPrompt(ctxImg.id);
-              setCtxMenu(null);
-            },
-          },
-          {
-            label: "Delete",
-            action: () => {
-              removeImage(ctxImg.id);
-              setCtxMenu(null);
-            },
-            color: "#f87171",
-          },
-        ];
-        return createPortal(
-          <div
-            style={{ position: "fixed", inset: 0, zIndex: 210 }}
-            onClick={() => setCtxMenu(null)}
-            onContextMenu={(e) => { e.preventDefault(); setCtxMenu(null); }}
-          >
-            <div
-              ref={ctxMenuRef}
-              style={{
-                position: "absolute",
-                top: Math.min(ctxMenu.y, window.innerHeight - 200),
-                left: Math.min(ctxMenu.x, window.innerWidth - 170),
-                backgroundColor: "var(--ezy-surface-raised)",
-                border: "1px solid var(--ezy-border)",
-                borderRadius: 6,
-                padding: "4px 0",
-                minWidth: 160,
-                boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              {items.map((item) => (
-                <div
-                  key={item.label}
-                  onClick={item.action}
-                  style={{
-                    padding: "6px 12px",
-                    fontSize: 12,
-                    color: item.color ?? "var(--ezy-text)",
-                    cursor: "pointer",
-                    transition: "background-color 80ms ease",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                >
-                  {item.label}
-                </div>
-              ))}
-            </div>
-          </div>,
-          document.body,
-        );
-      })()}
 
-      {/* Snip button right-click context menu */}
-      {snipCtxMenu && createPortal(
-        <div
-          style={{ position: "fixed", inset: 0, zIndex: 210 }}
-          onClick={() => setSnipCtxMenu(null)}
-          onContextMenu={(e) => { e.preventDefault(); setSnipCtxMenu(null); }}
-        >
-          <div
-            ref={snipCtxMenuRef}
-            className="dropdown-enter"
-            style={{
-              position: "absolute",
-              top: Math.min(snipCtxMenu.y, window.innerHeight - 100),
-              left: Math.min(snipCtxMenu.x, window.innerWidth - 170),
-              backgroundColor: "var(--ezy-surface-raised)",
-              border: "1px solid var(--ezy-border)",
-              borderRadius: 6,
-              padding: "4px 0",
-              minWidth: 160,
-              boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              onClick={images.length > 0 ? () => { setShowGallery(true); setSnipCtxMenu(null); } : undefined}
-              style={{
-                padding: "6px 12px",
-                fontSize: 12,
-                color: images.length > 0 ? "var(--ezy-text)" : "var(--ezy-text-muted)",
-                cursor: images.length > 0 ? "pointer" : "default",
-                opacity: images.length > 0 ? 1 : 0.5,
-                transition: "background-color 80ms ease",
-              }}
-              onMouseEnter={(e) => { if (images.length > 0) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-            >
-              View all screenshots
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
 
       {/* All screenshots gallery popup */}
       {showGallery && createPortal(
@@ -396,7 +341,6 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
           onClick={() => { setShowGallery(false); setGalleryCtxMenu(null); }}
         >
           <div
-            ref={galleryRef}
             className="dropdown-enter"
             style={{
               backgroundColor: "var(--ezy-surface-raised)",
@@ -622,7 +566,6 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
             onContextMenu={(e) => { e.preventDefault(); setGalleryCtxMenu(null); }}
           >
             <div
-              ref={galleryCtxMenuRef}
               className="dropdown-enter"
               style={{
                 position: "absolute",

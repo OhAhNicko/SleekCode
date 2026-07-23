@@ -1,12 +1,11 @@
-import { useState, useCallback, useRef, useEffect, useLayoutEffect } from "react";
-import { createPortal } from "react-dom";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand, FaServer } from "react-icons/fa";
 import { FaXmark, FaPlus, FaPencil } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useOverlayMenu } from "../lib/useOverlayMenu";
 import ServersPanel from "./ServersPanel";
 import { getPtyWrite } from "../store/terminalSlice";
 import { openOrUpdateBrowserPane, generateTerminalId } from "../lib/layout-utils";
@@ -93,143 +92,6 @@ function classifyHost(url: string): string {
  * Anchored via getBoundingClientRect so it can escape the sidebar's
  * overflow:hidden, and rendered through a portal for the same reason.
  */
-function UrlPopover({
-  anchorRect,
-  localUrl,
-  networkUrls,
-  onSelect,
-  onClose,
-  onMouseEnter,
-  onMouseLeave,
-}: {
-  anchorRect: DOMRect;
-  localUrl: string;
-  networkUrls: string[];
-  onSelect: (url: string, openExternal: boolean) => void;
-  onClose: () => void;
-  onMouseEnter: () => void;
-  onMouseLeave: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('dev-server-tab-urls', ref);
-  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
-
-  // After mount, measure ourselves and place above the anchor (or below if no room).
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    const margin = 8;
-    const vh = window.innerHeight;
-    const vw = window.innerWidth;
-    let top = anchorRect.top - h - margin;
-    if (top < margin) top = anchorRect.bottom + margin;
-    let left = anchorRect.right - w; // right-align with the URL
-    if (left < margin) left = margin;
-    if (left + w > vw - margin) left = vw - margin - w;
-    if (top + h > vh - margin) top = Math.max(margin, vh - margin - h);
-    setPos({ left, top });
-  }, [anchorRect]);
-
-  // Close on Escape
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const rows: Array<{ label: string; url: string; accent?: boolean }> = [
-    { label: "Local", url: localUrl, accent: true },
-    ...networkUrls.map((u) => ({ label: classifyHost(u), url: u })),
-  ];
-
-  return createPortal(
-    <div
-      ref={ref}
-      onMouseEnter={onMouseEnter}
-      onMouseLeave={onMouseLeave}
-      style={{
-        position: "fixed",
-        left: pos ? pos.left : -9999,
-        top: pos ? pos.top : -9999,
-        zIndex: 500,
-        minWidth: 240,
-        maxWidth: 360,
-        backgroundColor: "var(--ezy-surface)",
-        border: "1px solid var(--ezy-border)",
-        borderRadius: 6,
-        boxShadow: "0 10px 28px rgba(0,0,0,0.45), 0 2px 6px rgba(0,0,0,0.3)",
-        padding: "4px 0",
-        opacity: pos ? 1 : 0,
-        transform: pos ? "translateY(0)" : "translateY(2px)",
-        transition: "opacity 120ms ease, transform 120ms ease",
-        pointerEvents: pos ? "auto" : "none",
-      }}
-    >
-      <div
-        style={{
-          padding: "4px 12px 6px",
-          fontSize: 9,
-          fontWeight: 600,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: "var(--ezy-text-muted)",
-          borderBottom: "1px solid var(--ezy-border-subtle)",
-          marginBottom: 2,
-        }}
-      >
-        Server addresses
-      </div>
-      {rows.map((row) => (
-        <div
-          key={row.url}
-          onClick={(e) => onSelect(row.url, e.ctrlKey || e.metaKey)}
-          title={`${row.url} — Click to preview / Ctrl+Click to open in browser`}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            padding: "6px 12px",
-            cursor: "pointer",
-            transition: "background-color 100ms ease",
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-        >
-          <span
-            style={{
-              fontSize: 9,
-              fontWeight: 600,
-              letterSpacing: "0.04em",
-              textTransform: "uppercase",
-              color: row.accent ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-              minWidth: 56,
-              flexShrink: 0,
-            }}
-          >
-            {row.label}
-          </span>
-          <span
-            style={{
-              fontSize: 11,
-              color: "var(--ezy-cyan)",
-              flex: 1,
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              fontVariantNumeric: "tabular-nums",
-            }}
-          >
-            {row.url}
-          </span>
-        </div>
-      ))}
-    </div>,
-    document.body,
-  );
-}
 
 /** Open or retarget the (single) browser preview pane in a tab. Enforces the
  *  one-pane invariant: if a pane already exists, its URL is updated in place
@@ -294,12 +156,62 @@ function DevServerRow({ server }: { server: DevServer }) {
     }, 3000);
   }, [networkUrls.length, cancelOpenTimer, cancelCloseTimer]);
   const scheduleClose = useCallback(() => {
+    // Only cancels a PENDING open. Once open, the popover is an overlay
+    // backdrop menu — outside click / Escape / selection dismiss it (the
+    // old 180ms hover-close would kill it before the pointer arrived, since
+    // the overlay webview can't cancel this timer).
     cancelOpenTimer();
     cancelCloseTimer();
-    closeTimerRef.current = setTimeout(() => setPopoverRect(null), 180);
   }, [cancelOpenTimer, cancelCloseTimer]);
 
   useEffect(() => () => { cancelOpenTimer(); cancelCloseTimer(); }, [cancelOpenTimer, cancelCloseTimer]);
+  // URL popover — overlay-rendered (kind "anchored-menu"); Ctrl+click state
+  // rides back in the action's data ({ ctrl }) for open-in-external-browser.
+  useOverlayMenu({
+    id: "dev-server-tab-urls",
+    open: !!popoverRect && !!serverUrl,
+    anchorRect:
+      popoverRect
+        ? {
+            x: popoverRect.left,
+            y: popoverRect.top,
+            width: popoverRect.width,
+            height: popoverRect.height,
+          }
+        : null,
+    payload:
+      popoverRect && serverUrl
+        ? {
+            placement: "above-end",
+            gap: 8,
+            sections: [
+              {
+                title: "Server addresses",
+                items: [
+                  { actionId: "url:0", label: serverUrl, shortcut: "LOCAL" },
+                  ...networkUrls.map((u, i) => ({
+                    actionId: `url:${i + 1}`,
+                    label: u,
+                    shortcut: classifyHost(u),
+                  })),
+                ],
+              },
+            ],
+          }
+        : null,
+    onAction: (actionId, data) => {
+      if (!actionId.startsWith("url:") || !serverUrl) return;
+      const urls = [serverUrl, ...networkUrls];
+      const url = urls[Number(actionId.slice(4))];
+      if (url) {
+        const ctrl = !!(data as { ctrl?: boolean } | undefined)?.ctrl;
+        openServerUrl(url, ctrl);
+      }
+    },
+    onClose: () => setPopoverRect(null),
+  });
+
+
   // Drop the popover if the URL list changes out from under it
   useEffect(() => { if (networkUrls.length === 0) setPopoverRect(null); }, [networkUrls.length]);
 
@@ -614,17 +526,7 @@ function DevServerRow({ server }: { server: DevServer }) {
         </div>
       )}
 
-      {popoverRect && serverUrl && (
-        <UrlPopover
-          anchorRect={popoverRect}
-          localUrl={serverUrl}
-          networkUrls={networkUrls}
-          onSelect={(url, openExternal) => { openServerUrl(url, openExternal); setPopoverRect(null); }}
-          onClose={() => setPopoverRect(null)}
-          onMouseEnter={cancelCloseTimer}
-          onMouseLeave={scheduleClose}
-        />
-      )}
+      {/* URL popover — overlay-rendered (useOverlayMenu above). */}
     </div>
   );
 }

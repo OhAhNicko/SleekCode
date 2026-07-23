@@ -1,6 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import type { SearchResult, RemoteServer } from "../types";
 
 interface GlobalSearchProps {
@@ -13,8 +12,6 @@ interface GlobalSearchProps {
 }
 
 export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpenRemoteFile }: GlobalSearchProps) {
-  const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('global-search', overlayRef);
   const [query, setQuery] = useState("");
   const [localResults, setLocalResults] = useState<SearchResult[]>([]);
   const [remoteResults, setRemoteResults] = useState<SearchResult[]>([]);
@@ -172,7 +169,7 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
   };
 
   return (
-    <div ref={overlayRef} style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       {/* Search input */}
       <div style={{ padding: "8px", borderBottom: "1px solid var(--ezy-border)" }}>
         <div style={{ position: "relative" }}>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useOverlayMenu } from "../lib/useOverlayMenu";
 import type { TerminalType, TerminalBackend, ProjectSession, SessionIndexEntry } from "../types";
 import type { ContextInfo } from "../lib/context-parser";
 import { TERMINAL_CONFIGS, toWslPath } from "../lib/terminal-config";
@@ -153,93 +154,6 @@ function TerminalIcon({ type }: { type: TerminalType }) {
   }
 }
 
-/** Compact CLI picker dropdown used for split and type-switch */
-function CliPicker({
-  onSelect,
-  onClose,
-  currentType,
-}: {
-  onSelect: (type: TerminalType) => void;
-  onClose: () => void;
-  currentType?: TerminalType;
-}) {
-  const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('terminal-header-type-picker', overlayRef);
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  return (
-    <>
-      {/* Backdrop to catch clicks outside (Tauri drag region swallows mousedown) */}
-      <div
-        style={{ position: "fixed", inset: 0, zIndex: 199 }}
-        onMouseDown={onClose}
-      />
-      <div
-        ref={overlayRef}
-        className="dropdown-enter"
-        style={{
-          position: "absolute",
-          top: "100%",
-          left: 0,
-          marginTop: 2,
-          width: 180,
-          backgroundColor: "var(--ezy-surface-raised)",
-          border: "1px solid var(--ezy-border)",
-          borderRadius: 8,
-          overflow: "hidden",
-          boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
-          zIndex: 200,
-        }}
-      >
-      {TOOL_ORDER.map((type) => {
-        const config = TERMINAL_CONFIGS[type];
-        const isCurrent = type === currentType;
-        return (
-          <button
-            key={type}
-            className="w-full text-left"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "6px 10px",
-              backgroundColor: isCurrent ? "var(--ezy-accent-glow)" : "transparent",
-              border: "none",
-              cursor: "pointer",
-              fontSize: 12,
-              fontWeight: isCurrent ? 600 : 400,
-              color: isCurrent ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
-              fontFamily: "inherit",
-            }}
-            onMouseEnter={(e) => {
-              if (!isCurrent) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
-            }}
-            onMouseLeave={(e) => {
-              if (!isCurrent) e.currentTarget.style.backgroundColor = "transparent";
-            }}
-            onClick={() => {
-              onSelect(type);
-              onClose();
-            }}
-          >
-            <TerminalIcon type={type} />
-            <span>{config.label}</span>
-            {isCurrent && (
-              <FaCheck size={10} color="var(--ezy-accent)" style={{ marginLeft: "auto" }} />
-            )}
-          </button>
-        );
-      })}
-    </div>
-    </>
-  );
-}
 
 /** Format a relative time string, e.g. "2h ago", "3d ago" */
 function formatRelativeTime(isoDate: string): string {
@@ -263,155 +177,6 @@ function formatTimestamp(ts: number): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-function PromptHistoryDropdown({
-  entries,
-  anchorRef,
-  onSelect,
-  onClose,
-}: {
-  entries: PromptEntry[];
-  anchorRef: React.RefObject<HTMLButtonElement | null>;
-  onSelect: (line: number) => void;
-  onClose: () => void;
-}) {
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('terminal-header-prompt-history', overlayRef);
-
-  useEffect(() => {
-    if (anchorRef?.current) {
-      const rect = anchorRef.current.getBoundingClientRect();
-      // Align right edge of dropdown with right edge of button
-      setPos({ top: rect.bottom + 2, left: Math.max(8, rect.right - 320) });
-    }
-  }, [anchorRef]);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [onClose]);
-
-  if (!pos) return null;
-
-  return (
-    <>
-      <div
-        style={{ position: "fixed", inset: 0, zIndex: 199 }}
-        onMouseDown={onClose}
-      />
-      <div
-        ref={overlayRef}
-        className="dropdown-enter"
-        style={{
-          position: "fixed",
-          top: pos.top,
-          left: pos.left,
-          width: 320,
-          backgroundColor: "var(--ezy-surface-raised)",
-          border: "1px solid var(--ezy-border)",
-          borderRadius: 8,
-          overflow: "hidden",
-          boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
-          zIndex: 200,
-          maxHeight: 340,
-        }}
-      >
-        <div
-          style={{
-            padding: "6px 10px",
-            borderBottom: "1px solid var(--ezy-border)",
-            fontSize: 11,
-            fontWeight: 600,
-            color: "var(--ezy-text-muted)",
-          }}
-        >
-          Prompt History
-        </div>
-        <div style={{ overflowY: "auto", maxHeight: 296 }}>
-          {entries.length === 0 ? (
-            <div
-              style={{
-                padding: "24px 10px",
-                textAlign: "center",
-                fontSize: 12,
-                color: "var(--ezy-text-muted)",
-                opacity: 0.6,
-              }}
-            >
-              No prompts yet
-            </div>
-          ) : (
-            entries.slice().reverse().map((entry, i) => (
-              <div
-                key={`${entry.line}-${i}`}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 6,
-                  padding: "5px 10px",
-                  cursor: "pointer",
-                  backgroundColor: "transparent",
-                  borderBottom: "1px solid var(--ezy-border-subtle, rgba(255,255,255,0.04))",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = "transparent";
-                }}
-                onClick={() => {
-                  onSelect(entry.line);
-                  onClose();
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: 10,
-                    color: "var(--ezy-text-muted)",
-                    opacity: 0.5,
-                    minWidth: 20,
-                    textAlign: "right",
-                    flexShrink: 0,
-                  }}
-                >
-                  #{entries.length - i}
-                </span>
-                <span
-                  style={{
-                    flex: 1,
-                    fontSize: 12,
-                    color: "var(--ezy-text)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {entry.text}
-                </span>
-                {entry.timestamp && (
-                  <span
-                    style={{
-                      fontSize: 10,
-                      color: "var(--ezy-text-muted)",
-                      opacity: 0.5,
-                      flexShrink: 0,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {formatTimestamp(entry.timestamp)}
-                  </span>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </>
-  );
-}
 
 /** Merged session item for the picker — combines store + index data */
 interface MergedSession {
@@ -870,10 +635,83 @@ export default function TerminalHeader({
   /** Check if a statusline feature is shown (falls back to the per-key default). */
   const sl = (key: string) => slToggles?.[key] ?? getStatuslineDefault(key);
   const [showTypePicker, setShowTypePicker] = useState(false);
+  const typePickerAnchorRef = useRef<HTMLDivElement>(null);
+  // CLI type picker — overlay-rendered (kind "anchored-menu").
+  useOverlayMenu({
+    id: `terminal-header-type-picker-${terminalId}`,
+    open: showTypePicker,
+    anchorRef: typePickerAnchorRef,
+    payload: showTypePicker
+      ? {
+          placement: "below-start",
+          width: 180,
+          sections: [
+            {
+              items: TOOL_ORDER.map((type) => ({
+                actionId: `type:${type}`,
+                label: TERMINAL_CONFIGS[type].label,
+                iconId: `cli-${type}`,
+                checked: type === terminalType,
+              })),
+            },
+          ],
+        }
+      : null,
+    onAction: (actionId) => {
+      const type = actionId.replace(/^type:/, "") as TerminalType;
+      if (type !== terminalType) onChangeType(type);
+    },
+    onClose: () => setShowTypePicker(false),
+  });
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [showPromptHistory, setShowPromptHistory] = useState(false);
   const [promptEntries, setPromptEntries] = useState<PromptEntry[]>([]);
   const promptHistoryBtnRef = useRef<HTMLButtonElement>(null);
+  // Prompt-history dropdown — overlay-rendered, right-aligned to its button.
+  useOverlayMenu({
+    id: `terminal-header-prompt-history-${terminalId}`,
+    open: showPromptHistory && !!onScrollToPromptLine,
+    anchorRef: promptHistoryBtnRef,
+    payload:
+      showPromptHistory && onScrollToPromptLine
+        ? {
+            placement: "below-end",
+            width: 320,
+            maxHeight: 340,
+            gap: 2,
+            sections: [
+              {
+                title: "Prompt History",
+                items:
+                  promptEntries.length === 0
+                    ? [
+                        {
+                          actionId: "__none__",
+                          label: "No prompts yet",
+                          disabled: true,
+                        },
+                      ]
+                    : promptEntries
+                        .slice()
+                        .reverse()
+                        .map((entry, i) => ({
+                          actionId: `line:${entry.line}`,
+                          label: `#${promptEntries.length - i}  ${entry.text}`,
+                          shortcut: entry.timestamp
+                            ? formatTimestamp(entry.timestamp)
+                            : undefined,
+                        })),
+              },
+            ],
+          }
+        : null,
+    onAction: (actionId) => {
+      if (actionId.startsWith("line:")) {
+        onScrollToPromptLine?.(Number(actionId.slice(5)));
+      }
+    },
+    onClose: () => setShowPromptHistory(false),
+  });
   const [inlineRenaming, setInlineRenaming] = useState(false);
   const [inlineRenameValue, setInlineRenameValue] = useState("");
   const inlineInputRef = useRef<HTMLInputElement>(null);
@@ -989,6 +827,7 @@ export default function TerminalHeader({
       {/* Left: type badge — clickable to switch CLI */}
       <div style={{ position: "relative", marginLeft: 3, flexShrink: 0 }}>
         <div
+          ref={typePickerAnchorRef}
           className="flex items-center gap-1.5"
           style={{ cursor: "pointer", borderRadius: 4, padding: "2px 4px", margin: "-2px -4px" }}
           onClick={() => setShowTypePicker((v) => !v)}
@@ -1045,15 +884,7 @@ export default function TerminalHeader({
           )}
           <FaChevronDown size={8} color="var(--ezy-text-muted)" />
         </div>
-        {showTypePicker && (
-          <CliPicker
-            currentType={terminalType}
-            onSelect={(type) => {
-              if (type !== terminalType) onChangeType(type);
-            }}
-            onClose={() => setShowTypePicker(false)}
-          />
-        )}
+        {/* Type picker — overlay-rendered (useOverlayMenu above). */}
       </div>
 
       {/* File path — max 3 segments from end */}
@@ -1515,15 +1346,7 @@ export default function TerminalHeader({
         />
       )}
 
-      {/* Prompt history dropdown — rendered outside overflow-hidden context info area */}
-      {showPromptHistory && onScrollToPromptLine && (
-        <PromptHistoryDropdown
-          entries={promptEntries}
-          anchorRef={promptHistoryBtnRef}
-          onSelect={onScrollToPromptLine}
-          onClose={() => setShowPromptHistory(false)}
-        />
-      )}
+      {/* Prompt history dropdown — overlay-rendered (useOverlayMenu above). */}
     </div>
   );
 }

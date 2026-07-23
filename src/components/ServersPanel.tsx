@@ -5,7 +5,6 @@ import { HiMiniSignal } from "react-icons/hi2";
 import { BiCopy } from "react-icons/bi";
 import { TbRefresh } from "react-icons/tb";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import type { RemoteServer } from "../types";
 import { invoke } from "@tauri-apps/api/core";
 import ClaudeTokenWizardModal from "./ClaudeTokenWizardModal";
@@ -400,8 +399,6 @@ const EMPTY_SERVER: Omit<RemoteServer, "id"> = {
 /* ── Main component ── */
 
 export default function ServersPanel({ compact }: { compact?: boolean }) {
-  const overlayRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('servers-panel', overlayRef);
   const servers = useAppStore((s) => s.servers);
   const addServer = useAppStore((s) => s.addServer);
   const updateServer = useAppStore((s) => s.updateServer);
@@ -657,7 +654,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
     };
 
     return (
-      <div ref={overlayRef} style={{ display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", flexDirection: "column" }}>
         {/* Compact section header */}
         <div
           style={{
@@ -1079,7 +1076,6 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
 
   return (
     <div
-      ref={overlayRef}
       className="h-full w-full flex flex-col workspace-enter"
       style={{ backgroundColor: "var(--ezy-bg)" }}
     >

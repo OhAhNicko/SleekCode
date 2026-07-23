@@ -25,20 +25,21 @@ export type OverlayToastPayload = {
 };
 
 /**
- * Viewport-anchored companion to `useOverlayPopupAnchor`: publishes a toast to
- * the overlay webview while `open`, and routes its button/dismiss actions back
- * to the caller. The toast positions itself in the overlay (bottom-center /
- * bottom-right), so no anchor rect is streamed — toasts don't track a DOM
- * element. Keyboard shortcuts (Ctrl+Z etc.) stay in the MAIN webview: the
- * overlay is WS_EX_NOACTIVATE and never receives keystrokes.
+ * Generic viewport-anchored popup driver: publishes `payload` to the overlay
+ * webview under `kind` while `open`, and routes bounced actions back. The
+ * popup positions itself in the overlay (no anchor rect is streamed — the
+ * rect sent is a zero placeholder because OverlayRoot drops null-rect
+ * popups). Keyboard shortcuts stay in the MAIN webview: the overlay is
+ * WS_EX_NOACTIVATE and never receives keystrokes.
  */
-export function useOverlayToast(opts: {
+export function useOverlayViewportPopup(opts: {
   id: string;
+  kind: string;
   open: boolean;
-  payload: OverlayToastPayload | null;
+  payload: unknown;
   onAction?: (action: string) => void;
 }): void {
-  const { id, open } = opts;
+  const { id, kind, open } = opts;
   // Serialize so a new inline payload object each render doesn't re-emit.
   const payloadJson = JSON.stringify(opts.payload ?? null);
   // Keep the latest handler without resubscribing the action listener.
@@ -47,22 +48,20 @@ export function useOverlayToast(opts: {
 
   useEffect(() => {
     if (!open) {
-      emitOverlayPopup({ id, kind: "toast", open: false, rect: null });
+      emitOverlayPopup({ id, kind, open: false, rect: null });
       return;
     }
     emitOverlayPopup({
       id,
-      kind: "toast",
+      kind,
       open: true,
-      // Toasts are viewport-anchored; the renderer ignores the rect (it must
-      // still be non-null — OverlayRoot drops popups with a null rect).
       rect: { x: 0, y: 0, width: 0, height: 0 },
       payload: JSON.parse(payloadJson),
     });
     return () => {
-      emitOverlayPopup({ id, kind: "toast", open: false, rect: null });
+      emitOverlayPopup({ id, kind, open: false, rect: null });
     };
-  }, [id, open, payloadJson]);
+  }, [id, kind, open, payloadJson]);
 
   useEffect(() => {
     if (!open) return;
@@ -80,4 +79,20 @@ export function useOverlayToast(opts: {
       un?.();
     };
   }, [id, open]);
+}
+
+/** Toast-flavored wrapper over useOverlayViewportPopup (kind "toast"). */
+export function useOverlayToast(opts: {
+  id: string;
+  open: boolean;
+  payload: OverlayToastPayload | null;
+  onAction?: (action: string) => void;
+}): void {
+  useOverlayViewportPopup({
+    id: opts.id,
+    kind: "toast",
+    open: opts.open,
+    payload: opts.payload,
+    onAction: opts.onAction,
+  });
 }

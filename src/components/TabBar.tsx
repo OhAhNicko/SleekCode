@@ -8,21 +8,23 @@ import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectCo
 import { isTerminalActive } from "../lib/terminal-activity";
 import { isWindows, detectBackendForPath } from "../lib/platform";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
 import { useModalWhen } from "../store/modalCoordinationSlice";
-import type { RemoteServer, TerminalType, TerminalBackend } from "../types";
+import { useOverlayMenu } from "../lib/useOverlayMenu";
+import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
+import { useOverlayViewportPopup } from "../lib/useOverlayToast";
+import type { RemoteServer, TerminalType } from "../types";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import CreateProjectModal from "./CreateProjectModal";
 import ClipboardImageStrip from "./ClipboardImageStrip";
 import VoiceMicButton from "./VoiceMicButton";
 import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 import GitStatusBar from "./GitStatusBar";
-import { FaFolder, FaChevronDown, FaCheck } from "react-icons/fa";
+import { FaChevronDown, FaCheck } from "react-icons/fa";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
-import { FaXmark, FaPlus, FaBolt, FaGear, FaServer, FaArrowsRotate } from "react-icons/fa6";
+import { FaXmark, FaPlus, FaGear, FaServer } from "react-icons/fa6";
 import { PiKanbanDuotone, PiGameControllerDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
-import { BiSidebar, BiExpandVertical } from "react-icons/bi";
+import { BiSidebar } from "react-icons/bi";
 
 function truncateTabPath(path: string, maxSegments = 3): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -76,22 +78,97 @@ export default function TabBar() {
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
   const [colorPickerTab, setColorPickerTab] = useState<{ tabId: string; x: number; y: number } | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const recentMenuRef = useRef<HTMLDivElement>(null);
-  const colorPickerRef = useRef<HTMLDivElement>(null);
+  // Tab color picker — overlay-rendered (kind "swatch-menu", backdrop).
+  const colorPickerDir = (() => {
+    if (!colorPickerTab) return null;
+    const t = tabs.find((tb) => tb.id === colorPickerTab.tabId);
+    return t ? t.workingDir.replace(/\\/g, "/") : null;
+  })();
+  useOverlayViewportPopup({
+    id: "tabbar-color-picker",
+    kind: "swatch-menu",
+    open: !!colorPickerTab && colorPickerDir != null,
+    payload:
+      colorPickerTab && colorPickerDir != null
+        ? {
+            x: colorPickerTab.x,
+            y: colorPickerTab.y,
+            title: "TAB COLOR",
+            selected: projectColors[colorPickerDir] ?? null,
+            swatches: PROJECT_COLOR_PRESETS.map((p) => ({
+              id: p.id,
+              label: p.label,
+              color: p.color,
+            })),
+          }
+        : null,
+    onAction: (action) => {
+      if (action === "__dismiss__") {
+        setColorPickerTab(null);
+        return;
+      }
+      if (colorPickerDir == null) return;
+      if (action === "color:none") setProjectColor(colorPickerDir, null);
+      else if (action.startsWith("color:"))
+        setProjectColor(colorPickerDir, action.slice(6) as ProjectColorId);
+      setColorPickerTab(null);
+    },
+  });
   const quitConfirmRef = useRef<HTMLDivElement>(null);
-  const pathTooltipRef = useRef<HTMLDivElement>(null);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
 
   // Hole-cut publishers: each floating overlay publishes its viewport rect so
   // the native HWND underneath cuts a hole. Refs are conditionally attached
   // (only when the overlay is rendered); useOverlayPublisher's rAF loop
   // tolerates null refs and re-reads each frame.
-  useOverlayPublisher("tabbar-new-tab-menu", menuRef);
-  useOverlayPublisher("tabbar-recent-menu", recentMenuRef);
-  useOverlayPublisher("tabbar-color-picker", colorPickerRef);
+  const newTabChevronRef = useRef<HTMLDivElement>(null);
+  // "Add pane" dropdown — overlay-rendered (kind "anchored-menu").
+  useOverlayMenu({
+    id: "tabbar-new-tab-menu",
+    open: showNewTabMenu,
+    anchorRef: newTabChevronRef,
+    payload: showNewTabMenu
+      ? {
+          placement: "below-start",
+          width: 220,
+          gap: 2,
+          sections: [
+            {
+              title: "Add pane",
+              items: (["claude", "codex", "gemini", "shell"] as const).map(
+                (type) => ({
+                  actionId: `split:${type}`,
+                  label: TERMINAL_CONFIGS[type].label,
+                  iconId: `cli-${type}`,
+                  badge: cliYolo[type] ? "YOLO" : undefined,
+                  trailing: {
+                    actionId: `split-down:${type}`,
+                    iconId: "split-down",
+                    title: "Split Down",
+                  },
+                }),
+              ),
+            },
+          ],
+        }
+      : null,
+    onAction: (actionId) => {
+      const [verb, type] = actionId.split(":");
+      if (verb === "split") {
+        window.dispatchEvent(
+          new CustomEvent("made:split-terminal", { detail: { type } }),
+        );
+      } else if (verb === "split-down") {
+        window.dispatchEvent(
+          new CustomEvent("made:split-terminal", {
+            detail: { type, direction: "vertical" },
+          }),
+        );
+      }
+    },
+    onClose: () => setShowNewTabMenu(false),
+  });
   useModalWhen("tabbar-quit-confirm", showQuitConfirm);
-  useOverlayPublisher("tabbar-path-tooltip", pathTooltipRef);
   const dragStartRef = useRef<{ tabId: string; offsetX: number; startX: number; startY: number; tabWidth: number; tabTop: number } | null>(null);
   const didDragRef = useRef(false);
   const [dragState, setDragState] = useState<{
@@ -112,6 +189,19 @@ export default function TabBar() {
   // Delayed path tooltip (2s hover)
   const [pathTooltip, setPathTooltip] = useState<{ tabId: string; x: number; y: number } | null>(null);
   const pathTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tab-path hover tooltip — overlay-rendered (kind "tooltip", display-only).
+  const pathTooltipTab = pathTooltip
+    ? tabs.find((t) => t.id === pathTooltip.tabId)
+    : null;
+  useOverlayViewportPopup({
+    id: "tabbar-path-tooltip",
+    kind: "tooltip",
+    open: !!pathTooltip && !!pathTooltipTab?.workingDir,
+    payload:
+      pathTooltip && pathTooltipTab?.workingDir
+        ? { x: pathTooltip.x, y: pathTooltip.y, text: pathTooltipTab.workingDir }
+        : null,
+  });
   const clearPathTooltip = useCallback(() => {
     if (pathTooltipTimer.current) { clearTimeout(pathTooltipTimer.current); pathTooltipTimer.current = null; }
     setPathTooltip(null);
@@ -223,6 +313,128 @@ export default function TabBar() {
     },
     [addTerminals, addTabWithLayout, addRecentProject, autoStartServerCommand]
   );
+
+  // Recent-projects dropdown — overlay-rendered (custom kind "recent-menu",
+  // backdrop). Live payload: rows update in place (quick/backend/remove keep
+  // the menu open, mirroring the old DOM menu).
+  const recentBtnRef = useRef<HTMLDivElement>(null);
+  useOverlayPopupAnchor({
+    id: "tabbar-recent-menu",
+    kind: "recent-menu",
+    open: showRecentMenu,
+    anchorRef: recentBtnRef,
+    payload: showRecentMenu
+      ? {
+          projects: recentProjects.map((project) => {
+            const hasSavedLayout = !!project.lastLayout || !!project.lastTemplate;
+            const canQuickOpen = hasSavedLayout && !!project.quickOpen;
+            const savedPaneCount = project.lastLayout
+              ? countLeafPanes(project.lastLayout)
+              : project.lastTemplate?.paneCount;
+            const linkedServer = project.serverId
+              ? servers.find((sv) => sv.id === project.serverId)
+              : undefined;
+            const isOrphanRemote = !!project.serverId && !linkedServer;
+            const backend = (() => {
+              if (!isWindows() || project.serverId) return null;
+              const effective =
+                project.preferredBackend ??
+                detectBackendForPath(project.path, terminalBackend);
+              if (effective !== "wsl" && effective !== "windows") return null;
+              return effective === "wsl" ? "WSL" : "WIN";
+            })();
+            return {
+              key: project.id,
+              name: project.name,
+              subtitle: truncatePath(project.path),
+              tooltip: isOrphanRemote
+                ? `Server removed — re-add it in the Remote Servers panel to use this project. (${project.path})`
+                : linkedServer
+                  ? `${linkedServer.name}: ${project.path}`
+                  : project.path,
+              disabled: isOrphanRemote,
+              badge: project.serverId
+                ? isOrphanRemote
+                  ? "no server"
+                  : (linkedServer?.name ?? linkedServer?.host ?? "remote")
+                : undefined,
+              badgeMuted: isOrphanRemote,
+              showFresh: canQuickOpen,
+              showQuick: hasSavedLayout,
+              quickOn: !!project.quickOpen,
+              paneCount: String(savedPaneCount ?? "?"),
+              backendLabel: backend ?? undefined,
+            };
+          }),
+          canCreate: !!projectsDir,
+          servers: servers.map((sv) => ({ id: sv.id, name: sv.name })),
+        }
+      : null,
+    onAction: (action) => {
+      if (action === "__dismiss__") {
+        setShowRecentMenu(false);
+        return;
+      }
+      const idx = action.indexOf(":");
+      const verb = idx === -1 ? action : action.slice(0, idx);
+      const arg = idx === -1 ? "" : action.slice(idx + 1);
+      const project = recentProjects.find((pr) => pr.id === arg);
+      switch (verb) {
+        case "open":
+          if (!project) return;
+          setShowRecentMenu(false);
+          if ((!!project.lastLayout || !!project.lastTemplate) && project.quickOpen) {
+            quickOpenProject(project, false);
+          } else {
+            setPendingDir({
+              name: project.name,
+              dir: project.path,
+              serverId: project.serverId,
+            });
+          }
+          break;
+        case "fresh":
+          if (!project) return;
+          setShowRecentMenu(false);
+          quickOpenProject(project, true);
+          break;
+        case "quick":
+          if (project) toggleProjectQuickOpen(project.path, project.serverId);
+          break;
+        case "backend": {
+          if (!project) return;
+          const effective =
+            project.preferredBackend ??
+            detectBackendForPath(project.path, terminalBackend);
+          setProjectBackend(
+            project.path,
+            project.serverId,
+            effective === "wsl" ? "windows" : "wsl",
+          );
+          break;
+        }
+        case "remove":
+          if (project) removeRecentProject(project.path, project.serverId);
+          break;
+        case "create":
+          setShowRecentMenu(false);
+          setShowCreateProjectModal(true);
+          break;
+        case "browse":
+          setShowRecentMenu(false);
+          handleNewLocalTab();
+          break;
+        case "server": {
+          const server = servers.find((sv) => sv.id === arg);
+          if (server) {
+            setShowRecentMenu(false);
+            setBrowsingServer(server);
+          }
+          break;
+        }
+      }
+    },
+  });
 
   // Track maximized state for window control icon
   useEffect(() => {
@@ -852,6 +1064,7 @@ export default function TabBar() {
         <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
           {/* + button — opens recent projects dropdown or folder picker */}
           <div
+            ref={recentBtnRef}
             style={{
               display: "flex",
               alignItems: "center",
@@ -881,325 +1094,11 @@ export default function TabBar() {
           </div>
 
           {/* Recent Projects dropdown */}
-          {showRecentMenu && (
-            <div
-              ref={recentMenuRef}
-              className="dropdown-enter"
-              style={{
-                position: "absolute",
-                top: "100%",
-                left: 0,
-                marginTop: 2,
-                width: 300,
-                backgroundColor: "var(--ezy-surface-raised)",
-                border: "1px solid var(--ezy-border)",
-                borderRadius: 8,
-                overflow: "hidden",
-                boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
-                zIndex: 100,
-              }}
-            >
-              <div
-                style={{
-                  padding: "6px 12px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                  borderBottom: "1px solid var(--ezy-border)",
-                }}
-              >
-                Recent Projects
-              </div>
-              {recentProjects.map((project) => {
-                const hasSavedLayout = !!project.lastLayout || !!project.lastTemplate;
-                const canQuickOpen = hasSavedLayout && !!project.quickOpen;
-                const savedPaneCount = project.lastLayout ? countLeafPanes(project.lastLayout) : project.lastTemplate?.paneCount;
-                const linkedServer = project.serverId ? servers.find((s) => s.id === project.serverId) : undefined;
-                const isOrphanRemote = !!project.serverId && !linkedServer;
-                const tooltip = isOrphanRemote
-                  ? `Server removed — re-add it in the Remote Servers panel to use this project. (${project.path})`
-                  : linkedServer
-                    ? `${linkedServer.name}: ${project.path}`
-                    : project.path;
-                return (
-                <div
-                  key={project.id}
-                  className="group"
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    padding: "7px 12px",
-                    cursor: isOrphanRemote ? "not-allowed" : "pointer",
-                    fontSize: 13,
-                    color: "var(--ezy-text-secondary)",
-                    position: "relative",
-                    opacity: isOrphanRemote ? 0.5 : 1,
-                  }}
-                  title={tooltip}
-                  onMouseEnter={(e) => { if (!isOrphanRemote) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                  onClick={() => {
-                    if (isOrphanRemote) return;
-                    setShowRecentMenu(false);
-                    if (canQuickOpen) {
-                      quickOpenProject(project, false);
-                    } else {
-                      setPendingDir({ name: project.name, dir: project.path, serverId: project.serverId });
-                    }
-                  }}
-                >
-                  {/* Folder icon */}
-                  <FaFolder size={14} color="var(--ezy-text-muted)" style={{ flexShrink: 0 }} />
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontWeight: 500, color: "var(--ezy-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{project.name}</span>
-                      {project.serverId && (
-                        <span
-                          style={{
-                            flexShrink: 0,
-                            fontSize: 9,
-                            fontWeight: 600,
-                            padding: "1px 6px",
-                            borderRadius: 3,
-                            backgroundColor: isOrphanRemote ? "var(--ezy-surface)" : "var(--ezy-neutral-700, #404040)",
-                            color: isOrphanRemote ? "var(--ezy-text-muted)" : "#ffffff",
-                            letterSpacing: "0.02em",
-                            textTransform: "uppercase",
-                            border: isOrphanRemote ? "1px solid var(--ezy-border)" : "none",
-                          }}
-                        >
-                          {isOrphanRemote ? "no server" : (linkedServer?.name ?? linkedServer?.host ?? "remote")}
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {truncatePath(project.path)}
-                    </div>
-                  </div>
-                  {/* Quick-open toggle — only shown when a saved layout/template exists */}
-                  {hasSavedLayout && (
-                    <>
-                      {/* Start Fresh — same layout, new sessions */}
-                      {canQuickOpen && (
-                        <button
-                          title="Start fresh — same layout, new sessions"
-                          style={{
-                            flexShrink: 0,
-                            display: "flex",
-                            alignItems: "center",
-                            padding: "2px 4px",
-                            border: "1px solid var(--ezy-border)",
-                            borderRadius: 4,
-                            backgroundColor: "transparent",
-                            color: "var(--ezy-text-muted)",
-                            fontSize: 10,
-                            cursor: "pointer",
-                            lineHeight: 1,
-                            transition: "all 120ms ease",
-                          }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setShowRecentMenu(false);
-                            quickOpenProject(project, true);
-                          }}
-                          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--ezy-text-muted)"; e.currentTarget.style.color = "var(--ezy-text)"; }}
-                          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--ezy-border)"; e.currentTarget.style.color = "var(--ezy-text-muted)"; }}
-                        >
-                          <FaArrowsRotate size={9} />
-                        </button>
-                      )}
-                      {/* Quick-open toggle */}
-                      <button
-                        title={project.quickOpen
-                          ? `Quick open ON (${savedPaneCount ?? "?"} panes) — click to disable`
-                          : `Quick open OFF — click to enable (reuse last ${savedPaneCount ?? "?"}-pane layout)`}
-                        style={{
-                          flexShrink: 0,
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 4,
-                          padding: "2px 6px",
-                          border: "1px solid",
-                          borderColor: project.quickOpen ? "var(--ezy-accent, #10b981)" : "var(--ezy-border)",
-                          borderRadius: 4,
-                          backgroundColor: project.quickOpen ? "var(--ezy-accent-glow, rgba(16,185,129,0.12))" : "transparent",
-                          color: project.quickOpen ? "var(--ezy-accent, #10b981)" : "var(--ezy-text-muted)",
-                          fontSize: 10,
-                          fontWeight: 600,
-                          cursor: "pointer",
-                          lineHeight: 1,
-                          whiteSpace: "nowrap",
-                          transition: "all 120ms ease",
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleProjectQuickOpen(project.path, project.serverId);
-                        }}
-                      >
-                        <FaBolt size={10} color="currentColor" />
-                        {savedPaneCount ?? "?"}
-                      </button>
-                    </>
-                  )}
-                  {/* Per-project backend toggle (Windows-only, local projects only) */}
-                  {isWindows() && !project.serverId && (() => {
-                    const effective: TerminalBackend =
-                      project.preferredBackend ?? detectBackendForPath(project.path, terminalBackend);
-                    if (effective !== "wsl" && effective !== "windows") return null;
-                    const isWsl = effective === "wsl";
-                    const next: TerminalBackend = isWsl ? "windows" : "wsl";
-                    const label = isWsl ? "WSL" : "WIN";
-                    return (
-                      <button
-                        title={`Backend: ${isWsl ? "WSL" : "Windows"} — click to use ${next === "wsl" ? "WSL" : "Windows"} for new tabs`}
-                        style={{
-                          flexShrink: 0,
-                          padding: "2px 6px",
-                          border: "1px solid var(--ezy-border)",
-                          borderRadius: 4,
-                          backgroundColor: "transparent",
-                          color: "var(--ezy-text-muted)",
-                          fontSize: 10,
-                          fontWeight: 600,
-                          letterSpacing: "0.04em",
-                          cursor: "pointer",
-                          lineHeight: 1,
-                          transition: "all 120ms ease",
-                        }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setProjectBackend(project.path, project.serverId, next);
-                        }}
-                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--ezy-text-muted)"; e.currentTarget.style.color = "var(--ezy-text)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--ezy-border)"; e.currentTarget.style.color = "var(--ezy-text-muted)"; }}
-                      >
-                        {label}
-                      </button>
-                    );
-                  })()}
-                  {/* Remove button */}
-                  <FaXmark
-                    size={14}
-                    color="var(--ezy-text-muted)"
-                    className="opacity-0 group-hover:opacity-50 hover:!opacity-100"
-                    style={{ flexShrink: 0, cursor: "pointer", transition: "opacity 120ms ease" }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeRecentProject(project.path, project.serverId);
-                    }}
-                  />
-                </div>
-                );
-              })}
-              {/* Divider + Create / Browse */}
-              <div style={{ height: 1, backgroundColor: "var(--ezy-border)", margin: "2px 0" }} />
-              <button
-                disabled={!projectsDir}
-                title={!projectsDir ? "Set a projects directory in Settings first" : "Create a new project folder"}
-                className="w-full text-left"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 12px",
-                  backgroundColor: "transparent",
-                  border: "none",
-                  cursor: !projectsDir ? "not-allowed" : "pointer",
-                  fontSize: 13,
-                  color: !projectsDir ? "var(--ezy-text-muted)" : "var(--ezy-text-secondary)",
-                  fontFamily: "inherit",
-                  opacity: !projectsDir ? 0.45 : 1,
-                }}
-                onMouseEnter={(e) => { if (projectsDir) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                onClick={() => {
-                  if (!projectsDir) return;
-                  setShowRecentMenu(false);
-                  setShowCreateProjectModal(true);
-                }}
-              >
-                <FaFolder size={14} color={!projectsDir ? "var(--ezy-text-muted)" : "var(--ezy-text-muted)"} />
-                Create New Project
-              </button>
-              <button
-                className="w-full text-left"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 12px",
-                  backgroundColor: "transparent",
-                  border: "none",
-                  cursor: "pointer",
-                  fontSize: 13,
-                  color: "var(--ezy-text-secondary)",
-                  fontFamily: "inherit",
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                onClick={() => {
-                  setShowRecentMenu(false);
-                  handleNewLocalTab();
-                }}
-              >
-                <FaPlus size={14} color="var(--ezy-text-muted)" />
-                Browse for Folder...
-              </button>
-              {servers.length > 0 && (
-                <>
-                  <div style={{ height: 1, backgroundColor: "var(--ezy-border)", margin: "2px 0" }} />
-                  <div
-                    style={{
-                      padding: "6px 12px",
-                      fontSize: 10,
-                      fontWeight: 600,
-                      letterSpacing: "0.08em",
-                      textTransform: "uppercase",
-                      color: "var(--ezy-text-muted)",
-                    }}
-                  >
-                    Remote Servers
-                  </div>
-                  {servers.map((server) => (
-                    <button
-                      key={server.id}
-                      className="w-full text-left"
-                      title={`Browse folders on ${server.username}@${server.host}`}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        padding: "8px 12px",
-                        backgroundColor: "transparent",
-                        border: "none",
-                        cursor: "pointer",
-                        fontSize: 13,
-                        color: "var(--ezy-text-secondary)",
-                        fontFamily: "inherit",
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)")}
-                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-                      onClick={() => {
-                        setShowRecentMenu(false);
-                        setBrowsingServer(server);
-                      }}
-                    >
-                      <FaServer size={12} color="var(--ezy-text-muted)" />
-                      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        Open folder on {server.name}…
-                      </span>
-                    </button>
-                  ))}
-                </>
-              )}
-            </div>
-          )}
+          {/* Recent-projects menu — overlay-rendered (kind "recent-menu", hook above). */}
 
           {/* Chevron — opens dropdown menu (only when a project is open) */}
           {tabs.some(t => !t.isKanbanTab && !t.isDevServerTab && !t.isServersTab && !t.isSettingsTab) && <><div
+            ref={newTabChevronRef}
             style={{
               display: "flex",
               alignItems: "center",
@@ -1224,135 +1123,7 @@ export default function TabBar() {
             <FaChevronDown size={8} color={showNewTabMenu ? "var(--ezy-text)" : "var(--ezy-text-muted)"} />
           </div>
 
-          {showNewTabMenu && (
-            <div
-              ref={menuRef}
-              className="dropdown-enter"
-              style={{
-                position: "absolute",
-                top: "100%",
-                left: 0,
-                marginTop: 2,
-                width: 220,
-                backgroundColor: "var(--ezy-surface-raised)",
-                border: "1px solid var(--ezy-border)",
-                borderRadius: 8,
-                overflow: "hidden",
-                boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
-                zIndex: 100,
-              }}
-            >
-              <div
-                style={{
-                  padding: "6px 12px 4px",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  textTransform: "uppercase",
-                  color: "var(--ezy-text-muted)",
-                }}
-              >
-                Add pane
-              </div>
-              {/* Claude Code */}
-              {[
-                { type: "claude" as const, icon: (
-                  <svg width="14" height="14" viewBox="0 0 24 24">
-                    <path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" fill="#D97757" />
-                  </svg>
-                )},
-                { type: "codex" as const, icon: (
-                  <svg width="14" height="14" viewBox="0 0 24 24">
-                    <path d="M22.282 9.821a6 6 0 0 0-.516-4.91 6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9 6.05 6.05 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206 6 6 0 0 0 3.997-2.9 6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081 4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023l-.141-.085-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365l2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5Z" fill="#10a37f" />
-                  </svg>
-                )},
-                { type: "gemini" as const, icon: (
-                  <svg width="14" height="14" viewBox="0 0 24 24">
-                    <path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" fill="#8E75B2" />
-                  </svg>
-                )},
-                { type: "shell" as const, icon: (
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="4,4 8,8 4,12" />
-                    <line x1="9" y1="12" x2="13" y2="12" />
-                  </svg>
-                )},
-              ].map(({ type, icon }) => (
-                <div
-                  key={type}
-                  className="flex items-center"
-                  style={{ padding: "0 0 0 0" }}
-                  onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                  onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                >
-                  <button
-                    className="text-left"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      padding: "7px 12px",
-                      flex: 1,
-                      backgroundColor: "transparent",
-                      border: "none",
-                      cursor: "pointer",
-                      fontSize: 13,
-                      color: "var(--ezy-text-secondary)",
-                      fontFamily: "inherit",
-                    }}
-                    onClick={() => {
-                      setShowNewTabMenu(false);
-                      window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type } }));
-                    }}
-                  >
-                    {icon}
-                    {TERMINAL_CONFIGS[type].label}
-                    {!!cliYolo[type] && (
-                      <span
-                        style={{
-                          fontSize: 9,
-                          fontWeight: 700,
-                          letterSpacing: "0.06em",
-                          lineHeight: 1,
-                          padding: "1px 4px",
-                          borderRadius: 3,
-                          backgroundColor: "var(--ezy-red, #e55)",
-                          color: "#fff",
-                          marginLeft: "auto",
-                        }}
-                      >
-                        YOLO
-                      </span>
-                    )}
-                  </button>
-                  {/* Split Down */}
-                  <div
-                    title="Split Down"
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      width: 28,
-                      height: 28,
-                      cursor: "pointer",
-                      borderRadius: 4,
-                      flexShrink: 0,
-                      marginRight: 4,
-                    }}
-                    onMouseEnter={(e) => { e.stopPropagation(); e.currentTarget.style.backgroundColor = "var(--ezy-border)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowNewTabMenu(false);
-                      window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type, direction: "vertical" } }));
-                    }}
-                  >
-                    <BiExpandVertical size={12} color="var(--ezy-text-muted)" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          {/* Add-pane menu — overlay-rendered (useOverlayMenu above). */}
           </>}
         </div>
 
@@ -1631,73 +1402,7 @@ export default function TabBar() {
       )}
 
       {/* Tab color picker (right-click menu) */}
-      {colorPickerTab && (() => {
-        const pickerTab = tabs.find((t) => t.id === colorPickerTab.tabId);
-        if (!pickerTab) return null;
-        const pickerDir = pickerTab.workingDir.replace(/\\/g, "/");
-        const currentColorId = projectColors[pickerDir] ?? null;
-        return (
-          <>
-            <div style={{ position: "fixed", inset: 0, zIndex: 299 }} onMouseDown={() => setColorPickerTab(null)} />
-            <div
-              ref={colorPickerRef}
-              className="dropdown-enter"
-              style={{
-                position: "fixed",
-                left: colorPickerTab.x,
-                top: colorPickerTab.y,
-                zIndex: 300,
-                backgroundColor: "var(--ezy-surface-raised)",
-                border: "1px solid var(--ezy-border)",
-                borderRadius: 8,
-                padding: 8,
-                boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
-              }}
-            >
-              <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500, letterSpacing: "0.04em" }}>
-                TAB COLOR
-              </div>
-              <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxWidth: 140 }}>
-                {/* None swatch */}
-                <div
-                  title="None"
-                  onClick={() => { setProjectColor(pickerDir, null); setColorPickerTab(null); }}
-                  style={{
-                    width: 20,
-                    height: 20,
-                    borderRadius: 4,
-                    backgroundColor: "var(--ezy-surface)",
-                    border: currentColorId === null ? "2px solid var(--ezy-text)" : "1px solid var(--ezy-border)",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: 10,
-                    color: "var(--ezy-text-muted)",
-                  }}
-                >
-                  ×
-                </div>
-                {PROJECT_COLOR_PRESETS.map((preset) => (
-                  <div
-                    key={preset.id}
-                    title={preset.label}
-                    onClick={() => { setProjectColor(pickerDir, preset.id); setColorPickerTab(null); }}
-                    style={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: 4,
-                      backgroundColor: preset.color,
-                      border: currentColorId === preset.id ? "2px solid #fff" : "1px solid transparent",
-                      cursor: "pointer",
-                    }}
-                  />
-                ))}
-              </div>
-            </div>
-          </>
-        );
-      })()}
+      {/* Color picker — overlay-rendered (useOverlayViewportPopup above). */}
 
       {/* Quit confirmation dialog */}
       {showQuitConfirm && (
@@ -1817,33 +1522,7 @@ export default function TabBar() {
       )}
 
       {/* Delayed path tooltip (2s hover on tab) */}
-      {pathTooltip && (() => {
-        const tt = tabs.find((t) => t.id === pathTooltip.tabId);
-        if (!tt?.workingDir) return null;
-        return (
-          <div
-            ref={pathTooltipRef}
-            style={{
-              position: "fixed",
-              left: pathTooltip.x,
-              top: pathTooltip.y,
-              transform: "translateX(-50%)",
-              zIndex: 400,
-              backgroundColor: "var(--ezy-surface-raised)",
-              border: "1px solid var(--ezy-border)",
-              borderRadius: 6,
-              padding: "4px 8px",
-              fontSize: 11,
-              color: "var(--ezy-text-secondary)",
-              whiteSpace: "nowrap",
-              pointerEvents: "none",
-              boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
-            }}
-          >
-            {tt.workingDir}
-          </div>
-        );
-      })()}
+      {/* Tab-path tooltip — overlay-rendered (useOverlayViewportPopup above). */}
     </>
   );
 }

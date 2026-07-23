@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { statusBadge } from "./CodeReviewFileList";
 import { generateCommitMsg } from "../lib/generate-commit-msg";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useModal } from "../store/modalCoordinationSlice";
 import type { GitFileStatus } from "../types";
 
 interface CommitPopoverProps {
@@ -270,7 +270,7 @@ export default function CommitPopover({
   const [confirmBypass, setConfirmBypass] = useState(false);
 
   const popoverRef = useRef<HTMLDivElement>(null);
-  useOverlayPublisher('commit-popover', popoverRef);
+  useModal("commit-popover");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-focus textarea on mount

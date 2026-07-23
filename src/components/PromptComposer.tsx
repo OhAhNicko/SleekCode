@@ -1,10 +1,9 @@
 import { useRef, useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import type { Terminal } from "@xterm/xterm";
 import { promptify } from "../lib/promptify";
 import { useAppStore } from "../store";
-import { useOverlayPublisher } from "../store/overlayRegionSlice";
+import { useOverlayMenu } from "../lib/useOverlayMenu";
 import { useClipboardImageStore, type ClipboardImage } from "../store/clipboardImageStore";
 import { useBrowserConsoleStore } from "../store/browserConsoleStore";
 import { getImageLabel, resolveImagePath } from "../lib/clipboard-insert";
@@ -188,11 +187,54 @@ export default function PromptComposer({
   const [localImages, setLocalImages] = useState<ClipboardImage[]>([]);
   const [previewImage, setPreviewImage] = useState<{ dataUri: string; winPath: string } | null>(null);
   const [imgCtxMenu, setImgCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
-  const imgCtxMenuRef = useRef<HTMLDivElement>(null);
-  // Key MUST be per-instance: this hook runs in EVERY mounted composer, and
-  // with a shared key a second composer's null publish clobbers the open
-  // menu's rect (hole lost over native panes).
-  useOverlayPublisher(`prompt-composer-image-menu-${terminalId}`, imgCtxMenuRef);
+  // Overlay-rendered at the cursor (kind "anchored-menu"). Id stays
+  // per-instance: every mounted composer runs this hook, and a shared id
+  // would let a second composer's close-emit clobber the open menu.
+  useOverlayMenu({
+    id: `prompt-composer-image-menu-${terminalId}`,
+    open: !!imgCtxMenu,
+    anchorPoint: imgCtxMenu ? { x: imgCtxMenu.x, y: imgCtxMenu.y } : null,
+    payload: imgCtxMenu
+      ? {
+          placement: "below-start",
+          width: 160,
+          sections: [
+            {
+              items: [
+                { actionId: "expand", label: "Expand" },
+                { actionId: "copy", label: "Copy" },
+                { actionId: "copy-path", label: "Copy filepath" },
+                { actionId: "attached", label: "Attached to prompt", disabled: true },
+                { actionId: "delete", label: "Delete", danger: true },
+              ],
+            },
+          ],
+        }
+      : null,
+    onAction: (actionId) => {
+      const img = imgCtxMenu
+        ? localImages.find((im) => im.id === imgCtxMenu.imgId)
+        : null;
+      if (!img) return;
+      switch (actionId) {
+        case "expand":
+          setPreviewImage({ dataUri: img.dataUri, winPath: img.winPath });
+          break;
+        case "copy":
+          void invoke("copy_image_to_clipboard", { path: img.winPath }).catch(() => {});
+          break;
+        case "copy-path":
+          void resolveImagePath(img.winPath, "clipboard").then((p) => {
+            if (p) navigator.clipboard.writeText(p).catch(() => {});
+          });
+          break;
+        case "delete":
+          setLocalImages((prev) => prev.filter((im) => im.id !== img.id));
+          break;
+      }
+    },
+    onClose: () => setImgCtxMenu(null),
+  });
   const [consoleSnippet, setConsoleSnippet] = useState<{ tag: string; formatted: string } | null>(null);
   const consoleTagRef = useRef<string | null>(null); // current tag text in textarea
   const browserPreviewOpen = useBrowserConsoleStore((s) => s.active);
@@ -2367,91 +2409,6 @@ export default function PromptComposer({
         onClose={() => setPreviewImage(null)}
       />
     )}
-    {/* Right-click context menu for image thumbnails — portaled to body to avoid clipping */}
-    {imgCtxMenu && (() => {
-      const ctxImg = localImages.find((im) => im.id === imgCtxMenu.imgId);
-      if (!ctxImg) return null;
-      const items: { label: string; action: () => void; color?: string }[] = [
-        {
-          label: "Expand",
-          action: () => {
-            setPreviewImage({ dataUri: ctxImg.dataUri, winPath: ctxImg.winPath });
-            setImgCtxMenu(null);
-          },
-        },
-        {
-          label: "Copy",
-          action: () => {
-            void invoke("copy_image_to_clipboard", { path: ctxImg.winPath }).catch(() => {});
-            setImgCtxMenu(null);
-          },
-        },
-        {
-          label: "Copy filepath",
-          action: () => {
-            void resolveImagePath(ctxImg.winPath, "clipboard").then((p) => {
-              if (p) navigator.clipboard.writeText(p).catch(() => {});
-            });
-            setImgCtxMenu(null);
-          },
-        },
-        {
-          label: "Attached to prompt",
-          action: () => setImgCtxMenu(null),
-          color: "var(--ezy-text-muted)",
-        },
-        {
-          label: "Delete",
-          action: () => {
-            setLocalImages((prev) => prev.filter((im) => im.id !== ctxImg.id));
-            setImgCtxMenu(null);
-          },
-          color: "#f87171",
-        },
-      ];
-      return createPortal(
-        <div
-          style={{ position: "fixed", inset: 0, zIndex: 210 }}
-          onClick={() => setImgCtxMenu(null)}
-          onContextMenu={(e) => { e.preventDefault(); setImgCtxMenu(null); }}
-        >
-          <div
-            ref={imgCtxMenuRef}
-            style={{
-              position: "absolute",
-              top: Math.min(imgCtxMenu.y, window.innerHeight - 200),
-              left: Math.min(imgCtxMenu.x, window.innerWidth - 170),
-              backgroundColor: "var(--ezy-surface-raised)",
-              border: "1px solid var(--ezy-border)",
-              borderRadius: 6,
-              padding: "4px 0",
-              minWidth: 160,
-              boxShadow: "0 4px 16px rgba(0,0,0,0.4)",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {items.map((item) => (
-              <div
-                key={item.label}
-                onClick={item.action}
-                style={{
-                  padding: "6px 12px",
-                  fontSize: 12,
-                  color: item.color ?? "var(--ezy-text)",
-                  cursor: "pointer",
-                  transition: "background-color 80ms ease",
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-              >
-                {item.label}
-              </div>
-            ))}
-          </div>
-        </div>,
-        document.body,
-      );
-    })()}
     </>
   );
 }
