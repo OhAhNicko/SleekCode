@@ -52,8 +52,12 @@ export default function FileLinkTooltip({
   // only for the top rows where above would clip.
   const above = !!hover && hover.line >= 2;
   if (hover) {
+    // Above: bottom-anchored slightly INTO the line's leading (+6) so the
+    // tooltip visually hugs the link — the mirrored cell metrics drift a few
+    // px from the real glyph grid, and any extra gap reads as "disconnected".
+    // The line's leading is empty space, so a small overlap never covers text.
     top = above
-      ? hover.line * CELL_H_LOGICAL - 4
+      ? hover.line * CELL_H_LOGICAL + 6
       : (hover.line + 1) * CELL_H_LOGICAL + 4;
     left = hover.col * CELL_W_LOGICAL;
 
