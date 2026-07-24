@@ -92,6 +92,9 @@ interface TerminalHeaderProps {
   onScrollToPromptLine?: (line: number) => void;
   /** Called when the user clicks the context-left widget to trigger a manual refresh. */
   onRefreshContext?: () => void | Promise<void>;
+  /** True when this pane is drawn by the native (wgpu) renderer. Shows a
+   * neutral NATIVE chip so a mixed native/xterm grid is readable at a glance. */
+  isNativeRenderer?: boolean;
 }
 
 function TerminalIcon({ type }: { type: TerminalType }) {
@@ -413,6 +416,7 @@ export default function TerminalHeader({
   getPromptEntries,
   onScrollToPromptLine,
   onRefreshContext,
+  isNativeRenderer = false,
 }: TerminalHeaderProps) {
   const contextPercent = contextInfo?.percent ?? null;
   const [refreshingContext, setRefreshingContext] = useState(false);
@@ -676,6 +680,25 @@ export default function TerminalHeader({
               }}
             >
               {contextInfo.collabMode}
+            </span>
+          )}
+          {isNativeRenderer && (
+            <span
+              title="Drawn by the native GPU renderer"
+              style={{
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: "0.06em",
+                lineHeight: 1.2,
+                padding: "1px 4px",
+                borderRadius: 3,
+                // Neutral on purpose: red means YOLO and cyan means collab mode
+                // in this same chip row. The renderer is a fact, not a warning.
+                backgroundColor: "var(--ezy-border-light, #484f58)",
+                color: "var(--ezy-text, #e6edf3)",
+              }}
+            >
+              NATIVE
             </span>
           )}
           <FaChevronDown size={8} color="var(--ezy-text-muted)" />

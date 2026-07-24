@@ -1,15 +1,18 @@
 // Selector between xterm.js and native (wgpu) renderers.
 //
-// Reads `useNativeTerminalRenderer` (global) + `paneRendererOverride[id]`
-// (per-pane) from nativeRendererSlice and dispatches to the matching pane
-// implementation. Consumers import this file; they don't need to know which
-// renderer is active.
+// Precedence, highest first:
+//   1. `paneRendererOverride[terminalId]` — runtime-only escape hatch.
+//   2. `renderer` prop — the pane's own persisted choice, stored on its layout
+//      leaf and stamped when the pane is created from the "Add pane" dropdown.
+//   3. `useNativeTerminalRenderer` — the global Settings toggle.
+//
+// Consumers import this file; they don't need to know which renderer is active.
 
 import { useAppStore } from "../store";
 import TerminalPaneNative from "./TerminalPaneNative";
 import TerminalPaneXterm from "./TerminalPaneXterm";
 import type { CommandBlock } from "../lib/command-block-parser";
-import type { TerminalType, TerminalBackend } from "../types";
+import type { TerminalType, TerminalBackend, TerminalRenderer } from "../types";
 
 // Re-export the shared focus-suppression set so existing call sites in
 // Workspace.tsx etc. that import `suppressFocusTerminals` from "./TerminalPane"
@@ -35,12 +38,15 @@ interface TerminalPaneProps {
   onSessionResumeId?: (id: string) => void;
   onSwitchSession?: (newSessionId: string | undefined) => void;
   backend?: TerminalBackend;
+  /** This pane's persisted renderer choice (from its layout leaf). */
+  renderer?: TerminalRenderer;
 }
 
-export default function TerminalPane(props: TerminalPaneProps) {
+export default function TerminalPane({ renderer, ...props }: TerminalPaneProps) {
   const useNative = useAppStore((s) => s.useNativeTerminalRenderer);
   const override = useAppStore((s) => s.paneRendererOverride[props.terminalId]);
-  const resolved = override ?? (useNative ? "native" : "xterm");
+  const resolved = override ?? renderer ?? (useNative ? "native" : "xterm");
+  // `renderer` is deliberately NOT forwarded — neither implementation declares it.
   return resolved === "native" ? (
     <TerminalPaneNative {...props} />
   ) : (

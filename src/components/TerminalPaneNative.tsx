@@ -1688,6 +1688,7 @@ export default function TerminalPaneNative({
           getPromptEntries={getPromptEntries}
           onScrollToPromptLine={handleScrollToPromptLine}
           onRefreshContext={refreshContext}
+          isNativeRenderer
         />
       )}
       {/* Terminal anchor — R's HWND positions itself over this div's bounding rect. */}

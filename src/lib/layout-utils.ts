@@ -755,6 +755,9 @@ export function cloneLayoutWithFreshIds(
           terminalId: newId,
           terminalType: node.terminalType,
           sessionResumeId: resumeId,
+          // Carry the per-pane renderer choice into the clone, so duplicating a
+          // tab reproduces its native/xterm mix.
+          renderer: node.renderer,
         } as PaneLeaf;
       }
       case "split":

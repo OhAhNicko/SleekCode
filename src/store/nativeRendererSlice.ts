@@ -11,6 +11,12 @@ export interface NativeRendererTelemetry {
 
 export interface NativeRendererSlice {
   useNativeTerminalRenderer: boolean;
+  /** Sticky mode for the tab bar's "Add pane" dropdown: when on, panes opened
+   * from that menu are stamped `renderer: "native"` on their layout leaf. Does
+   * NOT touch already-open panes — that's the whole point of it existing
+   * alongside `useNativeTerminalRenderer`. Ctrl+clicking a menu item forces
+   * native for that one pane regardless of this flag. */
+  newPaneNativeRenderer: boolean;
   paneRendererOverride: Record<string, Exclude<PaneRendererOverride, null>>;
   nativeRendererTelemetry: NativeRendererTelemetry;
   // Tracks every alive native-term HWND id so coordinators (e.g. modal
@@ -42,6 +48,7 @@ export interface NativeRendererSlice {
   appWindowFocused: boolean;
 
   setUseNativeTerminalRenderer: (v: boolean) => void;
+  setNewPaneNativeRenderer: (v: boolean) => void;
   setPaneRendererOverride: (paneId: string, override: PaneRendererOverride) => void;
   recordNativeRendererCrash: () => void;
   registerNativeTerm: (id: NativeTermId) => void;
@@ -60,6 +67,7 @@ export const createNativeRendererSlice: StateCreator<
   NativeRendererSlice
 > = (set, get) => ({
   useNativeTerminalRenderer: false,
+  newPaneNativeRenderer: false,
   paneRendererOverride: {},
   nativeRendererTelemetry: { panes: 0, crashes: 0, lastCrashAt: null },
   liveNativeTerms: EMPTY_LIVE,
@@ -69,6 +77,8 @@ export const createNativeRendererSlice: StateCreator<
   appWindowFocused: true,
 
   setUseNativeTerminalRenderer: (v) => set({ useNativeTerminalRenderer: v }),
+
+  setNewPaneNativeRenderer: (v) => set({ newPaneNativeRenderer: v }),
 
   setWebviewFocused: (focused) => {
     const s = get();

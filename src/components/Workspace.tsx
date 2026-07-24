@@ -1,6 +1,6 @@
 import { useCallback, useState, useRef, useMemo, useEffect } from "react";
 import { createPortal } from "react-dom";
-import type { Tab, TerminalType, PaneLayout } from "../types";
+import type { Tab, TerminalType, PaneLayout, TerminalRenderer } from "../types";
 import { useAppStore } from "../store";
 import {
   addPaneAsGrid,
@@ -451,8 +451,13 @@ export default function Workspace({ tab }: WorkspaceProps) {
       const type = detail?.type as TerminalType | undefined;
       if (!type) return;
 
+      // Per-pane renderer, only ever set by the tab bar's "Add pane" dropdown
+      // (sticky toggle or Ctrl+click). Every other dispatcher omits it, so
+      // those panes follow the global Settings toggle. Lives on the leaf, so
+      // it persists with the layout and dies with the pane.
+      const renderer = detail?.renderer as TerminalRenderer | undefined;
       const newTerminalId = generateTerminalId();
-      const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type };
+      const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type, renderer };
 
       const focusNewPane = !useAppStore.getState().openPanesInBackground;
 
@@ -746,6 +751,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
             onExplainError={(block) => handleTerminalExplainError(termId, block)}
             serverId={terminal.serverId}
             sessionResumeId={leaf?.sessionResumeId}
+            renderer={leaf?.renderer}
             backend={tab.backend}
             onSessionResumeId={(id) => {
               updatePaneSessionResumeId(tab.id, termId, id);

@@ -133,6 +133,7 @@ export const useAppStore = create<AppStore>()(
         pttHotkey: state.pttHotkey,
         voiceConfirmDestructive: state.voiceConfirmDestructive,
         useNativeTerminalRenderer: state.useNativeTerminalRenderer,
+        newPaneNativeRenderer: state.newPaneNativeRenderer,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;

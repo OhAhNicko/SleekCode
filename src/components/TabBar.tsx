@@ -48,6 +48,8 @@ export default function TabBar() {
   const removeRecentProject = useAppStore((s) => s.removeRecentProject);
   const servers = useAppStore((s) => s.servers);
   const cliYolo = useAppStore((s) => s.cliYolo);
+  const newPaneNativeRenderer = useAppStore((s) => s.newPaneNativeRenderer);
+  const setNewPaneNativeRenderer = useAppStore((s) => s.setNewPaneNativeRenderer);
   const toggleProjectQuickOpen = useAppStore((s) => s.toggleProjectQuickOpen);
   const setProjectBackend = useAppStore((s) => s.setProjectBackend);
   const terminalBackend = useAppStore((s) => s.terminalBackend);
@@ -134,6 +136,18 @@ export default function TabBar() {
           gap: 2,
           sections: [
             {
+              // Sticky renderer mode. Picking it closes the menu (useOverlayMenu
+              // fires onClose after every action) — reopen to see the checkmark.
+              items: [
+                {
+                  actionId: "toggle-native-renderer",
+                  label: "Native renderer (beta)",
+                  sublabel: "Ctrl+click a pane type to open native once",
+                  checked: newPaneNativeRenderer,
+                },
+              ],
+            },
+            {
               title: "Add pane",
               items: (["claude", "codex", "gemini", "shell"] as const).map(
                 (type) => ({
@@ -152,16 +166,26 @@ export default function TabBar() {
           ],
         }
       : null,
-    onAction: (actionId) => {
+    onAction: (actionId, data) => {
+      if (actionId === "toggle-native-renderer") {
+        setNewPaneNativeRenderer(!newPaneNativeRenderer);
+        return;
+      }
       const [verb, type] = actionId.split(":");
+      // Ctrl (or Cmd) forces native for this one pane, regardless of the sticky
+      // mode. The overlay forwards the modifier for both the row and its
+      // trailing split-down button.
+      const ctrl = !!(data as { ctrl?: boolean } | undefined)?.ctrl;
+      const renderer =
+        newPaneNativeRenderer || ctrl ? ("native" as const) : undefined;
       if (verb === "split") {
         window.dispatchEvent(
-          new CustomEvent("made:split-terminal", { detail: { type } }),
+          new CustomEvent("made:split-terminal", { detail: { type, renderer } }),
         );
       } else if (verb === "split-down") {
         window.dispatchEvent(
           new CustomEvent("made:split-terminal", {
-            detail: { type, direction: "vertical" },
+            detail: { type, direction: "vertical", renderer },
           }),
         );
       }

@@ -1,6 +1,10 @@
 export type TerminalType = "claude" | "codex" | "gemini" | "shell" | "devserver";
 export type GameType = "snake" | "2048" | "sudoku" | "crossword" | "minesweeper" | "wordle" | "ticTacToe" | "blockBreaker" | "solitaire" | "pong" | "chess" | "memory" | "flappyBird" | "spaceInvaders" | "tetris" | "asteroids" | "frogger" | "duckHunt" | "donkeyKong";
 export type TerminalBackend = "wsl" | "windows" | "native" | "ssh";
+/** Which terminal implementation draws a pane: the classic xterm.js pane or
+ * the native (wgpu) one. Unrelated to TerminalBackend, which is about *where*
+ * the PTY runs. */
+export type TerminalRenderer = "native" | "xterm";
 
 export type AuthMethod = "ssh-key" | "password";
 
@@ -66,6 +70,10 @@ export interface PaneLeaf {
   terminalId: string;
   terminalType?: TerminalType;
   sessionResumeId?: string;
+  /** Per-pane renderer choice. Absent => follow the global
+   * `useNativeTerminalRenderer` setting. Persisted with the layout, so a pane
+   * opened as native comes back native. See TerminalPane.tsx for precedence. */
+  renderer?: TerminalRenderer;
 }
 
 export interface ProjectSession {
