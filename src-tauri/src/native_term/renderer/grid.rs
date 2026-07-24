@@ -617,9 +617,47 @@ impl CellGrid {
         // anchored to content — and therefore correct — while scrolled.
         let sel_range = t.selection.as_ref().and_then(|s| s.to_range(&*t));
         let mut out = Vec::with_capacity(visible_rows);
+        // Always-on link underline: per-row scratch, reused across rows.
+        let mut link_text = String::new();
+        let mut link_byte_cols: Vec<(usize, u16)> = Vec::new();
+        let mut link_cols: Vec<bool> = Vec::new();
         for y in 0..visible_rows {
             let line = Line(y as i32 - display_offset);
             let mut runs: Vec<RowRun> = Vec::new();
+
+            // --- always-on link underline (user decision 2026-07-24) ---
+            // Pre-pass: rebuild the row's text (spacer cells contribute no
+            // char, mirroring the text-run rules below) with a byte->col map,
+            // scan it with the SAME link matchers the JS hover/click paths
+            // use (link_scan ports them), and mark matched columns. The main
+            // cell loop then forces the underline attr on those cells, so
+            // links are spottable without hovering — in every CLI, matching
+            // the requested xterm/native parity.
+            link_text.clear();
+            link_byte_cols.clear();
+            link_cols.clear();
+            link_cols.resize(visible_cols, false);
+            for x in 0..visible_cols {
+                let cell: &Cell = &grid[line][Column(x)];
+                if cell
+                    .flags
+                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
+                }
+                let ch = if cell.c == '\u{0}' { ' ' } else { cell.c };
+                link_byte_cols.push((link_text.len(), x as u16));
+                link_text.push(ch);
+            }
+            if link_text.contains("://") || link_text.contains('/') {
+                for (bs, be) in super::link_scan::link_byte_ranges(&link_text) {
+                    for &(byte_off, col) in &link_byte_cols {
+                        if byte_off >= bs && byte_off < be {
+                            link_cols[col as usize] = true;
+                        }
+                    }
+                }
+            }
             let mut bg_segs: Vec<BgSegment> = Vec::new();
             let mut decor_segs: Vec<DecorSegment> = Vec::new();
             let mut block_cells: Vec<BlockCell> = Vec::new();
@@ -636,7 +674,11 @@ impl CellGrid {
             for x in 0..visible_cols {
                 let cell: &Cell = &grid[line][Column(x)];
                 let ch = if cell.c == '\u{0}' { ' ' } else { cell.c };
-                let attrs = CellAttrs::from_flags(cell.flags);
+                let mut attrs = CellAttrs::from_flags(cell.flags);
+                // Always-on link underline (see the row pre-pass above).
+                if link_cols[x] {
+                    attrs.underline = true;
+                }
                 let inverse = cell.flags.contains(Flags::INVERSE);
                 // P6b wide chars: spacer cells (the trailing half of a CJK
                 // glyph, or the line-end LEADING spacer before a wrapped

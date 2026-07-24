@@ -78,6 +78,7 @@ mod win32_border {
     /// themed caption/frame; classic borderless windows swallow them.
     const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
     const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
+    const WM_ERASEBKGND: u32 = 0x0014;
     const WM_SIZE: u32 = 0x0005;
     const WM_MOVE: u32 = 0x0003;
     const WM_ACTIVATE: u32 = 0x0006;
@@ -483,19 +484,50 @@ mod win32_border {
             return 0;
         }
         //
+        // 1b) WM_ERASEBKGND is swallowed: tao's handler FillRects the ENTIRE
+        //    client rect with the configured backgroundColor (#0d1117), and the
+        //    window has no WS_CLIPCHILDREN, so that fill wipes the WebView2 and
+        //    wgpu pane children out of the redirection surface. Any external
+        //    invalidation (the overlay window's SetWindowRgn on popup open/close
+        //    is the hot one) then races the children's next present — losing the
+        //    race showed 1-2 frames of bare #0d1117 over the whole app (the
+        //    "flicker when menus open/close" bug; hardware-captured 2026-07-24).
+        //    Claiming "erased" without painting keeps the previous surface
+        //    content, which the children fully cover anyway. This subclass is
+        //    installed AFTER webview creation, so the pre-webview startup frames
+        //    still get tao's solid-color erase.
+        if msg == WM_ERASEBKGND {
+            return 1;
+        }
+        //
         // 2) WM_NCACTIVATE fires on every focus gain/loss and its DEFAULT
         //    handler paints system chrome ("can draw an incorrect title bar
         //    and cause visual corruption" — Chromium OnNCActivate). It must
-        //    still reach tao's handler (it drives Tauri focus events), so it
-        //    is forwarded under a redraw lock instead of being swallowed.
+        //    still reach tao's handler (it drives Tauri focus events), so the
+        //    repaint is suppressed via the DOCUMENTED lParam=-1 form: "when
+        //    lParam is -1, DefWindowProc does not repaint the nonclient area"
+        //    (Chromium's DWM-frame path). It must NOT go through the
+        //    WS_VISIBLE redraw lock: clearing WS_VISIBLE on the whole window
+        //    — even for the microseconds of a DefSubclassProc call — races
+        //    DWM's composition sampling, and losing dropped the WebView2 +
+        //    wgpu children for 1-2 frames, flashing the entire app to bare
+        //    #0d1117. Overlay-popup clicks deactivate/reactivate main within
+        //    ~40ms (Chromium's child in the overlay steals activation), so
+        //    this bracket ran on EVERY menu dismiss/item click and flashed
+        //    ~25% of them (hardware-captured 2026-07-24; Chromium reserves
+        //    the redraw lock for CLASSIC frames — a regioned window — which
+        //    main never is).
+        if msg == WM_NCACTIVATE {
+            apply_border_suppression(hwnd);
+            return DefSubclassProc(hwnd, msg, wparam, -1);
+        }
         //    WM_SETTEXT/WM_SETICON default handlers likewise paint NC chrome
-        //    internally. (WM_NCLBUTTONDOWN is deliberately NOT locked: its
-        //    default handling can enter a modal move loop, and with a zero NC
-        //    area it never fires here.)
-        if msg == WM_NCACTIVATE || msg == WM_SETTEXT || msg == WM_SETICON {
-            if msg == WM_NCACTIVATE {
-                apply_border_suppression(hwnd);
-            }
+        //    internally and have no lParam=-1 escape; they keep the redraw
+        //    lock. They only fire on title/icon changes (project switches),
+        //    never on the popup hot path. (WM_NCLBUTTONDOWN is deliberately
+        //    NOT locked: its default handling can enter a modal move loop,
+        //    and with a zero NC area it never fires here.)
+        if msg == WM_SETTEXT || msg == WM_SETICON {
             return def_subclass_proc_with_redraw_lock(hwnd, msg, wparam, lparam);
         }
 

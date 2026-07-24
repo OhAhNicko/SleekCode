@@ -16,6 +16,7 @@ import { CommandBlockParser, type CommandBlock } from "../lib/command-block-pars
 import { shouldInjectShellIntegration } from "../lib/shell-integration";
 import { supportsSessionResume } from "../lib/session-resume";
 import { createFilePathLinkProvider } from "../lib/file-link-provider";
+import { attachLinkUnderlines } from "../lib/xterm-link-underline";
 import { readSessionContext, type ContextInfo } from "../lib/context-parser";
 import { readSessionFirstPrompt, slugify } from "../lib/sessions-index";
 import { invoke } from "@tauri-apps/api/core";
@@ -699,6 +700,10 @@ export default function TerminalPane({
 
     let disposed = false;
     term.open(el);
+
+    // Always-on link underlines (xterm/native parity — see
+    // xterm-link-underline.ts). Attached after open() so .xterm-screen exists.
+    const linkUnderlineDispose = attachLinkUnderlines(term);
 
     // When "Open panes in background" created this terminal, suppress ALL
     // focus attempts until the user explicitly activates this pane.
@@ -1515,6 +1520,7 @@ export default function TerminalPane({
       }
       observer.disconnect();
       fileLinkDisposable.dispose();
+      linkUnderlineDispose();
       dataDisposable.dispose();
       resizeDisposable.dispose();
       scrollDisposable.dispose();

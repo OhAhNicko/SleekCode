@@ -688,7 +688,11 @@ export default function TerminalPaneNative({
       // "isTerminal" branch (Clear / Split / Close Pane items) lights up.
       const u3 = await subscribeRButton(termId, (p) => {
         if (cancelled) return;
-        const paneEl = paneDivRef.current;
+        // p.x/p.y are pane-HWND-local logical px, and the native HWND covers
+        // terminalDivRef (the content anchor) — NOT paneDivRef, which starts
+        // one header higher. Using paneDivRef here opened the context menu
+        // ~30px ABOVE the cursor (user-reported 2026-07-24).
+        const paneEl = terminalDivRef.current ?? paneDivRef.current;
         if (!paneEl) return;
         const r = paneEl.getBoundingClientRect();
         const clientX = r.left + p.x;

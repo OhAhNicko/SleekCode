@@ -250,6 +250,12 @@ struct ChildState {
     /// WM_LBUTTONDOWN, cleared on WM_LBUTTONUP and on capture loss. Gates
     /// WM_MOUSEMOVE's selection-extend branch.
     lbutton_down: bool,
+    /// R4-mouse: last PTY-reported motion cell — coalescing key for
+    /// mouse-mode move reports. SEPARATE from `last_cell_hover`: the JS
+    /// hover/link pipeline runs in mouse mode too (xterm parity — links stay
+    /// hoverable inside TUI apps), and a shared key would let each branch
+    /// suppress the other's first emit for a cell.
+    last_mouse_report_cell: Option<(i64, u32)>,
     /// R3: last emitted (line, col) for cell_hover coalescing. The hover
     /// event fires only when (line, col) differs from the previous emit so
     /// sub-cell mouse jitter doesn't flood the bus. Reset to None on
@@ -391,6 +397,7 @@ impl PlatformWindow {
                 last_passthrough: None,
                 term: None,
                 lbutton_down: false,
+                last_mouse_report_cell: None,
                 last_cell_hover: None,
                 last_link_hover: None,
                 mouse_tracking: false,
@@ -2379,15 +2386,15 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
         WM_SETCURSOR => {
-            // Ctrl over a JS-detected link => hand cursor (Ctrl+Click opens).
-            // Everything else falls through to the class cursor (arrow).
+            // Hovering a JS-detected link => hand cursor, no modifier needed
+            // (user decision 2026-07-24: the hand shows on plain hover; the
+            // Ctrl requirement stays on the CLICK only — the tooltip already
+            // says "Ctrl+Click"). Everything else falls through to the class
+            // cursor (arrow).
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
             if !state_ptr.is_null() && (*state_ptr).hover_link_active {
-                let ctrl = (GetKeyState(VK_CONTROL_RAW as i32) as u16 & 0x8000) != 0;
-                if ctrl {
-                    SetCursor(LoadCursorW(HINSTANCE::default(), IDC_HAND).unwrap_or_default());
-                    return LRESULT(1);
-                }
+                SetCursor(LoadCursorW(HINSTANCE::default(), IDC_HAND).unwrap_or_default());
+                return LRESULT(1);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -2598,12 +2605,12 @@ unsafe extern "system" fn wnd_proc(
                     };
                     if let Some(btn) = emit {
                         let (x_cell, y_cell) = px_to_cell_1based(x_px, y_px, (*state_ptr).cell_w_px, (*state_ptr).cell_h_px);
-                        // Coalesce: only emit when the cell changed. xterm
+                        // Coalesce: only report when the cell changed. xterm
                         // mouse reports are spammy enough without sub-cell
-                        // jitter — re-use last_cell_hover as the dedup key.
+                        // jitter. Own key — see last_mouse_report_cell docs.
                         let key = (y_cell as i64, x_cell);
-                        if (*state_ptr).last_cell_hover != Some(key) {
-                            (*state_ptr).last_cell_hover = Some(key);
+                        if (*state_ptr).last_mouse_report_cell != Some(key) {
+                            (*state_ptr).last_mouse_report_cell = Some(key);
                             let fmt = mouse_format(modes);
                             if let Some(bytes) = encode_mouse_event(
                                 btn, x_cell, y_cell, ctrl, shift, alt, true, true, fmt,
@@ -2614,12 +2621,12 @@ unsafe extern "system" fn wnd_proc(
                             }
                         }
                     }
-                    // SKIP cell_hover / link_hover / selection-extend / passthrough
-                    // emissions while a TUI is consuming raw mouse events — they
-                    // would clutter the React side with hover effects the TUI
-                    // never knows about. Re-arm TrackMouseEvent already happened
-                    // above so WM_MOUSELEAVE still fires.
-                    return LRESULT(0);
+                    // Do NOT return: cell_hover / link_hover below keep running
+                    // in mouse mode (xterm parity — links in TUI apps like the
+                    // Claude CLI stay hoverable + Ctrl+Clickable; the user hit
+                    // exactly this gap 2026-07-24). Only selection-extend and
+                    // the splitter edge-band are skipped while the TUI owns the
+                    // mouse (both gated on mouse_mode_active below).
                 }
 
                 // R3: cell_hover. Translate physical px → cell coords using
@@ -2727,7 +2734,8 @@ unsafe extern "system" fn wnd_proc(
                 }
                 // R3-mouse: if we're mid-drag, extend the active selection.
                 // Cheap: brief lock, mutate the existing Selection, invalidate.
-                if (*state_ptr).lbutton_down {
+                // Skipped while the TUI owns the mouse (drag belongs to it).
+                if !mouse_mode_active && (*state_ptr).lbutton_down {
                     if let Some(point) = mouse_to_point(&*state_ptr, x_px, y_px) {
                         if let Some(term) = (*state_ptr).term.as_ref() {
                             let mut t = term.lock().expect("term lock poisoned");
@@ -2751,7 +2759,10 @@ unsafe extern "system" fn wnd_proc(
                 let near_right = x_px >= w_px - edge_px;
                 let near_top = y_px <= edge_px;
                 let near_bottom = y_px >= h_px - edge_px;
-                if near_left || near_right || near_top || near_bottom {
+                if mouse_mode_active {
+                    // Splitter edge-band passthrough stays off while the TUI
+                    // owns the mouse (pre-existing behavior).
+                } else if near_left || near_right || near_top || near_bottom {
                     let x = x_px as f32 / dpr;
                     let y = y_px as f32 / dpr;
                     let key = (x.round() as i32, y.round() as i32);
@@ -2781,6 +2792,7 @@ unsafe extern "system" fn wnd_proc(
                 (*state_ptr).mouse_tracking = false;
                 (*state_ptr).last_cell_hover = None;
                 (*state_ptr).last_link_hover = None;
+                (*state_ptr).last_mouse_report_cell = None;
                 if let (Some(app), Some(tid)) =
                     ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
                 {

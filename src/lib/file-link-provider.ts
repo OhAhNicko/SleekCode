@@ -57,6 +57,36 @@ export function findFilePathsInLine(lineText: string): FileLinkMatch[] {
   return matches;
 }
 
+// Plain http(s) URL matcher — kept in sync with useNativeFileLinks' URL_RE
+// and the Rust port (src-tauri/src/native_term/renderer/link_scan.rs).
+const URL_RANGE_RE = /https?:\/\/[^\s<>"'`)\]}]+/gi;
+
+/**
+ * Character ranges (start, end-exclusive) of every link-looking span in a
+ * line — URLs (trailing punctuation trimmed) + file paths (skipped when they
+ * start inside a URL range, which already covers them). Single JS source for
+ * the ALWAYS-ON link underline layers (user decision 2026-07-24); the native
+ * renderer ports the exact same rules in link_scan.rs — keep them in sync.
+ */
+export function findLinkRangesInLine(lineText: string): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  URL_RANGE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = URL_RANGE_RE.exec(lineText)) !== null) {
+    let end = m.index + m[0].length;
+    while (end > m.index && /[.,;:!?]/.test(lineText[end - 1])) end--;
+    if (end > m.index) out.push([m.index, end]);
+  }
+  const urlCount = out.length;
+  for (const f of findFilePathsInLine(lineText)) {
+    const inUrl = out
+      .slice(0, urlCount)
+      .some(([s, e]) => f.startIndex >= s && f.startIndex < e);
+    if (!inUrl) out.push([f.startIndex, f.endIndex]);
+  }
+  return out;
+}
+
 function getLineText(buffer: Terminal["buffer"]["active"], lineNumber: number): string {
   // lineNumber is 1-based from xterm
   const line: IBufferLine | undefined = buffer.getLine(lineNumber - 1);

@@ -146,36 +146,49 @@ pub fn set_region(hwnd: isize, rects_px: &[(i32, i32, i32, i32, i32)]) -> Result
     Ok(())
 }
 
-/// Full-window region for backdrop popups. A REGION (not region-removal):
-/// clearing the region entirely flipped the overlay between DWM composition
-/// (no region) and the classic path (region) on every backdrop open/close,
-/// and that composition flip repainted the overlay surface over the whole
-/// app — the "app flickers when closing the menu" bug. With the NC-guard
-/// subclass the classic path has no non-client area to paint (the old
-/// "Tauri App" caption can't come back), so staying regioned at ALL times is
-/// safe and transition-free: empty region <-> full region, same path.
+/// Show/hide the overlay WITHOUT activating it. This replaced the old
+/// empty-region<->full-region flips for popup open/close: `SetWindowRgn` on a
+/// VISIBLE window invalidates the window AND every window underneath the
+/// changed area (legacy GDI exposure), and the main window + its WebView2 /
+/// wgpu children then race the next DWM frame to re-present — losing the race
+/// painted the whole app in bare #0d1117 for 1-2 frames (the hardware-captured
+/// "flicker when menus open/close" bug; ~30% of transitions). Show/hide of a
+/// whole top-level window is a pure DWM composition op and invalidates
+/// nothing beneath. Raw ShowWindow (not tauri's show/hide) so ordering with
+/// the region calls in `overlay_set_region` is strictly synchronous.
 #[cfg(target_os = "windows")]
-pub fn set_full_region(hwnd: isize) -> Result<(), String> {
-    use windows::Win32::Foundation::{BOOL, HWND, RECT};
-    use windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn};
-    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+pub fn set_shown(hwnd: isize, shown: bool) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOWNA};
     unsafe {
-        let hwnd = HWND(hwnd as *mut _);
-        let mut rc = RECT::default();
-        if GetWindowRect(hwnd, &mut rc).is_err() {
-            return Err("GetWindowRect failed".to_string());
-        }
-        let rgn = CreateRectRgn(0, 0, rc.right - rc.left, rc.bottom - rc.top);
-        if rgn.is_invalid() {
-            return Err("CreateRectRgn failed".to_string());
-        }
-        if SetWindowRgn(hwnd, rgn, BOOL(0)) == 0 {
-            let _ = DeleteObject(rgn);
-            return Err("SetWindowRgn failed".to_string());
-        }
+        let _ = ShowWindow(HWND(hwnd as *mut _), if shown { SW_SHOWNA } else { SW_HIDE });
     }
-    Ok(())
 }
+
+/// Is the overlay currently shown? (WS_VISIBLE, ignoring owner minimize.)
+#[cfg(target_os = "windows")]
+pub fn is_shown(hwnd: isize) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+    unsafe { IsWindowVisible(HWND(hwnd as *mut _)).as_bool() }
+}
+
+/// Focus-handoff re-assert state (see `set_focusable`): number of retry
+/// ticks left on the FOCUS_RETRY_TIMER. While > 0, the NC-guard's WM_TIMER
+/// handler steals the foreground BACK to the overlay if a window of THIS
+/// process (main webview / a pane) grabbed it during the handoff settle
+/// window — Chromium's async click-focus in the main webview landed ~16-50ms
+/// AFTER SetForegroundWindow(overlay) and killed the popup input's caret
+/// (git dropdown "Search branches" steal, hardware-traced 2026-07-24).
+/// Cross-process foreground changes (alt-tab) are never fought.
+#[cfg(target_os = "windows")]
+static FOCUS_RETRIES: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+#[cfg(target_os = "windows")]
+const FOCUS_RETRY_TIMER: usize = 0x4F52; // "OR" — Overlay foreground Re-assert
+#[cfg(target_os = "windows")]
+const FOCUS_RETRY_INTERVAL_MS: u32 = 60;
+#[cfg(target_os = "windows")]
+const FOCUS_RETRY_TICKS: i32 = 5; // ~300ms settle window
 
 /// STRUCTURAL non-client kill for the overlay, same philosophy as the main
 /// window's accent-border subclass: styles are a losing battle (tao rewrites
@@ -201,6 +214,9 @@ pub fn install_nc_guard(hwnd: isize) {
     const WM_CONTEXTMENU: u32 = 0x007B;
     const WM_NCDESTROY: u32 = 0x0082;
     const WM_ERASEBKGND: u32 = 0x0014;
+    const WM_MOUSEACTIVATE: u32 = 0x0021;
+    const MA_NOACTIVATE: isize = 3;
+    const WM_TIMER: u32 = 0x0113;
     const SWP_FRAMECHANGED: u32 = 0x0020;
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOMOVE: u32 = 0x0002;
@@ -234,6 +250,7 @@ pub fn install_nc_guard(hwnd: isize) {
             cy: i32,
             flags: u32,
         ) -> i32;
+        fn KillTimer(hwnd: *mut c_void, id: usize) -> i32;
     }
 
     unsafe extern "system" fn nc_guard_proc(
@@ -264,6 +281,40 @@ pub fn install_nc_guard(hwnd: isize) {
             // bug. Claim "erased" and let the transparent webview own every
             // pixel.
             WM_ERASEBKGND => 1,
+            // Clicking a popup must NEVER move activation to the overlay:
+            // WS_EX_NOACTIVATE alone doesn't stop the WebView2 CHILD from
+            // stealing it, and the resulting deactivate/reactivate pair on
+            // the MAIN window ran its WM_NCACTIVATE path on every backdrop
+            // dismiss / item click (the flash race; same MA_NOACTIVATE
+            // mechanic the wgpu pane windows use). Keyboard-needing popups
+            // use the explicit overlay_set_focusable handoff instead.
+            WM_MOUSEACTIVATE => MA_NOACTIVATE,
+            // Focus-handoff settle guard: for ~300ms after set_focusable(true)
+            // took the foreground, steal it back if OUR OWN process's main
+            // window re-grabbed it (Chromium's async click-focus tail). See
+            // FOCUS_RETRIES docs above.
+            WM_TIMER if wparam == FOCUS_RETRY_TIMER => {
+                use std::sync::atomic::Ordering;
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+                };
+                let left = FOCUS_RETRIES.fetch_sub(1, Ordering::SeqCst);
+                if left <= 0 {
+                    FOCUS_RETRIES.store(0, Ordering::SeqCst);
+                    KillTimer(hwnd, FOCUS_RETRY_TIMER);
+                    return 0;
+                }
+                let fg = GetForegroundWindow();
+                if !fg.0.is_null() && fg.0 as isize != hwnd as isize {
+                    let mut pid = 0u32;
+                    let _ = GetWindowThreadProcessId(fg, Some(&mut pid));
+                    if pid == std::process::id() {
+                        let _ = SetForegroundWindow(HWND(hwnd as *mut _));
+                    }
+                }
+                0
+            }
             WM_NCDESTROY => {
                 RemoveWindowSubclass(hwnd, Some(nc_guard_proc), SUBCLASS_ID);
                 DefSubclassProc(hwnd, msg, wparam, lparam)
@@ -299,18 +350,32 @@ pub fn install_nc_guard(hwnd: isize) {
 /// the pane HWND via the existing native_term_focus_keyboard path).
 #[cfg(target_os = "windows")]
 pub fn set_focusable(overlay_hwnd: isize, main_hwnd: isize, focusable: bool) {
+    use std::sync::atomic::Ordering;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowLongPtrW, SetForegroundWindow, SetWindowLongPtrW,
-        GWL_EXSTYLE, WS_EX_NOACTIVATE,
+        GetForegroundWindow, GetWindowLongPtrW, KillTimer, SetForegroundWindow,
+        SetTimer, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
     };
     unsafe {
         let overlay = HWND(overlay_hwnd as *mut _);
         let ex = GetWindowLongPtrW(overlay, GWL_EXSTYLE);
         if focusable {
             SetWindowLongPtrW(overlay, GWL_EXSTYLE, ex & !(WS_EX_NOACTIVATE.0 as isize));
+            // The overlay is hidden while no popup is open (see set_shown);
+            // SetForegroundWindow needs a visible window. The popup's region
+            // call shows it in the same commit, but ordering across the two
+            // invokes isn't guaranteed — make shown-ness explicit here.
+            set_shown(overlay_hwnd, true);
             let _ = SetForegroundWindow(overlay);
+            // Settle guard: the opening click's async focus tail in the MAIN
+            // webview can re-grab the foreground ~16-50ms from now and kill
+            // the popup input's caret. Arm the NC-guard's re-assert timer
+            // (see FOCUS_RETRIES) to steal it back for ~300ms.
+            FOCUS_RETRIES.store(FOCUS_RETRY_TICKS, Ordering::SeqCst);
+            let _ = SetTimer(overlay, FOCUS_RETRY_TIMER, FOCUS_RETRY_INTERVAL_MS, None);
         } else {
+            FOCUS_RETRIES.store(0, Ordering::SeqCst);
+            let _ = KillTimer(overlay, FOCUS_RETRY_TIMER);
             SetWindowLongPtrW(overlay, GWL_EXSTYLE, ex | (WS_EX_NOACTIVATE.0 as isize));
             // Only hand the foreground to main if WE still hold it — if the
             // user alt-tabbed away while the popup was open, yanking focus
@@ -326,17 +391,17 @@ pub fn set_focusable(overlay_hwnd: isize, main_hwnd: isize, focusable: bool) {
 pub fn set_focusable(_overlay_hwnd: isize, _main_hwnd: isize, _focusable: bool) {}
 
 /// Remove the window region entirely (backdrop popups). With NO region the
-/// window is composed by DWM again — the classic-NC fallback that a region
-/// forces can never run — and the whole overlay is hit-testable, which is
-/// exactly what a backdrop popup wants (it must catch the outside click that
+/// window is composed by DWM — the classic-NC fallback that a region forces
+/// can never run — and the whole overlay is hit-testable, which is exactly
+/// what a backdrop popup wants (it must catch the outside click that
 /// dismisses it). Transparency + real drop shadows render on this path.
+/// MUST only be called while the overlay is HIDDEN — see `set_shown`.
 #[cfg(target_os = "windows")]
-#[allow(dead_code)] // kept: the region-removal primitive, unused since backdrop went full-region
 pub fn clear_region(hwnd: isize) -> Result<(), String> {
     use windows::Win32::Foundation::{BOOL, HWND};
     use windows::Win32::Graphics::Gdi::{SetWindowRgn, HRGN};
     unsafe {
-        if SetWindowRgn(HWND(hwnd as *mut _), HRGN::default(), BOOL(1)) == 0 {
+        if SetWindowRgn(HWND(hwnd as *mut _), HRGN::default(), BOOL(0)) == 0 {
             return Err("SetWindowRgn (clear) failed".to_string());
         }
     }
@@ -352,6 +417,16 @@ pub fn apply_ex_styles(_hwnd: isize) {}
 #[allow(dead_code)]
 pub fn clear_region(_hwnd: isize) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
+pub fn set_shown(_hwnd: isize, _shown: bool) {}
+
+#[cfg(not(target_os = "windows"))]
+#[allow(dead_code)]
+pub fn is_shown(_hwnd: isize) -> bool {
+    false
 }
 
 #[cfg(not(target_os = "windows"))]

@@ -617,9 +617,16 @@ function Toast({
 /**
  * Hovered file-path tooltip (native pane). Display-only; positioned at a
  * pane-LOCAL offset computed by the main webview (payload.top/left) plus the
- * live pane rect. Being in the region makes its pixels visible but also
- * click-dead — acceptable for a hover tooltip. Colors are the component's
- * original untthemed values.
+ * live pane rect. 1:1 port of the xterm pane's `.ezy-file-link-tooltip`
+ * (index.css): same background/border/radius/shadow, `.ezy-flt-label` +
+ * `.ezy-flt-kbd` typography (xterm/native design-parity rule).
+ *
+ * The pill sits inside a transparent PADDED wrapper (the registered region
+ * element): the padding gives the `0 4px 12px` drop shadow room INSIDE the
+ * 1-bit clip instead of being cropped at the pill's edge, and keeps the
+ * region clear of the hovered line so the pointer never enters it (region
+ * under the cursor would steal the mouse from the pane → hover-close
+ * oscillation).
  */
 function FileLinkTip({
   msg,
@@ -638,49 +645,63 @@ function FileLinkTip({
     [registerEl, msg.id],
   );
   const rect = msg.rect!;
+  // Shadow bleed room inside the clip region (>= the shadow's max extent:
+  // y-offset 4 + blur 12). p.top/p.left are the PILL's top-left (xterm's
+  // clientY-36 / clientX placement); the wrapper offsets by the padding so
+  // the pill lands exactly there. In above-mode the bottom padding is 0 —
+  // the region's bottom edge must never reach the pointer (a region under
+  // the cursor steals the mouse from the pane → hover-close oscillation),
+  // so the below-the-pill part of the shadow is sacrificed there.
+  const PAD = 14;
+  const padBottom = p.above ? 0 : PAD;
   return (
     <div
       ref={ref}
       aria-hidden
       style={{
         position: "fixed",
-        top: rect.y + (p.top ?? 0),
-        left: rect.x + (p.left ?? 0),
-        // `above`: p.top is the hovered line's top — anchor the tooltip's
-        // BOTTOM there so it sits above the line, clear of the cursor.
-        transform: p.above ? "translateY(-100%)" : undefined,
+        top: rect.y + (p.top ?? 0) - PAD,
+        left: rect.x + (p.left ?? 0) - PAD,
+        padding: `${PAD}px ${PAD}px ${padBottom}px ${PAD}px`,
         pointerEvents: "none",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "4px 10px",
-        background: "var(--ezy-surface-raised, #1c2128)",
-        boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
-        borderRadius: 6,
-        whiteSpace: "nowrap",
-        fontFamily: "system-ui, -apple-system, sans-serif",
       }}
     >
-      <span
+      <div
         style={{
-          fontSize: 12,
-          color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "4px 10px",
+          background: "var(--ezy-surface-raised, #1c2128)",
+          border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+          borderRadius: 6,
+          boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)",
+          whiteSpace: "nowrap",
+          fontFamily: "system-ui, -apple-system, sans-serif",
         }}
       >
-        Open in MADE
-      </span>
-      <span
-        style={{
-          fontSize: 11,
-          padding: "1px 5px",
-          background: "var(--ezy-surface, #161b22)",
-          boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
-          borderRadius: 3,
-          color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-        }}
-      >
-        Ctrl+Click
-      </span>
+        <span
+          style={{
+            fontSize: 12,
+            color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+          }}
+        >
+          Open in MADE
+        </span>
+        <kbd
+          style={{
+            fontSize: 11,
+            padding: "1px 5px",
+            background: "var(--ezy-surface, #161b22)",
+            border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+            borderRadius: 3,
+            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            fontFamily: "system-ui, -apple-system, sans-serif",
+          }}
+        >
+          Ctrl+Click
+        </kbd>
+      </div>
     </div>
   );
 }

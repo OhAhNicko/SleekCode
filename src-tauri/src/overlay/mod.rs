@@ -29,17 +29,35 @@ pub struct Rect {
     pub radius: f64,
 }
 
-/// Clip the overlay to the union of currently-open popup rects (rounded to each
-/// popup's corner radius). Inside a popup the overlay is hit-testable so the
-/// DOM gets the click; everywhere else the overlay is not part of the window and
-/// the click falls through to the native pane. Empty vec => fully click-through.
-/// Rects convert logical->physical via the overlay's scale factor (rounded to
-/// the nearest physical px so the clip tracks the popup's opaque edge).
+/// The region tuples last applied via SetWindowRgn, or None while the window
+/// is REGIONLESS (never regioned, or cleared for backdrop mode). Lets the
+/// command skip identical re-applies (the ~750ms popup keepalives re-emit the
+/// same rects) and know whether a clear is needed before backdrop mode.
+#[cfg(target_os = "windows")]
+static LAST_REGION: std::sync::Mutex<Option<Vec<(i32, i32, i32, i32, i32)>>> =
+    std::sync::Mutex::new(None);
+
+/// Drive the overlay's visibility + click-through for the currently-open
+/// popups. THE hard rule (hardware-captured 2026-07-24): `SetWindowRgn` on a
+/// VISIBLE window invalidates every window beneath the changed area, and the
+/// main window + its WebView2/wgpu children then race the next DWM frame to
+/// re-present — losing the race showed the whole app as bare #0d1117 for 1-2
+/// frames (the menu open/close flicker, ~30% of transitions). So popup
+/// open/close is expressed as SHOW/HIDE of the whole overlay window (a pure
+/// DWM composition op that invalidates nothing beneath), and every region
+/// change happens while the window is HIDDEN.
 ///
-/// `backdrop: true` (dismiss-on-outside-click popups) REMOVES the region
-/// instead: a regionless window is DWM-composed (no classic-NC fallback, real
-/// shadows) and fully hit-testable — every click lands in the overlay, which
-/// is what a backdrop popup needs. `rects` is ignored in that mode.
+/// Modes:
+/// - `backdrop: true` (dismiss-on-outside-click menus): REGIONLESS + shown.
+///   Regionless = DWM-composed (no classic-NC fallback, real shadows) and
+///   fully hit-testable, which a backdrop popup needs anyway (it must catch
+///   the outside click). `rects` is ignored in this mode.
+/// - non-empty `rects` (ambient popups): clip to the union of popup rects
+///   (rounded to each popup's CSS radius; logical->physical via the scale
+///   factor) + shown. Inside a popup the overlay is hit-testable; elsewhere
+///   clicks fall through to the panes.
+/// - empty `rects`: hidden. No region op at all on the close path; a stale
+///   region stays on the hidden window and is corrected before the next show.
 #[tauri::command]
 pub fn overlay_set_region(
     app: tauri::AppHandle,
@@ -53,11 +71,28 @@ pub fn overlay_set_region(
             .get_webview_window("overlay")
             .ok_or_else(|| "overlay window not found".to_string())?;
         let hwnd = overlay.hwnd().map_err(|e| e.to_string())?.0 as isize;
+        let mut last = LAST_REGION
+            .lock()
+            .map_err(|_| "LAST_REGION poisoned".to_string())?;
+
         if backdrop.unwrap_or(false) {
-            // Full-window REGION, not region-removal — see set_full_region's
-            // note on the DWM/classic composition-flip flicker.
-            return win32::set_full_region(hwnd);
+            if last.is_some() {
+                // A tight region is installed (an ambient popup was open).
+                // Hide -> clear -> show: the SetWindowRgn lands on a hidden
+                // window, so nothing beneath gets invalidated.
+                win32::set_shown(hwnd, false);
+                win32::clear_region(hwnd)?;
+                *last = None;
+            }
+            win32::set_shown(hwnd, true);
+            return Ok(());
         }
+
+        if rects.is_empty() {
+            win32::set_shown(hwnd, false);
+            return Ok(());
+        }
+
         let scale = overlay.scale_factor().map_err(|e| e.to_string())?;
         let px: Vec<(i32, i32, i32, i32, i32)> = rects
             .iter()
@@ -76,7 +111,22 @@ pub fn overlay_set_region(
                 )
             })
             .collect();
-        win32::set_region(hwnd, &px)
+
+        if last.as_ref() != Some(&px) {
+            // Regionless->tight while visible would be a live SetWindowRgn on
+            // a fully-composed window — hide across the change instead.
+            // Tight->tight while visible stays LIVE: anchored popups stream
+            // their rect while a pane moves, and hide/show per update would
+            // strobe the popup itself; a tight->tight change only invalidates
+            // the small popup-rect areas.
+            if last.is_none() && win32::is_shown(hwnd) {
+                win32::set_shown(hwnd, false);
+            }
+            win32::set_region(hwnd, &px)?;
+            *last = Some(px);
+        }
+        win32::set_shown(hwnd, true);
+        Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {

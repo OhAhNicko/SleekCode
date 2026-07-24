@@ -2,6 +2,7 @@ pub mod cursor;
 pub mod damage;
 pub mod glyph_atlas;
 pub mod grid;
+pub mod link_scan;
 pub mod pipeline;
 pub mod quad_pipeline;
 

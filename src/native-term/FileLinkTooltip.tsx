@@ -55,19 +55,21 @@ export default function FileLinkTooltip({
   // only for the top rows where above would clip.
   const above = !!hover && hover.line >= 2;
   if (hover) {
-    // Above: bottom-anchored slightly INTO the line's leading (+6) so the
-    // tooltip visually hugs the link — the mirrored cell metrics drift a few
-    // px from the real glyph grid, and any extra gap reads as "disconnected".
-    // The line's leading is empty space, so a small overlap never covers text.
-    top = above ? hover.line * ch + 2 : (hover.line + 1) * ch + 4;
+    // Exact xterm-parity placement (file-link-provider hover): the xterm
+    // tooltip's TOP sits at clientY - 36 (flip: clientY + 20). The native
+    // hover pipeline is cell-based, so clientY is estimated as the hovered
+    // line's vertical middle. `top` is the PILL's top edge, pane-local.
+    const cursorYEst = hover.line * ch + ch / 2;
+    top = above ? cursorYEst - 36 : cursorYEst + 20;
     // Anchor at the cell under the POINTER, not the match start — xterm's
     // tooltip sits at the mouse position (left = clientX).
     left = (hover.pointerCol ?? hover.col) * cw;
 
-    // Clamp to pane bounds. The tooltip now has fixed content (the xterm
-    // design: "Open in MADE" + Ctrl+Click chip) — ~170px wide.
+    // Clamp to pane bounds. Fixed content (the xterm design: "Open in MADE"
+    // + Ctrl+Click chip) is ~170px wide + the overlay wrapper's 2x14px
+    // shadow padding.
     const paneWidth = paneRef.current?.clientWidth ?? 0;
-    const approxWidth = 170;
+    const approxWidth = 200;
     if (paneWidth > 0 && left + approxWidth > paneWidth - 8) {
       left = Math.max(0, paneWidth - approxWidth - 8);
     }
