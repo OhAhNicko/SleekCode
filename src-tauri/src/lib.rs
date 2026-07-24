@@ -143,6 +143,10 @@ mod win32_border {
         recomposite_pending: bool,
         was_minimized: bool,
         was_maximized: bool,
+        /// Client size (px) of the last bounds sync actually pushed to the
+        /// WebView2 controller. `sync_webview_bounds` skips identical
+        /// re-syncs — see its docs.
+        last_synced_px: Option<(i32, i32)>,
     }
 
     extern "system" {
@@ -381,6 +385,30 @@ mod win32_border {
         if width <= 0 || height <= 0 {
             return;
         }
+
+        // IDEMPOTENCE GUARD (2026-07-24). WM_WINDOWPOSCHANGED fires for pure
+        // ACTIVATION / Z-ORDER changes too, not just geometry — and showing or
+        // hiding the owned overlay window (every menu, dropdown and context
+        // menu) produces exactly that on the owner. Hardware-logged: each menu
+        // toggle drove TWO full bounds re-syncs at an unchanged 1902x825, i.e.
+        // SetBounds + a SetWindowPos on the WebView2 child + a
+        // NotifyParentWindowPositionChanged, each one re-laying-out Chromium
+        // and re-painting main, for no geometry change at all.
+        //
+        // Re-syncing identical bounds can only cost frames: the whole class of
+        // bug in this window (see docs/learnings/2026-07-24-overlay-region-
+        // flicker.md) is "main loses its composed children for a frame when
+        // something churns its child windows". Skip the no-op.
+        //
+        // Moves are unaffected: screen-position changes are notified from the
+        // WM_MOVE / WM_MOVING arm, which calls
+        // NotifyParentWindowPositionChanged directly. Real size changes
+        // (resize, maximize/restore, DPI, display transitions, the +1/-1
+        // recomposite nudge) all differ from the cache and sync as before.
+        if state.last_synced_px == Some((width, height)) {
+            return;
+        }
+        state.last_synced_px = Some((width, height));
 
         let bounds = WebViewRect {
             left: 0,
@@ -725,6 +753,7 @@ mod win32_border {
                 recomposite_pending: false,
                 was_minimized: false,
                 was_maximized: false,
+                last_synced_px: None,
             });
             SetWindowSubclass(
                 hwnd,
@@ -6758,6 +6787,11 @@ pub fn run() {
             {
                 if let Some(window) = app.get_webview_window("main") {
                     window.open_devtools();
+                    // Dev builds identify themselves in the title bar / taskbar /
+                    // Get-Process MainWindowTitle, so a debug instance is never
+                    // mistaken for the installed production app (which may hold
+                    // live work — never kill it by name).
+                    let _ = window.set_title("MADE_debug");
                 }
             }
 

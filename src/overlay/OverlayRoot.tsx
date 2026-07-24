@@ -80,9 +80,20 @@ export function OverlayRoot() {
       if (msg.open && msg.rect) lastSeen.current.set(msg.id, Date.now());
       else lastSeen.current.delete(msg.id);
       setPopups((prev) => {
+        // Identity-stable no-ops: every popup hook emits `open:false` on mount
+        // and unmount, so a burst of closes for ids that were never open used
+        // to allocate a new Map each time -> re-render -> a fresh
+        // overlay_set_region invoke per message (hardware-logged 2026-07-24:
+        // a dozen redundant region/show-hide round-trips inside a single ms).
+        // Returning `prev` unchanged keeps the region call on real changes only.
+        if (!(msg.open && msg.rect)) {
+          if (!prev.has(msg.id)) return prev;
+          const next = new Map(prev);
+          next.delete(msg.id);
+          return next;
+        }
         const next = new Map(prev);
-        if (msg.open && msg.rect) next.set(msg.id, msg);
-        else next.delete(msg.id);
+        next.set(msg.id, msg);
         return next;
       });
     }).then((u) => {
@@ -227,6 +238,8 @@ function OverlayPopup({
       return <Toast msg={msg} registerEl={registerEl} />;
     case "file-link-tooltip":
       return <FileLinkTip msg={msg} registerEl={registerEl} />;
+    case "history-scrubber":
+      return <HistoryScrubber msg={msg} registerEl={registerEl} />;
     case "ime-composition":
       return <ImeComposition msg={msg} registerEl={registerEl} />;
     case "jump-btn":
@@ -701,6 +714,136 @@ function FileLinkTip({
         >
           Ctrl+Click
         </kbd>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * TUI-fullscreen history scrubber (kind "history-scrubber"). A right-edge
+ * scrollbar over the native pane, shown while the user is viewing frame
+ * history (frozen). payload { index, count }: index 0 = OLDEST frame (thumb at
+ * top), count-1 = newest (thumb at bottom). Dragging bounces a "seek" action
+ * ({ index }) to the main webview, which calls native_term_history_seek.
+ *
+ * The registered region element is a WIDE transparent hit-strip (not just the
+ * visible track) so a vertical drag has horizontal slop before the pointer
+ * leaves the overlay's clip region (outside the region, clicks fall through to
+ * the pane and the drag would stall — the overlay can't OS-capture the mouse).
+ */
+function HistoryScrubber({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as { index?: number; count?: number };
+  const count = Math.max(1, p.count ?? 1);
+  const index = Math.min(Math.max(0, p.index ?? 0), count - 1);
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const stripRef = useRef<HTMLDivElement | null>(null);
+  const rect = msg.rect!;
+
+  const STRIP_W = 44; // transparent hit area (drag slop)
+  const TRACK_W = 6;
+  const PAD_Y = 6;
+  const trackH = Math.max(0, rect.height - PAD_Y * 2);
+  const thumbH =
+    count <= 1 ? trackH : Math.max(28, trackH / count);
+  const thumbY =
+    count <= 1 ? 0 : (index / (count - 1)) * (trackH - thumbH);
+
+  // Map a client-Y within the track to a frame index (0 = oldest/top).
+  const seekFromY = (clientY: number) => {
+    const el = stripRef.current;
+    if (!el) return;
+    const b = el.getBoundingClientRect();
+    const localY = clientY - b.top - PAD_Y - thumbH / 2;
+    const denom = Math.max(1, trackH - thumbH);
+    const frac = Math.min(1, Math.max(0, localY / denom));
+    const idx = Math.round(frac * (count - 1));
+    emitOverlayAction({ id: msg.id, action: "seek", data: { index: idx } });
+  };
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+    seekFromY(e.clientY);
+  };
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (e.buttons & 1) seekFromY(e.clientY);
+  };
+
+  return (
+    <div
+      ref={(el) => {
+        stripRef.current = el;
+        ref(el);
+      }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      style={{
+        position: "fixed",
+        left: rect.x + rect.width - STRIP_W,
+        top: rect.y,
+        width: STRIP_W,
+        height: rect.height,
+        pointerEvents: "auto",
+        cursor: "ns-resize",
+        display: "flex",
+        justifyContent: "flex-end",
+        touchAction: "none",
+      }}
+    >
+      {/* Track */}
+      <div
+        style={{
+          position: "relative",
+          width: TRACK_W,
+          margin: `${PAD_Y}px 4px`,
+          borderRadius: TRACK_W / 2,
+          background: "var(--ezy-border, rgba(255,255,255,0.12))",
+        }}
+      >
+        {/* Thumb */}
+        <div
+          style={{
+            position: "absolute",
+            top: thumbY,
+            left: 0,
+            width: TRACK_W,
+            height: thumbH,
+            borderRadius: TRACK_W / 2,
+            background: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
+          }}
+        />
+      </div>
+      {/* Position pill, vertically centered on the thumb */}
+      <div
+        style={{
+          position: "absolute",
+          right: STRIP_W + 2,
+          top: Math.min(
+            Math.max(0, rect.height - 20),
+            PAD_Y + thumbY + thumbH / 2 - 10,
+          ),
+          padding: "2px 7px",
+          borderRadius: 4,
+          background: "var(--ezy-surface-raised, #1c2128)",
+          boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.14))",
+          color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+          fontFamily: "Inter, system-ui, sans-serif",
+          fontSize: 10,
+          fontVariantNumeric: "tabular-nums",
+          whiteSpace: "nowrap",
+          userSelect: "none",
+        }}
+      >
+        {index + 1}/{count}
       </div>
     </div>
   );

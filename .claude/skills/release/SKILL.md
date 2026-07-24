@@ -6,6 +6,19 @@ argument-hint: "[version]"
 
 Bump the app version, trigger a CI release build, and populate the GitHub release body with a changelog generated from git history. The changelog feeds the in-app ChangelogModal after auto-updates, so every release needs real notes — never leave the default "See the assets below" placeholder.
 
+0. Branch & working-tree pre-flight (do this FIRST — releases must cut from `main`, and `git add -A` in step 5 sweeps EVERYTHING dirty into the release):
+   - `current=$(git branch --show-current)` and `git status --short`.
+   - **Surface dirty state before touching anything.** If the working tree is dirty, list the files and CONFIRM with the user that ALL of it is meant to ship this version — step 5's `git add -A` will sweep every modified/untracked file (including other sessions' WIP) into the release commit. Never sweep silently.
+   - **Already on `main` and clean** → skip to step 1.
+   - **On a feature branch (multi-branch flow — the branch holds the work, `main` is the release trunk):**
+     a. `git fetch origin`, then confirm a clean fast-forward is possible:
+        - `git rev-list --count main..$current` → commits the branch is ahead (should be > 0), and
+        - `git rev-list --count $current..origin/main` → **must be 0** (the branch already contains `origin/main`). If it's > 0, `main` advanced independently — STOP and ask; a plain fast-forward would drop those commits, so a merge/rebase is needed first.
+     b. **Commit the feature WIP on the branch as its OWN `feat/fix(...)` commit(s)** describing the work — NOT the version bump. Keep the feature commit(s) and the later `chore: bump version` commit separate so history reads cleanly. If unsure what the WIP is, read the diff and write an accurate message (don't guess).
+     c. Fast-forward `main` up to the branch: `git switch main && git merge --ff-only $current`. Use `git switch` (non-destructive once the tree is clean); never `git checkout`/`reset`/`restore` files — see Rule #1 in CLAUDE.md.
+     d. Continue with step 1 onward **from `main`** — the version bump, commit, and tag all land on `main` (the source of truth), not the feature branch.
+   - After the release goes out, the local feature branch is fully merged into `main`; ask the user before deleting it.
+
 1. Determine target version:
    - If `$ARGUMENTS` is a valid semver (e.g. `0.2.0`): use it.
    - If `$ARGUMENTS` is empty or missing: run `gh release list --limit 1` to get the latest published release tag, then auto-increment the patch version (e.g. `0.1.2` → `0.1.3`). If no releases exist, fall back to reading `package.json` and incrementing that.
@@ -17,6 +30,7 @@ Bump the app version, trigger a CI release build, and populate the GitHub releas
    - `package.json` → `"version": "<version>"`
    - `src-tauri/Cargo.toml` → `version = "<version>"`
    - `src-tauri/tauri.conf.json` → `"version": "<version>"`
+   - Also `src-tauri/Cargo.lock` (the `made` package entry). A running `tauri:dev` cargo watcher on Windows auto-regenerates it to `<version>` the moment `Cargo.toml` is bumped, and step 5's `git add -A` commits it — so it usually just works. If no dev server is running, edit the `made` entry by hand so the lock doesn't drift from `Cargo.toml` and fail CI.
 4. Run `npm run typecheck` — if it fails, STOP and report errors.
 5. `git add -A && git commit -m "chore: bump version to <version>"`
 6. `git push`
