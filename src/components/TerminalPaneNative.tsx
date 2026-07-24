@@ -688,7 +688,6 @@ export default function TerminalPaneNative({
       // "isTerminal" branch (Clear / Split / Close Pane items) lights up.
       const u3 = await subscribeRButton(termId, (p) => {
         if (cancelled) return;
-        if (import.meta.env.DEV) console.debug("[rbtn] event", termId, p.x, p.y);
         const paneEl = paneDivRef.current;
         if (!paneEl) return;
         const r = paneEl.getBoundingClientRect();

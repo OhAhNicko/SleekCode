@@ -15,6 +15,10 @@ import PaneExpandButton from "./PaneExpandButton";
 
 const TOOL_ORDER: TerminalType[] = ["claude", "codex", "gemini", "shell"];
 
+// Stable fallback so the session-picker anchor hook's effect (anchorRef in
+// deps) doesn't restart every render when no anchor is passed.
+const NULL_ANCHOR_REF: { current: HTMLDivElement | null } = { current: null };
+
 /** All statusline toggle keys per CLI */
 export const STATUSLINE_FEATURES: Record<string, { label: string; clis: TerminalType[] }> = {
   filePath:       { label: "File path",            clis: ["claude", "codex", "gemini"] },
@@ -325,7 +329,7 @@ function SessionPicker({
     id: "terminal-header-session-picker",
     kind: "session-picker",
     open: true, // component only mounts while the picker is open
-    anchorRef: anchorRef ?? { current: null },
+    anchorRef: anchorRef ?? NULL_ANCHOR_REF,
     payload: {
       sessions: mergedSessions.map((m) => ({
         id: m.id,

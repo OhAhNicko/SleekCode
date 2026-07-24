@@ -40,7 +40,3 @@ ReactDOM.createRoot(document.getElementById("overlay-root") as HTMLElement).rend
     <OverlayRoot />
   </React.StrictMode>,
 );
-
-// hmr-bump 2
-
-// hmr-bump 3

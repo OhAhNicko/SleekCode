@@ -35,19 +35,27 @@ export default function GlobalContextMenu() {
   const isTerminalRef = useRef(false);
 
   // Emit open/close + model to the overlay whenever the menu state changes.
+  // Re-emit as a ~750ms keepalive while open: the overlay's ghost-sweep
+  // drops any popup whose owner goes silent for 2.5s (bus is fire-and-
+  // forget), and this menu doesn't use the keepalive-equipped hooks.
   useEffect(() => {
     if (!menu) {
       emitOverlayPopup({ id: POPUP_ID, kind: "context-menu", open: false, rect: null });
       return;
     }
     isTerminalRef.current = menu.isTerminal;
-    emitOverlayPopup({
-      id: POPUP_ID,
-      kind: "context-menu",
-      open: true,
-      rect: { x: menu.x, y: menu.y, width: 0, height: 0 },
-      payload: { sections: buildContextMenuSections(menu.isTerminal) },
-    });
+    const send = () => {
+      emitOverlayPopup({
+        id: POPUP_ID,
+        kind: "context-menu",
+        open: true,
+        rect: { x: menu.x, y: menu.y, width: 0, height: 0 },
+        payload: { sections: buildContextMenuSections(menu.isTerminal) },
+      });
+    };
+    send();
+    const iv = setInterval(send, 750);
+    return () => clearInterval(iv);
   }, [menu]);
 
   // Run the action the overlay reports back.
@@ -71,8 +79,6 @@ export default function GlobalContextMenu() {
   // Open on right-click (bubble phase; skip if another handler claimed it).
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (import.meta.env.DEV)
-        console.debug("[ctxmenu] window handler", e.clientX, e.clientY, e.defaultPrevented);
       if (e.defaultPrevented) return;
       e.preventDefault();
       const target = e.target as HTMLElement;

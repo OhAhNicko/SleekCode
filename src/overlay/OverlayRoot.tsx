@@ -168,13 +168,6 @@ export function OverlayRoot() {
         });
       }
     }
-    if (import.meta.env.DEV) {
-      // Debug seam readable from OUTSIDE (GetWindowTextW): expose the live
-      // popup ids + region mode in the window title. DEV only.
-      document.title = `OV[${needsBackdrop ? "B" : "A"}] ${Array.from(
-        popups.keys(),
-      ).join(",")}`;
-    }
     invoke("overlay_set_region", { rects, backdrop: needsBackdrop }).catch((e) =>
       console.error("[overlay] overlay_set_region failed", e),
     );
