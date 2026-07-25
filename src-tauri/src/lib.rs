@@ -2,6 +2,7 @@ mod preview_proxy;
 mod pty;
 mod native_term;
 mod overlay;
+mod file_watch;
 
 use std::process::{Child, Command};
 use std::sync::Mutex;
@@ -1321,6 +1322,45 @@ async fn read_file(path: String) -> Result<String, String> {
 #[tauri::command]
 async fn write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, &content).map_err(|e| format!("Failed to write file: {}", e))
+}
+
+/// Read a local image as a `data:` URI for the markdown preview.
+///
+/// Tauri's asset protocol is deliberately left disabled (enabling it would hand
+/// the WebView a general read channel over the filesystem), and the CSP allows
+/// `data:` for images already — so inlining is both the smaller change and the
+/// tighter one. Reads stay behind this command, at the same trust level as
+/// `read_file`.
+#[tauri::command]
+async fn read_image_data_uri(path: String) -> Result<String, String> {
+    // Guard against inlining something enormous into the DOM. Markdown images
+    // are screenshots and diagrams; anything past this is not a page asset.
+    const MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+    let meta = std::fs::metadata(&path).map_err(|e| format!("Failed to read image: {}", e))?;
+    if meta.len() > MAX_BYTES {
+        return Err(format!("Image too large ({} bytes)", meta.len()));
+    }
+
+    let mime = match std::path::Path::new(&path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("bmp") => "image/bmp",
+        Some("ico") => "image/x-icon",
+        Some("avif") => "image/avif",
+        _ => return Err("Unsupported image type".to_string()),
+    };
+
+    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;
+    Ok(format!("data:{};base64,{}", mime, STANDARD.encode(&bytes)))
 }
 
 #[derive(Deserialize)]
@@ -6036,6 +6076,238 @@ fn read_first_user_prompt_from_jsonl(path: &std::path::Path) -> Option<String> {
     None
 }
 
+/// Every user prompt in a Claude session JSONL, oldest first.
+///
+/// Same filtering as `read_first_user_prompt_from_jsonl` (skip sidechains,
+/// slash-commands, `<tags>`, `[Request…]`) — this is the list-returning twin of
+/// it. The pane scrollbar matches Claude's on-screen "sticky prompt" against
+/// this list to derive an EXACT position ("message 7 of 20") instead of
+/// dead-reckoning wheel notches, which cannot be exact because Claude
+/// accelerates the wheel and one notch is not a fixed number of lines.
+///
+/// Each entry is truncated to 200 chars: only a prefix is ever needed, since
+/// the sticky row itself is truncated to the pane width.
+fn read_user_prompts_from_jsonl(path: &std::path::Path) -> Vec<String> {
+    use std::io::{BufRead, BufReader};
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let reader = BufReader::new(file);
+    let mut out: Vec<String> = Vec::new();
+    for line in reader.lines().filter_map(|l| l.ok()) {
+        if !line.contains("\"type\":\"user\"") { continue; }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        if v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) { continue; }
+        if v.get("type").and_then(|t| t.as_str()) != Some("user") { continue; }
+        let Some(content) = v.get("message").and_then(|m| m.get("content")) else { continue };
+        let text = if let Some(s) = content.as_str() {
+            s.to_string()
+        } else if let Some(arr) = content.as_array() {
+            arr.iter()
+                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            continue;
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() { continue; }
+        if trimmed.starts_with('/') || trimmed.starts_with('<') || trimmed.starts_with("[Request") {
+            continue;
+        }
+        out.push(trimmed.chars().take(200).collect());
+    }
+    out
+}
+
+/// Resolve a Claude session JSONL inside WSL via the \\wsl.localhost UNC path.
+/// Extracted so the first-prompt and all-prompts commands cannot drift apart —
+/// this is the only backend whose path resolution is non-trivial (unknown
+/// distro, unknown linux user).
+fn resolve_wsl_session_jsonl(
+    project_path: &str,
+    session_id: &str,
+    distro: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    let encoded = project_path.replace('/', "-");
+    let distro_name = distro.unwrap_or("").trim().to_string();
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    let mut try_distro = |d: &str, candidates: &mut Vec<std::path::PathBuf>| {
+        if d.is_empty() { return; }
+        for prefix in ["\\\\wsl.localhost", "\\\\wsl$"] {
+            let base = std::path::PathBuf::from(format!("{}\\{}\\home", prefix, d));
+            if base.is_dir() {
+                if let Ok(users) = std::fs::read_dir(&base) {
+                    for u in users.filter_map(|e| e.ok()) {
+                        let projects = u.path().join(".claude").join("projects");
+                        let p = projects.join(&encoded).join(format!("{}.jsonl", session_id));
+                        if p.exists() {
+                            candidates.push(p);
+                            continue;
+                        }
+                        // CASE-INSENSITIVE fallback. The encoded key comes from
+                        // a WINDOWS path, but WSL's filesystem is case-
+                        // SENSITIVE, so `…-Documents-…` and `…-documents-…` are
+                        // two different directories — and both exist on real
+                        // machines (one holding every session, the other
+                        // empty). Landing in the empty one made every session
+                        // read return nothing, which is what silently broke
+                        // auto-naming: readSessionFirstPrompt returned "" and
+                        // the retry loop never set a name. The Windows/native
+                        // paths already handled this via find_claude_project_dir.
+                        let want = encoded.to_lowercase();
+                        if let Ok(dirs) = std::fs::read_dir(&projects) {
+                            for d in dirs.filter_map(|e| e.ok()) {
+                                if d.file_name().to_string_lossy().to_lowercase() == want {
+                                    let p = d.path().join(format!("{}.jsonl", session_id));
+                                    if p.exists() { candidates.push(p); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    try_distro(&distro_name, &mut candidates);
+    if candidates.is_empty() {
+        for d in ["Ubuntu-24.04", "Ubuntu-22.04", "Ubuntu", "Debian"] {
+            try_distro(d, &mut candidates);
+            if !candidates.is_empty() { break; }
+        }
+    }
+    if candidates.is_empty() {
+        if let Ok(home) = std::env::var("HOME") {
+            let p = std::path::PathBuf::from(&home)
+                .join(".claude").join("projects").join(&encoded)
+                .join(format!("{}.jsonl", session_id));
+            if p.exists() { candidates.push(p); }
+        }
+    }
+    candidates.into_iter().next()
+}
+
+/// Merge a single key into Claude's `settings.json`, preserving everything
+/// else. Creates the file (and its directory) when absent.
+///
+/// A read-modify-write on the USER's config file, so it is deliberately
+/// conservative: unparseable JSON is left completely alone rather than
+/// overwritten, because clobbering a hand-edited config to set one preference
+/// would be a far worse outcome than the preference not applying.
+fn merge_claude_setting(path: &std::path::Path, key: &str, value: serde_json::Value) -> Result<(), String> {
+    let mut root: serde_json::Value = match std::fs::read_to_string(path) {
+        Ok(raw) if !raw.trim().is_empty() => match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => return Err(format!("settings.json is not valid JSON, leaving it untouched: {e}")),
+        },
+        _ => serde_json::json!({}),
+    };
+    let Some(obj) = root.as_object_mut() else {
+        return Err("settings.json is not a JSON object, leaving it untouched".to_string());
+    };
+    obj.insert(key.to_string(), value);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    std::fs::write(path, pretty).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Locate `~/.claude/settings.json` inside WSL over the \\wsl.localhost UNC
+/// path. Mirrors `resolve_wsl_session_jsonl`: the distro and the linux user are
+/// both unknown, so candidates are enumerated.
+fn resolve_wsl_claude_settings(distro: Option<&str>) -> Option<std::path::PathBuf> {
+    let distro_name = distro.unwrap_or("").trim().to_string();
+    let mut found: Option<std::path::PathBuf> = None;
+    let mut try_distro = |d: &str, found: &mut Option<std::path::PathBuf>| {
+        if d.is_empty() || found.is_some() { return; }
+        for prefix in ["\\\\wsl.localhost", "\\\\wsl$"] {
+            let base = std::path::PathBuf::from(format!("{}\\{}\\home", prefix, d));
+            if let Ok(users) = std::fs::read_dir(&base) {
+                for u in users.filter_map(|e| e.ok()) {
+                    let dir = u.path().join(".claude");
+                    if dir.is_dir() {
+                        *found = Some(dir.join("settings.json"));
+                        return;
+                    }
+                }
+            }
+        }
+    };
+    try_distro(&distro_name, &mut found);
+    if found.is_none() {
+        for d in ["Ubuntu-24.04", "Ubuntu-22.04", "Ubuntu", "Debian"] {
+            try_distro(d, &mut found);
+            if found.is_some() { break; }
+        }
+    }
+    if found.is_none() {
+        if let Ok(home) = std::env::var("HOME") {
+            let dir = std::path::PathBuf::from(&home).join(".claude");
+            if dir.is_dir() { found = Some(dir.join("settings.json")); }
+        }
+    }
+    found
+}
+
+/// Set Claude's notification channel (`notifChannel`) — WSL.
+/// Values: auto | iterm2 | bell | kitty | ghostty | iterm2+bell | none.
+#[tauri::command]
+async fn set_claude_notif_channel(channel: String, distro: Option<String>) -> Result<String, String> {
+    let Some(path) = resolve_wsl_claude_settings(distro.as_deref()) else {
+        return Err("could not locate ~/.claude/settings.json in WSL".to_string());
+    };
+    merge_claude_setting(&path, "notifChannel", serde_json::Value::String(channel))?;
+    Ok(path.display().to_string())
+}
+
+/// Set Claude's notification channel — Windows native.
+#[tauri::command]
+async fn set_claude_notif_channel_windows(channel: String) -> Result<String, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let path = std::path::PathBuf::from(home).join(".claude").join("settings.json");
+    merge_claude_setting(&path, "notifChannel", serde_json::Value::String(channel))?;
+    Ok(path.display().to_string())
+}
+
+/// Set Claude's notification channel — macOS/Linux native.
+#[tauri::command]
+async fn set_claude_notif_channel_native(channel: String) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let path = std::path::PathBuf::from(home).join(".claude").join("settings.json");
+    merge_claude_setting(&path, "notifChannel", serde_json::Value::String(channel))?;
+    Ok(path.display().to_string())
+}
+
+/// All user prompts for a session (Windows native).
+#[tauri::command]
+async fn read_session_prompts_windows(project_path: String, session_id: String) -> Result<Vec<String>, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let Some(dir) = find_claude_project_dir(&home, &project_path, '/') else {
+        return Ok(Vec::new());
+    };
+    Ok(read_user_prompts_from_jsonl(&dir.join(format!("{}.jsonl", session_id))))
+}
+
+/// All user prompts for a session (macOS/Linux native).
+#[tauri::command]
+async fn read_session_prompts_native(project_path: String, session_id: String) -> Result<Vec<String>, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let Some(dir) = find_claude_project_dir(&home, &project_path, '/') else {
+        return Ok(Vec::new());
+    };
+    Ok(read_user_prompts_from_jsonl(&dir.join(format!("{}.jsonl", session_id))))
+}
+
+/// All user prompts for a session (WSL).
+#[tauri::command]
+async fn read_session_prompts(project_path: String, session_id: String, distro: Option<String>) -> Result<Vec<String>, String> {
+    match resolve_wsl_session_jsonl(&project_path, &session_id, distro.as_deref()) {
+        Some(path) => Ok(read_user_prompts_from_jsonl(&path)),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// Read first user prompt from a Claude session JSONL (Windows native).
 #[tauri::command]
 async fn read_session_first_prompt_windows(project_path: String, session_id: String) -> Result<String, String> {
@@ -6065,44 +6337,12 @@ async fn read_session_first_prompt_native(project_path: String, session_id: Stri
 /// No bash, no python, no wsl.exe round-trip.
 #[tauri::command]
 async fn read_session_first_prompt(project_path: String, session_id: String, distro: Option<String>) -> Result<String, String> {
-    let encoded = project_path.replace('/', "-");
-    let distro_name = distro.as_deref().unwrap_or("").trim();
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    let mut try_distro = |d: &str, candidates: &mut Vec<std::path::PathBuf>| {
-        if d.is_empty() { return; }
-        for prefix in ["\\\\wsl.localhost", "\\\\wsl$"] {
-            let base = std::path::PathBuf::from(format!("{}\\{}\\home", prefix, d));
-            if base.is_dir() {
-                if let Ok(users) = std::fs::read_dir(&base) {
-                    for u in users.filter_map(|e| e.ok()) {
-                        let p = u.path()
-                            .join(".claude").join("projects").join(&encoded)
-                            .join(format!("{}.jsonl", session_id));
-                        if p.exists() { candidates.push(p); }
-                    }
-                }
-            }
-        }
-    };
-    try_distro(distro_name, &mut candidates);
-    if candidates.is_empty() {
-        for d in ["Ubuntu-24.04", "Ubuntu-22.04", "Ubuntu", "Debian"] {
-            try_distro(d, &mut candidates);
-            if !candidates.is_empty() { break; }
-        }
+    // Shares resolve_wsl_session_jsonl with the all-prompts command so the two
+    // cannot drift — and so both inherit the case-insensitive fallback below.
+    match resolve_wsl_session_jsonl(&project_path, &session_id, distro.as_deref()) {
+        Some(path) => Ok(read_first_user_prompt_from_jsonl(&path).unwrap_or_default()),
+        None => Ok(String::new()),
     }
-    if candidates.is_empty() {
-        if let Ok(home) = std::env::var("HOME") {
-            let p = std::path::PathBuf::from(&home)
-                .join(".claude").join("projects").join(&encoded).join(format!("{}.jsonl", session_id));
-            if p.exists() { candidates.push(p); }
-        }
-    }
-    let path = match candidates.into_iter().next() {
-        Some(p) => p,
-        None => return Ok(String::new()),
-    };
-    Ok(read_first_user_prompt_from_jsonl(&path).unwrap_or_default())
 }
 
 // ─── SSH session lookups ──────────────────────────────────────────────────
@@ -6763,11 +7003,16 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, overlay::overlay_set_region, overlay::overlay_set_focusable])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file])
         .setup(|app| {
             // Registry of active `ssh -N -L` port-forward processes for remote
             // dev servers (commands: ssh_forward_port_start / _stop).
             app.manage(SshForwardRegistry::default());
+
+            // Refcounted directory watches backing the text editor's live
+            // reload (commands: watch_file / unwatch_file, event:
+            // made:file-changed).
+            app.manage(file_watch::FileWatchState::default());
 
             // Start the local preview proxy. The browser pane forwards iframe
             // requests through this so it can inject the devtools script and

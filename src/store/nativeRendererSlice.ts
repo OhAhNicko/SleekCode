@@ -30,6 +30,15 @@ export interface NativeRendererSlice {
    * `wheelScrollAccelerationEnabled` — so stacking ours would make the
    * distance per flick unpredictable. */
   wheelAcceleration: boolean;
+  /** TERM_PROGRAM advertised to the AI CLIs. Claude gates synchronized output,
+   * progress reporting and its automatic notification channel on recognising
+   * the terminal; blank advertises nothing. Free-form so every name in
+   * Claude's table can be tried — which set contains which capability could not
+   * be reconstructed from the binary. See termProgramEnvPairs. */
+  termProgram: string;
+  /** Reported alongside it. Blank uses a sensible default for known names —
+   * Claude enforces per-terminal minimums. */
+  termProgramVersion: string;
   paneRendererOverride: Record<string, Exclude<PaneRendererOverride, null>>;
   nativeRendererTelemetry: NativeRendererTelemetry;
   // Tracks every alive native-term HWND id so coordinators (e.g. modal
@@ -64,6 +73,8 @@ export interface NativeRendererSlice {
   setNewPaneNativeRenderer: (v: boolean) => void;
   setScrollThumbAcceleration: (v: boolean) => void;
   setWheelAcceleration: (v: boolean) => void;
+  setTermProgram: (v: string) => void;
+  setTermProgramVersion: (v: string) => void;
   setPaneRendererOverride: (paneId: string, override: PaneRendererOverride) => void;
   recordNativeRendererCrash: () => void;
   registerNativeTerm: (id: NativeTermId) => void;
@@ -85,6 +96,8 @@ export const createNativeRendererSlice: StateCreator<
   newPaneNativeRenderer: false,
   scrollThumbAcceleration: true,
   wheelAcceleration: true,
+  termProgram: "ghostty",
+  termProgramVersion: "",
   paneRendererOverride: {},
   nativeRendererTelemetry: { panes: 0, crashes: 0, lastCrashAt: null },
   liveNativeTerms: EMPTY_LIVE,
@@ -100,6 +113,10 @@ export const createNativeRendererSlice: StateCreator<
   setScrollThumbAcceleration: (v) => set({ scrollThumbAcceleration: v }),
 
   setWheelAcceleration: (v) => set({ wheelAcceleration: v }),
+
+  setTermProgram: (v) => set({ termProgram: v }),
+
+  setTermProgramVersion: (v) => set({ termProgramVersion: v }),
 
   setWebviewFocused: (focused) => {
     const s = get();

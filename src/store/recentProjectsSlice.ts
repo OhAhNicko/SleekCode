@@ -126,6 +126,22 @@ export interface RecentProjectsSlice {
   confirmQuit: boolean;
   slashCommandGhostText: boolean;
   codeReviewCollapseAll: boolean;
+  /**
+   * false (default): the text editor is a GLOBAL surface — opening a file opens
+   * it in every project tab, and the pane's X closes it everywhere at once.
+   * true: each project tab owns an independent editor — files open only in the
+   * active project and the X closes only that project's pane.
+   */
+  perProjectEditor: boolean;
+  setPerProjectEditor: (value: boolean) => void;
+  /**
+   * Soft-wrap long lines in the editor's SOURCE view (the markdown preview
+   * always wraps). On by default — panes are typically ~30% of the window, so
+   * without it the tail of every long line sits off-screen behind a horizontal
+   * scrollbar.
+   */
+  editorWordWrap: boolean;
+  setEditorWordWrap: (value: boolean) => void;
   showTabPath: boolean;
   setShowTabPath: (value: boolean) => void;
   openPanesInBackground: boolean;
@@ -240,6 +256,10 @@ export const createRecentProjectsSlice: StateCreator<
   confirmQuit: true,
   slashCommandGhostText: false,
   codeReviewCollapseAll: false,
+  perProjectEditor: false,
+  setPerProjectEditor: (value) => set({ perProjectEditor: value }),
+  editorWordWrap: true,
+  setEditorWordWrap: (value) => set({ editorWordWrap: value }),
   showTabPath: false,
   setShowTabPath: (value) => set({ showTabPath: value }),
   openPanesInBackground: false,

@@ -51,6 +51,8 @@ const CATEGORIES: Category[] = [
       "copyOnSelect",
       "confirmQuit",
       "codeReviewCollapseAll",
+      "perProjectEditor",
+      "editorWordWrap",
       "showTabPath",
       "openPanesInBackground",
       "wideGridLayout",

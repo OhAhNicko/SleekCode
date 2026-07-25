@@ -209,6 +209,234 @@ body,
   font-family: system-ui, -apple-system, sans-serif;
 }
 
+/* ── Markdown preview (FileViewerPane, MD button) ──────────────────────────
+   Rendered documentation living inside a code pane. Two constraints drive
+   everything here:
+
+   1. The pane is NARROW — it spawns at 30% of the window. So there is no
+      max-width (the column is already constrained), the type scale is tuned
+      one notch down from web-reading defaults, and every element that can
+      exceed the column (code, tables, long URLs, images) either wraps or
+      scrolls inside its own container. The document body itself must never
+      scroll sideways.
+   2. It must read as MADE, not as a webpage pasted into a dark box — so every
+      value below resolves to an existing --ezy-* token and inherits the app's
+      Inter/Hack pairing. No new palette.
+
+   The one deliberate flourish: h1 and h2 carry a short accent rail in the left
+   gutter. It encodes heading depth (full strength vs. dimmed), which is real
+   structural information — in a tall narrow column it is how you find your
+   place while scrolling. Everything else stays quiet. */
+.ezy-md {
+  padding: 18px 22px 44px;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--ezy-text-secondary);
+  /* Long unbroken tokens (URLs, hashes, paths) must fold rather than force a
+     horizontal scrollbar on the whole document. */
+  overflow-wrap: anywhere;
+}
+
+.ezy-md > :first-child { margin-top: 0; }
+.ezy-md > :last-child { margin-bottom: 0; }
+
+.ezy-md h1,
+.ezy-md h2,
+.ezy-md h3,
+.ezy-md h4,
+.ezy-md h5,
+.ezy-md h6 {
+  position: relative;
+  color: var(--ezy-text);
+  font-weight: 650;
+  line-height: 1.3;
+  margin: 1.6em 0 0.6em;
+  scroll-margin-top: 12px;
+}
+.ezy-md h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.ezy-md h2 { font-size: 16.5px; letter-spacing: -0.01em; }
+.ezy-md h3 { font-size: 14px; }
+.ezy-md h4 { font-size: 13px; }
+.ezy-md h5,
+.ezy-md h6 { font-size: 12.5px; color: var(--ezy-text-secondary); }
+
+/* The rail sits in the container's left padding, so heading text stays flush
+   with the body copy above and below it. */
+.ezy-md h1::before,
+.ezy-md h2::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 0.2em;
+  bottom: 0.2em;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--ezy-accent);
+}
+.ezy-md h2::before { opacity: 0.45; }
+
+.ezy-md h1 {
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--ezy-border-subtle);
+}
+
+.ezy-md p { margin: 0 0 0.9em; }
+
+.ezy-md a {
+  color: var(--ezy-accent);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+.ezy-md a:hover {
+  color: var(--ezy-accent-hover);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ezy-md a:focus-visible {
+  outline: 2px solid var(--ezy-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.ezy-md strong { color: var(--ezy-text); font-weight: 650; }
+.ezy-md em { font-style: italic; }
+.ezy-md del { color: var(--ezy-text-muted); }
+
+.ezy-md ul,
+.ezy-md ol { margin: 0 0 0.9em; padding-left: 1.4em; }
+.ezy-md li { margin: 0.25em 0; }
+.ezy-md li::marker { color: var(--ezy-text-muted); }
+.ezy-md li > ul,
+.ezy-md li > ol { margin: 0.25em 0 0; }
+
+/* GFM task lists. Solid opaque fill when checked — never a tinted wash. */
+.ezy-md ul:has(> li > input[type="checkbox"]) { padding-left: 0.2em; }
+.ezy-md li:has(> input[type="checkbox"]) { list-style: none; }
+.ezy-md input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin: 0 8px 0 0;
+  vertical-align: -1px;
+  border: 1px solid var(--ezy-text-muted);
+  border-radius: 3px;
+  background: transparent;
+  flex-shrink: 0;
+}
+.ezy-md input[type="checkbox"]:checked {
+  background-color: var(--ezy-accent);
+  border-color: var(--ezy-accent);
+  /* Checkmark drawn as a mask so it always reads white on the accent fill,
+     whatever the active theme sets --ezy-accent to. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.2 2.2 4.8-4.8' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-size: 12px 12px;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+.ezy-md li:has(> input[type="checkbox"]:checked) { color: var(--ezy-text-muted); }
+
+.ezy-md code {
+  font-family: Hack, "Geist Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  background: var(--ezy-surface-raised);
+  border: 1px solid var(--ezy-border-subtle);
+  border-radius: 4px;
+  padding: 1px 5px;
+  color: var(--ezy-text);
+}
+
+.ezy-md pre {
+  margin: 0 0 1em;
+  padding: 12px 14px;
+  background: var(--ezy-surface);
+  border: 1px solid var(--ezy-border-subtle);
+  border-radius: 6px;
+  /* Code is the one place we keep lines intact and scroll instead of folding —
+     wrapped code is harder to read than scrolled code. */
+  overflow-x: auto;
+}
+.ezy-md pre code {
+  display: block;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-wrap: normal;
+  color: var(--ezy-text-secondary);
+}
+
+.ezy-md blockquote {
+  margin: 0 0 1em;
+  padding: 0.1em 0 0.1em 14px;
+  border-left: 2px solid var(--ezy-border-light);
+  color: var(--ezy-text-muted);
+}
+.ezy-md blockquote > :last-child { margin-bottom: 0; }
+
+.ezy-md hr {
+  margin: 1.8em 0;
+  border: 0;
+  border-top: 1px solid var(--ezy-border);
+}
+
+/* Tables scroll inside their own wrapper (see MarkdownPreview's table
+   override) so a wide table never drags the document sideways. */
+.ezy-md-table-wrap {
+  margin: 0 0 1em;
+  overflow-x: auto;
+  border: 1px solid var(--ezy-border-subtle);
+  border-radius: 6px;
+}
+.ezy-md table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+/* Cells wrap rather than forcing a scroll: in a 30%-wide pane a prose table
+   would otherwise need constant horizontal scrubbing. The wrapper's overflow
+   stays as the safety net for tables with genuinely many columns. */
+.ezy-md th,
+.ezy-md td {
+  padding: 6px 12px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--ezy-border-subtle);
+}
+.ezy-md thead th {
+  background: var(--ezy-surface);
+  color: var(--ezy-text);
+  font-weight: 600;
+}
+.ezy-md tbody tr:last-child td { border-bottom: 0; }
+
+.ezy-md img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  display: block;
+  margin: 0.4em 0 1em;
+}
+
+.ezy-md kbd {
+  font-family: Hack, "Geist Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  padding: 1px 5px;
+  background: var(--ezy-surface-raised);
+  border: 1px solid var(--ezy-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  color: var(--ezy-text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ezy-md a { transition: none; }
+}
+
 /* ── Startup splash (no-project screen) — single-fire entrance reveal ───── */
 @keyframes madeLetterReveal {
   from { opacity: 0; transform: translateY(0.5em); filter: blur(10px); }

@@ -270,6 +270,26 @@ export interface TitleEvent {
   title: string;
 }
 
+/**
+ * Desktop notification requested by the program (OSC 9 / 99 / 777). Claude
+ * emits one when it wants attention; which sequence depends on its
+ * `notifChannel` setting. `title` may be empty — OSC 9 and Kitty carry a body
+ * only — so the UI supplies its own.
+ */
+export interface NotifyEvent {
+  title: string;
+  body: string;
+}
+
+/**
+ * ConEmu progress (OSC 9;4). `state`: 0 clear, 1 normal, 2 error,
+ * 3 indeterminate, 4 paused. `percent` is 0-100, meaningless for 0 and 3.
+ */
+export interface ProgressEvent {
+  state: number;
+  percent: number;
+}
+
 // Discriminated union of all event kinds. Channel suffix maps to payload.
 export type NativeTermEventKind =
   | "osc133"
@@ -292,7 +312,9 @@ export type NativeTermEventKind =
   | "alt_screen"
   | "tui_scroll"
   | "tui_prompt_nav"
-  | "title";
+  | "title"
+  | "notify"
+  | "progress";
 
 export interface NativeTermEventPayloadMap {
   osc133: Osc133Event;
@@ -316,6 +338,8 @@ export interface NativeTermEventPayloadMap {
   tui_scroll: TuiScrollEvent;
   tui_prompt_nav: TuiPromptNavEvent;
   title: TitleEvent;
+  notify: NotifyEvent;
+  progress: ProgressEvent;
 }
 
 export function nativeTermEventChannel(
@@ -859,4 +883,18 @@ export function subscribeTitle(
   cb: (e: TitleEvent) => void,
 ): Promise<Unlisten> {
   return subscribe(id, "title", cb);
+}
+
+export function subscribeNotify(
+  id: NativeTermId,
+  cb: (e: NotifyEvent) => void,
+): Promise<Unlisten> {
+  return subscribe(id, "notify", cb);
+}
+
+export function subscribeProgress(
+  id: NativeTermId,
+  cb: (e: ProgressEvent) => void,
+): Promise<Unlisten> {
+  return subscribe(id, "progress", cb);
 }

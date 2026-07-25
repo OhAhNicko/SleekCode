@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
+import { EditorState, Compartment } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
 import { python } from "@codemirror/lang-python";
@@ -78,6 +78,12 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
   const cmSearch = useCodeMirrorSearch(viewRef);
   const themeId = useAppStore((s) => s.themeId);
   const theme = getTheme(themeId);
+  const editorWordWrap = useAppStore((s) => s.editorWordWrap ?? true);
+  // Soft wrap lives in a compartment so toggling reconfigures the live editor
+  // rather than rebuilding it (which would drop caret, scroll and undo).
+  const wrapCompartment = useMemo(() => new Compartment(), []);
+  const wordWrapRef = useRef(editorWordWrap);
+  wordWrapRef.current = editorWordWrap;
   const servers = useAppStore((s) => s.servers);
   const server = serverId ? servers.find((s) => s.id === serverId) : undefined;
 
@@ -164,6 +170,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
             ...langExts,
             editorTheme,
             search(),
+            wrapCompartment.of(wordWrapRef.current ? EditorView.lineWrapping : []),
             keymap.of([
               ...defaultKeymap,
               ...historyKeymap,
@@ -201,6 +208,15 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filePath]);
+
+  // Apply a word-wrap toggle to the already-mounted editor.
+  useEffect(() => {
+    viewRef.current?.dispatch({
+      effects: wrapCompartment.reconfigure(
+        editorWordWrap ? EditorView.lineWrapping : []
+      ),
+    });
+  }, [editorWordWrap, wrapCompartment]);
 
   // Theme hot-swap for editor: destroy and recreate with new theme
   // EditorView.reconfigure is not available as a static — we skip dynamic

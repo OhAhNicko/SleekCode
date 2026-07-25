@@ -17,7 +17,7 @@
 // R1.a scope: stand the pipeline up, log per-batch progress via eprintln.
 // No rendering yet — that's R1.b.
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, RecvTimeoutError};
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -31,8 +31,8 @@ use tauri::AppHandle;
 use alacritty_terminal::term::TermMode;
 
 use super::events::{
-    emit_alt_screen, emit_cursor, emit_osc133, emit_scroll, emit_title, AltScreen, Cursor,
-    Osc133, Scroll as ScrollEvt, TermTitle,
+    emit_alt_screen, emit_cursor, emit_notify, emit_osc133, emit_progress, emit_scroll,
+    emit_title, AltScreen, Cursor, Notify, Osc133, Progress, Scroll as ScrollEvt, TermTitle,
 };
 
 /// Minimal `Dimensions` impl for `Term::new`. Mirrors alacritty's internal
@@ -302,6 +302,15 @@ fn worker_loop(
     //   "133;D;<int>". A/B/C may also carry payload (e.g. "133;A;cl=m") but we
     //   only care about the kind for those.
     let mut osc_scanner = Osc133Scanner::new();
+    // Notification / progress OSCs (9, 99, 777). Same pre-scan rationale as
+    // Osc133Scanner: alacritty_terminal does not surface these to its listener.
+    let mut notify_scanner = OscNotifyScanner::new();
+    // Synchronized output (DECSET 2026). While a program holds an update open
+    // we withhold the render wake so a frame split across PTY reads is never
+    // presented half-drawn.
+    let mut sync_scanner = SyncOutputScanner::new();
+    let mut in_sync = false;
+    let mut sync_since = std::time::Instant::now();
 
     // R3 scroll-coalescer. We cache the last emitted display_offset and rate-
     // limit emissions to ~50ms so smooth wheel scrolling doesn't flood the bus.
@@ -317,7 +326,30 @@ fn worker_loop(
     // `None` forces the first real state to emit so JS never has to assume.
     let mut last_alt_screen: Option<(bool, bool)> = None;
 
-    while let Ok(bytes) = rx.recv() {
+    loop {
+        // While a synchronized update is open we must be able to time out even
+        // if the program sends NOTHING further: the wake is withheld during
+        // sync, so the win32 watchdog (which compares batch counts) sees no
+        // change either and cannot rescue a pane stuck mid-update. Waiting with
+        // a deadline is what makes the DEC-mandated escape hatch actually fire.
+        let bytes = if in_sync {
+            match rx.recv_timeout(std::time::Duration::from_millis(SYNC_TIMEOUT_MS as u64)) {
+                Ok(b) => b,
+                Err(RecvTimeoutError::Timeout) => {
+                    // Update never closed — release the frame we withheld.
+                    in_sync = false;
+                    wake.notify();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match rx.recv() {
+                Ok(b) => b,
+                Err(_) => break,
+            }
+        };
+
         batches += 1;
         total_bytes += bytes.len() as u64;
 
@@ -327,6 +359,13 @@ fn worker_loop(
         //    deferred until after the Term lock is released — we don't want
         //    to block the parse on a Tauri broadcast.
         let osc_hits: Vec<(char, Option<i32>)> = osc_scanner.feed(&bytes);
+        let notify_hits = notify_scanner.feed(&bytes);
+        if let Some(begin) = sync_scanner.feed(&bytes) {
+            if begin && !in_sync {
+                sync_since = std::time::Instant::now();
+            }
+            in_sync = begin;
+        }
 
         // 2) Lock the Term across the whole batch — single contiguous parse,
         //    no .await inside. Other readers (get_buffer_lines etc.) wait
@@ -356,7 +395,19 @@ fn worker_loop(
         // drop (the paint path re-locks the Term in sync_from_term) and
         // BEFORE the slow eprintln/emit tail so the repaint isn't delayed
         // behind console IO.
-        wake.notify();
+        //
+        // Synchronized output: while a program holds an update open (DECSET
+        // 2026) the wake is WITHHELD, so a repaint arriving across several PTY
+        // reads is presented once, whole, rather than half-drawn. The timeout
+        // is the spec's required escape hatch — a program that dies between
+        // BSU and ESU must not freeze the pane.
+        let sync_expired = sync_since.elapsed().as_millis() >= SYNC_TIMEOUT_MS;
+        if in_sync && sync_expired {
+            in_sync = false;
+        }
+        if !in_sync {
+            wake.notify();
+        }
 
         eprintln!(
             "[native_term] term {} batch={} bytes={} total={} cursor=(line={}, col={}) last_line=\"{}\"",
@@ -411,6 +462,17 @@ fn worker_loop(
                     term_id,
                     Osc133 { kind, exit_code, abs_line },
                 );
+            }
+
+            for hit in notify_hits {
+                match hit {
+                    OscNotifyEvent::Notify(title, body) => {
+                        emit_notify(app, term_id, Notify { title, body })
+                    }
+                    OscNotifyEvent::Progress(state, percent) => {
+                        emit_progress(app, term_id, Progress { state, percent })
+                    }
+                }
             }
 
             // Alt-screen transitions. Not coalesced — these are rare (one per
@@ -577,6 +639,223 @@ impl Osc133Scanner {
             };
         }
         out
+    }
+}
+
+/// Synchronized-output scanner (DECSET 2026, "BSU/ESU").
+///
+/// A program wraps a whole repaint in `CSI ? 2026 h` … `CSI ? 2026 l` to say
+/// "do not paint until I am done" — without it a frame split across PTY reads
+/// can be presented half-updated (tearing).
+///
+/// MADE must implement this itself: alacritty_terminal 0.24.2 explicitly
+/// IGNORES the mode (`NamedPrivateMode::SyncUpdate => ()` in both its set and
+/// unset handlers, and it reports the mode as Reset). Upstream alacritty does
+/// the buffering in its event loop, which MADE does not use — it drives the
+/// Term directly. So the Term carries no flag to read and the gate lives here.
+///
+/// This must land BEFORE MADE advertises a TERM_PROGRAM: Claude gates
+/// `syncOutput` on recognising the terminal, so claiming an identity without
+/// this would switch on exactly the tearing it prevents.
+pub(crate) struct SyncOutputScanner {
+    /// Bytes of `\x1b[?2026` matched so far.
+    matched: usize,
+}
+
+/// The literal prefix shared by BSU and ESU; the next byte is 'h' or 'l'.
+const SYNC_PREFIX: &[u8] = b"\x1b[?2026";
+
+/// Longest a synchronized update may hold the screen. The DEC spec makes this
+/// a required escape hatch: a program that crashes between BSU and ESU must not
+/// freeze the pane forever.
+pub(crate) const SYNC_TIMEOUT_MS: u128 = 150;
+
+impl SyncOutputScanner {
+    pub(crate) fn new() -> Self {
+        Self { matched: 0 }
+    }
+
+    /// Returns the LAST begin/end transition seen in this batch, if any.
+    /// `Some(true)` = ended inside a synchronized update, `Some(false)` = the
+    /// update closed. Only the final transition matters: the caller's question
+    /// is simply "may I paint now".
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Option<bool> {
+        let mut last: Option<bool> = None;
+        for &b in bytes {
+            if self.matched == SYNC_PREFIX.len() {
+                // Prefix complete — this byte selects begin vs end.
+                match b {
+                    b'h' => last = Some(true),
+                    b'l' => last = Some(false),
+                    _ => {}
+                }
+                self.matched = 0;
+                continue;
+            }
+            if b == SYNC_PREFIX[self.matched] {
+                self.matched += 1;
+            } else {
+                // Restart, but allow this byte to begin a fresh match so
+                // "\x1b\x1b[?2026h" is not missed.
+                self.matched = usize::from(b == SYNC_PREFIX[0]);
+            }
+        }
+        last
+    }
+}
+
+/// Desktop-notification + progress OSC scanner.
+///
+/// Claude Code can emit a notification when it wants attention; which sequence
+/// depends on its `notifChannel` setting: iTerm2 (OSC 9), Kitty (OSC 99),
+/// Ghostty (OSC 777), or the bell. It can also emit ConEmu progress (OSC 9;4)
+/// when "Emit OSC 9;4 progress sequences during long operations" is on.
+///
+/// OSC 9 is OVERLOADED and the two meanings must not be confused:
+///   OSC 9 ; <text>              -> notification, body = text
+///   OSC 9 ; 4 ; <st> ; <pct>    -> progress (ConEmu), NOT a notification
+/// so a payload beginning `4;` is routed to progress.
+///
+/// Runs as a pre-scan beside Osc133Scanner because alacritty_terminal does not
+/// surface these OSCs to its EventListener.
+pub(crate) struct OscNotifyScanner {
+    state: NotifyState,
+    digits: Vec<u8>,
+    payload: Vec<u8>,
+}
+
+enum NotifyState {
+    Idle,
+    SawEsc,
+    InPrefix,
+    InPayload { osc: u16 },
+    PayloadSawEsc { osc: u16 },
+}
+
+/// What a completed OSC resolved to.
+pub(crate) enum OscNotifyEvent {
+    /// Desktop notification: (title, body). Title may be empty.
+    Notify(String, String),
+    /// ConEmu progress: (state, percent). state 0 = clear, 1 = normal,
+    /// 2 = error, 3 = indeterminate, 4 = paused/warning.
+    Progress(u8, u8),
+}
+
+/// Payloads are bounded — a stream that never terminates an OSC must not grow
+/// memory without limit.
+const NOTIFY_PAYLOAD_CAP: usize = 2048;
+
+impl OscNotifyScanner {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: NotifyState::Idle,
+            digits: Vec::with_capacity(4),
+            payload: Vec::with_capacity(64),
+        }
+    }
+
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<OscNotifyEvent> {
+        let mut out = Vec::new();
+        for &b in bytes {
+            let prev = std::mem::replace(&mut self.state, NotifyState::Idle);
+            self.state = match prev {
+                NotifyState::Idle => {
+                    if b == 0x1b { NotifyState::SawEsc } else { NotifyState::Idle }
+                }
+                NotifyState::SawEsc => {
+                    if b == b']' {
+                        self.digits.clear();
+                        NotifyState::InPrefix
+                    } else if b == 0x1b {
+                        NotifyState::SawEsc
+                    } else {
+                        NotifyState::Idle
+                    }
+                }
+                NotifyState::InPrefix => {
+                    if b.is_ascii_digit() && self.digits.len() < 4 {
+                        self.digits.push(b);
+                        NotifyState::InPrefix
+                    } else if b == b';' {
+                        let osc: u16 = std::str::from_utf8(&self.digits)
+                            .ok()
+                            .and_then(|d| d.parse().ok())
+                            .unwrap_or(0);
+                        if matches!(osc, 9 | 99 | 777) {
+                            self.payload.clear();
+                            NotifyState::InPayload { osc }
+                        } else {
+                            NotifyState::Idle
+                        }
+                    } else {
+                        NotifyState::Idle
+                    }
+                }
+                NotifyState::InPayload { osc } => {
+                    if b == 0x07 {
+                        if let Some(ev) = finish_notify(osc, &self.payload) { out.push(ev); }
+                        self.payload.clear();
+                        NotifyState::Idle
+                    } else if b == 0x1b {
+                        NotifyState::PayloadSawEsc { osc }
+                    } else {
+                        if self.payload.len() < NOTIFY_PAYLOAD_CAP { self.payload.push(b); }
+                        NotifyState::InPayload { osc }
+                    }
+                }
+                NotifyState::PayloadSawEsc { osc } => {
+                    if b == b'\\' {
+                        if let Some(ev) = finish_notify(osc, &self.payload) { out.push(ev); }
+                        self.payload.clear();
+                        NotifyState::Idle
+                    } else {
+                        self.payload.clear();
+                        NotifyState::Idle
+                    }
+                }
+            };
+        }
+        out
+    }
+}
+
+/// Interpret a completed OSC payload for 9 / 99 / 777.
+fn finish_notify(osc: u16, payload: &[u8]) -> Option<OscNotifyEvent> {
+    let text = String::from_utf8_lossy(payload);
+    match osc {
+        9 => {
+            // ConEmu progress is OSC 9;4;<state>;<pct> — the payload we hold
+            // here already has the leading "9;" consumed, so it starts "4;".
+            if let Some(rest) = text.strip_prefix("4;") {
+                let mut it = rest.split(';');
+                let st: u8 = it.next()?.trim().parse().ok()?;
+                let pct: u8 = it.next().unwrap_or("0").trim().parse().unwrap_or(0);
+                return Some(OscNotifyEvent::Progress(st, pct.min(100)));
+            }
+            let body = text.trim();
+            if body.is_empty() { return None; }
+            Some(OscNotifyEvent::Notify(String::new(), body.to_string()))
+        }
+        // urxvt/Ghostty: 777;notify;<title>;<body>
+        777 => {
+            let rest = text.strip_prefix("notify;")?;
+            let (title, body) = match rest.split_once(';') {
+                Some((t, b)) => (t.trim().to_string(), b.trim().to_string()),
+                None => (String::new(), rest.trim().to_string()),
+            };
+            if title.is_empty() && body.is_empty() { return None; }
+            Some(OscNotifyEvent::Notify(title, body))
+        }
+        // Kitty: 99;<metadata>;<payload>. Only the common single-chunk plain
+        // text form is handled; chunked/encoded variants are ignored rather
+        // than half-decoded into gibberish.
+        99 => {
+            let (_meta, body) = text.split_once(';')?;
+            let body = body.trim();
+            if body.is_empty() { return None; }
+            Some(OscNotifyEvent::Notify(String::new(), body.to_string()))
+        }
+        _ => None,
     }
 }
 

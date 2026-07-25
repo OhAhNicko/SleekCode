@@ -85,6 +85,8 @@ export const useAppStore = create<AppStore>()(
         copyOnSelect: state.copyOnSelect,
         confirmQuit: state.confirmQuit,
         codeReviewCollapseAll: state.codeReviewCollapseAll,
+        perProjectEditor: state.perProjectEditor,
+        editorWordWrap: state.editorWordWrap,
         showTabPath: state.showTabPath,
         openPanesInBackground: state.openPanesInBackground,
         wideGridLayout: state.wideGridLayout,
@@ -136,6 +138,8 @@ export const useAppStore = create<AppStore>()(
         newPaneNativeRenderer: state.newPaneNativeRenderer,
         scrollThumbAcceleration: state.scrollThumbAcceleration,
         wheelAcceleration: state.wheelAcceleration,
+        termProgram: state.termProgram,
+        termProgramVersion: state.termProgramVersion,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;

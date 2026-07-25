@@ -127,20 +127,6 @@ export default function PaneGrid({
     [layout, onLayoutChange]
   );
 
-  // Listen for sidebar file-open events — route to tabbed file viewer
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (!detail?.filePath) return;
-      // Route to the file viewer (creates one or adds to existing)
-      window.dispatchEvent(
-        new CustomEvent("made:open-fileviewer", { detail: { filePath: detail.filePath, lineNumber: detail.lineNumber } })
-      );
-    };
-    window.addEventListener("made:open-file", handler);
-    return () => window.removeEventListener("made:open-file", handler);
-  }, [layout, onLayoutChange]);
-
   // Open http(s) links from the native terminal (OSC 8 hyperlinks and
   // plain-text URLs, both dispatched by useNativeFileLinks) in the system
   // browser. Mirrors TerminalPaneXterm's WebLinksAddon, which routes through
@@ -272,9 +258,30 @@ export default function PaneGrid({
     return () => window.removeEventListener("made:ai-done", handler);
   }, [layout, onLayoutChange, autoMinimizeGameOnAiDone]);
 
-  // Listen for file viewer open events
+  // Listen for file-open events (sidebar click, terminal Ctrl+Click, code
+  // review, markdown link) and route them to the tabbed file viewer.
+  //
+  // Both event names land here directly. `made:open-file` used to be bounced
+  // through a re-dispatch of `made:open-fileviewer`, but every open project tab
+  // keeps its PaneGrid mounted (inactive tabs are display:none, not unmounted),
+  // so N mounted grids re-emitted the same event N times and each of them then
+  // handled all N copies. Handling the source event once per grid gives the same
+  // result without the amplification — and without making delivery depend on
+  // which tab happens to be active, so opening a file still works while a system
+  // tab (Kanban, Dev Server) is in front.
+  //
+  // By default the text editor is a GLOBAL surface: every project tab's grid
+  // handles this, so a file opens in every project and the editor sits in the
+  // same place whichever project you switch to. With `perProjectEditor` on, each
+  // tab owns an independent editor and only the active tab reacts.
   useEffect(() => {
     const handler = (e: Event) => {
+      if (
+        useAppStore.getState().perProjectEditor &&
+        useAppStore.getState().activeTabId !== tabId
+      ) {
+        return;
+      }
       const detail = (e as CustomEvent).detail;
       if (!detail?.filePath) return;
       const filePath: string = detail.filePath;
@@ -315,9 +322,44 @@ export default function PaneGrid({
       };
       onLayoutChange(newLayout);
     };
+    window.addEventListener("made:open-file", handler);
     window.addEventListener("made:open-fileviewer", handler);
-    return () => window.removeEventListener("made:open-fileviewer", handler);
-  }, [layout, onLayoutChange]);
+    return () => {
+      window.removeEventListener("made:open-file", handler);
+      window.removeEventListener("made:open-fileviewer", handler);
+    };
+  }, [layout, onLayoutChange, tabId]);
+
+  // Global editor close. The X in FileViewerPane emits this (unless
+  // `perProjectEditor` is on, in which case it closes locally instead) so the
+  // editor disappears from EVERY project tab at once — the counterpart to
+  // made:open-fileviewer opening it in every tab. Routed through handleClose so
+  // the undo snapshot and pane-mode cleanup are identical to a local close.
+  useEffect(() => {
+    const handler = () => {
+      const findFileViewerIds = (node: PaneLayout, out: string[]): string[] => {
+        if (node.type === "fileviewer") out.push(node.id);
+        if (node.type === "split") {
+          findFileViewerIds(node.children[0], out);
+          findFileViewerIds(node.children[1], out);
+        }
+        return out;
+      };
+      // Normally one per tab, but a layout can legitimately hold several.
+      // Remove them one at a time off the freshest layout each round.
+      let next = layout;
+      for (const id of findFileViewerIds(layout, [])) {
+        const removed = removePane(next, id);
+        if (removed) next = removed;
+      }
+      if (next !== layout) {
+        snapshotPane(tabId, layout);
+        onLayoutChange(redistributeOnClose ? redistributeEqually(next) : next);
+      }
+    };
+    window.addEventListener("made:close-fileviewer", handler);
+    return () => window.removeEventListener("made:close-fileviewer", handler);
+  }, [layout, onLayoutChange, tabId, redistributeOnClose]);
 
   // Remote editor: open an EditorPane with serverId so file I/O routes over SSH.
   useEffect(() => {

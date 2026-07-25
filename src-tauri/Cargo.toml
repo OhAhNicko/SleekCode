@@ -1,6 +1,6 @@
 [package]
 name = "made"
-version = "0.1.76"
+version = "0.1.77"
 description = "AI Terminal Workspace"
 authors = ["you"]
 edition = "2021"
@@ -32,6 +32,11 @@ bytes = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+
+# Live-reload for the text editor (file_watch.rs). Watches the parent directory
+# of every open file non-recursively so atomic saves (write-temp + rename) don't
+# silently kill the watch, and emits `made:file-changed` to the frontend.
+notify = "6"
 
 # native_term (Phase 0 spike — child HWND + wgpu)
 wgpu = "22"

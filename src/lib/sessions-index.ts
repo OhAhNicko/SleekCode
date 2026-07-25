@@ -84,6 +84,72 @@ export async function readSessionFirstPrompt(
 }
 
 /**
+ * Claude's notification channel — which escape sequence it emits when it wants
+ * attention. Written into the user's `~/.claude/settings.json`.
+ *
+ * MADE parses OSC 9 / 99 / 777, so any of iterm2 / kitty / ghostty produce a
+ * toast; `ghostty` is the richest, being the only one that carries a title as
+ * well as a body. `bell` is intentionally NOT useful here — a BEL has no
+ * message to show.
+ */
+export type ClaudeNotifChannel =
+  | "auto"
+  | "iterm2"
+  | "bell"
+  | "kitty"
+  | "ghostty"
+  | "iterm2+bell"
+  | "none";
+
+/** Writes `notifChannel` into Claude's settings.json, preserving everything
+ * else. Resolves to the path written. Throws with a readable message when the
+ * file exists but is not parseable — in that case nothing is modified. */
+export async function setClaudeNotifChannel(
+  channel: ClaudeNotifChannel,
+  backend: TerminalBackend,
+): Promise<string> {
+  if (backend === "native") {
+    return await invoke<string>("set_claude_notif_channel_native", { channel });
+  } else if (backend === "windows") {
+    return await invoke<string>("set_claude_notif_channel_windows", { channel });
+  }
+  const distro = getCachedDistro();
+  return await invoke<string>("set_claude_notif_channel", { channel, distro: distro || null });
+}
+
+/**
+ * Every user prompt in a session, oldest first (truncated to 200 chars each).
+ *
+ * Used to give the fullscreen-TUI scrollbar an EXACT position: Claude renders
+ * a "sticky prompt" at the top of the screen naming the message you are inside,
+ * so matching it against this list yields "message 7 of 20". That is immune to
+ * Claude's wheel acceleration, which makes notch-counting inherently
+ * approximate.
+ *
+ * SSH is intentionally unsupported — the scrollbar falls back to dead
+ * reckoning there rather than paying a round-trip per sample.
+ */
+export async function readSessionPrompts(
+  projectPath: string,
+  sessionId: string,
+  backend: TerminalBackend,
+): Promise<string[]> {
+  try {
+    if (backend === "ssh") return [];
+    if (backend === "native") {
+      return await invoke<string[]>("read_session_prompts_native", { projectPath, sessionId });
+    } else if (backend === "windows") {
+      return await invoke<string[]>("read_session_prompts_windows", { projectPath, sessionId });
+    } else {
+      const distro = getCachedDistro();
+      return await invoke<string[]>("read_session_prompts", { projectPath, sessionId, distro: distro || null });
+    }
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Turn a prompt string into a short kebab-case slug, e.g. "color-change-feed-page".
  * Keeps at most 4 words, lowercased, stripped of non-alphanumeric chars.
  */

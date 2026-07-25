@@ -1341,8 +1341,11 @@ export default function TabBar() {
             onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)"}
             onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-              <line x1="1" y1="5" x2="9" y2="5" stroke="var(--ezy-text-muted)" strokeWidth="1" />
+            {/* Warp parity: 10px mark inset 1px in a 12px box. y=5.5 puts the
+                1px stroke inside a single device row (y=5 straddled two rows
+                and rendered at half brightness). */}
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+              <line x1="1" y1="5.5" x2="11" y2="5.5" stroke="var(--ezy-text-secondary)" strokeWidth="1" />
             </svg>
           </div>
 
@@ -1368,13 +1371,13 @@ export default function TabBar() {
             onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
           >
             {isMaximized ? (
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1">
-                <rect x="0.5" y="2.5" width="7" height="7" />
-                <polyline points="2.5,2.5 2.5,0.5 9.5,0.5 9.5,7.5 7.5,7.5" />
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-secondary)" strokeWidth="1">
+                <rect x="1.5" y="3.5" width="7" height="7" />
+                <polyline points="3.5,3.5 3.5,1.5 10.5,1.5 10.5,8.5 8.5,8.5" />
               </svg>
             ) : (
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1">
-                <rect x="1" y="1" width="8" height="8" />
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-secondary)" strokeWidth="1">
+                <rect x="1.5" y="1.5" width="9" height="9" />
               </svg>
             )}
           </div>
@@ -1405,12 +1408,12 @@ export default function TabBar() {
             onMouseLeave={(e) => {
               e.currentTarget.style.backgroundColor = "transparent";
               const svg = e.currentTarget.querySelector("svg");
-              if (svg) svg.style.stroke = "var(--ezy-text-muted)";
+              if (svg) svg.style.stroke = "var(--ezy-text-secondary)";
             }}
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.2" strokeLinecap="round">
-              <line x1="1" y1="1" x2="9" y2="9" />
-              <line x1="9" y1="1" x2="1" y2="9" />
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-secondary)" strokeWidth="1.2" strokeLinecap="round">
+              <line x1="1.5" y1="1.5" x2="10.5" y2="10.5" />
+              <line x1="10.5" y1="1.5" x2="1.5" y2="10.5" />
             </svg>
           </div>
         </div>

@@ -232,6 +232,32 @@ pub fn emit_title(app: &AppHandle, term_id: u32, payload: TermTitle) {
     let _ = app.emit(&format!("native_term:{}:title", term_id), payload);
 }
 
+/// Desktop notification requested by the program (OSC 9 / 99 / 777). Claude
+/// emits one when it wants attention; which sequence depends on its
+/// `notifChannel` setting. `title` may be empty (OSC 9 and Kitty carry body
+/// only) — the UI supplies a sensible default.
+#[derive(Serialize, Clone)]
+pub struct Notify {
+    pub title: String,
+    pub body: String,
+}
+
+pub fn emit_notify(app: &AppHandle, term_id: u32, payload: Notify) {
+    let _ = app.emit(&format!("native_term:{}:notify", term_id), payload);
+}
+
+/// ConEmu progress (OSC 9;4). `state`: 0 clear, 1 normal, 2 error,
+/// 3 indeterminate, 4 paused. `percent` is 0-100 and meaningless for 0/3.
+#[derive(Serialize, Clone)]
+pub struct Progress {
+    pub state: u8,
+    pub percent: u8,
+}
+
+pub fn emit_progress(app: &AppHandle, term_id: u32, payload: Progress) {
+    let _ = app.emit(&format!("native_term:{}:progress", term_id), payload);
+}
+
 /// OSC 8 hyperlink mouse-over. Rect is pane-local logical-px.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]

@@ -43,6 +43,8 @@ import type { NativeRendererSlice } from "../store/nativeRendererSlice";
 import ImeCompositionPopup from "../native-term/ImeCompositionPopup";
 import FileLinkTooltip from "../native-term/FileLinkTooltip";
 import TuiScrollbar from "../native-term/TuiScrollbar";
+import PaneNotification from "../native-term/PaneNotification";
+import PaneProgressBar from "../native-term/PaneProgressBar";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { queueGeom } from "../native-term/frameSync";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
@@ -901,11 +903,15 @@ export default function TerminalPaneNative({
   // `terminalTitleFromRename` setting). Plumbing only for now — logged in dev
   // so real values can be observed before choosing where to render it.
   useEffect(() => {
-    if (termId == null || !import.meta.env.DEV) return;
+    if (termId == null) return;
     let un: (() => void) | undefined;
     let disposed = false;
     subscribeTitle(termId, (e) => {
-      console.debug(
+      // NOT gated on DEV: titles have to be observed in a RELEASE build,
+      // because that is where real sessions live — a dev-only log would never
+      // run where the values actually exist. console.info so it shows at the
+      // default log level, like the [capability] lines.
+      console.info(
         `[title] pane ${terminalId} ${e.title ? `"${e.title}"` : "(reset)"}`,
       );
     }).then((u) => {
@@ -1758,6 +1764,9 @@ export default function TerminalPaneNative({
           isNativeRenderer
         />
       )}
+      {/* Long-operation progress (OSC 9;4), as a hairline directly above the
+          terminal surface. Renders nothing unless a program is reporting. */}
+      <PaneProgressBar termId={termId} />
       {/* Terminal anchor — R's HWND positions itself over this div's bounding rect. */}
       <div
         ref={terminalDivRef}
@@ -1798,9 +1807,22 @@ export default function TerminalPaneNative({
       {/* Fullscreen-TUI scrollbar. Only renders while the pane is in the
           alternate screen, where MADE's own scrollback is empty and the TUI
           owns scrolling — normal-buffer panes keep the real scrollbar. */}
+      {/* Branded in-app notification when the CLI asks for attention
+          (OSC 9 / 99 / 777). Suppressed for the active pane — you can already
+          see it. */}
+      <PaneNotification
+        termId={termId}
+        terminalType={terminalType}
+        paneLabel={contextInfo?.sessionName ?? undefined}
+        isActive={isActive}
+        onFocusPane={onFocus}
+      />
       <TuiScrollbar
         termId={termId}
         terminalType={terminalType}
+        sessionId={sessionResumeId}
+        workingDir={workingDir}
+        backend={backend}
         paneRef={terminalDivRef}
         write={ptyWrite}
         submitNonce={submitNonce}

@@ -48,8 +48,9 @@ import {
   subscribeTuiPromptNav,
   type NativeTermId,
 } from "../lib/native-term-bridge";
+import { readSessionPrompts } from "../lib/sessions-index";
 import { useAppStore } from "../store";
-import type { TerminalType } from "../types";
+import type { TerminalBackend, TerminalType } from "../types";
 import { useOverlayPopupAnchor } from "./useOverlayPopupAnchor";
 
 /** Ctrl+End — Claude's `scroll:bottom`. Same bytes MADE's key encoder emits
@@ -158,9 +159,41 @@ function scrollbarEnabledFor(type: TerminalType): boolean {
   return type === "claude";
 }
 
+/** Reduce a line to comparable form: lowercase alphanumerics only. Strips the
+ * sticky row's leading glyph/indent and any box-drawing, so a truncated header
+ * still prefix-matches its full prompt. */
+function normalizeForMatch(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * Which prompt is the sticky row showing? Returns -1 when unknown.
+ *
+ * The sticky row is truncated to the pane width, so this is a PREFIX match. A
+ * short prefix is ambiguous across prompts that open the same way, so anything
+ * under MIN_MATCH_CHARS is refused outright rather than guessed — a wrong match
+ * would jump the thumb somewhere false, which is worse than leaving it on dead
+ * reckoning. When several prompts share the prefix the LAST is taken: repeated
+ * prompts are usually follow-ups, and the later one is the likelier read.
+ */
+export function matchPromptIndex(sticky: string, prompts: string[]): number {
+  const MIN_MATCH_CHARS = 12;
+  const key = normalizeForMatch(sticky);
+  if (key.length < MIN_MATCH_CHARS || prompts.length === 0) return -1;
+  let found = -1;
+  for (let i = 0; i < prompts.length; i++) {
+    if (normalizeForMatch(prompts[i]).startsWith(key)) found = i;
+  }
+  return found;
+}
+
 interface TuiScrollbarProps {
   termId: NativeTermId | null;
   terminalType: TerminalType;
+  /** Session whose transcript backs the exact-position match. */
+  sessionId?: string;
+  workingDir?: string;
+  backend?: TerminalBackend;
   paneRef: React.RefObject<HTMLDivElement | null>;
   /** Pane's PTY writer — Ctrl+End and the page-key fallback. */
   write: (data: string) => void;
@@ -171,6 +204,9 @@ interface TuiScrollbarProps {
 export default function TuiScrollbar({
   termId,
   terminalType,
+  sessionId,
+  workingDir,
+  backend,
   paneRef,
   write,
   submitNonce,
@@ -189,6 +225,8 @@ export default function TuiScrollbar({
   // Total scrollback in notches, PROVEN by the top anchor. null = still
   // unknown, so the span is extrapolated instead (see MIN_SPAN_NOTCHES).
   const [knownSpan, setKnownSpan] = useState<number | null>(null);
+  const knownSpanRef = useRef<number | null>(null);
+  knownSpanRef.current = knownSpan;
   const writeRef = useRef(write);
   writeRef.current = write;
 
@@ -201,6 +239,40 @@ export default function TuiScrollbar({
     // thumb at the top.
     setKnownSpan((k) => (k !== null && clamped > k ? clamped : k));
   }, []);
+
+  /**
+   * Exact position, from the conversation itself.
+   *
+   * Notch counting can never be exact: Claude accelerates the wheel, so one
+   * notch is not a fixed number of lines. But Claude renders a STICKY PROMPT
+   * naming the message you are inside, and the session JSONL lists every user
+   * message — so matching one against the other gives "message 7 of 20", which
+   * acceleration cannot perturb.
+   *
+   * The match CALIBRATES the existing notch position rather than replacing it
+   * (pos = frac * span), so dragging keeps working in one coordinate system and
+   * the thumb is exact at every sample, drifting only between them.
+   */
+  const promptsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    if (!sessionId || !workingDir || !altScreen) {
+      promptsRef.current = [];
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      const list = await readSessionPrompts(workingDir, sessionId, backend ?? "wsl");
+      if (!cancelled) promptsRef.current = list;
+    };
+    void load();
+    // The conversation grows; refresh periodically so newly-sent prompts count.
+    const id = setInterval(load, 20000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [sessionId, workingDir, backend, altScreen]);
 
   // ── Ground-truth anchors ────────────────────────────────────────────────
   // Dead reckoning counts notches SENT, not lines actually scrolled, so it
@@ -230,6 +302,20 @@ export default function TuiScrollbar({
         setPos(0);
         return;
       }
+      // EXACT position from the conversation, when the sticky prompt is
+      // recognisable. Calibrates the notch estimate instead of replacing it.
+      const stickyIdx = matchPromptIndex(lines[0] ?? "", promptsRef.current);
+      const total = promptsRef.current.length;
+      if (stickyIdx >= 0 && total > 1) {
+        // stickyIdx 0 = oldest message = top of the scrollback.
+        const frac = (total - 1 - stickyIdx) / (total - 1);
+        const spanNow = knownSpanRef.current ?? Math.max(MIN_SPAN_NOTCHES, posRef.current + UNKNOWN_HEADROOM_NOTCHES);
+        const calibrated = Math.round(frac * spanNow);
+        posRef.current = calibrated;
+        setPos(calibrated);
+        return;
+      }
+
       if (unchanged && lastDirRef.current > 0) {
         // We pushed upward and nothing moved — this is the true top, so the
         // distance travelled IS the total scrollback. Now the thumb can

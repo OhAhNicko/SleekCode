@@ -177,6 +177,10 @@ export function usePty({
           extraArgs.push(yoloFlag);
         }
         console.log(`[PTY] spawn ${terminalType}`, extraArgs.length ? `extraArgs: ${extraArgs.join(" ")}` : "(no extra args)", `forceYolo=${forceYoloRef.current}`);
+        // Terminal identity advertised to the CLI (TERM_PROGRAM). Read at
+        // spawn so a settings change applies to the next pane without a
+        // restart.
+        const { termProgram, termProgramVersion } = useAppStore.getState();
         // Never resume an id the CLI can no longer find: it drops into its
         // interactive "Resume session" picker, which MADE mishandles (the
         // composer steals banner text into the search box — the "Welcome"
@@ -212,7 +216,7 @@ export function usePty({
 
         if (backend === "native") {
           // macOS/Linux native: use resolved CLI path directly, native cwd
-          const config = getTerminalConfig(terminalType, resumeId, extraArgs, undefined, "native");
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, undefined, "native", termProgram, termProgramVersion);
           command = config.command;
           args = [...config.args];
           // cwd stays as native path
@@ -224,7 +228,7 @@ export function usePty({
           const cwdForConfig = terminalType === "shell" || terminalType === "devserver"
             ? (currentWorkingDir || undefined)
             : undefined;
-          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, "windows");
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, "windows", termProgram, termProgramVersion);
           command = config.command;
           args = [...config.args];
           if (terminalType === "devserver") {
@@ -248,7 +252,7 @@ export function usePty({
           const cwdForConfig = terminalType === "shell"
             ? (currentWorkingDir || undefined)
             : (resumeId ? wslCwd : undefined);
-          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig);
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, undefined, termProgram, termProgramVersion);
           command = config.command;
 
           args = [...config.args];

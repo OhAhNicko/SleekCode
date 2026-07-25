@@ -201,6 +201,80 @@ function mntToWindowsPath(p: string): string {
  * exports it to hooks/child processes). Tested: Claude ignored it and created
  * its own id.
  */
+/**
+ * Terminal identity advertised to the AI CLIs via TERM_PROGRAM.
+ *
+ * Claude Code keeps a capability table keyed by TERM_PROGRAM and gates
+ * `syncOutput`, `progressReporting` and its automatic notification channel on
+ * recognising the terminal. With none set, MADE gets none of them — which is
+ * why the progress bar has nothing to draw and notifications fall back to the
+ * bell.
+ *
+ * FREE-FORM ON PURPOSE. The capability table is a flat string list in the
+ * binary, so which terminals sit in which capability sets could NOT be
+ * reconstructed — it is genuinely unknown whether e.g. `alacritty` qualifies
+ * for syncOutput. Rather than hardcode a guess, any value can be entered and
+ * tried; these are the names the table contains:
+ *
+ *   iTerm.app · WezTerm · WarpTerminal · ghostty · contour · vscode
+ *   alacritty · mintty · Tabby · kitty · xterm-ghostty · foot
+ *
+ * DEFAULT: `ghostty`. The rule is "only advertise what MADE can render", and
+ * MADE now honours everything ghostty implies that Claude uses — synchronized
+ * output, ConEmu progress, and OSC 777 notifications (the richest of the three
+ * channels, the only one carrying a title as well as a body).
+ *
+ * `alacritty` was tried first on the reasoning that MADE's parser IS
+ * alacritty_terminal, so claiming it was the "honest" answer. That was the
+ * wrong test: TERM_PROGRAM is a capability negotiation, not a statement of
+ * fact. Alacritty has no desktop-notification protocol, so on Claude's default
+ * "Auto" channel that identity resolves to the bell — which MADE deliberately
+ * ignores — guaranteeing silence. A default should make the features work.
+ *
+ * Residual risk, unchanged: ghostty also implies kitty graphics and CSI-u
+ * keyboard, which MADE does NOT support. Programs query before using those and
+ * MADE answers nothing, so it should not arise; if a pane ever shows garbage,
+ * switching identity in Settings undoes it immediately.
+ */
+
+/** Version reported when the user leaves the version field blank. Claude
+ * enforces per-terminal minimums (ghostty 1.2.0, iTerm.app 3.6.6), so a known
+ * name with no version can be rejected outright. Keys are lowercased. */
+const DEFAULT_TERM_PROGRAM_VERSIONS: Record<string, string> = {
+  "iterm.app": "3.6.6",
+  wezterm: "20240203-110809-5046fc22",
+  warpterminal: "v0.2024.11.12.08.02.stable_01",
+  ghostty: "1.2.0",
+  contour: "0.4.3",
+  vscode: "1.95.0",
+  alacritty: "0.24.2",
+  mintty: "3.7.0",
+  tabby: "1.0.215",
+  kitty: "0.36.4",
+  "xterm-ghostty": "1.2.0",
+  foot: "1.19.0",
+};
+
+/** The names Claude's capability table contains, for the settings hint. */
+export const KNOWN_TERM_PROGRAMS = [
+  "iTerm.app", "WezTerm", "WarpTerminal", "ghostty", "contour", "vscode",
+  "alacritty", "mintty", "Tabby", "kitty", "xterm-ghostty", "foot",
+] as const;
+
+/**
+ * `KEY=VALUE` pairs for the advertised identity. Empty when `program` is blank,
+ * so clearing the field genuinely advertises nothing rather than an empty
+ * TERM_PROGRAM (which some programs treat as "a terminal called ''").
+ */
+export function termProgramEnvPairs(program: string, version?: string): string[] {
+  const name = program.trim();
+  if (!name) return [];
+  const v = (version ?? "").trim() || DEFAULT_TERM_PROGRAM_VERSIONS[name.toLowerCase()] || "";
+  const pairs = [`TERM_PROGRAM=${name}`];
+  if (v) pairs.push(`TERM_PROGRAM_VERSION=${v}`);
+  return pairs;
+}
+
 export function claudeSessionIdArgs(
   type: TerminalType,
   resumeId?: string,
@@ -210,7 +284,11 @@ export function claudeSessionIdArgs(
   return { args: ["--session-id", sessionId], sessionId };
 }
 
-export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string, backend?: TerminalBackend): TerminalConfig {
+export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string, backend?: TerminalBackend, termProgram = "", termProgramVersion = ""): TerminalConfig {
+  // Advertised terminal identity (see termProgramEnvPairs). Only the AI CLIs
+  // consult it; shell/devserver panes are left exactly as they were.
+  const idEnv = type === "shell" || type === "devserver" ? [] : termProgramEnvPairs(termProgram, termProgramVersion);
+  const idExport = idEnv.length ? `export ${idEnv.join(" ")}; ` : "";
   // Native backend (macOS/Linux) — direct spawn, no WSL
   if (backend === "native") {
     const nativeBase = TERMINAL_CONFIGS_NATIVE[type];
@@ -291,6 +369,7 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
       `PATH=${cachedPath}`,
       "TERM=xterm-256color",
       "COLORTERM=truecolor",
+      ...idEnv,
     ];
     return {
       ...base,
@@ -316,7 +395,7 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
     const cdPart = wslCwd ? `cd ${sh(wslCwd)} && ` : "";
     return {
       ...base,
-      args: [...distroArgs, "--", "bash", "-lic", `export TERM=xterm-256color COLORTERM=truecolor; ${cdPart}exec ${fullCmd}`],
+      args: [...distroArgs, "--", "bash", "-lic", `export TERM=xterm-256color COLORTERM=truecolor; ${idExport}${cdPart}exec ${fullCmd}`],
     };
   }
 

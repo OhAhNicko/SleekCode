@@ -3,6 +3,8 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { open } from "@tauri-apps/plugin-dialog";
+import { KNOWN_TERM_PROGRAMS } from "../lib/terminal-config";
+import { setClaudeNotifChannel, type ClaudeNotifChannel } from "../lib/sessions-index";
 import { useAppStore } from "../store";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
 import { THEMES, getTheme } from "../lib/themes";
@@ -693,6 +695,46 @@ function UpdatesSection() {
 
 // ─── Voice agent section ──────────────────────────────────────────────────
 
+/** Dropdown styled to match TextInput. Matches the app's existing select
+ * (CreatePullRequestModal) in colour and border, sized like TextInput so a
+ * select and a text field can sit side by side without looking mismatched. */
+function SelectInput<T extends string>({
+  value,
+  onChange,
+  options,
+  width = 260,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  options: { value: T; label: string }[];
+  width?: number;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as T)}
+      style={{
+        width,
+        padding: "5px 8px",
+        fontSize: 12,
+        fontFamily: "inherit",
+        color: "var(--ezy-text)",
+        backgroundColor: "var(--ezy-surface)",
+        border: "1px solid var(--ezy-border)",
+        borderRadius: 5,
+        outline: "none",
+        cursor: "pointer",
+      }}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function TextInput({
   value,
   onChange,
@@ -1026,6 +1068,10 @@ export default function SettingsPane() {
   const setShowKanbanButton = useAppStore((s) => s.setShowKanbanButton);
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
   const setCopyOnSelect = useAppStore((s) => s.setCopyOnSelect);
+  const perProjectEditor = useAppStore((s) => s.perProjectEditor);
+  const setPerProjectEditor = useAppStore((s) => s.setPerProjectEditor);
+  const editorWordWrap = useAppStore((s) => s.editorWordWrap ?? true);
+  const setEditorWordWrap = useAppStore((s) => s.setEditorWordWrap);
   const showTabPath = useAppStore((s) => s.showTabPath);
   const setShowTabPath = useAppStore((s) => s.setShowTabPath);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
@@ -1091,6 +1137,13 @@ export default function SettingsPane() {
   const useNativeTerminalRenderer = useAppStore((s) => s.useNativeTerminalRenderer);
   const scrollThumbAcceleration = useAppStore((s) => s.scrollThumbAcceleration);
   const wheelAcceleration = useAppStore((s) => s.wheelAcceleration);
+  const termProgram = useAppStore((s) => s.termProgram);
+  const setTermProgram = useAppStore((s) => s.setTermProgram);
+  const termProgramVersion = useAppStore((s) => s.termProgramVersion);
+  const [notifChannelState, setNotifChannelState] = useState<
+    { status: "idle" | "ok" | "fail"; msg?: string }
+  >({ status: "idle" });
+  const setTermProgramVersion = useAppStore((s) => s.setTermProgramVersion);
   const setWheelAcceleration = useAppStore((s) => s.setWheelAcceleration);
   const setScrollThumbAcceleration = useAppStore((s) => s.setScrollThumbAcceleration);
   const setUseNativeTerminalRenderer = useAppStore((s) => s.setUseNativeTerminalRenderer);
@@ -1255,6 +1308,76 @@ export default function SettingsPane() {
             <SettingsSection id="native-renderer" title="Native renderer" description="Experimental GPU-accelerated terminal renderer. When off, MADE uses the classic xterm panes.">
               <SettingsRow label="Native terminal renderer (beta)" description="Render terminals with the native GPU renderer instead of the classic xterm panes. When off, MADE uses the proven xterm renderer. Open terminals reload when you change this.">
                 <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
+              </SettingsRow>
+              <SettingsRow
+                vertical
+                label="Report terminal type to AI CLIs (TERM_PROGRAM)"
+                description="Claude enables synchronized output, progress reporting and automatic notifications only for terminals it recognises. These are the names it knows — if a feature stays quiet, pick another. Applies to the next pane you open. Leave the version blank unless you need to override it."
+              >
+                <div className="flex items-center gap-2">
+                  <SelectInput<string>
+                    value={termProgram}
+                    onChange={setTermProgram}
+                    options={[
+                      { value: "", label: "Off — report nothing" },
+                      ...KNOWN_TERM_PROGRAMS.map((n) => ({ value: n as string, label: n })),
+                    ]}
+                    width={200}
+                  />
+                  <TextInput
+                    value={termProgramVersion}
+                    onChange={setTermProgramVersion}
+                    placeholder="version (blank = default)"
+                    monospace
+                  />
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                vertical
+                label="Claude notification channel"
+                description="Which escape sequence Claude sends when it wants your attention. MADE turns iTerm2 (OSC 9), Kitty (OSC 99) and Ghostty (OSC 777) into an in-app toast; Ghostty is richest, being the only one that also carries a title. Terminal Bell carries no message, so it produces nothing. This writes notifChannel into Claude's own settings.json and applies to newly started sessions."
+              >
+                <div className="flex items-center gap-2">
+                  <SelectInput<ClaudeNotifChannel | "">
+                    value=""
+                    onChange={(v) => {
+                      if (!v) return;
+                      setNotifChannelState({ status: "idle" });
+                      void setClaudeNotifChannel(v as ClaudeNotifChannel, "wsl")
+                        .then((path) =>
+                          setNotifChannelState({ status: "ok", msg: `Set to "${v}" in ${path}` }),
+                        )
+                        .catch((e) =>
+                          setNotifChannelState({ status: "fail", msg: String(e) }),
+                        );
+                    }}
+                    options={[
+                      { value: "", label: "Choose a channel to apply…" },
+                      { value: "ghostty", label: "Ghostty (OSC 777) — recommended" },
+                      { value: "iterm2", label: "iTerm2 (OSC 9)" },
+                      { value: "kitty", label: "Kitty (OSC 99)" },
+                      { value: "iterm2+bell", label: "iTerm2 w/ Bell" },
+                      { value: "auto", label: "Auto (follow terminal type)" },
+                      { value: "bell", label: "Terminal Bell — no toast" },
+                      { value: "none", label: "Disabled" },
+                    ]}
+                    width={280}
+                  />
+                  {notifChannelState.status !== "idle" && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color:
+                          notifChannelState.status === "ok"
+                            ? "var(--ezy-accent)"
+                            : "var(--ezy-red)",
+                      }}
+                      title={notifChannelState.msg}
+                    >
+                      {notifChannelState.status === "ok" ? "Applied" : "Failed"}
+                    </span>
+                  )}
+                </div>
               </SettingsRow>
               <SettingsRow label="Mouse wheel acceleration" description="Scroll faster with the wheel to travel further per notch, like Warp. Applies to a native pane's own scrollback. Fullscreen CLIs (Claude's /tui fullscreen) receive raw wheel events and do their own acceleration, so this does not affect them.">
                 <ToggleSwitch checked={wheelAcceleration} onChange={setWheelAcceleration} />
@@ -1589,6 +1712,20 @@ export default function SettingsPane() {
       case "editor":
         return (
           <>
+            <SettingsSection id="texteditor" title="Text Editor" description="How the file editor behaves across your open projects.">
+              <SettingsRow
+                label="Wrap long lines"
+                description="Continue long lines on the next row instead of running off the edge behind a horizontal scrollbar. Applies to editing; the markdown preview always wraps."
+              >
+                <ToggleSwitch checked={editorWordWrap} onChange={setEditorWordWrap} />
+              </SettingsRow>
+              <SettingsRow
+                label="Separate editor per project"
+                description="Off: one shared editor — files open in every project and the close button closes it everywhere. On: each project keeps its own editor and its own open files."
+              >
+                <ToggleSwitch checked={perProjectEditor} onChange={setPerProjectEditor} />
+              </SettingsRow>
+            </SettingsSection>
             <SettingsSection id="composer" title="MadeComposer" description="Configure the prompt composer overlay (Ctrl+I).">
               <SettingsRow label="Enable MadeComposer">
                 <ToggleSwitch checked={promptComposerEnabled} onChange={setPromptComposerEnabled} />
