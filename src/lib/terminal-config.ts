@@ -184,6 +184,32 @@ function mntToWindowsPath(p: string): string {
  * When backend is "wsl" (default), uses cached PATH + absolute CLI path
  * when available (fast path), falls back to bash -lic (slow path) otherwise.
  */
+/**
+ * Claude supports `--session-id <uuid>` ("Use a specific session ID for the
+ * conversation (must be a valid UUID)"), verified on 2.1.219: passing it makes
+ * Claude write exactly `<uuid>.jsonl`.
+ *
+ * That lets MADE ASSIGN the session id up front instead of guessing it
+ * afterwards from the newest .jsonl mtime — the heuristic behind the
+ * session-steal, clock-skew and case-sensitivity bug classes, where two panes
+ * racing to claim the same freshly-written file swap each other's sessions.
+ *
+ * Only for NEW Claude sessions: a resume passes `--resume <id>` instead, and
+ * reusing an existing id here would collide.
+ *
+ * NOTE: `CLAUDE_CODE_SESSION_ID` does NOT do this — it is read-only (Claude
+ * exports it to hooks/child processes). Tested: Claude ignored it and created
+ * its own id.
+ */
+export function claudeSessionIdArgs(
+  type: TerminalType,
+  resumeId?: string,
+): { args: string[]; sessionId?: string } {
+  if (type !== "claude" || resumeId) return { args: [] };
+  const sessionId = crypto.randomUUID();
+  return { args: ["--session-id", sessionId], sessionId };
+}
+
 export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string, backend?: TerminalBackend): TerminalConfig {
   // Native backend (macOS/Linux) — direct spawn, no WSL
   if (backend === "native") {

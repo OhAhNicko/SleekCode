@@ -28,7 +28,12 @@ use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::vte::ansi::Processor;
 use tauri::AppHandle;
 
-use super::events::{emit_cursor, emit_osc133, emit_scroll, Cursor, Osc133, Scroll as ScrollEvt};
+use alacritty_terminal::term::TermMode;
+
+use super::events::{
+    emit_alt_screen, emit_cursor, emit_osc133, emit_scroll, emit_title, AltScreen, Cursor,
+    Osc133, Scroll as ScrollEvt, TermTitle,
+};
 
 /// Minimal `Dimensions` impl for `Term::new`. Mirrors alacritty's internal
 /// test `TermSize` since the public `Dimensions` trait is what `Term::new`
@@ -60,13 +65,25 @@ impl Dimensions for TermDims {
 #[derive(Clone)]
 pub struct TermListener {
     pub term_id: u32,
+    /// Emits OSC 0/2 title changes. `None` in tests (no Tauri app).
+    pub app: Option<AppHandle>,
 }
 
 impl EventListener for TermListener {
     fn send_event(&self, event: Event) {
         match event {
-            Event::Title(s) => eprintln!("[native_term] term {} title='{}'", self.term_id, s),
-            Event::ResetTitle => eprintln!("[native_term] term {} title reset", self.term_id),
+            Event::Title(s) => {
+                // OSC 0 / OSC 2. Forwarded so a pane header can show what the
+                // program is doing; empty string means "no title".
+                if let Some(app) = self.app.as_ref() {
+                    emit_title(app, self.term_id, TermTitle { title: s });
+                }
+            }
+            Event::ResetTitle => {
+                if let Some(app) = self.app.as_ref() {
+                    emit_title(app, self.term_id, TermTitle { title: String::new() });
+                }
+            }
             Event::Bell => eprintln!("[native_term] term {} bell", self.term_id),
             Event::CursorBlinkingChange => {}
             Event::Wakeup => {} // far too noisy to log every parser tick
@@ -231,7 +248,7 @@ impl ParserBridge {
         app: Option<AppHandle>,
     ) -> Self {
         let dims = TermDims { columns: cols, screen_lines };
-        let listener = TermListener { term_id };
+        let listener = TermListener { term_id, app: app.clone() };
         // P7a: CreateOpts.scrollback → alacritty scrolling_history (field
         // name verified against alacritty_terminal 0.24.2 term::Config).
         let config = Config { scrolling_history: scrollback, ..Config::default() };
@@ -292,6 +309,14 @@ fn worker_loop(
     let mut last_scroll_emit = std::time::Instant::now();
     const SCROLL_COALESCE_MS: u128 = 50;
 
+    // DECSET 1049 alt-screen tracking. A fullscreen TUI (Claude's `/tui
+    // fullscreen`, vim, htop) swaps to the alternate buffer, which by
+    // definition has no scrollback — so MADE's own scrollbar has nothing to
+    // show there and the TUI's own scrolling takes over. JS uses this to swap
+    // which scrollbar it renders. Emitted ONLY on transition (not per batch);
+    // `None` forces the first real state to emit so JS never has to assume.
+    let mut last_alt_screen: Option<(bool, bool)> = None;
+
     while let Ok(bytes) = rx.recv() {
         batches += 1;
         total_bytes += bytes.len() as u64;
@@ -321,6 +346,10 @@ fn worker_loop(
         let cursor_line: i64 = pt.line.0 as i64;
         let abs_line = history + cursor_line;
         let display_offset_now = t.grid().display_offset();
+        let alt_screen_now = t.mode().contains(TermMode::ALT_SCREEN);
+        let mouse_reporting_now = t.mode().contains(TermMode::MOUSE_REPORT_CLICK)
+            || t.mode().contains(TermMode::MOUSE_DRAG)
+            || t.mode().contains(TermMode::MOUSE_MOTION);
         drop(t); // release before any eprintln / app.emit
 
         // P3b: wake the render thread for this batch — AFTER the Term lock
@@ -381,6 +410,22 @@ fn worker_loop(
                     app,
                     term_id,
                     Osc133 { kind, exit_code, abs_line },
+                );
+            }
+
+            // Alt-screen transitions. Not coalesced — these are rare (one per
+            // fullscreen enter/exit) and JS swaps its scrollbar on them, so a
+            // dropped or delayed edge is directly visible.
+            let alt_state = (alt_screen_now, mouse_reporting_now);
+            if last_alt_screen != Some(alt_state) {
+                last_alt_screen = Some(alt_state);
+                emit_alt_screen(
+                    app,
+                    term_id,
+                    AltScreen {
+                        active: alt_screen_now,
+                        mouse_reporting: mouse_reporting_now,
+                    },
                 );
             }
 

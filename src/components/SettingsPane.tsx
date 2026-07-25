@@ -1089,6 +1089,10 @@ export default function SettingsPane() {
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
   const setNativeCursorBlink = useAppStore((s) => s.setNativeCursorBlink);
   const useNativeTerminalRenderer = useAppStore((s) => s.useNativeTerminalRenderer);
+  const scrollThumbAcceleration = useAppStore((s) => s.scrollThumbAcceleration);
+  const wheelAcceleration = useAppStore((s) => s.wheelAcceleration);
+  const setWheelAcceleration = useAppStore((s) => s.setWheelAcceleration);
+  const setScrollThumbAcceleration = useAppStore((s) => s.setScrollThumbAcceleration);
   const setUseNativeTerminalRenderer = useAppStore((s) => s.setUseNativeTerminalRenderer);
   const aiTimeBursts = useAppStore((s) => s.aiTimeBursts);
   const clearAiTimeStats = useAppStore((s) => s.clearAiTimeStats);
@@ -1251,6 +1255,12 @@ export default function SettingsPane() {
             <SettingsSection id="native-renderer" title="Native renderer" description="Experimental GPU-accelerated terminal renderer. When off, MADE uses the classic xterm panes.">
               <SettingsRow label="Native terminal renderer (beta)" description="Render terminals with the native GPU renderer instead of the classic xterm panes. When off, MADE uses the proven xterm renderer. Open terminals reload when you change this.">
                 <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
+              </SettingsRow>
+              <SettingsRow label="Mouse wheel acceleration" description="Scroll faster with the wheel to travel further per notch, like Warp. Applies to a native pane's own scrollback. Fullscreen CLIs (Claude's /tui fullscreen) receive raw wheel events and do their own acceleration, so this does not affect them.">
+                <ToggleSwitch checked={wheelAcceleration} onChange={setWheelAcceleration} />
+              </SettingsRow>
+              <SettingsRow label="Scroll thumb acceleration" description="When dragging a native pane's scrollbar in a fullscreen CLI (Claude's /tui fullscreen), drag faster to scroll further per pixel. Off gives a strict 1:1 mapping, so dragging the thumb to the top lands exactly at the top. Applies to native panes only.">
+                <ToggleSwitch checked={scrollThumbAcceleration} onChange={setScrollThumbAcceleration} />
               </SettingsRow>
               <SettingsRow label="Native terminal cursor style" description="Applies to native terminal renderer only.">
                 <SegmentedControl<"bar" | "block" | "underline">

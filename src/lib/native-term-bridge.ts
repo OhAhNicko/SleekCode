@@ -228,6 +228,48 @@ export interface FocusGainedEvent {}
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface FocusLostEvent {}
 
+/**
+ * DECSET 1049 alternate-screen state. `active` = a fullscreen TUI owns the
+ * screen (Claude's `/tui fullscreen`, vim, htop). The alt buffer has no
+ * scrollback, so MADE's own scrollbar has nothing to show and the TUI scrolls
+ * itself — the pane swaps scrollbars on this edge. Emitted on transition only.
+ */
+export interface AltScreenEvent {
+  active: boolean;
+  /** The TUI has DECSET 1000/1002/1003 mouse reporting on, i.e. it wants wheel
+   * events. Precondition for MADE's TUI scrollbar: without it there is no way
+   * to drive the TUI's own scroller. */
+  mouseReporting: boolean;
+}
+
+/**
+ * A wheel scroll forwarded to a fullscreen TUI as mouse-report bytes.
+ * `notches` is signed: positive = wheel up (older content). Lets the pane
+ * scrollbar track scrolling the USER drove with the wheel, not just its own.
+ */
+export interface TuiScrollEvent {
+  notches: number;
+}
+
+/**
+ * Ctrl+Up / Ctrl+Down pressed inside a fullscreen TUI: jump to the previous
+ * (`dir` +1, older) or next (`dir` -1, newer) message. Rust claims the key and
+ * emits this instead of forwarding it, because the TUI has no message-level
+ * scroll command — the pane performs the jump by scrolling until Claude's
+ * sticky prompt row changes.
+ */
+export interface TuiPromptNavEvent {
+  dir: number;
+}
+
+/**
+ * OSC 0 / OSC 2 terminal title. Empty string = title reset (OSC 104 /
+ * ResetTitle), meaning "fall back to the pane's normal label".
+ */
+export interface TitleEvent {
+  title: string;
+}
+
 // Discriminated union of all event kinds. Channel suffix maps to payload.
 export type NativeTermEventKind =
   | "osc133"
@@ -246,7 +288,11 @@ export type NativeTermEventKind =
   | "cell_hover"
   | "cell_hover_end"
   | "focus_gained"
-  | "focus_lost";
+  | "focus_lost"
+  | "alt_screen"
+  | "tui_scroll"
+  | "tui_prompt_nav"
+  | "title";
 
 export interface NativeTermEventPayloadMap {
   osc133: Osc133Event;
@@ -266,6 +312,10 @@ export interface NativeTermEventPayloadMap {
   cell_hover_end: CellHoverEndEvent;
   focus_gained: FocusGainedEvent;
   focus_lost: FocusLostEvent;
+  alt_screen: AltScreenEvent;
+  tui_scroll: TuiScrollEvent;
+  tui_prompt_nav: TuiPromptNavEvent;
+  title: TitleEvent;
 }
 
 export function nativeTermEventChannel(
@@ -310,7 +360,10 @@ export type NativeTermCmd =
   | "native_term_reset"
   | "native_term_search"
   | "native_term_search_clear"
-  | "native_term_set_search_highlights";
+  | "native_term_set_search_highlights"
+  | "native_term_tui_scroll"
+  | "native_term_set_wheel_acceleration"
+  | "native_term_set_prompt_nav";
 
 // --- Lifecycle ---
 
@@ -509,6 +562,44 @@ export function nativeTermGetSelection(
   id: NativeTermId,
 ): Promise<string | null> {
   return invoke<string | null>("native_term_get_selection", { id });
+}
+
+/**
+ * Opt a pane into MADE claiming Ctrl+Up / Ctrl+Down for sticky-prompt
+ * navigation. Enable only for pane types that have that UI (Claude), so the
+ * keys keep reaching the TUI everywhere else.
+ */
+export function nativeTermSetPromptNav(
+  id: NativeTermId,
+  enabled: boolean,
+): Promise<void> {
+  return invoke<void>("native_term_set_prompt_nav", { id, enabled });
+}
+
+/**
+ * Toggle Warp-style velocity acceleration on MADE's OWN scrollback wheel
+ * scrolling (fast flicks travel further per notch). Applies to the local
+ * scroll path only — wheel events forwarded to a mouse-reporting TUI stay raw,
+ * because the TUI may run its own ramp (Claude does).
+ */
+export function nativeTermSetWheelAcceleration(
+  id: NativeTermId,
+  enabled: boolean,
+): Promise<void> {
+  return invoke<void>("native_term_set_wheel_acceleration", { id, enabled });
+}
+
+/**
+ * Drive a fullscreen TUI's own scroller with synthesized wheel events
+ * (`notches` signed; positive = up/older). Resolves false when the TUI has no
+ * mouse reporting enabled, in which case nothing was sent and the caller
+ * should fall back to page keys.
+ */
+export function nativeTermTuiScroll(
+  id: NativeTermId,
+  notches: number,
+): Promise<boolean> {
+  return invoke<boolean>("native_term_tui_scroll", { id, notches });
 }
 
 export function nativeTermScrollToBottom(id: NativeTermId): Promise<void> {
@@ -740,4 +831,32 @@ export function subscribeFocusLost(
   cb: () => void,
 ): Promise<Unlisten> {
   return subscribe(id, "focus_lost", () => cb());
+}
+
+export function subscribeAltScreen(
+  id: NativeTermId,
+  cb: (e: AltScreenEvent) => void,
+): Promise<Unlisten> {
+  return subscribe(id, "alt_screen", cb);
+}
+
+export function subscribeTuiScroll(
+  id: NativeTermId,
+  cb: (e: TuiScrollEvent) => void,
+): Promise<Unlisten> {
+  return subscribe(id, "tui_scroll", cb);
+}
+
+export function subscribeTuiPromptNav(
+  id: NativeTermId,
+  cb: (e: TuiPromptNavEvent) => void,
+): Promise<Unlisten> {
+  return subscribe(id, "tui_prompt_nav", cb);
+}
+
+export function subscribeTitle(
+  id: NativeTermId,
+  cb: (e: TitleEvent) => void,
+): Promise<Unlisten> {
+  return subscribe(id, "title", cb);
 }

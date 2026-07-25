@@ -17,6 +17,19 @@ export interface NativeRendererSlice {
    * alongside `useNativeTerminalRenderer`. Ctrl+clicking a menu item forces
    * native for that one pane regardless of this flag. */
   newPaneNativeRenderer: boolean;
+  /** Velocity acceleration when dragging a native pane's fullscreen-TUI
+   * scrollbar: a fast drag scrolls further per pixel than a slow one. On by
+   * default (it makes a long scrollback reachable without a huge drag), but
+   * it compounds with Claude's own wheel ramp, so it's switchable. Off = a
+   * strictly 1:1 mapping, where dragging the thumb to the top lands at the
+   * top. */
+  scrollThumbAcceleration: boolean;
+  /** Warp-style velocity acceleration for the mouse wheel on MADE's OWN
+   * scrollback (native panes, normal buffer). Does NOT affect fullscreen TUIs:
+   * those receive raw wheel notches and apply their own ramp — Claude has
+   * `wheelScrollAccelerationEnabled` — so stacking ours would make the
+   * distance per flick unpredictable. */
+  wheelAcceleration: boolean;
   paneRendererOverride: Record<string, Exclude<PaneRendererOverride, null>>;
   nativeRendererTelemetry: NativeRendererTelemetry;
   // Tracks every alive native-term HWND id so coordinators (e.g. modal
@@ -49,6 +62,8 @@ export interface NativeRendererSlice {
 
   setUseNativeTerminalRenderer: (v: boolean) => void;
   setNewPaneNativeRenderer: (v: boolean) => void;
+  setScrollThumbAcceleration: (v: boolean) => void;
+  setWheelAcceleration: (v: boolean) => void;
   setPaneRendererOverride: (paneId: string, override: PaneRendererOverride) => void;
   recordNativeRendererCrash: () => void;
   registerNativeTerm: (id: NativeTermId) => void;
@@ -68,6 +83,8 @@ export const createNativeRendererSlice: StateCreator<
 > = (set, get) => ({
   useNativeTerminalRenderer: false,
   newPaneNativeRenderer: false,
+  scrollThumbAcceleration: true,
+  wheelAcceleration: true,
   paneRendererOverride: {},
   nativeRendererTelemetry: { panes: 0, crashes: 0, lastCrashAt: null },
   liveNativeTerms: EMPTY_LIVE,
@@ -79,6 +96,10 @@ export const createNativeRendererSlice: StateCreator<
   setUseNativeTerminalRenderer: (v) => set({ useNativeTerminalRenderer: v }),
 
   setNewPaneNativeRenderer: (v) => set({ newPaneNativeRenderer: v }),
+
+  setScrollThumbAcceleration: (v) => set({ scrollThumbAcceleration: v }),
+
+  setWheelAcceleration: (v) => set({ wheelAcceleration: v }),
 
   setWebviewFocused: (focused) => {
     const s = get();

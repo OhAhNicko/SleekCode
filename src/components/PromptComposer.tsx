@@ -317,8 +317,30 @@ export default function PromptComposer({
   // Detect interactive CLI mode (question dialogs, plan acceptance, tool permissions).
   // Only checks lines BELOW the prompt line — old hints scrolled above don't count.
   // Each CLI has its own hint strings — adjust these when testing each CLI's interactive UI.
+  // Strings that mark the CLI as showing an interactive dialog rather than an
+  // idle prompt. Compared lowercased against the rendered line.
+  //
+  // The resume picker entries are transcribed from a real screenshot of the
+  // failure (2026-07-25), not guessed. It renders:
+  //
+  //     Resume session
+  //     ⌕ Welcome
+  //     No sessions match "Welcome".
+  //     Type to Search · Enter to select · Esc to clear
+  //
+  // Only "enter to select" was in this table before, and it sits >4 lines below
+  // the prompt so Tier 1 missed it, while Tier 2 needs 2+ DISTINCT hints —
+  // Claude says "Esc to clear", not the "esc to cancel" we looked for. So the
+  // picker read as a normal prompt, the steal fired, and it grabbed banner text
+  // into the search box: the "Welcome" glitch on restart.
+  const RESUME_PICKER_HINTS = [
+    "type to search",
+    "esc to clear",
+    "resume session",
+    "no sessions match",
+  ];
   const interactiveHints: Record<string, string[]> = {
-    claude: ["enter to select", "arrow keys", "esc to cancel"],
+    claude: ["enter to select", "arrow keys", "esc to cancel", ...RESUME_PICKER_HINTS],
     codex: ["enter to select", "arrow keys", "esc to cancel"],   // TODO: verify with actual Codex interactive UI
     gemini: ["enter to select", "arrow keys", "esc to cancel"],  // TODO: verify with actual Gemini interactive UI
   };

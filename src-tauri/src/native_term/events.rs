@@ -170,6 +170,68 @@ pub fn emit_scroll(app: &AppHandle, term_id: u32, payload: Scroll) {
     let _ = app.emit(&format!("native_term:{}:scroll", term_id), payload);
 }
 
+/// DECSET 1049 alternate-screen state. `active` = a fullscreen TUI owns the
+/// screen (Claude's `/tui fullscreen`, vim, htop). The alt buffer has no
+/// scrollback, so MADE's own scrollbar is meaningless there and the TUI does
+/// its own scrolling — JS swaps scrollbars on this edge. Emitted on transition
+/// only, from the parser worker.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AltScreen {
+    pub active: bool,
+    /// The TUI has DECSET 1000/1002/1003 mouse reporting on, i.e. it WANTS
+    /// wheel events. This is the real precondition for MADE's TUI scrollbar:
+    /// without it there is no way to drive the TUI's own scroller, and it also
+    /// separates Claude's fullscreen conversation view (which owns the wheel,
+    /// and whose scroll settings are documented "fullscreen mode only") from
+    /// plain alt-screen programs that merely occupy the screen.
+    pub mouse_reporting: bool,
+}
+
+pub fn emit_alt_screen(app: &AppHandle, term_id: u32, payload: AltScreen) {
+    let _ = app.emit(&format!("native_term:{}:alt_screen", term_id), payload);
+}
+
+/// A wheel scroll that was forwarded to a fullscreen TUI as mouse-report
+/// bytes. `notches` is signed: positive = wheel up (older content). Emitted so
+/// the pane's scrollbar can track scrolling the USER drove with the wheel, not
+/// just scrolling the scrollbar itself drove — otherwise the thumb desyncs the
+/// moment the wheel is touched.
+#[derive(Serialize, Clone)]
+pub struct TuiScroll {
+    pub notches: i32,
+}
+
+pub fn emit_tui_scroll(app: &AppHandle, term_id: u32, payload: TuiScroll) {
+    let _ = app.emit(&format!("native_term:{}:tui_scroll", term_id), payload);
+}
+
+/// Ctrl+Up / Ctrl+Down inside a fullscreen TUI: "jump to the previous / next
+/// message". `dir` is +1 for older (up) and -1 for newer (down). Emitted
+/// instead of forwarding the key, because the TUI has no message-level scroll
+/// command of its own — JS performs the jump by scrolling until Claude's
+/// sticky prompt row changes.
+#[derive(Serialize, Clone)]
+pub struct TuiPromptNav {
+    pub dir: i32,
+}
+
+pub fn emit_tui_prompt_nav(app: &AppHandle, term_id: u32, payload: TuiPromptNav) {
+    let _ = app.emit(&format!("native_term:{}:tui_prompt_nav", term_id), payload);
+}
+
+/// OSC 0 / OSC 2 terminal title. `title` is empty for OSC 104 / ResetTitle,
+/// which the pane treats as "fall back to my normal label". Claude sets this
+/// while it works, so a pane header can show what it is actually doing.
+#[derive(Serialize, Clone)]
+pub struct TermTitle {
+    pub title: String,
+}
+
+pub fn emit_title(app: &AppHandle, term_id: u32, payload: TermTitle) {
+    let _ = app.emit(&format!("native_term:{}:title", term_id), payload);
+}
+
 /// OSC 8 hyperlink mouse-over. Rect is pane-local logical-px.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]

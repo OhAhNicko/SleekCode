@@ -1,7 +1,8 @@
 import { useEffect, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { TerminalType } from "../types";
-import { getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
+import { sessionStillExists } from "../lib/session-exists";
+import { claudeSessionIdArgs, getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
 import { wslReady } from "../lib/wsl-cache";
 import { windowsReady } from "../lib/windows-cli-cache";
 import { nativeReady } from "../lib/macos-cli-cache";
@@ -20,6 +21,10 @@ interface UsePtyOptions {
   onExit: (exitCode: number) => void;
   serverId?: string;
   sessionResumeId?: string;
+  /** Called with the session id MADE ASSIGNED to a freshly-spawned Claude
+   * session (via `--session-id`). Lets the pane claim it directly instead of
+   * guessing it back from the newest .jsonl mtime. */
+  onSessionIdAssigned?: (id: string) => void;
   injectShellIntegration?: boolean;
   /** When false, PTY spawn is deferred until the terminal has measured
    *  its real dimensions via fitAddon.fit(). This prevents spawning at
@@ -47,6 +52,7 @@ export function usePty({
   onExit,
   serverId,
   sessionResumeId,
+  onSessionIdAssigned,
   injectShellIntegration = false,
   ready = true,
   restartKey = 0,
@@ -62,6 +68,8 @@ export function usePty({
   // Capture resume ID via ref — read once at spawn time, never triggers re-spawn.
   // The ID is persisted to localStorage on exit and used on next app restart.
   const sessionResumeIdRef = useRef(sessionResumeId);
+  const onSessionIdAssignedRef = useRef(onSessionIdAssigned);
+  onSessionIdAssignedRef.current = onSessionIdAssigned;
   sessionResumeIdRef.current = sessionResumeId;
 
   // Store stable config in refs so only terminalType triggers PTY restart.
@@ -169,7 +177,37 @@ export function usePty({
           extraArgs.push(yoloFlag);
         }
         console.log(`[PTY] spawn ${terminalType}`, extraArgs.length ? `extraArgs: ${extraArgs.join(" ")}` : "(no extra args)", `forceYolo=${forceYoloRef.current}`);
-        const resumeId = sessionResumeIdRef.current;
+        // Never resume an id the CLI can no longer find: it drops into its
+        // interactive "Resume session" picker, which MADE mishandles (the
+        // composer steals banner text into the search box — the "Welcome"
+        // glitch). Checking first means the picker never appears. Fails OPEN,
+        // so an unreadable index can never discard a real conversation.
+        let resumeId = sessionResumeIdRef.current;
+        if (resumeId) {
+          const alive = await sessionStillExists(
+            terminalType,
+            resumeId,
+            currentWorkingDir || "",
+            backend ?? "wsl",
+            serverIdRef.current,
+          );
+          if (!alive) {
+            console.warn(
+              `[SessionResume] ${resumeId.slice(0, 8)} no longer exists — starting a fresh session instead of dropping into the CLI's resume picker`,
+            );
+            resumeId = undefined;
+            // Drop the dead id so the pane stops retrying it every launch.
+            onSessionIdAssignedRef.current?.("");
+          }
+        }
+        // Assign the Claude session id up front rather than detecting it after
+        // the fact (see claudeSessionIdArgs). No-op for every other pane type
+        // and for resumes.
+        const assigned = claudeSessionIdArgs(terminalType, resumeId);
+        if (assigned.sessionId) {
+          extraArgs.push(...assigned.args);
+          onSessionIdAssignedRef.current?.(assigned.sessionId);
+        }
         cwd = currentWorkingDir || undefined;
 
         if (backend === "native") {

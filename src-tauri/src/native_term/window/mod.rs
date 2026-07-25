@@ -199,6 +199,31 @@ pub trait NativeTermWindow: Send {
         Ok(())
     }
 
+    /// Opt this pane into MADE claiming Ctrl+Up/Ctrl+Down for message
+    /// navigation. Off by default so the keys reach the TUI everywhere except
+    /// the panes that actually have a sticky-prompt UI to navigate.
+    fn set_prompt_nav(&mut self, _on: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Enable/disable velocity acceleration for MADE's OWN scrollback wheel
+    /// scrolling (Warp-style: fast flicks travel further per notch). Does not
+    /// affect wheel events forwarded to a mouse-reporting TUI — those stay raw,
+    /// since the TUI may run its own ramp. Default no-op for mac/linux stubs.
+    fn set_wheel_acceleration(&mut self, _on: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Drive a fullscreen TUI's own scroller by synthesizing wheel events into
+    /// the PTY (`notches` signed; positive = up/older). Used by the pane
+    /// scrollbar so dragging it scrolls exactly as smoothly as the real wheel.
+    /// Returns false when the TUI has not enabled mouse reporting, so the
+    /// caller can fall back to page keys. Default no-op keeps the mac/linux
+    /// stubs compiling.
+    fn tui_scroll(&mut self, _notches: i32) -> Result<bool, String> {
+        Ok(false)
+    }
+
     /// Phase 3 search-highlight overlay. Replace the pane's current set of
     /// highlight rects (coord space: pane-local pixels matching the
     /// `native_term_search` result). Pass an empty slice — or call

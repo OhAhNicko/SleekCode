@@ -12,6 +12,7 @@
 pub mod events;
 pub mod parser_bridge;
 pub mod pty_route;
+pub mod key_encoding;
 pub mod registry;
 pub mod region;
 pub mod renderer;
@@ -334,6 +335,36 @@ pub fn native_term_set_copy_on_select(id: u32, copy_on_select: bool) -> Result<(
 #[tauri::command]
 pub fn native_term_focus_keyboard(id: u32) -> Result<(), String> {
     registry::with_window(id, |w| w.focus_keyboard())
+}
+
+/// Opt a pane into MADE claiming Ctrl+Up/Ctrl+Down for sticky-prompt
+/// navigation. JS enables it only for pane types that have that UI.
+#[tauri::command]
+pub fn native_term_set_prompt_nav(id: u32, enabled: bool) -> Result<(), String> {
+    registry::with_window(id, |w| w.set_prompt_nav(enabled))
+}
+
+/// Toggle Warp-style velocity acceleration on MADE's own scrollback wheel
+/// scrolling. Applies to the local-scroll path only (normal buffer); wheel
+/// events forwarded to a mouse-reporting TUI stay raw.
+#[tauri::command]
+pub fn native_term_set_wheel_acceleration(id: u32, enabled: bool) -> Result<(), String> {
+    registry::with_window(id, |w| w.set_wheel_acceleration(enabled))
+}
+
+/// Drive a fullscreen TUI's own scroller with synthesized wheel events
+/// (`notches` signed; positive = up/older). The pane scrollbar uses this so a
+/// drag scrolls as smoothly as the physical wheel — page keys move a whole
+/// screen and read as "skippy". Returns false if the TUI has no mouse
+/// reporting on, so JS can fall back to PgUp/PgDn.
+#[tauri::command]
+pub fn native_term_tui_scroll(id: u32, notches: i32) -> Result<bool, String> {
+    let mut sent = false;
+    registry::with_window(id, |w| {
+        sent = w.tui_scroll(notches)?;
+        Ok(())
+    })?;
+    Ok(sent)
 }
 
 /// Debug-only: inject raw bytes directly into the parser bridge channel for

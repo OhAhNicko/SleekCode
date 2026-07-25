@@ -32,6 +32,8 @@ import {
   nativeTermSetCursorStyle,
   nativeTermSetFont,
   nativeTermSetCopyOnSelect,
+  nativeTermSetWheelAcceleration,
+  subscribeTitle,
   nativeTermProposeDimensions,
 } from "../lib/native-term-bridge";
 import { useNativeCommandBlocks } from "../hooks/useNativeCommandBlocks";
@@ -40,6 +42,7 @@ import { usePtyNative } from "../hooks/usePtyNative";
 import type { NativeRendererSlice } from "../store/nativeRendererSlice";
 import ImeCompositionPopup from "../native-term/ImeCompositionPopup";
 import FileLinkTooltip from "../native-term/FileLinkTooltip";
+import TuiScrollbar from "../native-term/TuiScrollbar";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { queueGeom } from "../native-term/frameSync";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
@@ -206,6 +209,8 @@ export default function TerminalPaneNative({
 
   const paneDivRef = useRef<HTMLDivElement | null>(null);
   const terminalDivRef = useRef<HTMLDivElement | null>(null);
+  // Bumped on prompt submit; re-zeroes TuiScrollbar's scroll estimate.
+  const [submitNonce, setSubmitNonce] = useState(0);
   const [termId, setTermId] = useState<NativeTermId | null>(null);
   const [cols, setCols] = useState(80);
   const [rows, setRows] = useState(24);
@@ -443,6 +448,7 @@ export default function TerminalPaneNative({
   // N-b: copy-on-select store flag (legacy default false). Pushed to the
   // native pane below so a mouse-selection auto-copies only when enabled.
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
+  const wheelAcceleration = useAppStore((s) => s.wheelAcceleration);
   const cliFontSize = useAppStore((s) => s.cliFontSizes[terminalType] ?? DEFAULT_CLI_FONT_SIZE);
   // P5b: mirror the CLI font size into a ref so the create effect can push
   // the initial set_font without adding cliFontSize to its dep array (which
@@ -891,6 +897,39 @@ export default function TerminalPaneNative({
     );
   }, [termId, copyOnSelect]);
 
+  // OSC 0/2 terminal title. Claude sets this from your session name (its
+  // `terminalTitleFromRename` setting). Plumbing only for now — logged in dev
+  // so real values can be observed before choosing where to render it.
+  useEffect(() => {
+    if (termId == null || !import.meta.env.DEV) return;
+    let un: (() => void) | undefined;
+    let disposed = false;
+    subscribeTitle(termId, (e) => {
+      console.debug(
+        `[title] pane ${terminalId} ${e.title ? `"${e.title}"` : "(reset)"}`,
+      );
+    }).then((u) => {
+      if (disposed) u();
+      else un = u;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, [termId, terminalId]);
+
+  // Mirror the `wheelAcceleration` store flag onto the native pane. Governs
+  // MADE's OWN scrollback wheel scrolling only (Warp-style velocity ramp) —
+  // wheel events forwarded to a mouse-reporting TUI stay raw, since those
+  // apply their own acceleration. Also fires on termId-flip so a fresh pane
+  // starts in sync.
+  useEffect(() => {
+    if (termId == null) return;
+    void nativeTermSetWheelAcceleration(termId, wheelAcceleration).catch((e) =>
+      console.error("[TerminalPaneNative] set_wheel_acceleration update failed", e),
+    );
+  }, [termId, wheelAcceleration]);
+
   // ── Font hot-swap (P5b) ───────────────────────────────────────────────
   // Re-push the font whenever the user changes the CLI font size (same
   // store field the xterm pane reads). Rust-side set_font re-derives the
@@ -1135,6 +1174,30 @@ export default function TerminalPaneNative({
     [onPtyExit, terminalId],
   );
 
+  // MADE assigned this Claude session's id at spawn (`--session-id`), so the
+  // whole detect-by-newest-jsonl-mtime dance is unnecessary here: claim it
+  // directly. `claimSessionId` still runs so two panes can never hold the same
+  // id, and `sessionTrusted` marks it authoritative rather than guessed.
+  const handleSessionIdAssigned = useCallback(
+    (id: string) => {
+      // Empty id = "the stored session is gone, forget it" (see
+      // sessionStillExists). Clear rather than claim, so the pane stops
+      // retrying a dead id on every launch and the next spawn gets a fresh one.
+      if (!id) {
+        setSessionTrusted(false);
+        sessionResumeIdPropRef.current = undefined;
+        onSessionResumeIdRef.current?.("");
+        return;
+      }
+      if (!claimSessionId(id)) return; // already held by another pane
+      setSessionTrusted(true);
+      sessionResumeIdPropRef.current = id;
+      onSessionResumeIdRef.current?.(id);
+      console.log(`[SessionResume] native assigned at spawn: ${id.slice(0, 8)}`);
+    },
+    [],
+  );
+
   const { write: ptyWrite } = usePtyNative({
     terminalType,
     terminalId,
@@ -1145,6 +1208,7 @@ export default function TerminalPaneNative({
     onExit: handlePtyExit,
     serverId,
     sessionResumeId,
+    onSessionIdAssigned: handleSessionIdAssigned,
     ready: termId != null,
     restartKey,
     backend,
@@ -1207,6 +1271,9 @@ export default function TerminalPaneNative({
   const handleComposerSubmit = useCallback(
     (text: string) => {
       recordTerminalWrite(terminalId);
+      // A submitted prompt lands a fullscreen TUI back at the bottom — tell
+      // TuiScrollbar so its dead-reckoning estimate re-zeroes with the view.
+      setSubmitNonce((n) => n + 1);
       const isCli =
         terminalType === "claude" ||
         terminalType === "codex" ||
@@ -1728,6 +1795,16 @@ export default function TerminalPaneNative({
           cellH={cellMetrics?.h}
         />
       )}
+      {/* Fullscreen-TUI scrollbar. Only renders while the pane is in the
+          alternate screen, where MADE's own scrollback is empty and the TUI
+          owns scrolling — normal-buffer panes keep the real scrollbar. */}
+      <TuiScrollbar
+        termId={termId}
+        terminalType={terminalType}
+        paneRef={terminalDivRef}
+        write={ptyWrite}
+        submitNonce={submitNonce}
+      />
       {/* Pane search — overlay-rendered with FOCUS HANDOFF (the overlay
           becomes focusable while the bar hosts the input; see the
           "pane-search" kind hook above). The last hole-cut user is gone. */}

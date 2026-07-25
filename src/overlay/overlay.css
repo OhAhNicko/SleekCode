@@ -1,0 +1,69 @@
+/*
+ * Overlay-webview styling.
+ *
+ * The overlay is a separate webview with its own HTML entry, deliberately kept
+ * minimal — it does NOT load index.css, and its popups style themselves inline
+ * with `var(--ezy-*, fallback)` against the theme bridge. The one thing inline
+ * styles cannot reach is browser chrome: scrollbars. Without these rules any
+ * scrollable popup (the session picker, command history, any long list) gets
+ * WebView2's default light-gray scrollbar, which reads as a foreign element
+ * sitting on top of a dark panel.
+ *
+ * These are the SAME values as index.css:80-93, deliberately duplicated rather
+ * than shared: the two webviews have no common stylesheet, and a scrollbar that
+ * silently drifts from the main app is worse than a six-line copy. If you change
+ * one, change the other.
+ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ezy-border, #30363d);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ezy-border-light, #484f58);
+}
+
+/* Firefox / spec-track equivalent, so the overlay degrades the same way the
+   xterm viewport does (index.css:118-121). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ezy-border, #30363d) transparent;
+}
+
+/* The overlay is click-through except where a popup registers a region, so it
+   must never scroll or paint its own background. */
+html,
+body {
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+/*
+ * Popup panels (session picker, prompt history, any anchored menu) sit on
+ * --ezy-surface-raised (#1c2128), several steps lighter than a terminal pane's
+ * background. The pane scrollbar's --ezy-border (#30363d) thumb has almost no
+ * contrast there, so these get a lighter pair — same palette, one step up, so
+ * the two still read as one system rather than two designs.
+ */
+.ezy-popup-scroll::-webkit-scrollbar-thumb {
+  background: var(--ezy-border-light, #484f58);
+}
+
+.ezy-popup-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--ezy-text-muted, #8b949e);
+}
+
+.ezy-popup-scroll {
+  scrollbar-color: var(--ezy-border-light, #484f58) transparent;
+}

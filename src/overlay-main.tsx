@@ -1,6 +1,9 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { OverlayRoot } from "./overlay/OverlayRoot";
+// Scrollbar + reset only. NOT index.css — see the note in overlay.css and the
+// isolation rationale below.
+import "./overlay/overlay.css";
 
 // Entry point for the SECOND webview (the transparent, always-above overlay).
 //

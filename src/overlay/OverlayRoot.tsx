@@ -238,8 +238,8 @@ function OverlayPopup({
       return <Toast msg={msg} registerEl={registerEl} />;
     case "file-link-tooltip":
       return <FileLinkTip msg={msg} registerEl={registerEl} />;
-    case "history-scrubber":
-      return <HistoryScrubber msg={msg} registerEl={registerEl} />;
+    case "tui-scrollbar":
+      return <TuiScrollbar msg={msg} registerEl={registerEl} />;
     case "ime-composition":
       return <ImeComposition msg={msg} registerEl={registerEl} />;
     case "jump-btn":
@@ -720,27 +720,41 @@ function FileLinkTip({
 }
 
 /**
- * TUI-fullscreen history scrubber (kind "history-scrubber"). A right-edge
- * scrollbar over the native pane, shown while the user is viewing frame
- * history (frozen). payload { index, count }: index 0 = OLDEST frame (thumb at
- * top), count-1 = newest (thumb at bottom). Dragging bounces a "seek" action
- * ({ index }) to the main webview, which calls native_term_history_seek.
+ * Fullscreen-TUI scrollbar (kind "tui-scrollbar") for native panes. The pane is
+ * running an alternate-screen TUI that owns its own scrollback, so this bar does
+ * not show MADE history — it DRIVES the TUI by bouncing actions back to the
+ * pane, which sends PgUp/PgDn. payload { pagesUp, span }: pagesUp 0 = bottom
+ * (newest), pagesUp === span = top (oldest). The thumb is a FIXED size because
+ * the TUI never reports how long its scrollback is; its position is the pane's
+ * dead-reckoning estimate.
  *
- * The registered region element is a WIDE transparent hit-strip (not just the
+ * The registered region element is a wide transparent hit-strip (not just the
  * visible track) so a vertical drag has horizontal slop before the pointer
- * leaves the overlay's clip region (outside the region, clicks fall through to
- * the pane and the drag would stall — the overlay can't OS-capture the mouse).
+ * leaves the overlay's clip region — outside it, events fall through to the
+ * pane and the drag stalls (the overlay cannot OS-capture the mouse).
+ *
+ * Visual language is ported 1:1 from the xterm pane's jump-to-bottom button
+ * (TerminalPaneXterm.tsx) per the xterm/native design-parity rule.
  */
-function HistoryScrubber({
+function TuiScrollbar({
   msg,
   registerEl,
 }: {
   msg: OverlayPopupMsg;
   registerEl: (id: string, el: HTMLElement | null) => void;
 }) {
-  const p = (msg.payload ?? {}) as { index?: number; count?: number };
-  const count = Math.max(1, p.count ?? 1);
-  const index = Math.min(Math.max(0, p.index ?? 0), count - 1);
+  const p = (msg.payload ?? {}) as {
+    pos?: number;
+    span?: number;
+    accel?: boolean;
+  };
+  // Forwarded from the main webview's store — the overlay has no store.
+  // Default ON so a payload from an older build still behaves as before.
+  const accelOn = p.accel !== false;
+  const span = Math.max(1, p.span ?? 300);
+  const pos = Math.min(Math.max(0, p.pos ?? 0), span);
+  const atBottom = pos === 0;
+
   const ref = useCallback(
     (el: HTMLElement | null) => registerEl(msg.id, el),
     [registerEl, msg.id],
@@ -748,35 +762,107 @@ function HistoryScrubber({
   const stripRef = useRef<HTMLDivElement | null>(null);
   const rect = msg.rect!;
 
-  const STRIP_W = 44; // transparent hit area (drag slop)
+  // The registered region steals the mouse from the native pane underneath, so
+  // it must stay as narrow as possible: a permanent wide strip would break
+  // text selection and clicks down the pane's right edge. At the bottom (the
+  // common case) only the thin track is grabbable; once the user is scrolled
+  // up they are already in "scrolling" mode, so we widen for drag slop and to
+  // cover the jump-to-bottom button.
   const TRACK_W = 6;
   const PAD_Y = 6;
+  const THUMB_H = 40; // FIXED — true length is unknown
   const trackH = Math.max(0, rect.height - PAD_Y * 2);
-  const thumbH =
-    count <= 1 ? trackH : Math.max(28, trackH / count);
-  const thumbY =
-    count <= 1 ? 0 : (index / (count - 1)) * (trackH - thumbH);
+  // RELATIVE drag: pointer MOVEMENT maps to wheel notches, exactly like a
+  // physical wheel where a detent is one notch. We deliberately do NOT seek to
+  // an absolute position: the TUI never reports its scrollback length, so
+  // "40% down the track" is a coordinate we invented, and walking to it forced
+  // us to also invent a scroll RATE. Here the user's hand sets the rate, which
+  // is the whole reason wheeling feels right.
+  //
+  // Base ratio maps a full-track drag onto the whole KNOWN scrollback.
+  const pxPerNotch = Math.max(1, (trackH - THUMB_H) / span);
 
-  // Map a client-Y within the track to a frame index (0 = oldest/top).
-  const seekFromY = (clientY: number) => {
-    const el = stripRef.current;
-    if (!el) return;
-    const b = el.getBoundingClientRect();
-    const localY = clientY - b.top - PAD_Y - thumbH / 2;
-    const denom = Math.max(1, trackH - thumbH);
-    const frac = Math.min(1, Math.max(0, localY / denom));
-    const idx = Math.round(frac * (count - 1));
-    emitOverlayAction({ id: msg.id, action: "seek", data: { index: idx } });
-  };
+  // ── Drag acceleration ──────────────────────────────────────────────────
+  // Slow drags stay 1:1 with the pointer so you can position precisely; fast
+  // drags multiply, so a flick covers a lot of ground. Same idea as pointer
+  // acceleration, and the reason a scrollbar over an unknown-length buffer can
+  // feel good: precision when you want it, reach when you need it.
+  //
+  // Velocity is px/ms. Below ACCEL_FLOOR nothing changes (factor 1). Above it
+  // the factor ramps linearly and is capped, so a violent flick cannot fire an
+  // unbounded burst.
+  const ACCEL_FLOOR = 0.4; // px/ms — below this, no acceleration at all
+  const ACCEL_GAIN = 1.6; // multiplier growth per px/ms above the floor
+  const ACCEL_MAX = 5; // hard cap
+  const MIN_DT_MS = 8; // guards against divide-by-tiny on coalesced events
+
+  const lastYRef = useRef(0);
+  const lastTRef = useRef(0);
+  const accumRef = useRef(0);
+  // Optimistic position, used ONLY while dragging. The authoritative count
+  // lives in the pane, but waiting for it (overlay -> IPC -> React -> payload
+  // -> overlay) puts the thumb a frame or two behind the pointer, which reads
+  // as the thumb "not keeping up" on fast drags. Render locally instead and
+  // let the echoed payload take over again on release.
+  const [dragPos, setDragPos] = useState<number | null>(null);
+  const [hovered, setHovered] = useState(false);
+  const dragPosRef = useRef(0);
 
   const onPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-    seekFromY(e.clientY);
+    lastYRef.current = e.clientY;
+    lastTRef.current = e.timeStamp;
+    accumRef.current = 0;
+    dragPosRef.current = pos;
+    setDragPos(pos);
   };
+
+  const endDrag = (e: React.PointerEvent) => {
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    setDragPos(null); // hand the thumb back to the authoritative count
+  };
+
   const onPointerMove = (e: React.PointerEvent) => {
-    if (e.buttons & 1) seekFromY(e.clientY);
+    if (!(e.buttons & 1)) return;
+    const dy = e.clientY - lastYRef.current;
+    const dt = Math.max(MIN_DT_MS, e.timeStamp - lastTRef.current);
+    lastYRef.current = e.clientY;
+    lastTRef.current = e.timeStamp;
+
+    // Setting off => strict 1:1, so dragging the thumb to the top lands at
+    // the top. On => fast drags multiply, capped.
+    const velocity = Math.abs(dy) / dt;
+    const accel = accelOn
+      ? Math.min(ACCEL_MAX, 1 + Math.max(0, velocity - ACCEL_FLOOR) * ACCEL_GAIN)
+      : 1;
+
+    // Dragging UP (dy < 0) scrolls toward OLDER content (positive notches).
+    accumRef.current += (-dy / pxPerNotch) * accel;
+    const whole = Math.trunc(accumRef.current);
+    if (whole === 0) return;
+    accumRef.current -= whole;
+
+    dragPosRef.current = Math.max(0, dragPosRef.current + whole);
+    setDragPos(dragPosRef.current);
+    emitOverlayAction({ id: msg.id, action: "scrollBy", data: { notches: whole } });
   };
+
+  // Hit-strip width. This region steals the mouse from the native pane, so it
+  // stays narrow at rest (a permanent wide strip would kill text selection and
+  // clicks down the pane's right edge). It MUST widen while dragging: if the
+  // pointer drifts outside the region mid-drag the OS routes events to the
+  // pane HWND instead of the overlay and the drag stalls — pointer capture
+  // cannot save it, because capture is inside the webview and the routing
+  // decision happens above it.
+  const STRIP_W = dragPos !== null || !atBottom ? 44 : 16;
+
+  // While dragging, the thumb follows the optimistic count (and therefore
+  // outruns the pointer when acceleration kicks in — that is the point).
+  const shownPos = dragPos ?? pos;
+  // frac 0 = bottom, 1 = top. Thumb travels the track minus its own height.
+  const frac = Math.min(1, shownPos / Math.max(span, shownPos || 1));
+  const thumbY = Math.max(0, (1 - frac) * (trackH - THUMB_H));
 
   return (
     <div
@@ -784,8 +870,6 @@ function HistoryScrubber({
         stripRef.current = el;
         ref(el);
       }}
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
       style={{
         position: "fixed",
         left: rect.x + rect.width - STRIP_W,
@@ -793,58 +877,106 @@ function HistoryScrubber({
         width: STRIP_W,
         height: rect.height,
         pointerEvents: "auto",
-        cursor: "ns-resize",
         display: "flex",
         justifyContent: "flex-end",
         touchAction: "none",
       }}
     >
-      {/* Track */}
+      {/* Track + thumb.
+          Deliberately the SAME language as every other scrollbar in MADE
+          (index.css:80-93 / overlay.css): transparent track, --ezy-border
+          thumb, --ezy-border-light on hover. It previously used
+          --ezy-text-muted (#8b949e) for the thumb over an always-filled track,
+          which made it the brightest scrollbar in the app and read as a
+          foreign widget pasted onto the pane. The track now only materialises
+          on hover — the bar should be findable, not permanently loud, over a
+          terminal already full of syntax colour. */}
       <div
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
         style={{
           position: "relative",
           width: TRACK_W,
           margin: `${PAD_Y}px 4px`,
           borderRadius: TRACK_W / 2,
-          background: "var(--ezy-border, rgba(255,255,255,0.12))",
+          // Track stays transparent at ALL times — exactly like the shell /
+          // PowerShell pane's scrollbar (index.css:80-93 + .xterm-viewport).
+          // The thumb alone carries the affordance.
+          background: "transparent",
+          cursor: "default",
         }}
       >
-        {/* Thumb */}
         <div
           style={{
             position: "absolute",
             top: thumbY,
             left: 0,
             width: TRACK_W,
-            height: thumbH,
+            height: THUMB_H,
             borderRadius: TRACK_W / 2,
-            background: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
+            background:
+              hovered || dragPos !== null
+                ? "var(--ezy-border-light, #484f58)"
+                : "var(--ezy-border, #30363d)",
+            // Wheel notches arrive as discrete, unevenly-timed events, so the
+            // raw position steps and reads as jitter. A short linear tween
+            // absorbs that. NOT applied while dragging: there the thumb must
+            // sit exactly under the pointer, and easing would feel like lag.
+            transition:
+              dragPos === null
+                ? "top 90ms linear, background-color 120ms ease"
+                : "background-color 120ms ease",
           }}
         />
       </div>
-      {/* Position pill, vertically centered on the thumb */}
-      <div
-        style={{
-          position: "absolute",
-          right: STRIP_W + 2,
-          top: Math.min(
-            Math.max(0, rect.height - 20),
-            PAD_Y + thumbY + thumbH / 2 - 10,
-          ),
-          padding: "2px 7px",
-          borderRadius: 4,
-          background: "var(--ezy-surface-raised, #1c2128)",
-          boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.14))",
-          color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
-          fontFamily: "Inter, system-ui, sans-serif",
-          fontSize: 10,
-          fontVariantNumeric: "tabular-nums",
-          whiteSpace: "nowrap",
-          userSelect: "none",
-        }}
-      >
-        {index + 1}/{count}
-      </div>
+
+      {/* Jump-to-bottom — only while scrolled up, mirroring the xterm pane. */}
+      {!atBottom && (
+        <div
+          onClick={() => emitOverlayAction({ id: msg.id, action: "toBottom" })}
+          title="Jump to bottom"
+          style={{
+            position: "absolute",
+            right: 12,
+            bottom: 12,
+            width: 22,
+            height: 22,
+            borderRadius: 4,
+            backgroundColor: "var(--ezy-surface-raised, #1c2128)",
+            border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            opacity: 0.85,
+            transition: "opacity 120ms ease",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.opacity = "1";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.opacity = "0.85";
+          }}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 12 12"
+            fill="none"
+            stroke="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <polyline points="2,3 6,7 10,3" />
+            <line x1="3" y1="9.5" x2="9" y2="9.5" />
+          </svg>
+        </div>
+      )}
     </div>
   );
 }
@@ -1163,6 +1295,10 @@ function AnchoredMenu({
     >
       <div
         ref={setRef}
+        // Popup panels sit on --ezy-surface-raised, several steps lighter than
+        // a terminal pane, so the pane scrollbar's --ezy-border thumb nearly
+        // disappears against them. See `.ezy-popup-scroll` in overlay.css.
+        className="ezy-popup-scroll"
         style={{
           position: "absolute",
           top,

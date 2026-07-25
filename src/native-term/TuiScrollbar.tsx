@@ -1,0 +1,440 @@
+/**
+ * TuiScrollbar — scrollbar for a NATIVE pane running a fullscreen TUI
+ * (alternate screen), where MADE's own scrollback is empty by definition.
+ *
+ * Claude Code's fullscreen TUI keeps its OWN scrollback and scrolls it on the
+ * mouse wheel (hardware-verified 2026-07-25). MADE therefore renders no
+ * history here — it DRIVES Claude's scroller with the exact bytes a physical
+ * wheel produces (win32.rs `send_wheel_notches`) and draws a bar reflecting
+ * how far it has driven it. Page keys were tried first and rejected: they move
+ * a whole screen per press and read as "skippy".
+ *
+ * Three things make this harder than a normal scrollbar, all learned on
+ * hardware:
+ *
+ * 1. POSITION IS DEAD-RECKONED. The TUI never reports its scroll position, so
+ *    the thumb is our own count of notches sent up minus notches sent back
+ *    down. It counts BOTH sources — drags here, and the user's own wheel (Rust
+ *    emits `tui_scroll` when it forwards a real wheel event).
+ *
+ * 2. THE COUNT MUST BE SYNCHRONOUS. It lives in a ref, not just state. A drag
+ *    fires pointermoves far faster than React re-renders; when the delta was
+ *    computed from a stale render value, every move re-sent the WHOLE distance
+ *    and the content flew (round-2 bug).
+ *
+ * 3. THE DRAG IS RELATIVE, NOT ABSOLUTE. Pointer MOVEMENT maps to notches
+ *    (overlay side), rather than seeking to a fraction of the track. Because
+ *    the TUI never reports its scrollback length, an absolute position is a
+ *    coordinate system we would be inventing — and seeking to it forced MADE
+ *    to invent a scroll RATE too, which is what made earlier versions feel
+ *    "insanely fast". Relative dragging hands the rate back to the user's
+ *    hand, exactly as on a physical wheel. It also means Claude's own wheel
+ *    acceleration (`wheelScrollAccelerationEnabled`) responds to a fast drag
+ *    the same way it responds to a fast flick of the real wheel.
+ *
+ * Jump-to-bottom sends Ctrl+End, Claude's own `scroll:bottom` binding. That is
+ * ABSOLUTE, so it cannot drift the way undoing our own notch count would — and
+ * it re-zeroes the estimate as a side effect.
+ */
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  nativeTermGetBufferLines,
+  nativeTermGetViewportState,
+  nativeTermTuiScroll,
+  nativeTermSetPromptNav,
+  subscribeAltScreen,
+  subscribeTuiScroll,
+  subscribeTuiPromptNav,
+  type NativeTermId,
+} from "../lib/native-term-bridge";
+import { useAppStore } from "../store";
+import type { TerminalType } from "../types";
+import { useOverlayPopupAnchor } from "./useOverlayPopupAnchor";
+
+/** Ctrl+End — Claude's `scroll:bottom`. Same bytes MADE's key encoder emits
+ * for a physical Ctrl+End (key_encoding.rs: VK_END is cursor_key('F'), ctrl
+ * gives modifier param 5). */
+const CTRL_END = "\x1b[1;5F";
+
+/** Page keys — fallback only, for a TUI that scrolls but never enabled mouse
+ * reporting. */
+const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
+
+/**
+ * Scrollbar span, in wheel notches — the total scrollback the thumb maps
+ * across. The TUI never reports its length, so this is learned in two stages:
+ *
+ *  UNKNOWN (default): the top is unproven, so the span is `pos + HEADROOM`.
+ *    The thumb rises monotonically toward — but never reaches — the top, which
+ *    is honest: we do not know how much is above you, only that there is more.
+ *
+ *  KNOWN: the top anchor fired (a scroll-up left the screen unchanged), so the
+ *    distance travelled IS the total. The span is pinned to it and the thumb
+ *    reaches the top exactly when you are at the top.
+ *
+ * An earlier version defined the span as "deepest point reached", which is
+ * degenerate: while scrolling up, the deepest point IS the current position,
+ * so pos/span collapsed to 1 and the thumb slammed to the top after
+ * MIN_SPAN_NOTCHES and stayed pinned there regardless of remaining content.
+ */
+const MIN_SPAN_NOTCHES = 30;
+
+/**
+ * Assumed remaining scrollback ABOVE the current position while the top is
+ * still unproven, in notches. The span is `pos + this`, so:
+ *
+ *   frac = pos / (pos + HEADROOM)
+ *
+ * which rises monotonically and approaches 1 without ever reaching it — the
+ * thumb always responds to scrolling, and only the proven top pins it.
+ *
+ * It must be an ADDITIVE constant, not a multiple of `pos`. Two earlier
+ * versions made the span proportional and both were degenerate:
+ *   span = pos        -> frac = 1        (thumb slammed to the top)
+ *   span = pos * 1.5  -> frac = 0.667    (thumb froze two-thirds up)
+ * Anything of the form `pos * k` cancels the position out entirely.
+ */
+const UNKNOWN_HEADROOM_NOTCHES = 40;
+
+/**
+ * NOTE ON SPEED. There is no rate knob here on purpose.
+ *
+ * Earlier versions converted "pointer is at X% of the track" into a target and
+ * then walked toward it, which meant MADE had to invent a scroll RATE — and
+ * every hardware round was a guess at that number (too fast, then too fast
+ * again). The drag is now RELATIVE: the overlay turns pointer MOVEMENT into
+ * notches, so the user's hand sets the rate exactly as it does on a physical
+ * wheel. Notches are forwarded the moment they arrive, unbuffered.
+ *
+ * This also sidesteps Claude's wheel acceleration
+ * (`wheelScrollAccelerationEnabled`, "Ramp mouse-wheel scroll speed during
+ * fast scrolls"): a fast drag produces a fast notch stream and Claude ramps it
+ * the same way it would ramp a fast flick of the real wheel — which is the
+ * behaviour the user is already used to, rather than something MADE imposed.
+ */
+
+/**
+ * Ground-truth anchor. Claude paints its scroll state INTO the screen: while
+ * you are scrolled up the transcript shows a "Jump to bottom" affordance
+ * (confirmed in the binary beside `scroll:bottom`, and visible on hardware).
+ * Its ABSENCE means we are at the bottom — an exact anchor, which lets the
+ * dead-reckoned estimate be corrected instead of drifting forever.
+ *
+ * Matched case-insensitively against the visible rows. If Claude reworded this
+ * the check simply stops firing and we fall back to pure dead reckoning — it
+ * degrades, it does not break.
+ */
+const AT_BOTTOM_MARKER = "jump to bottom";
+
+/** Idle delay before sampling the screen. Long enough that a burst of drag
+ * notches has landed and the TUI has repainted, short enough to feel instant. */
+const ANCHOR_SETTLE_MS = 150;
+
+/**
+ * Message-jump (Ctrl+Up / Ctrl+Down) tuning. Claude's TUI has no
+ * "scroll to previous message" command, so the jump is performed by scrolling
+ * until its STICKY PROMPT row (the pinned, greyed copy of the user message you
+ * are inside) changes. Coarse steps first, since a long message can be many
+ * screens; capped so a jump can never run away.
+ */
+const JUMP_STEP_NOTCHES = 4;
+const JUMP_MAX_STEPS = 60;
+/** Let the TUI repaint between steps before re-reading the row. */
+const JUMP_SETTLE_MS = 24;
+
+/** Notches assumed per page key, to keep the estimate honest in the fallback. */
+const NOTCHES_PER_PAGE = 10;
+
+/**
+ * Claude Code ONLY (user decision 2026-07-25). Everything here is built on
+ * Claude's fullscreen conversation view: its wheel handling, its Ctrl+End
+ * `scroll:bottom`, its "Jump to bottom" affordance, its sticky prompt. Codex,
+ * Gemini and shell TUIs (vim, htop) also use the alternate screen but have
+ * none of that, so the bar would be inert or wrong there.
+ */
+function scrollbarEnabledFor(type: TerminalType): boolean {
+  return type === "claude";
+}
+
+interface TuiScrollbarProps {
+  termId: NativeTermId | null;
+  terminalType: TerminalType;
+  paneRef: React.RefObject<HTMLDivElement | null>;
+  /** Pane's PTY writer — Ctrl+End and the page-key fallback. */
+  write: (data: string) => void;
+  /** Bumped by the pane whenever a prompt is submitted — lands at the bottom. */
+  submitNonce?: number;
+}
+
+export default function TuiScrollbar({
+  termId,
+  terminalType,
+  paneRef,
+  write,
+  submitNonce,
+}: TuiScrollbarProps) {
+  const enabled = scrollbarEnabledFor(terminalType);
+  // The overlay is a SEPARATE webview with no store access, so this rides
+  // along in the popup payload.
+  const accelEnabled = useAppStore((st) => st.scrollThumbAcceleration);
+  // Both must hold: alternate screen AND the TUI wants mouse input.
+  const [altScreen, setAltScreen] = useState(false);
+  const [mouseReporting, setMouseReporting] = useState(false);
+  // `pos` renders the thumb; `posRef` is authoritative and updates
+  // synchronously so back-to-back pointermoves compute honest deltas.
+  const [pos, setPos] = useState(0);
+  const posRef = useRef(0);
+  // Total scrollback in notches, PROVEN by the top anchor. null = still
+  // unknown, so the span is extrapolated instead (see MIN_SPAN_NOTCHES).
+  const [knownSpan, setKnownSpan] = useState<number | null>(null);
+  const writeRef = useRef(write);
+  writeRef.current = write;
+
+  const setPosition = useCallback((n: number) => {
+    const clamped = Math.max(0, n);
+    posRef.current = clamped;
+    setPos(clamped);
+    // Travelling past a previously-proven top means the buffer grew (or the
+    // estimate drifted high) — let the span follow rather than clamping the
+    // thumb at the top.
+    setKnownSpan((k) => (k !== null && clamped > k ? clamped : k));
+  }, []);
+
+  // ── Ground-truth anchors ────────────────────────────────────────────────
+  // Dead reckoning counts notches SENT, not lines actually scrolled, so it
+  // drifts — worst at the limits, where surplus notches are absorbed entirely.
+  // Sample the real screen once scrolling settles and snap the estimate to
+  // truth at whichever end we can prove:
+  //   bottom — Claude's "Jump to bottom" affordance is gone  -> pos = 0
+  //   top    — scrolling up left the screen byte-identical   -> span = pos
+  // Between anchors the estimate stays smooth and interpolated.
+  const lastScreenRef = useRef<string | null>(null);
+  const sampleTimerRef = useRef(0);
+  const lastDirRef = useRef(0);
+
+  const sampleAnchors = useCallback(async () => {
+    if (termId == null) return;
+    try {
+      const vp = await nativeTermGetViewportState(termId);
+      const lines = await nativeTermGetBufferLines(termId, 0, Math.max(1, vp.rows));
+      const screen = lines.join("\n");
+      const atBottomNow = !screen.toLowerCase().includes(AT_BOTTOM_MARKER);
+      const unchanged = lastScreenRef.current === screen;
+      lastScreenRef.current = screen;
+
+      if (atBottomNow) {
+        // Exact: nothing above us to jump back down to.
+        posRef.current = 0;
+        setPos(0);
+        return;
+      }
+      if (unchanged && lastDirRef.current > 0) {
+        // We pushed upward and nothing moved — this is the true top, so the
+        // distance travelled IS the total scrollback. Now the thumb can
+        // legitimately reach the top.
+        setKnownSpan(Math.max(1, posRef.current));
+      }
+    } catch {
+      // Pane went away mid-read, or the command failed — anchors are an
+      // optimisation, never a correctness requirement.
+    }
+  }, [termId]);
+
+  const scheduleAnchorSample = useCallback(
+    (dir: number) => {
+      lastDirRef.current = dir;
+      if (sampleTimerRef.current) clearTimeout(sampleTimerRef.current);
+      sampleTimerRef.current = window.setTimeout(() => {
+        sampleTimerRef.current = 0;
+        void sampleAnchors();
+      }, ANCHOR_SETTLE_MS);
+    },
+    [sampleAnchors],
+  );
+
+  useEffect(
+    () => () => {
+      if (sampleTimerRef.current) clearTimeout(sampleTimerRef.current);
+    },
+    [],
+  );
+
+  // Mirror the Rust alt-screen edge (emitted on transition only).
+  useEffect(() => {
+    if (termId == null || !enabled) {
+      setAltScreen(false);
+      return;
+    }
+    let un: (() => void) | undefined;
+    let disposed = false;
+    subscribeAltScreen(termId, (e) => {
+      setAltScreen(e.active);
+      setMouseReporting(e.mouseReporting);
+      if (!e.active) {
+        // The normal buffer has a REAL scrollbar; our estimate means nothing,
+        // and a different program will have a different scrollback.
+        setPosition(0);
+        setKnownSpan(null);
+      }
+    }).then((u) => {
+      if (disposed) u();
+      else un = u;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, [termId, enabled, setPosition]);
+
+  // Track the user's OWN wheel scrolling so the thumb follows it. Rust emits
+  // this only for real WM_MOUSEWHEEL forwards — never for the notches we
+  // synthesize below — so there is no double-counting.
+  useEffect(() => {
+    if (termId == null || !enabled) return;
+    let un: (() => void) | undefined;
+    let disposed = false;
+    subscribeTuiScroll(termId, (e) => {
+      setPosition(posRef.current + e.notches);
+      scheduleAnchorSample(e.notches);
+    }).then((u) => {
+      if (disposed) u();
+      else un = u;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, [termId, enabled, setPosition]);
+
+  // A submitted prompt lands the TUI at the bottom.
+  useEffect(() => {
+    if (submitNonce === undefined) return;
+    setPosition(0);
+  }, [submitNonce, setPosition]);
+
+  /**
+   * Scroll by `n` notches right now (positive = up/older). Sent unbuffered so
+   * the drag stays in lockstep with the pointer. The estimate is advanced
+   * OPTIMISTICALLY because the command path is not echoed back as
+   * `tui_scroll` — only real wheel events are, so there is no double count.
+   */
+  const scrollBy = useCallback(
+    (n: number) => {
+      if (n === 0 || termId == null) return;
+      setPosition(posRef.current + n);
+      scheduleAnchorSample(n);
+      nativeTermTuiScroll(termId, n)
+        .then((sent) => {
+          if (sent) return;
+          // No mouse reporting — fall back to page keys.
+          const pages = Math.max(1, Math.round(Math.abs(n) / NOTCHES_PER_PAGE));
+          writeRef.current((n > 0 ? PAGE_UP : PAGE_DOWN).repeat(pages));
+        })
+        .catch(() => {});
+    },
+    [termId, setPosition],
+  );
+
+  /** Read Claude's sticky prompt row (the pinned message header at the top). */
+  const readSticky = useCallback(async (): Promise<string | null> => {
+    if (termId == null) return null;
+    try {
+      const lines = await nativeTermGetBufferLines(termId, 0, 1);
+      return (lines[0] ?? "").trim();
+    } catch {
+      return null;
+    }
+  }, [termId]);
+
+  const jumpingRef = useRef(false);
+
+  /**
+   * Jump one message: scroll in `dir` (+1 = older) until the sticky prompt row
+   * changes. Heuristic by necessity — alt-screen has no OSC 133 markers to
+   * index the way the xterm pane does, so the rendered header IS the marker.
+   */
+  const jumpMessage = useCallback(
+    async (dir: number) => {
+      if (termId == null || jumpingRef.current) return;
+      jumpingRef.current = true;
+      try {
+        const from = await readSticky();
+        for (let i = 0; i < JUMP_MAX_STEPS; i++) {
+          const step = dir > 0 ? JUMP_STEP_NOTCHES : -JUMP_STEP_NOTCHES;
+          const sent = await nativeTermTuiScroll(termId, step);
+          if (!sent) break; // no mouse reporting — nothing to drive
+          setPosition(posRef.current + step);
+          await new Promise((r) => setTimeout(r, JUMP_SETTLE_MS));
+          const now = await readSticky();
+          // null = read failed; stop rather than spin.
+          if (now === null) break;
+          if (now !== from) break; // crossed into another message
+        }
+      } finally {
+        jumpingRef.current = false;
+        scheduleAnchorSample(dir);
+      }
+    },
+    [termId, readSticky, setPosition, scheduleAnchorSample],
+  );
+
+  // Tell Rust whether to claim Ctrl+Up/Down for this pane. Off for every pane
+  // type without a sticky-prompt UI, so the keys still reach those TUIs.
+  useEffect(() => {
+    if (termId == null) return;
+    void nativeTermSetPromptNav(termId, enabled).catch(() => {});
+  }, [termId, enabled]);
+
+  // Ctrl+Up / Ctrl+Down, claimed by Rust and routed here.
+  useEffect(() => {
+    if (termId == null || !enabled) return;
+    let un: (() => void) | undefined;
+    let disposed = false;
+    subscribeTuiPromptNav(termId, (e) => {
+      void jumpMessage(e.dir);
+    }).then((u) => {
+      if (disposed) u();
+      else un = u;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, [termId, enabled, jumpMessage]);
+
+  // Gate on mouse reporting as well as alt-screen. Claude's own docs call its
+  // scroll settings "fullscreen mode only", and driving its scroller requires
+  // wheel events — so a Claude pane that is NOT taking mouse input is not in
+  // the fullscreen conversation view and must not show this bar.
+  const open = enabled && altScreen && mouseReporting && termId != null;
+  const span =
+    knownSpan !== null
+      ? Math.max(MIN_SPAN_NOTCHES, knownSpan)
+      : Math.max(MIN_SPAN_NOTCHES, pos + UNKNOWN_HEADROOM_NOTCHES);
+
+  useOverlayPopupAnchor({
+    id: `tui-scrollbar-${termId}`,
+    kind: "tui-scrollbar",
+    open,
+    anchorRef: paneRef,
+    payload: open ? { pos, span, accel: accelEnabled } : null,
+    onAction: (action, data) => {
+      switch (action) {
+        case "toBottom":
+          // Claude's own scroll:bottom — absolute, so no drift.
+          writeRef.current(CTRL_END);
+          setPosition(0);
+          break;
+        case "scrollBy": {
+          const n = (data as { notches?: number } | undefined)?.notches;
+          if (typeof n === "number") scrollBy(n);
+          break;
+        }
+      }
+    },
+  });
+
+  return null;
+}

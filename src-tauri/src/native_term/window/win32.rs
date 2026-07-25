@@ -59,6 +59,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 /// `WindowsAndMessaging::*` namespace.
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
+use crate::native_term::key_encoding::{vk_also_yields_char, vk_to_key_action, KeyAction};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
@@ -71,9 +72,9 @@ use super::super::events::{
     emit_cell_hover, emit_cell_hover_end, emit_focus_gained, emit_focus_lost,
     emit_ime_composition, emit_key_down_preview, emit_link_click, emit_link_hover,
     emit_mouse_passthrough, emit_r_button, emit_resized, emit_scroll, emit_selection,
-    CellHover, ImeComposition, KeyDownPreview, KeyEventDto, KeyModifiers, LinkClick,
-    LinkHover, MousePassthrough, RButton, Resized, Scroll as ScrollEvt,
-    Selection as SelectionEvent,
+    emit_tui_prompt_nav, emit_tui_scroll, CellHover, ImeComposition, KeyDownPreview, KeyEventDto, KeyModifiers,
+    LinkClick, LinkHover, MousePassthrough, RButton, Resized, Scroll as ScrollEvt,
+    Selection as SelectionEvent, TuiPromptNav, TuiScroll,
 };
 use super::super::parser_bridge::{ParserBridge, RenderWake, TermDims, TermListener};
 use super::super::renderer::pipeline::RenderOutcome;
@@ -318,6 +319,26 @@ struct ChildState {
     /// the clipboard. Explicit copy paths (Ctrl+Shift+C via the React layer)
     /// are unaffected. Pushed from JS via `native_term_set_copy_on_select`.
     copy_on_select: bool,
+    /// Pane opts into MADE claiming Ctrl+Up/Ctrl+Down for message navigation.
+    /// Pushed from JS, which enables it only for the pane types that have a
+    /// sticky-prompt UI to navigate (Claude today). Without this the keys
+    /// would be swallowed in every alt-screen pane — Codex, vim, htop — with
+    /// nothing listening for them.
+    prompt_nav: bool,
+    /// Wheel acceleration for MADE's OWN scrollback (the local-scroll path).
+    /// Fast flicks cover more lines per notch, the way Warp and native macOS
+    /// scrolling do. Pushed from JS via `native_term_set_wheel_acceleration`.
+    ///
+    /// Deliberately NOT applied to the mouse-reporting path: a fullscreen TUI
+    /// that wants the wheel gets raw notches, and Claude in particular runs its
+    /// OWN ramp (`wheelScrollAccelerationEnabled`). Accelerating there too
+    /// would stack two curves and make the distance per flick unpredictable.
+    wheel_accel: bool,
+    /// Wall-clock of the previous wheel event, for the velocity estimate.
+    last_wheel_at: Option<std::time::Instant>,
+    /// Current acceleration multiplier. Grows while notches keep arriving
+    /// quickly and decays back to 1.0 once the user pauses.
+    wheel_streak: f32,
     /// M2: one-shot latch that drops the WM_CHAR TranslateMessage queues for a
     /// WM_KEYDOWN we already consumed as a paste (Ctrl+V) or UI shortcut. The
     /// message loop runs TranslateMessage BEFORE DispatchMessage, so returning
@@ -410,6 +431,10 @@ impl PlatformWindow {
                 last_scroll_emitted_offset: None,
                 last_scroll_emit: None,
                 copy_on_select: false,
+                prompt_nav: false,
+                wheel_accel: true,
+                last_wheel_at: None,
+                wheel_streak: 1.0,
                 swallow_next_char: false,
             })) as *mut ChildState;
             PENDING_STATE.with(|cell| *cell.borrow_mut() = Some(state));
@@ -823,13 +848,33 @@ impl NativeTermWindow for PlatformWindow {
             // call hide/show, and Windows may have re-stacked siblings
             // (e.g. WebView2 popups, IME windows) while we were hidden.
             let _ = bring_above_siblings(self.hwnd);
-            // P3a: force the first frame after SW_SHOW. While hidden, the
-            // pane's WM_PAINTs may have taken the clean-frame early-out, and
-            // the swapchain's retained buffer can be stale — pair an explicit
-            // force with an InvalidateRect so WM_PAINT fires AND renders.
+            // Render the first frame SYNCHRONOUSLY here, before returning to
+            // the message loop — the grid still holds its content across a
+            // hide, so there is no reason to reveal the pane blank.
+            //
+            // Previously show() only ARMED an async repaint (force_next_frame
+            // + InvalidateRect), so the pane became visible but EMPTY (terminal
+            // bg, no text) for ~270ms until that WM_PAINT landed. Fullscreen
+            // modals hide EVERY native pane while open, so closing one flashed
+            // all panes blank at once — very visible once the per-pane native
+            // renderer made every pane native (user-reported 2026-07-24).
+            // Rendering in-call fills the swapchain before DWM's next composite
+            // tick, so the first frame the user sees already has content.
             if let Some(r) = self.state.as_mut().renderer.as_mut() {
                 r.force_next_frame();
+                // A first SurfaceError::Lost (the swapchain can go stale over a
+                // hidden stretch) reconfigures and skips WITHOUT presenting;
+                // render once more so a frame actually lands this call instead
+                // of waiting on the ~16ms surface-retry timer (another blank).
+                if !matches!(
+                    r.render(),
+                    Ok(RenderOutcome::Presented | RenderOutcome::SkippedClean)
+                ) {
+                    let _ = r.render();
+                }
             }
+            // Safety net for a pathological double-Lost: keep the normal paint
+            // path armed (WM_PAINT → render_with_retry paces any further retry).
             let _ = InvalidateRect(self.hwnd, None, BOOL(0));
             // P2a: the blink timer is gated on visibility — re-evaluate now
             // that the window is showing again.
@@ -1219,6 +1264,27 @@ impl NativeTermWindow for PlatformWindow {
             PostMessageW(self.hwnd, WM_APP_FOCUS, WPARAM(0), LPARAM(0))
                 .map_err(|e| format!("PostMessageW(WM_APP_FOCUS): {e}"))
         }
+    }
+
+    fn set_prompt_nav(&mut self, on: bool) -> Result<(), String> {
+        unsafe {
+            self.state.as_mut().prompt_nav = on;
+        }
+        Ok(())
+    }
+
+    fn set_wheel_acceleration(&mut self, on: bool) -> Result<(), String> {
+        unsafe {
+            let st = self.state.as_mut();
+            st.wheel_accel = on;
+            st.wheel_streak = 1.0;
+            st.last_wheel_at = None;
+        }
+        Ok(())
+    }
+
+    fn tui_scroll(&mut self, notches: i32) -> Result<bool, String> {
+        unsafe { Ok(send_wheel_notches(self.state.as_ref(), self.hwnd, notches)) }
     }
 
     fn set_search_highlights(&mut self, rects: Vec<Rect>) -> Result<(), String> {
@@ -2130,6 +2196,15 @@ unsafe extern "system" fn wnd_proc(
                             }
                         }
                     }
+                    // Tell JS how far the USER just scrolled the TUI, so the
+                    // pane scrollbar's position estimate tracks the wheel and
+                    // not only its own drags.
+                    if let (Some(app), Some(tid)) =
+                        ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                    {
+                        let signed = if delta_raw > 0 { notches } else { -notches };
+                        emit_tui_scroll(app, tid, TuiScroll { notches: signed });
+                    }
                 }
                 return LRESULT(0);
             }
@@ -2172,7 +2247,32 @@ unsafe extern "system" fn wnd_proc(
                 return LRESULT(0);
             }
 
-            let lines = delta_raw / WHEEL_DELTA * LINES_PER_NOTCH;
+            // Velocity-ramped local scrollback (Warp parity). Notches arriving
+            // in quick succession compound the multiplier; a pause resets it,
+            // so slow scrolling stays precise at exactly LINES_PER_NOTCH.
+            // Capped so one fast flick cannot jump the whole buffer.
+            let notches_signed = delta_raw / WHEEL_DELTA;
+            let accel = if (*state_ptr).wheel_accel {
+                const ACCEL_WINDOW_MS: u128 = 120; // gap below which a flick "continues"
+                const ACCEL_GROWTH: f32 = 1.35; // multiplier gain per fast notch
+                const ACCEL_MAX: f32 = 6.0;
+                let now = std::time::Instant::now();
+                let fast = (*state_ptr)
+                    .last_wheel_at
+                    .map(|t| now.duration_since(t).as_millis() < ACCEL_WINDOW_MS)
+                    .unwrap_or(false);
+                (*state_ptr).last_wheel_at = Some(now);
+                (*state_ptr).wheel_streak = if fast {
+                    ((*state_ptr).wheel_streak * ACCEL_GROWTH).min(ACCEL_MAX)
+                } else {
+                    1.0
+                };
+                (*state_ptr).wheel_streak
+            } else {
+                1.0
+            };
+            let lines =
+                ((notches_signed * LINES_PER_NOTCH) as f32 * accel).round() as i32;
             if lines != 0 {
                 let term = (*state_ptr).term.as_ref().map(Arc::clone);
                 if let Some(term) = term {
@@ -2234,7 +2334,7 @@ unsafe extern "system" fn wnd_proc(
             // the paste text is the ONLY thing that reaches the PTY. Returning
             // LRESULT(0) does NOT stop TranslateMessage from queuing Ctrl+V's
             // 0x16 SYN as a WM_CHAR, so we arm swallow_next_char (below) to drop
-            // it. Handled before vk_to_ui_shortcut / vk_to_bytes.
+            // it. Handled before vk_to_ui_shortcut / vk_to_key_action.
             if !state_ptr.is_null() && is_paste_shortcut(vk, ctrl, shift, alt) {
                 let mut pasted_text = false;
                 if let Some(text) = read_clipboard_text(hwnd) {
@@ -2332,16 +2432,90 @@ unsafe extern "system" fn wnd_proc(
             } else {
                 None
             };
-            let bytes = vk_to_bytes(vk);
-            if let (Some(pid), Some(b)) = (pty_id, bytes) {
-                // P6a snap-to-bottom: keystrokes headed for the PTY jump a
-                // scrolled-back viewport to the live bottom first (standard
-                // terminal behavior). Cheap no-op when already pinned.
-                if !state_ptr.is_null() {
-                    snap_to_bottom_on_input(&mut *state_ptr, hwnd);
+            // DECCKM: arrows/Home/End switch to SS3 form while a TUI has
+            // application-cursor mode on. Read before the match so we never
+            // hold the term lock across snap_to_bottom_on_input.
+            let app_cursor = !state_ptr.is_null() && term_app_cursor(&*state_ptr);
+
+            // Shift+Enter inserts a newline instead of submitting, but ONLY in
+            // an opted-in fullscreen pane. Claude's `/terminal-setup` binds
+            // Shift+Enter to ESC CR for the terminals it can configure; every
+            // other pane here (shell, codex, gemini, Claude's non-fullscreen
+            // mode) keeps stock behaviour, where Shift+Enter is a bare CR.
+            if shift
+                && !ctrl
+                && !alt
+                && vk == 0x0D /* VK_RETURN */
+                && !state_ptr.is_null()
+                && (*state_ptr).prompt_nav
+                && term_alt_screen(&*state_ptr)
+            {
+                if let Some(pid) = (*state_ptr).pty_id {
+                    let _ = crate::pty::write_to_pty_sync(pid, &[0x1b, b'\r']);
+                    // TranslateMessage has already queued a WM_CHAR for Enter;
+                    // swallow it or the PTY sees a second, bare CR and submits.
+                    (*state_ptr).swallow_next_char = true;
                 }
-                let _ = crate::pty::write_to_pty_sync(pid, b);
                 return LRESULT(0);
+            }
+
+            // Ctrl+Up / Ctrl+Down inside a fullscreen TUI = jump to the
+            // previous / next message. Claimed here and NOT forwarded (same
+            // pattern as the Ctrl+K/Ctrl+B UI shortcuts) because the TUI has no
+            // message-level scroll command; JS does the jump by scrolling until
+            // Claude's sticky prompt row changes. Gated on alt-screen so a
+            // normal-buffer pane keeps Ctrl+arrow for its shell.
+            if ctrl
+                && !shift
+                && !alt
+                && (vk == 0x26 /* VK_UP */ || vk == 0x28 /* VK_DOWN */)
+                && !state_ptr.is_null()
+                && (*state_ptr).prompt_nav
+                && term_alt_screen(&*state_ptr)
+            {
+                if let (Some(app), Some(tid)) =
+                    ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                {
+                    let dir = if vk == 0x26 { 1 } else { -1 };
+                    emit_tui_prompt_nav(app, tid, TuiPromptNav { dir });
+                }
+                return LRESULT(0);
+            }
+            match vk_to_key_action(vk, ctrl, shift, alt, app_cursor) {
+                // xterm parity (Keyboard.ts cases 33/34): Shift+PgUp/PgDn
+                // scroll the viewport and never reach the PTY.
+                Some(KeyAction::ScrollPageUp) => {
+                    if !state_ptr.is_null() {
+                        scroll_viewport_page(&mut *state_ptr, hwnd, true);
+                    }
+                    return LRESULT(0);
+                }
+                Some(KeyAction::ScrollPageDown) => {
+                    if !state_ptr.is_null() {
+                        scroll_viewport_page(&mut *state_ptr, hwnd, false);
+                    }
+                    return LRESULT(0);
+                }
+                Some(KeyAction::Bytes(b)) => {
+                    if let Some(pid) = pty_id {
+                        // P6a snap-to-bottom: keystrokes headed for the PTY jump a
+                        // scrolled-back viewport to the live bottom first (standard
+                        // terminal behavior). Cheap no-op when already pinned.
+                        if !state_ptr.is_null() {
+                            snap_to_bottom_on_input(&mut *state_ptr, hwnd);
+                            // TranslateMessage already queued a WM_CHAR for
+                            // Backspace/Tab/Enter/Escape before this handler ran.
+                            // Latch it so the WM_CHAR arm drops it — otherwise the
+                            // key reaches the PTY twice (one delete becomes two).
+                            if vk_also_yields_char(vk) {
+                                (*state_ptr).swallow_next_char = true;
+                            }
+                        }
+                        let _ = crate::pty::write_to_pty_sync(pid, &b);
+                        return LRESULT(0);
+                    }
+                }
+                None => {}
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -2384,6 +2558,19 @@ unsafe extern "system" fn wnd_proc(
                 }
             }
             LRESULT(0)
+        }
+        WM_SYSCHAR => {
+            // Alt combos: TranslateMessage queues WM_SYSCHAR the same way it
+            // queues WM_CHAR. When the matching WM_SYSKEYDOWN was already
+            // consumed and forwarded (Alt+Backspace => ESC DEL), drop the
+            // queued char — DefWindowProc BEEPS on an unmatched menu mnemonic.
+            // Never forwarded to the PTY: Alt+X must not type "x".
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+            if !state_ptr.is_null() && (*state_ptr).swallow_next_char {
+                (*state_ptr).swallow_next_char = false;
+                return LRESULT(0);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_SETCURSOR => {
             // Hovering a JS-detected link => hand cursor, no modifier needed
@@ -3001,61 +3188,6 @@ fn to_wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
-/// Translate a Win32 virtual-key code into the byte sequence a terminal
-/// emulator expects. Returns `None` for keys that should fall through to
-/// WM_CHAR (printable characters, plus modified versions which Windows
-/// composes into character codes itself).
-fn vk_to_bytes(vk: u32) -> Option<&'static [u8]> {
-    // Constants from windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY.
-    // Using raw u32 values avoids importing the whole VK_* module.
-    const VK_BACK: u32 = 0x08;
-    const VK_TAB: u32 = 0x09;
-    const VK_RETURN: u32 = 0x0D;
-    const VK_ESCAPE: u32 = 0x1B;
-    const VK_PRIOR: u32 = 0x21; // PgUp
-    const VK_NEXT: u32 = 0x22; // PgDn
-    const VK_END: u32 = 0x23;
-    const VK_HOME: u32 = 0x24;
-    const VK_LEFT: u32 = 0x25;
-    const VK_UP: u32 = 0x26;
-    const VK_RIGHT: u32 = 0x27;
-    const VK_DOWN: u32 = 0x28;
-    const VK_DELETE: u32 = 0x2E;
-    const VK_F1: u32 = 0x70;
-    const VK_F12: u32 = 0x7B;
-
-    match vk {
-        // Most terminals expect DEL (0x7F) for Backspace, not BS (0x08).
-        // bash, fish, zsh, cmd.exe all treat 0x7F as delete-prev-char.
-        VK_BACK => Some(b"\x7F"),
-        VK_TAB => Some(b"\t"),
-        VK_RETURN => Some(b"\r"),
-        VK_ESCAPE => Some(b"\x1b"),
-        VK_UP => Some(b"\x1b[A"),
-        VK_DOWN => Some(b"\x1b[B"),
-        VK_RIGHT => Some(b"\x1b[C"),
-        VK_LEFT => Some(b"\x1b[D"),
-        VK_HOME => Some(b"\x1b[H"),
-        VK_END => Some(b"\x1b[F"),
-        VK_DELETE => Some(b"\x1b[3~"),
-        VK_PRIOR => Some(b"\x1b[5~"),
-        VK_NEXT => Some(b"\x1b[6~"),
-        VK_F1 => Some(b"\x1bOP"),
-        0x71 /* VK_F2 */ => Some(b"\x1bOQ"),
-        0x72 /* VK_F3 */ => Some(b"\x1bOR"),
-        0x73 /* VK_F4 */ => Some(b"\x1bOS"),
-        0x74 /* VK_F5 */ => Some(b"\x1b[15~"),
-        0x75 /* VK_F6 */ => Some(b"\x1b[17~"),
-        0x76 /* VK_F7 */ => Some(b"\x1b[18~"),
-        0x77 /* VK_F8 */ => Some(b"\x1b[19~"),
-        0x78 /* VK_F9 */ => Some(b"\x1b[20~"),
-        0x79 /* VK_F10 */ => Some(b"\x1b[21~"),
-        0x7A /* VK_F11 */ => Some(b"\x1b[23~"),
-        VK_F12 => Some(b"\x1b[24~"),
-        _ => None,
-    }
-}
-
 // Raw VK constants for modifier-state lookups via GetKeyState.
 const VK_CONTROL_RAW: u32 = 0x11;
 const VK_SHIFT_RAW: u32 = 0x10;
@@ -3196,6 +3328,53 @@ fn mouse_format(modes: MouseModes) -> MouseFormat {
     } else {
         MouseFormat::X10
     }
+}
+
+/// Synthesize `notches` wheel events into the PTY using the pane's CURRENT
+/// mouse-reporting mode — the same bytes a physical wheel would produce, so a
+/// fullscreen TUI scrolls exactly as smoothly as it does under the real wheel.
+/// Positive `notches` = wheel up (older content), negative = down.
+///
+/// This exists because page keys (PgUp/PgDn) are the only other way to drive a
+/// TUI's scroller, and they move a whole screen at a time — visibly "skippy"
+/// next to the wheel, which moves a few lines per notch (and which Claude
+/// additionally ramps; see its `/scroll-speed`).
+///
+/// Returns false when the TUI has NOT enabled mouse reporting, in which case
+/// nothing was written and the caller should fall back to page keys.
+unsafe fn send_wheel_notches(state: &ChildState, hwnd: HWND, notches: i32) -> bool {
+    if notches == 0 {
+        return true;
+    }
+    let modes = read_mouse_modes(state);
+    if !modes.clicks_enabled {
+        return false;
+    }
+    let Some(pid) = state.pty_id else {
+        return false;
+    };
+    // Aim at the pane CENTRE. A TUI can route the wheel by region (Claude
+    // draws a transcript above a fixed composer), and the centre is reliably
+    // inside the scrollable transcript — unlike (1,1) or the cursor, which
+    // may sit in chrome that ignores the wheel.
+    let mut rc = windows::Win32::Foundation::RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let (x_cell, y_cell) = px_to_cell_1based(
+        (rc.right - rc.left) / 2,
+        (rc.bottom - rc.top) / 2,
+        state.cell_w_px,
+        state.cell_h_px,
+    );
+    let btn = if notches > 0 { 64 } else { 65 };
+    let fmt = mouse_format(modes);
+    for _ in 0..notches.abs() {
+        if let Some(bytes) =
+            encode_mouse_event(btn, x_cell, y_cell, false, false, false, true, false, fmt)
+        {
+            let _ = crate::pty::write_to_pty_sync(pid, &bytes);
+        }
+    }
+    true
 }
 
 /// Read mouse-mode flags from the attached Term under a brief lock. Returns
@@ -3367,6 +3546,54 @@ fn is_paste_shortcut(vk: u32, ctrl: bool, shift: bool, alt: bool) -> bool {
 /// payload is then wrapped in `ESC[200~ … ESC[201~` so the REPL treats it as
 /// one literal block instead of interpreting embedded newlines as commands.
 /// Brief term lock; false when detached (raw paste).
+/// DECCKM (application cursor keys). Mirrors `paste_is_bracketed`: arrows and
+/// Home/End switch from CSI to SS3 form while a TUI has this on.
+/// Is the terminal in the alternate screen (a fullscreen TUI owns the screen)?
+/// Gates the Ctrl+Up/Down message-jump so normal-buffer panes keep whatever
+/// Ctrl+arrow means to their shell.
+unsafe fn term_alt_screen(state: &ChildState) -> bool {
+    let Some(term) = state.term.as_ref() else {
+        return false;
+    };
+    let t = term.lock().expect("term lock poisoned");
+    let on = t.mode().contains(TermMode::ALT_SCREEN);
+    drop(t);
+    on
+}
+
+unsafe fn term_app_cursor(state: &ChildState) -> bool {
+    let Some(term) = state.term.as_ref() else {
+        return false;
+    };
+    let t = term.lock().expect("term lock poisoned");
+    let on = t.mode().contains(TermMode::APP_CURSOR);
+    drop(t);
+    on
+}
+
+/// Shift+PgUp/PgDn viewport scroll. Same synchronous-render + coalesced-emit
+/// path as the wheel handler (see WM_MOUSEWHEEL) — WM_PAINT is the lowest
+/// priority message and gets starved, and the parser only emits `scroll` on
+/// byte arrival, so a scroll during quiet output must emit from here or the
+/// jump-to-bottom UI never appears.
+unsafe fn scroll_viewport_page(state: &mut ChildState, hwnd: HWND, up: bool) {
+    let Some(term) = state.term.as_ref().map(Arc::clone) else {
+        return;
+    };
+    let (offset_now, history) = {
+        let mut t = term.lock().expect("term lock poisoned");
+        t.scroll_display(if up { Scroll::PageUp } else { Scroll::PageDown });
+        let grid = t.grid();
+        (grid.display_offset(), grid.history_size() as i64)
+    };
+    if let Some(r) = state.renderer.as_mut() {
+        r.force_next_frame();
+    }
+    render_with_retry(state, hwnd);
+    let _ = ValidateRect(hwnd, None);
+    emit_scroll_coalesced(state, hwnd, offset_now, history);
+}
+
 unsafe fn paste_is_bracketed(state: &ChildState) -> bool {
     let Some(term) = state.term.as_ref() else {
         return false;

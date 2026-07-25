@@ -134,6 +134,8 @@ export const useAppStore = create<AppStore>()(
         voiceConfirmDestructive: state.voiceConfirmDestructive,
         useNativeTerminalRenderer: state.useNativeTerminalRenderer,
         newPaneNativeRenderer: state.newPaneNativeRenderer,
+        scrollThumbAcceleration: state.scrollThumbAcceleration,
+        wheelAcceleration: state.wheelAcceleration,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;

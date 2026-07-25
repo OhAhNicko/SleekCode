@@ -612,6 +612,30 @@ export default function TerminalPane({
     onPtyExitRef.current?.(exitCode);
   }, [terminalId]);
 
+  // MADE assigned this Claude session's id at spawn (`--session-id`), so the
+  // detect-by-newest-jsonl-mtime dance is unnecessary: claim it directly.
+  // `claimSessionId` still runs so two panes can never hold the same id, and
+  // `sessionTrusted` marks it authoritative rather than guessed.
+  const handleSessionIdAssigned = useCallback(
+    (id: string) => {
+      // Empty id = "the stored session is gone, forget it" (see
+      // sessionStillExists). Clear rather than claim, so the pane stops
+      // retrying a dead id on every launch and the next spawn gets a fresh one.
+      if (!id) {
+        setSessionTrusted(false);
+        sessionResumeIdPropRef.current = undefined;
+        onSessionResumeIdRef.current?.("");
+        return;
+      }
+      if (!claimSessionId(id)) return; // already held by another pane
+      setSessionTrusted(true);
+      sessionResumeIdPropRef.current = id;
+      onSessionResumeIdRef.current?.(id);
+      console.log(`[SessionResume] assigned at spawn: ${id.slice(0, 8)}`);
+    },
+    [],
+  );
+
   const { write, resize, kill } = usePty({
     terminalType,
     terminalId,
@@ -622,6 +646,7 @@ export default function TerminalPane({
     onExit: handlePtyExit,
     serverId,
     sessionResumeId,
+    onSessionIdAssigned: handleSessionIdAssigned,
     injectShellIntegration: useShellIntegration,
     ready: termReady,
     restartKey,
