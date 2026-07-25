@@ -88,7 +88,8 @@ interface TerminalHeaderProps {
   /** True when sessionResumeId came from restore/explicit switch; false when detected from disk (may be stale). */
   sessionTrusted?: boolean;
   onSwitchSession?: (sessionId: string | undefined) => void;
-  getPromptEntries?: () => PromptEntry[];
+  /** May be async: the native renderer reads its prompt lines over IPC. */
+  getPromptEntries?: () => PromptEntry[] | Promise<PromptEntry[]>;
   onScrollToPromptLine?: (line: number) => void;
   /** Called when the user clicks the context-left widget to trigger a manual refresh. */
   onRefreshContext?: () => void | Promise<void>;
@@ -1092,8 +1093,12 @@ export default function TerminalHeader({
             if (showPromptHistory) {
               setShowPromptHistory(false);
             } else {
-              setPromptEntries(getPromptEntries());
-              setShowPromptHistory(true);
+              // Native panes resolve their entries over IPC — await before
+              // opening so the dropdown never renders an empty first frame.
+              void Promise.resolve(getPromptEntries()).then((entries) => {
+                setPromptEntries(entries);
+                setShowPromptHistory(true);
+              });
             }
           }}
           title="Prompt history"

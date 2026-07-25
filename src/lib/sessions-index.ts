@@ -4,9 +4,14 @@ import { useAppStore } from "../store";
 import type { TerminalBackend, SessionIndexEntry } from "../types";
 
 /**
- * Read sessions-index.json for a project path.
- * Returns session entries sorted by modified desc, capped at 30.
- * Returns [] if the file doesn't exist or on any error.
+ * List a project's Claude sessions, newest first, capped at 30.
+ *
+ * Named for `sessions-index.json`, but local backends no longer depend on it:
+ * Claude stopped writing that file in early 2026, so the backend enumerates the
+ * `<project>/*.jsonl` transcripts and uses a surviving index only to enrich a
+ * row. SSH is the exception — it still needs the remote index.
+ *
+ * Returns [] if the project has no session directory, or on any error.
  *
  * For SSH projects, pass `backend = "ssh"` and the linked `serverId`. The
  * `projectPath` should be the REMOTE Unix path (the same cwd Claude sees on
@@ -39,9 +44,49 @@ export async function readSessionsIndex(
       raw = await invoke<string>("read_sessions_index", { projectPath, distro: distro || null });
     }
     if (!raw || raw === "[]") return [];
-    return JSON.parse(raw) as SessionIndexEntry[];
+    const entries = JSON.parse(raw) as SessionIndexEntry[];
+    // Self-heal the registry now that the picker is looking at this project.
+    // Panes used to register ids Claude never used, and those rows sort ABOVE
+    // the real ones in the picker — see pruneProjectSessions. Fire-and-forget:
+    // the list is what the picker is here for, the prune is a side-benefit.
+    if (backend !== "ssh") void pruneDeadSessions(projectPath, backend);
+    return entries;
   } catch {
     return [];
+  }
+}
+
+/**
+ * Grace period before a registered session with no transcript is treated as
+ * dead. Claude writes the transcript once the conversation has content, so a
+ * pane opened moments ago is legitimately absent from disk.
+ */
+const PRUNE_MIN_AGE_MS = 10 * 60_000;
+
+/**
+ * Drop registry rows whose transcript is gone.
+ *
+ * Deliberately asks for the COMPLETE id list rather than reusing the entries
+ * above: those are capped at the 30 most recent for display, and treating a
+ * truncated list as "everything that exists" would delete real sessions from
+ * projects with more than 30 of them.
+ */
+async function pruneDeadSessions(projectPath: string, backend: TerminalBackend): Promise<void> {
+  try {
+    let ids: string[];
+    if (backend === "native") {
+      ids = await invoke<string[]>("claude_session_ids_native", { projectPath });
+    } else if (backend === "windows") {
+      ids = await invoke<string[]>("claude_session_ids_windows", { projectPath });
+    } else {
+      const distro = getCachedDistro();
+      ids = await invoke<string[]>("claude_session_ids", { projectPath, distro: distro || null });
+    }
+    // An empty list means "could not look" as often as "nothing there", so the
+    // store action treats it as a no-op rather than a licence to wipe.
+    useAppStore.getState().pruneProjectSessions(projectPath, ids, PRUNE_MIN_AGE_MS);
+  } catch {
+    // Never let registry hygiene break the session list.
   }
 }
 

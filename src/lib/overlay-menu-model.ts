@@ -16,6 +16,18 @@ export type OverlayMenuItem = {
   iconId?: string;
   /** Leading checkmark (pickers: current session / terminal type). */
   checked?: boolean;
+  /**
+   * STICKY row: picking it does NOT close the menu. The action still bounces
+   * to the main webview, which updates the payload in place (e.g. flipping
+   * `checked`) — the open menu just re-renders with the new state.
+   *
+   * Use for toggles that the user may want to flip and then keep using the
+   * menu (the "Native renderer (beta)" mode row in the Add-pane dropdown).
+   * Without this, a toggle click ran the normal close path — overlay drops
+   * the popup, the window hides, and the app blinks while the user has to
+   * reopen the menu just to see the checkmark.
+   */
+  sticky?: boolean;
   /** Small leading color square (tab color menus etc.). */
   swatch?: string;
   /** Render red (destructive actions). */

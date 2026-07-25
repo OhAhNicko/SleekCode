@@ -137,6 +137,12 @@ export function usePty({
       let command: string;
       let args: string[];
       let cwd: string | undefined;
+      // Declared out here because the pooled spawn below needs the SAME list.
+      // It used to build its own, which silently dropped `--session-id` on
+      // every fresh WSL Claude pane — MADE then owned a uuid Claude had never
+      // been told about, and the next launch resumed a session that had never
+      // existed ("No conversation found with session ID: …").
+      const extraArgs: string[] = [];
 
       if (currentServerId) {
         const server = useAppStore.getState().servers.find((s) => s.id === currentServerId);
@@ -171,7 +177,6 @@ export function usePty({
             backend: backendRef.current,
           });
         }
-        const extraArgs: string[] = [];
         const yoloFlag = getYoloFlag(terminalType);
         if (yoloFlag && (forceYoloRef.current || useAppStore.getState().cliYolo[terminalType])) {
           extraArgs.push(yoloFlag);
@@ -200,7 +205,10 @@ export function usePty({
               `[SessionResume] ${resumeId.slice(0, 8)} no longer exists — starting a fresh session instead of dropping into the CLI's resume picker`,
             );
             resumeId = undefined;
-            // Drop the dead id so the pane stops retrying it every launch.
+            // Drop the dead id so the pane stops retrying it every launch, and
+            // unregister it so it stops appearing as an unpickable row in the
+            // session picker.
+            useAppStore.getState().removeProjectSession(currentWorkingDir || "", sessionResumeIdRef.current!);
             onSessionIdAssignedRef.current?.("");
           }
         }
@@ -288,14 +296,13 @@ export function usePty({
         // Windows mode skips pool entirely (no WSL pool).
         if (!currentServerId && backend !== "windows" && isWslTerminal(terminalType, backend) && !sessionResumeIdRef.current) {
           const wslCwd = currentWorkingDir ? toWslPath(currentWorkingDir) : undefined;
-          const poolExtraArgs: string[] = [];
-          const poolYoloFlag = getYoloFlag(terminalType);
-          if (poolYoloFlag && (forceYoloRef.current || useAppStore.getState().cliYolo[terminalType])) {
-            poolExtraArgs.push(poolYoloFlag);
-          }
-          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, poolExtraArgs, backend);
+          // Must be the same extraArgs the non-pooled path uses: it carries
+          // `--session-id <uuid>`, which the pane has ALREADY committed to via
+          // onSessionIdAssigned. Rebuilding a yolo-only list here is what made
+          // MADE's stored id and Claude's real id diverge.
+          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, extraArgs, backend);
           if (initCmd) {
-            console.log(`[PTY] using pool for ${terminalType}`, poolExtraArgs.length ? `extraArgs: ${poolExtraArgs.join(" ")}` : "(no extra args)");
+            console.log(`[PTY] using pool for ${terminalType}`, extraArgs.length ? `extraArgs: ${extraArgs.join(" ")}` : "(no extra args)");
             try {
               id = await invoke<number>("pty_spawn_pooled", {
                 initCommand: initCmd,

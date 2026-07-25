@@ -139,6 +139,10 @@ export function usePtyNative({
       let command: string;
       let args: string[];
       let cwd: string | undefined;
+      // Shared with the pooled spawn below — see the note in usePty.ts. A
+      // separate pool-only list drops `--session-id`, which desyncs the id MADE
+      // stores from the one Claude actually uses.
+      const extraArgs: string[] = [];
 
       if (currentServerId) {
         const server = useAppStore.getState().servers.find((s) => s.id === currentServerId);
@@ -155,7 +159,6 @@ export function usePtyNative({
         args = ssh.args;
         cwd = undefined;
       } else {
-        const extraArgs: string[] = [];
         const yoloFlag = getYoloFlag(terminalType);
         if (yoloFlag && (forceYoloRef.current || useAppStore.getState().cliYolo[terminalType])) {
           extraArgs.push(yoloFlag);
@@ -183,7 +186,10 @@ export function usePtyNative({
               `[SessionResume] ${resumeId.slice(0, 8)} no longer exists — starting a fresh session instead of dropping into the CLI's resume picker`,
             );
             resumeId = undefined;
-            // Drop the dead id so the pane stops retrying it every launch.
+            // Drop the dead id so the pane stops retrying it every launch, and
+            // unregister it so it stops appearing as an unpickable row in the
+            // session picker.
+            useAppStore.getState().removeProjectSession(currentWorkingDir || "", sessionResumeIdRef.current!);
             onSessionIdAssignedRef.current?.("");
           }
         }
@@ -251,12 +257,7 @@ export function usePtyNative({
 
         if (!currentServerId && backend !== "windows" && isWslTerminal(terminalType, backend) && !sessionResumeIdRef.current) {
           const wslCwd = currentWorkingDir ? toWslPath(currentWorkingDir) : undefined;
-          const poolExtraArgs: string[] = [];
-          const poolYoloFlag = getYoloFlag(terminalType);
-          if (poolYoloFlag && (forceYoloRef.current || useAppStore.getState().cliYolo[terminalType])) {
-            poolExtraArgs.push(poolYoloFlag);
-          }
-          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, poolExtraArgs, backend);
+          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, extraArgs, backend);
           if (initCmd) {
             try {
               id = await invoke<number>("pty_spawn_pooled", {

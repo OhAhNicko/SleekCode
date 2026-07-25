@@ -695,43 +695,186 @@ function UpdatesSection() {
 
 // ─── Voice agent section ──────────────────────────────────────────────────
 
-/** Dropdown styled to match TextInput. Matches the app's existing select
- * (CreatePullRequestModal) in colour and border, sized like TextInput so a
- * select and a text field can sit side by side without looking mismatched. */
-function SelectInput<T extends string>({
+/**
+ * Dropdown. Deliberately NOT a native `<select>`.
+ *
+ * A native select opens an OS popup that needs activation, and MADE's window
+ * management actively fights that: panes and the overlay answer
+ * WM_MOUSEACTIVATE with MA_NOACTIVATE and the main window subclasses
+ * WM_NCACTIVATE, so the popup lost activation and closed on the same click that
+ * opened it. Every other dropdown in this app is custom-rendered for the same
+ * reason; the one native `<select>` that works lives inside a modal, which
+ * hides the panes and changes the activation picture entirely.
+ *
+ * The list is `position: fixed` off the button's measured rect rather than
+ * absolutely positioned, because the settings pane is a scroll container with
+ * `overflow: hidden` ancestors that would otherwise clip it.
+ */
+function Dropdown<T extends string>({
   value,
   onChange,
   options,
   width = 260,
+  placeholder,
 }: {
   value: T;
   onChange: (v: T) => void;
   options: { value: T; label: string }[];
   width?: number;
+  placeholder?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+
+  const measure = useCallback(() => {
+    const el = btnRef.current;
+    if (!el) return;
+    const b = el.getBoundingClientRect();
+    setRect({ left: b.left, top: b.bottom + 4, width: b.width });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    measure();
+    const close = () => setOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    // Capture phase so a click anywhere else dismisses before it acts.
+    window.addEventListener("pointerdown", close, true);
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("resize", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("pointerdown", close, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [open, measure]);
+
+  const current = options.find((o) => o.value === value);
+  const label = current?.label ?? placeholder ?? "";
+
   return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value as T)}
-      style={{
-        width,
-        padding: "5px 8px",
-        fontSize: 12,
-        fontFamily: "inherit",
-        color: "var(--ezy-text)",
-        backgroundColor: "var(--ezy-surface)",
-        border: "1px solid var(--ezy-border)",
-        borderRadius: 5,
-        outline: "none",
-        cursor: "pointer",
-      }}
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>
-          {o.label}
-        </option>
-      ))}
-    </select>
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onPointerDown={(e) => {
+          // Stop the capture-phase dismiss above from firing on our own click.
+          e.stopPropagation();
+        }}
+        onClick={() => {
+          measure();
+          setOpen((v) => !v);
+        }}
+        style={{
+          width,
+          // Matches TextInput exactly so a dropdown and a field can sit side
+          // by side without looking mismatched.
+          padding: "5px 8px",
+          fontSize: 12,
+          fontFamily: "inherit",
+          textAlign: "left",
+          color: current ? "var(--ezy-text)" : "var(--ezy-text-muted)",
+          backgroundColor: "var(--ezy-surface)",
+          border: "1px solid var(--ezy-border)",
+          borderRadius: 5,
+          outline: "none",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          // The chevron sits directly after the label rather than pinned to the
+          // far edge, which is what made the native control look unbalanced on
+          // a wide field.
+          gap: 8,
+          lineHeight: 1.4,
+        }}
+      >
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {label}
+        </span>
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="var(--ezy-text-muted)"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{ flexShrink: 0, transform: open ? "rotate(180deg)" : undefined }}
+        >
+          <polyline points="3,4.5 6,8 9,4.5" />
+        </svg>
+      </button>
+      {open && rect && (
+        <div
+          className="ezy-popup-scroll"
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            position: "fixed",
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            maxHeight: 280,
+            overflowY: "auto",
+            zIndex: 1000,
+            padding: "4px 0",
+            borderRadius: 6,
+            backgroundColor: "var(--ezy-surface-raised)",
+            border: "1px solid var(--ezy-border)",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+          }}
+        >
+          {options.map((o) => {
+            const selected = o.value === value;
+            return (
+              <div
+                key={o.value}
+                onClick={() => {
+                  onChange(o.value);
+                  setOpen(false);
+                }}
+                style={{
+                  padding: "5px 10px",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  color: selected ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
+                  backgroundColor: selected ? "var(--ezy-border-subtle)" : "transparent",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "var(--ezy-border)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = selected
+                    ? "var(--ezy-border-subtle)"
+                    : "transparent";
+                }}
+              >
+                {o.label}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -1315,7 +1458,7 @@ export default function SettingsPane() {
                 description="Claude enables synchronized output, progress reporting and automatic notifications only for terminals it recognises. These are the names it knows — if a feature stays quiet, pick another. Applies to the next pane you open. Leave the version blank unless you need to override it."
               >
                 <div className="flex items-center gap-2">
-                  <SelectInput<string>
+                  <Dropdown<string>
                     value={termProgram}
                     onChange={setTermProgram}
                     options={[
@@ -1338,7 +1481,7 @@ export default function SettingsPane() {
                 description="Which escape sequence Claude sends when it wants your attention. MADE turns iTerm2 (OSC 9), Kitty (OSC 99) and Ghostty (OSC 777) into an in-app toast; Ghostty is richest, being the only one that also carries a title. Terminal Bell carries no message, so it produces nothing. This writes notifChannel into Claude's own settings.json and applies to newly started sessions."
               >
                 <div className="flex items-center gap-2">
-                  <SelectInput<ClaudeNotifChannel | "">
+                  <Dropdown<ClaudeNotifChannel | "">
                     value=""
                     onChange={(v) => {
                       if (!v) return;

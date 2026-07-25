@@ -3712,7 +3712,8 @@ async fn get_claude_session_id_by_spawn(
     let script = format!(
         r#"python3 -c "
 import json, os, sys, glob, time
-cwd = (sys.argv[1] or '').rstrip('/').lower()
+raw_cwd = (sys.argv[1] or '').rstrip('/')
+cwd = raw_cwd.lower()
 min_ms = int(sys.argv[2])
 now_ms = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 exclude = set(sys.argv[4].split(',')) if len(sys.argv) > 4 and sys.argv[4] else set()
@@ -3723,6 +3724,26 @@ wsl_now = int(time.time() * 1000)
 # correct the floor into WSL time; otherwise a positive skew filters out the
 # genuine just-spawned session and the resume is silently lost.
 floor = min_ms + (wsl_now - now_ms) if now_ms > 0 else min_ms
+# A sidecar's sessionId is PROVISIONAL: Claude rewrites it in place (same pid,
+# same startedAt) and a third of all sidecars name a session that has no
+# transcript. Adopting one of those hands the pane an id that --resume cannot
+# find. Only ids with a transcript on disk are real, so resolve this project's
+# transcript dir(s) up front — exact first, then the case-folded sibling that
+# /mnt paths produce (Documents vs documents).
+proj_root = os.path.expanduser('~/.claude/projects')
+enc = raw_cwd.replace('/', '-')
+tdirs = [os.path.join(proj_root, enc)]
+try:
+    for d in os.listdir(proj_root):
+        if d.lower() == enc.lower() and d != enc:
+            tdirs.append(os.path.join(proj_root, d))
+except OSError:
+    pass
+def has_transcript(s):
+    for d in tdirs:
+        if os.path.exists(os.path.join(d, s + '.jsonl')):
+            return True
+    return False
 best_id = None
 best_started = -1
 diag = []
@@ -3740,9 +3761,10 @@ for path in glob.glob(os.path.expanduser('~/.claude/sessions/*.json')):
     if not isinstance(started, (int, float)): continue
     sid = v.get('sessionId', '')
     if not sid: continue
-    if debug: diag.append('%s started=%d ok=%s excluded=%s' % (sid[:8], int(started), started >= floor, sid in exclude))
+    if debug: diag.append('%s started=%d ok=%s excluded=%s transcript=%s' % (sid[:8], int(started), started >= floor, sid in exclude, has_transcript(sid)))
     if started < floor: continue
     if sid in exclude: continue
+    if not has_transcript(sid): continue
     if started > best_started:
         best_started = started
         best_id = sid
@@ -3787,7 +3809,8 @@ async fn get_claude_session_id_by_spawn_native(
     let _ = now_ms; // native: session startedAt and the floor share one OS clock — no skew correction
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     let sessions_dir = std::path::Path::new(&home).join(".claude").join("sessions");
-    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids, debug)
+    let transcript_dir = find_claude_project_dir(&home, &project_path, '/');
+    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids, debug, transcript_dir.as_deref())
 }
 
 /// Windows variant of get_claude_session_id_by_spawn.
@@ -3802,7 +3825,8 @@ async fn get_claude_session_id_by_spawn_windows(
     let _ = now_ms; // windows-native: same OS clock for startedAt and floor — no skew correction
     let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
     let sessions_dir = std::path::Path::new(&home).join(".claude").join("sessions");
-    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids, debug)
+    let transcript_dir = find_claude_project_dir(&home, &project_path, '/');
+    scan_claude_sessions_dir(&sessions_dir, &project_path, min_started_at_ms, &exclude_ids, debug, transcript_dir.as_deref())
 }
 
 /// Helper: scan a directory of pid-keyed session sidecars and return the
@@ -3814,10 +3838,20 @@ fn scan_claude_sessions_dir(
     min_started_at_ms: u64,
     exclude_ids: &[String],
     debug: bool,
+    // Where this project's transcripts live. A sidecar's sessionId is
+    // provisional (Claude rewrites it in place), so an id is only real once
+    // `<transcript_dir>/<id>.jsonl` exists. `None` means Claude has never
+    // written anything for this cwd — nothing here can be verified, so nothing
+    // is returned rather than handing back an id --resume cannot find.
+    transcript_dir: Option<&std::path::Path>,
 ) -> Result<Option<String>, String> {
     if !sessions_dir.is_dir() {
         return Ok(None);
     }
+    let tdir = match transcript_dir {
+        Some(d) => d,
+        None => return Ok(None),
+    };
     let entries = match std::fs::read_dir(sessions_dir) {
         Ok(e) => e,
         Err(_) => return Ok(None),
@@ -3852,6 +3886,7 @@ fn scan_claude_sessions_dir(
         if started < min_started_at_ms { continue; }
         if sid.is_empty() { continue; }
         if exclude_ids.iter().any(|ex| ex == sid) { continue; }
+        if !tdir.join(format!("{}.jsonl", sid)).exists() { continue; }
         match &best {
             Some((b, _)) if *b >= started => {}
             _ => { best = Some((started, sid.to_string())); }
@@ -5885,16 +5920,178 @@ fn find_claude_project_dir(home: &str, project_path: &str, separator: char) -> O
 }
 
 /// Parse sessions-index.json and return a JSON array of entries.
-fn parse_sessions_index(index_path: &std::path::Path) -> Result<String, String> {
-    let content = match std::fs::read_to_string(index_path) {
-        Ok(c) => c,
-        Err(_) => return Ok("[]".to_string()),
-    };
-    parse_sessions_index_from_content(&content)
+/// Format epoch millis as an ISO-8601 UTC string (`2026-07-25T19:06:25Z`).
+///
+/// Hand-rolled because this crate has no date dependency. Uses Howard
+/// Hinnant's civil_from_days; verified against 20k timestamps.
+fn iso8601_utc(ms: u64) -> String {
+    let secs = (ms / 1000) as i64;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hh, mm, ss)
 }
 
-/// Same as parse_sessions_index but operates on already-loaded content.
-/// Used by SSH variants that fetch the file contents over the network.
+fn file_mtime_ms(path: &std::path::Path) -> u64 {
+    path.metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The session list for one Claude project directory.
+///
+/// The transcripts ARE the inventory. `sessions-index.json` is Claude's own
+/// cache and it stopped being written in early 2026 — it survives in a handful
+/// of stale project dirs and is absent everywhere else, which is why the
+/// session dropdown had been permanently empty (and why `sessionStillExists`,
+/// which used to read it, never once blocked a bad resume). So enumerate
+/// `<dir>/*.jsonl` and treat any surviving index entry as enrichment only
+/// (summary / customTitle / gitBranch / messageCount) — never as the authority
+/// on whether a session exists.
+fn is_uuid_stem(s: &str) -> bool {
+    s.len() == 36
+        && s.split('-').count() == 5
+        && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+/// EVERY session id this project has a transcript for — uncapped, no file
+/// reads, just the directory listing.
+///
+/// Separate from build_sessions_list because that one truncates to the 30 most
+/// recent for display. Using a truncated list to decide what is dead would
+/// delete real sessions from the registry: this machine has a project with 59
+/// transcripts, so 29 live sessions would have looked absent.
+fn list_session_ids(dir: &std::path::Path) -> Vec<String> {
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    read_dir
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |ext| ext == "jsonl"))
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+        .filter(|s| is_uuid_stem(s))
+        .collect()
+}
+
+/// Complete session-id list for a project (WSL).
+#[tauri::command]
+async fn claude_session_ids(project_path: String, distro: Option<String>) -> Result<Vec<String>, String> {
+    Ok(resolve_wsl_project_dir(&project_path, distro.as_deref())
+        .map(|d| list_session_ids(&d))
+        .unwrap_or_default())
+}
+
+/// Complete session-id list for a project (native Windows).
+#[tauri::command]
+async fn claude_session_ids_windows(project_path: String) -> Result<Vec<String>, String> {
+    let home = match std::env::var("USERPROFILE") { Ok(h) => h, Err(_) => return Ok(Vec::new()) };
+    Ok(find_claude_project_dir(&home, &project_path, '/')
+        .map(|d| list_session_ids(&d))
+        .unwrap_or_default())
+}
+
+/// Complete session-id list for a project (macOS/Linux).
+#[tauri::command]
+async fn claude_session_ids_native(project_path: String) -> Result<Vec<String>, String> {
+    let home = match std::env::var("HOME") { Ok(h) => h, Err(_) => return Ok(Vec::new()) };
+    Ok(find_claude_project_dir(&home, &project_path, '/')
+        .map(|d| list_session_ids(&d))
+        .unwrap_or_default())
+}
+
+fn build_sessions_list(dir: &std::path::Path) -> Result<String, String> {
+    let is_valid_uuid = is_uuid_stem;
+
+    // Surviving index entries, keyed by session id. Absent on nearly every
+    // project — that is expected, not an error.
+    let mut meta: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+    if let Ok(content) = std::fs::read_to_string(dir.join("sessions-index.json")) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(arr) = v.get("entries").and_then(|e| e.as_array()) {
+                for e in arr {
+                    if let Some(sid) = e.get("sessionId").and_then(|s| s.as_str()) {
+                        meta.insert(sid.to_string(), e.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return Ok("[]".to_string()),
+    };
+
+    let mut rows: Vec<(u64, serde_json::Value)> = Vec::new();
+    for entry in read_dir.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().map_or(true, |ext| ext != "jsonl") { continue; }
+        let sid = match path.file_stem().and_then(|s| s.to_str()) {
+            Some(s) if is_valid_uuid(s) => s.to_string(),
+            _ => continue,
+        };
+        let e = meta.get(&sid);
+        if e.and_then(|e| e.get("isSidechain")).and_then(|b| b.as_bool()).unwrap_or(false) { continue; }
+
+        let mtime_ms = file_mtime_ms(&path);
+        // Prefer the index's firstPrompt (already extracted) and only fall back
+        // to reading the transcript, which early-exits at the first user turn.
+        let first_prompt = e
+            .and_then(|e| e.get("firstPrompt"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| read_first_user_prompt_from_jsonl(&path))
+            .unwrap_or_default();
+        let truncated: String = first_prompt.chars().take(100).collect();
+        // mtime is ground truth for "last worked in"; the index's own timestamps
+        // are only used for `created`, which mtime cannot tell us.
+        let created = e
+            .and_then(|e| e.get("created"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| iso8601_utc(mtime_ms));
+
+        rows.push((mtime_ms, serde_json::json!({
+            "sessionId": sid,
+            "summary": e.and_then(|e| e.get("summary")).and_then(|v| v.as_str()).unwrap_or(""),
+            "customTitle": e.and_then(|e| e.get("customTitle")).and_then(|v| v.as_str()).unwrap_or(""),
+            "firstPrompt": truncated,
+            "messageCount": e.and_then(|e| e.get("messageCount")).and_then(|v| v.as_u64()).unwrap_or(0),
+            "created": created,
+            "modified": iso8601_utc(mtime_ms),
+            "gitBranch": e.and_then(|e| e.get("gitBranch")).and_then(|v| v.as_str()).unwrap_or(""),
+            "isSidechain": false,
+        })));
+    }
+
+    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    rows.truncate(30);
+    let items: Vec<serde_json::Value> = rows.into_iter().map(|(_, v)| v).collect();
+    serde_json::to_string(&items).map_err(|e| e.to_string())
+}
+
+/// Parse a `sessions-index.json` payload already loaded into memory.
+///
+/// SSH-only. Local backends use build_sessions_list, which enumerates the
+/// transcripts themselves; over SSH we cannot cheaply stat a directory and read
+/// each file's first prompt, so remote projects still depend on the index and
+/// will list nothing when the remote Claude no longer writes one.
 fn parse_sessions_index_from_content(content: &str) -> Result<String, String> {
     if content.trim().is_empty() {
         return Ok("[]".to_string());
@@ -5935,7 +6132,7 @@ fn parse_sessions_index_from_content(content: &str) -> Result<String, String> {
     serde_json::to_string(&items).map_err(|e| e.to_string())
 }
 
-/// Read sessions-index.json on native Windows via %USERPROFILE%.
+/// List a project's Claude sessions on native Windows via %USERPROFILE%.
 #[tauri::command]
 async fn read_sessions_index_windows(project_path: String) -> Result<String, String> {
     let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
@@ -5943,10 +6140,10 @@ async fn read_sessions_index_windows(project_path: String) -> Result<String, Str
         Some(d) => d,
         None => return Ok("[]".to_string()),
     };
-    parse_sessions_index(&dir.join("sessions-index.json"))
+    build_sessions_list(&dir)
 }
 
-/// Read sessions-index.json on macOS/Linux via $HOME.
+/// List a project's Claude sessions on macOS/Linux via $HOME.
 #[tauri::command]
 async fn read_sessions_index_native(project_path: String) -> Result<String, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
@@ -5954,62 +6151,22 @@ async fn read_sessions_index_native(project_path: String) -> Result<String, Stri
         Some(d) => d,
         None => return Ok("[]".to_string()),
     };
-    parse_sessions_index(&dir.join("sessions-index.json"))
+    build_sessions_list(&dir)
 }
 
-/// Read sessions-index.json via WSL.
+/// List a project's Claude sessions (WSL).
+///
+/// Implemented natively in Rust over the `\\wsl.localhost` UNC share — same
+/// approach as read_session_first_prompt. No bash, no python, no wsl.exe
+/// round-trip, which matters because the session dropdown polls this every 30s.
+/// The old bash script bailed at `[ -f "$FILE" ] || exit 0`, so once Claude
+/// stopped writing sessions-index.json it returned nothing, forever.
 #[tauri::command]
 async fn read_sessions_index(project_path: String, distro: Option<String>) -> Result<String, String> {
-    let encoded = project_path.replace('/', "-");
-
-    let script = format!(
-        r#"DIR="$HOME/.claude/projects/{enc}"
-if [ ! -d "$DIR" ]; then
-  enc_lower=$(echo '{enc}' | tr '[:upper:]' '[:lower:]')
-  for d in $HOME/.claude/projects/*/; do
-    base=$(basename "$d")
-    if [ "$(echo "$base" | tr '[:upper:]' '[:lower:]')" = "$enc_lower" ]; then
-      DIR="$d"
-      break
-    fi
-  done
-fi
-FILE="$DIR/sessions-index.json"
-[ -f "$FILE" ] || exit 0
-python3 -c "
-import json,sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-entries = [e for e in data.get('entries', []) if not e.get('isSidechain', False)]
-entries.sort(key=lambda e: e.get('modified', ''), reverse=True)
-out = []
-for e in entries[:30]:
-    fp = (e.get('firstPrompt') or '')[:100]
-    out.append(dict(sessionId=e.get('sessionId',''), summary=e.get('summary',''),
-        customTitle=e.get('customTitle',''), firstPrompt=fp,
-        messageCount=e.get('messageCount',0), created=e.get('created',''),
-        modified=e.get('modified',''), gitBranch=e.get('gitBranch',''), isSidechain=False))
-print(json.dumps(out))
-" "$FILE""#,
-        enc = encoded
-    );
-
-    let mut cmd = wsl_command();
-    if let Some(ref d) = distro {
-        if !d.is_empty() {
-            cmd.args(["-d", d]);
-        }
+    match resolve_wsl_project_dir(&project_path, distro.as_deref()) {
+        Some(dir) => build_sessions_list(&dir),
+        None => Ok("[]".to_string()),
     }
-    cmd.args(["--", "bash", "-lic", &script]);
-
-    let output = cmd.output().map_err(|e| format!("Failed to read sessions index: {}", e))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    if stdout.is_empty() {
-        return Ok("[]".to_string());
-    }
-
-    Ok(stdout)
 }
 
 /// Read the first user prompt from JSONL content (already loaded into memory).
@@ -6185,6 +6342,128 @@ fn resolve_wsl_session_jsonl(
         }
     }
     candidates.into_iter().next()
+}
+
+/// Result of "can this session id actually be resumed?".
+///
+/// Two booleans, not one, because "no transcript" and "I could not look" must
+/// never collapse into the same answer. `checked = false` means the project
+/// directory itself was unreachable (WSL UNC down, HOME unset, project never
+/// opened by Claude) — the caller then fails OPEN and resumes anyway rather
+/// than discarding a real conversation on a failed lookup.
+#[derive(Serialize)]
+struct SessionFileCheck {
+    exists: bool,
+    checked: bool,
+}
+
+/// Locate the Claude project DIRECTORY for a WSL project path.
+///
+/// Mirrors resolve_wsl_session_jsonl's distro/UNC/HOME walk exactly, but stops
+/// at the directory so callers can distinguish "directory found, file absent"
+/// from "directory not found". Kept adjacent to it so the two cannot drift.
+fn resolve_wsl_project_dir(project_path: &str, distro: Option<&str>) -> Option<std::path::PathBuf> {
+    let encoded = project_path.replace('/', "-");
+    let want = encoded.to_lowercase();
+    let mut found: Option<std::path::PathBuf> = None;
+
+    let try_distro = |d: &str, found: &mut Option<std::path::PathBuf>| {
+        if d.is_empty() || found.is_some() { return; }
+        for prefix in ["\\\\wsl.localhost", "\\\\wsl$"] {
+            let base = std::path::PathBuf::from(format!("{}\\{}\\home", prefix, d));
+            if !base.is_dir() { continue; }
+            let users = match std::fs::read_dir(&base) { Ok(u) => u, Err(_) => continue };
+            for u in users.filter_map(|e| e.ok()) {
+                let projects = u.path().join(".claude").join("projects");
+                let exact = projects.join(&encoded);
+                if exact.is_dir() { *found = Some(exact); return; }
+                // Case-insensitive fallback: the encoded key comes from a
+                // Windows path but WSL's filesystem is case-sensitive, so
+                // `…-Documents-…` and `…-documents-…` are different dirs and
+                // both exist on real machines.
+                if let Ok(dirs) = std::fs::read_dir(&projects) {
+                    for d in dirs.filter_map(|e| e.ok()) {
+                        if d.file_name().to_string_lossy().to_lowercase() == want {
+                            *found = Some(d.path());
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    try_distro(distro.unwrap_or("").trim(), &mut found);
+    if found.is_none() {
+        for d in ["Ubuntu-24.04", "Ubuntu-22.04", "Ubuntu", "Debian"] {
+            try_distro(d, &mut found);
+            if found.is_some() { break; }
+        }
+    }
+    if found.is_none() {
+        if let Ok(home) = std::env::var("HOME") {
+            let p = std::path::PathBuf::from(&home).join(".claude").join("projects").join(&encoded);
+            if p.is_dir() { found = Some(p); }
+        }
+    }
+    found
+}
+
+/// Does `<project-dir>/<session_id>.jsonl` exist? (WSL)
+///
+/// This is the ONLY thing `claude --resume <id>` actually requires. MADE used
+/// to answer this question from `sessions-index.json`, which Claude stopped
+/// writing in early 2026 — so the check silently passed every id, including
+/// ids no session ever wrote, and the CLI answered "No conversation found with
+/// session ID: …".
+#[tauri::command]
+async fn claude_session_file_exists(
+    project_path: String,
+    session_id: String,
+    distro: Option<String>,
+) -> Result<SessionFileCheck, String> {
+    let dir = match resolve_wsl_project_dir(&project_path, distro.as_deref()) {
+        Some(d) => d,
+        None => return Ok(SessionFileCheck { exists: false, checked: false }),
+    };
+    let exists = dir.join(format!("{}.jsonl", session_id)).exists();
+    Ok(SessionFileCheck { exists, checked: true })
+}
+
+/// Windows-native variant of claude_session_file_exists.
+#[tauri::command]
+async fn claude_session_file_exists_windows(
+    project_path: String,
+    session_id: String,
+) -> Result<SessionFileCheck, String> {
+    let home = match std::env::var("USERPROFILE") {
+        Ok(h) => h,
+        Err(_) => return Ok(SessionFileCheck { exists: false, checked: false }),
+    };
+    let dir = match find_claude_project_dir(&home, &project_path, '/') {
+        Some(d) => d,
+        None => return Ok(SessionFileCheck { exists: false, checked: false }),
+    };
+    let exists = dir.join(format!("{}.jsonl", session_id)).exists();
+    Ok(SessionFileCheck { exists, checked: true })
+}
+
+/// macOS/Linux-native variant of claude_session_file_exists.
+#[tauri::command]
+async fn claude_session_file_exists_native(
+    project_path: String,
+    session_id: String,
+) -> Result<SessionFileCheck, String> {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return Ok(SessionFileCheck { exists: false, checked: false }),
+    };
+    let dir = match find_claude_project_dir(&home, &project_path, '/') {
+        Some(d) => d,
+        None => return Ok(SessionFileCheck { exists: false, checked: false }),
+    };
+    let exists = dir.join(format!("{}.jsonl", session_id)).exists();
+    Ok(SessionFileCheck { exists, checked: true })
 }
 
 /// Merge a single key into Claude's `settings.json`, preserving everything
@@ -7003,7 +7282,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file])
         .setup(|app| {
             // Registry of active `ssh -N -L` port-forward processes for remote
             // dev servers (commands: ssh_forward_port_start / _stop).

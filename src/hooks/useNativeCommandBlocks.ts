@@ -44,6 +44,13 @@ export interface NativeCommandBlocksState {
 
 export function useNativeCommandBlocks(
   termId: NativeTermId | null,
+  /**
+   * Bump to drop all recorded state and re-subscribe. A PTY restart detaches
+   * and re-attaches, and `attach_pty` spawns a fresh ParserBridge with a NEW
+   * Term — so every absLine recorded against the old buffer is stale. The
+   * term id itself does not change, so the effect needs this to re-run.
+   */
+  resetKey: number = 0,
 ): NativeCommandBlocksState {
   const [commandBlocks, setCommandBlocks] = useState<CommandBlock[]>([]);
   const [promptLines, setPromptLines] = useState<number[]>([]);
@@ -176,7 +183,7 @@ export function useNativeCommandBlocks(
       setCommandBlocks([]);
       setPromptLines([]);
     };
-  }, [termId]);
+  }, [termId, resetKey]);
 
   return { commandBlocks, promptLines };
 }

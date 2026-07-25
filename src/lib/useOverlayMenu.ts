@@ -38,6 +38,18 @@ export function useOverlayMenu(opts: {
   onActionRef.current = opts.onAction;
   const onCloseRef = useRef(opts.onClose);
   onCloseRef.current = opts.onClose;
+  // actionIds of STICKY rows (see OverlayMenuItem.sticky): their action runs
+  // WITHOUT closing the menu, so a mode toggle updates the payload in place
+  // instead of dropping the popup and blinking the app. Derived from the
+  // payload we just sent — one source of truth, no extra wire field — and
+  // held in a ref because the action listener below is not re-subscribed on
+  // payload changes.
+  const stickyIdsRef = useRef<Set<string>>(new Set());
+  stickyIdsRef.current = new Set(
+    (opts.payload?.sections ?? []).flatMap((s) =>
+      s.items.filter((i) => i.sticky).map((i) => i.actionId),
+    ),
+  );
 
   // Close only on open→false / unmount (payload/point deliberately excluded —
   // payload updates must overwrite the menu in place, not close/reopen it).
@@ -107,6 +119,7 @@ export function useOverlayMenu(opts: {
     listenOverlayAction((msg) => {
       if (msg.id !== id) return;
       if (msg.action !== "__dismiss__") onActionRef.current(msg.action, msg.data);
+      if (stickyIdsRef.current.has(msg.action)) return;
       onCloseRef.current();
     }).then((u) => {
       if (disposed) u();

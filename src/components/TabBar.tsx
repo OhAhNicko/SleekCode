@@ -136,14 +136,18 @@ export default function TabBar() {
           gap: 2,
           sections: [
             {
-              // Sticky renderer mode. Picking it closes the menu (useOverlayMenu
-              // fires onClose after every action) — reopen to see the checkmark.
+              // Sticky renderer mode: `sticky` keeps the menu OPEN, so the
+              // checkmark flips in place and the user can pick a pane type in
+              // the same visit. (Closing it here used to drop the overlay
+              // popup — menu gone + an app blink — for a mode change that
+              // adds no pane.)
               items: [
                 {
                   actionId: "toggle-native-renderer",
                   label: "Native renderer (beta)",
                   sublabel: "Ctrl+click a pane type to open native once",
                   checked: newPaneNativeRenderer,
+                  sticky: true,
                 },
               ],
             },

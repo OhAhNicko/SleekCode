@@ -47,6 +47,7 @@ import PaneNotification from "../native-term/PaneNotification";
 import PaneProgressBar from "../native-term/PaneProgressBar";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { queueGeom } from "../native-term/frameSync";
+import { forgetPane, setPaneLayoutVisible } from "../native-term/visibility";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
 import PromptComposer from "./PromptComposer";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
@@ -70,12 +71,13 @@ import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
 import { invoke } from "@tauri-apps/api/core";
 import { supportsSessionResume } from "../lib/session-resume";
 import { toWslPath } from "../lib/terminal-config";
-import { readSessionContext, type ContextInfo } from "../lib/context-parser";
 import { readSessionFirstPrompt, slugify } from "../lib/sessions-index";
-// Session-detection state + helpers shared with the xterm pane. MUST come
-// from TerminalPaneXterm so both renderers resolve claims/dedup against ONE
-// universe — a separate copy here would let an xterm pane and a native pane
-// claim the same Claude session (header/session steal class of bugs).
+import { useSessionContext } from "../hooks/useSessionContext";
+// Session-detection state + helpers shared with the xterm pane and the
+// useSessionContext hook. MUST come from lib/session-dedup so all three
+// resolve claims/dedup against ONE universe — a separate copy here would let
+// an xterm pane and a native pane claim the same Claude session
+// (header/session steal class of bugs).
 import {
   claimedSessionIds,
   claimSessionId,
@@ -83,7 +85,7 @@ import {
   panesWithLockedSession,
   paneWorkingDir,
   lookupClaudeBySpawn,
-} from "./TerminalPaneXterm";
+} from "../lib/session-dedup";
 
 // Until `store/index.ts` (M-list) registers `createNativeRendererSlice`,
 // these fields aren't visible on AppStore at the type level. Cast through
@@ -242,6 +244,15 @@ export default function TerminalPaneNative({
   // keyed on it, so a bump detaches the native term, kills the old PTY and
   // spawns a fresh one that reads the (eagerly updated) resume session ID.
   const [restartKey, setRestartKey] = useState(0);
+  // SSH server label shown after the CLI name in the header (xterm parity).
+  const serverName = useAppStore((s) => {
+    if (!serverId) return undefined;
+    return s.servers.find((srv) => srv.id === serverId)?.name;
+  });
+  // YOLO state snapshotted at launch — drives both the header chip and the
+  // spawn flag, so toggling the setting mid-session doesn't relabel a pane
+  // that was launched without it (xterm parity).
+  const [launchedWithYolo, setLaunchedWithYolo] = useState(() => !!useAppStore.getState().cliYolo[terminalType]);
 
   // ── Session remember (parity with TerminalPaneXterm) ─────────────────
   // Seed claimed set with persisted IDs so new panes don't steal them.
@@ -250,7 +261,6 @@ export default function TerminalPaneNative({
   // Trusted = restored from persist or explicit switch; disk-detected
   // sessions become trusted once atomically claimed.
   const [sessionTrusted, setSessionTrusted] = useState(!!sessionResumeId);
-  const [contextInfo, setContextInfo] = useState<ContextInfo | null>(null);
   const sessionLookupDone = useRef(false);
   const sessionRetryCancelRef = useRef<(() => void) | null>(null);
   // First-PTY-data timestamp (minus 2s cushion) — the floor for spawn-based
@@ -355,35 +365,26 @@ export default function TerminalPaneNative({
     paneWorkingDir.delete(terminalId);
   }, [terminalId]);
 
-  // Context/header info poll. Deliberately ONLY when this pane has locked its
-  // own session — the "__latest__" fallback the xterm pane uses is ambiguous
-  // when panes share a working dir (another pane's session/model/cost would
-  // show here); an unlocked native pane just shows nothing until detection
-  // locks. Mirrors the xterm poll call signature + 5s cadence.
-  useEffect(() => {
-    if (!sessionResumeId || !supportsSessionResume(terminalType)) {
-      setContextInfo(null);
-      return;
-    }
-    let cancelled = false;
-    const poll = async () => {
-      const isSsh = !!serverIdRef.current;
-      const info = await readSessionContext(
-        terminalType,
-        sessionResumeId,
-        backend,
-        serverIdRef.current,
-        isSsh ? workingDirRef.current : undefined,
-      );
-      if (!cancelled && info) setContextInfo(info);
-    };
-    void poll();
-    const intervalId = setInterval(poll, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(intervalId);
-    };
-  }, [sessionResumeId, terminalType, backend]);
+  // Context/header info — the SAME hook the xterm pane uses, so both headers
+  // show identical model / context % / cost / session-name / rate-limit data
+  // and both get late detection, drift detection and registry auto-naming.
+  // This pane used to run a stripped-down poll gated on `sessionResumeId`,
+  // which is why native headers showed nothing but the CLI name + path.
+  // Ambiguity of the "__latest__" fallback is handled inside the hook by
+  // otherResumablePaneSharesDir — do not re-add a renderer-local gate.
+  const { contextInfo, setContextInfo, refreshContext } = useSessionContext({
+    terminalId,
+    terminalType,
+    workingDir,
+    sessionResumeId,
+    serverIdRef,
+    backendRef,
+    workingDirRef,
+    ptySpawnTimeRef,
+    sessionResumeIdPropRef,
+    onSessionResumeIdRef,
+    setSessionTrusted,
+  });
 
   // ── Overlay state (parity with TerminalPaneXterm) ────────────────────
   const [composerOpen, setComposerOpen] = useState(false);
@@ -617,16 +618,32 @@ export default function TerminalPaneNative({
       geomRafId = requestAnimationFrame(pushGeom);
       if (createdId == null || !el.isConnected) return;
       const rect = rectOf(el);
-      if (rect.width <= 0 || rect.height <= 0) return;
+      // A zero-size anchor means this pane is not laid out: its tab is behind
+      // App.tsx's `display: none` (tab/project switch) or the pane collapsed.
+      // The HWND is an OS window — CSS can't hide it, so it would keep
+      // painting over whatever tab you switched to. Hand the state to the
+      // visibility owner (it hides, and re-shows only when the modal gate
+      // also allows it) and clear the geometry guard so the next visible
+      // frame re-pushes even if the rect is unchanged.
+      if (rect.width <= 0 || rect.height <= 0) {
+        setPaneLayoutVisible(createdId, false);
+        lastGeomJson = "";
+        return;
+      }
       const dpr = window.devicePixelRatio;
       const json = JSON.stringify([rect, dpr]);
-      if (json === lastGeomJson) return;
-      lastGeomJson = json;
-      // P4b: route through the frame-sync coalescer instead of a direct
-      // resize invoke — all panes' geometry (and hole) updates for a frame
-      // merge into ONE `native_term_frame_sync` batch, applied Rust-side in
-      // a single DeferWindowPos transaction (atomic splitter moves).
-      queueGeom(createdId, rect, dpr);
+      if (json !== lastGeomJson) {
+        lastGeomJson = json;
+        // P4b: route through the frame-sync coalescer instead of a direct
+        // resize invoke — all panes' geometry (and hole) updates for a frame
+        // merge into ONE `native_term_frame_sync` batch, applied Rust-side in
+        // a single DeferWindowPos transaction (atomic splitter moves).
+        queueGeom(createdId, rect, dpr);
+      }
+      // AFTER the queue: on the hidden→visible transition the owner flushes
+      // the batch before its show invoke, so the pane never appears for a
+      // frame at the geometry it had when its tab was hidden.
+      setPaneLayoutVisible(createdId, true);
     };
     geomRafId = requestAnimationFrame(pushGeom);
 
@@ -645,6 +662,10 @@ export default function TerminalPaneNative({
       ro.disconnect();
       if (createdId != null) {
         unregisterNativeTerm(createdId);
+        // Drop the visibility entry BEFORE destroy: ids are allocated
+        // monotonically so reuse isn't a concern, but a leftover entry would
+        // keep a dead id in the modal gate's reconcile loop forever.
+        forgetPane(createdId);
         void nativeTermDestroy(createdId).catch(() => {});
       }
     };
@@ -1217,6 +1238,7 @@ export default function TerminalPaneNative({
     onSessionIdAssigned: handleSessionIdAssigned,
     ready: termId != null,
     restartKey,
+    forceYolo: launchedWithYolo,
     backend,
     attachTo: termId,
   });
@@ -1274,6 +1296,11 @@ export default function TerminalPaneNative({
   // using ptyWrite. CLI TUIs (claude/codex/gemini) need bracketed paste + a
   // length-scaled delayed Enter so the REPL ingests the whole prompt before
   // the carriage return (otherwise long prompts land as "[Text #N]").
+  //
+  // Composer-submitted prompts, keyed by absLine — lets getPromptEntries show
+  // the prompt the user actually typed (and its timestamp) instead of the
+  // truncated line the TUI drew. Same role as the xterm pane's ref.
+  const promptTimestampsRef = useRef<{ text: string; line: number; timestamp: number }[]>([]);
   const handleComposerSubmit = useCallback(
     (text: string) => {
       recordTerminalWrite(terminalId);
@@ -1284,6 +1311,26 @@ export default function TerminalPaneNative({
         terminalType === "claude" ||
         terminalType === "codex" ||
         terminalType === "gemini";
+
+      // Record prompt with buffer line + timestamp for the prompt-history
+      // dropdown (xterm parity). The cursor line is only readable via an
+      // async viewport read here, so the entry lands a tick later — harmless,
+      // getPromptEntries matches on a ±3 line window.
+      if (isCli && termId != null) {
+        const id = termId;
+        void nativeTermGetViewportState(id)
+          .then((vp) => {
+            promptTimestampsRef.current.push({
+              text,
+              // cursorY is screen-space (0..rows) = SIGNED space; convert to
+              // the scrollback-origin absLine getPromptEntries indexes by.
+              line: vp.cursorY - vp.baseY,
+              timestamp: Date.now(),
+            });
+          })
+          .catch(() => {});
+      }
+
       if (isCli) {
         const content = text + (terminalType === "gemini" ? " " : "");
         const baseDelay = terminalType === "claude" ? 150 : 80;
@@ -1298,14 +1345,16 @@ export default function TerminalPaneNative({
         ptyWrite(text + "\r");
       }
     },
-    [ptyWrite, terminalId, terminalType],
+    [ptyWrite, terminalId, terminalType, termId],
   );
   const handleComposerClose = useCallback(() => {
     setComposerOpen(false);
   }, []);
 
   // ── Native command blocks + file links ────────────────────────────────
-  const { commandBlocks, promptLines } = useNativeCommandBlocks(termId);
+  // restartKey doubles as the reset nonce: a restart re-attaches the PTY, and
+  // Rust builds a fresh Term, so previously recorded OSC 133 lines are stale.
+  const { commandBlocks, promptLines } = useNativeCommandBlocks(termId, restartKey);
   const { hover: fileLinkHover } = useNativeFileLinks({ termId, workingDir });
 
   // ── Scroll-to-prompt / scroll-to-next-prompt (S10, xterm parity) ──────
@@ -1573,15 +1622,36 @@ export default function TerminalPaneNative({
   });
 
   // ── TerminalHeader props ──────────────────────────────────────────────
-  // Context bar (model / context % / cost) is fed by the session poll above
-  // once this pane locks its own session; prompt history comes from the
-  // OSC 133 prompt-line cache below.
+  // Context bar (model / context % / cost) comes from useSessionContext — the
+  // same hook the xterm pane uses, locked session or not. Prompt history comes
+  // from the buffer scan below (NOT OSC 133 — native emits none for AI CLIs).
   const handleClose = useCallback(() => onClose(), [onClose]);
+  // Restart = respawn the PTY in place, mirroring TerminalPaneXterm.handleRestart.
+  // The restartKey bump re-runs usePtyNative's spawn effect: cleanup detaches
+  // the native term and kills the old PTY, then a fresh spawn re-attaches —
+  // and `attach_pty` builds a NEW Term, so the old buffer content drops without
+  // an explicit clear (the xterm pane needs term.clear()/reset() because its
+  // buffer lives in JS). This used to just close the pane.
   const handleRestart = useCallback(() => {
-    // Restart not yet implemented for native panes — would tear down the PTY
-    // and respawn. For now, just close the pane and let the user reopen.
-    onClose();
-  }, [onClose]);
+    // Capture current YOLO state at restart time — updates badge + forceYolo for spawn
+    setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
+    setExited(false);
+    setContextInfo(null);
+    promptTimestampsRef.current = [];
+    // Hide composer and search bar until the fresh PTY produces output again
+    setComposerOpen(false);
+    setSearchOpen(false);
+    // A fresh buffer starts pinned at the bottom — re-zero TuiScrollbar's
+    // dead-reckoning estimate so the thumb doesn't inherit the old scroll.
+    setSubmitNonce((n) => n + 1);
+    // Only re-enable session lookup if we don't already have a session ID.
+    // If we DO have one, keep it — restart should use the SAME session, not find a new one.
+    if (!sessionResumeIdPropRef.current) {
+      sessionRetryCancelRef.current?.();
+      sessionLookupDone.current = false;
+    }
+    setRestartKey((k) => k + 1);
+  }, [terminalType, setContextInfo]);
   const handleSwitchSession = useCallback(
     (sid: string | undefined) => {
       // Claim bookkeeping parity with TerminalPaneXterm.handleSwitchSession:
@@ -1616,90 +1686,62 @@ export default function TerminalPaneNative({
     },
     [onSwitchSession],
   );
-  // Prompt-entry cache: keyed by absolute line, populated lazily on
-  // getPromptEntries() calls. Avoids re-fetching the same buffer line per
-  // render. New OSC 133;A events show up in `promptLines`; lines not yet
-  // in the cache are fetched and merged into the cache (and the resulting
-  // entries returned via the ref so the next getPromptEntries() call sees
-  // them without another await).
-  const promptEntriesRef = useRef<PromptEntry[]>([]);
-  const promptCacheRef = useRef<Map<number, PromptEntry>>(new Map());
-  const inflightLinesRef = useRef<Set<number>>(new Set());
-  const [, bumpPromptCache] = useState(0);
-
-  useEffect(() => {
-    if (termId == null) return;
-    const cache = promptCacheRef.current;
-    const inflight = inflightLinesRef.current;
-    const needs = promptLines.filter(
-      (line) => !cache.has(line) && !inflight.has(line),
-    );
-
-    // Track which prompt-lines came from a command block (so we can mark
-    // fromComposer=false reliably; future composer-originated entries can
-    // set true). Currently all native-detected prompts are non-composer.
-    void commandBlocks;
-
-    if (needs.length === 0) {
-      // Rebuild the array even if nothing was fetched — promptLines may
-      // have shrunk (e.g. term reset).
-      promptEntriesRef.current = promptLines
-        .map((line) => cache.get(line))
-        .filter((e): e is PromptEntry => !!e);
-      return;
+  // Prompt history — the SAME source the xterm pane uses: a regex scan of the
+  // whole terminal buffer for CLI prompt lines. This pane previously derived
+  // entries from OSC 133;A `promptLines`, but native injects no shell
+  // integration and Claude/Codex/Gemini emit no OSC 133, so the list was
+  // always empty. `promptLines` still drives prompt JUMP navigation above.
+  //
+  // Coordinates: entries carry OSC-133-style absLine values (scrollback-origin,
+  // 0 = oldest buffered line) because handleScrollToPromptLine converts back
+  // through the live baseY. Buffer reads use alacritty's SIGNED space
+  // [baseY, rows), so absLine = signed - baseY.
+  const getPromptEntries = useCallback(async (): Promise<PromptEntry[]> => {
+    if (termId == null) return [];
+    let baseY = 0;
+    let rows = 0;
+    try {
+      const vp = await nativeTermGetViewportState(termId);
+      baseY = vp.baseY;
+      rows = vp.rows;
+    } catch {
+      return [];
+    }
+    let lines: string[] = [];
+    try {
+      lines = await nativeTermGetBufferLines(termId, baseY, rows);
+    } catch {
+      return [];
     }
 
-    let cancelled = false;
-    (async () => {
-      // D-review coordinate fix: promptLines hold OSC 133 absLine values
-      // (scrollback-origin space, 0 = oldest buffered line) while
-      // nativeTermGetBufferLines takes alacritty's SIGNED space
-      // [-history, screen) — map through the LIVE baseY (= -history) at
-      // fetch time or every read returns empty once history exists. The
-      // cache stays keyed by absLine (stable identifier).
-      let baseY = 0;
-      try {
-        baseY = (await nativeTermGetViewportState(termId)).baseY;
-      } catch {
-        // No PTY attached yet — keep 0 (fresh pane, no history).
-      }
-      if (cancelled) return;
-      for (const line of needs) {
-        inflight.add(line);
-        try {
-          const lines = await nativeTermGetBufferLines(
-            termId,
-            line + baseY,
-            line + baseY + 1,
-          );
-          if (cancelled) return;
-          const text = (lines[0] ?? "").trimEnd();
-          cache.set(line, { line, text, fromComposer: false });
-        } catch {
-          // Mark with empty text so we don't refetch indefinitely.
-          cache.set(line, { line, text: "", fromComposer: false });
-        } finally {
-          inflight.delete(line);
-        }
-      }
-      if (cancelled) return;
-      promptEntriesRef.current = promptLines
-        .map((line) => cache.get(line))
-        .filter((e): e is PromptEntry => !!e);
-      // Bump a state counter so TerminalHeader (which calls getPromptEntries
-      // on each render via onRefreshContext) re-reads. Cheap — just an int.
-      bumpPromptCache((n) => n + 1);
-    })();
+    // Filters mirror TerminalPaneXterm.getPromptEntries exactly.
+    const promptRegex = /^[>❯›»]\s/;
+    const entries: PromptEntry[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i] ?? "";
+      const trimmed = raw.trim();
+      if (!promptRegex.test(trimmed)) continue;
+      // Skip if prompt char not at column 0-1
+      const col = raw.search(/[>❯›»]/);
+      if (col > 1) continue;
+      // Skip numbered selection items (> 3. Option)
+      const after = trimmed.replace(/^[>❯›»]\s?/, "").trim();
+      if (/^\d+[.)]/.test(after)) continue;
+      if (after.length < 2) continue;
 
-    return () => {
-      cancelled = true;
-    };
-  }, [termId, promptLines, commandBlocks]);
-
-  const getPromptEntries = useCallback(
-    (): PromptEntry[] => promptEntriesRef.current,
-    [],
-  );
+      // Try to match with a PromptComposer entry (±3 line tolerance)
+      const match = promptTimestampsRef.current.find(
+        (p) => Math.abs(p.line - i) <= 3,
+      );
+      entries.push({
+        line: i,
+        text: match?.text ?? after,
+        timestamp: match?.timestamp,
+        fromComposer: !!match,
+      });
+    }
+    return entries;
+  }, [termId]);
   const handleScrollToPromptLine = useCallback(
     (line: number) => {
       if (termId == null) return;
@@ -1720,13 +1762,6 @@ export default function TerminalPaneNative({
     },
     [termId],
   );
-  const refreshContext = useCallback((): void => {
-    // TerminalHeader passes its internal "refresh" callback through this
-    // prop. We stash it so the prompt-cache async loop can trigger it
-    // after a fetch resolves.
-    // (No-op when called directly — actual nudges flow via the ref above.)
-  }, []);
-
   return (
     <div
       ref={paneDivRef}
@@ -1750,8 +1785,9 @@ export default function TerminalPaneNative({
           onClose={handleClose}
           onRestart={handleRestart}
           onSwapPane={onSwapPane}
+          serverName={serverName}
           serverId={serverId}
-          isYolo={false}
+          isYolo={launchedWithYolo}
           contextInfo={contextInfo}
           workingDir={workingDir}
           backend={backend}

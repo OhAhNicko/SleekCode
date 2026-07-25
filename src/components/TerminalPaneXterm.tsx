@@ -17,7 +17,6 @@ import { shouldInjectShellIntegration } from "../lib/shell-integration";
 import { supportsSessionResume } from "../lib/session-resume";
 import { createFilePathLinkProvider } from "../lib/file-link-provider";
 import { attachLinkUnderlines } from "../lib/xterm-link-underline";
-import { readSessionContext, type ContextInfo } from "../lib/context-parser";
 import { readSessionFirstPrompt, slugify } from "../lib/sessions-index";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -35,107 +34,33 @@ import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-reg
 import hackRegularUrl from "../fonts/hack-regular.woff2?url";
 import hackBoldUrl from "../fonts/hack-bold.woff2?url";
 import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
+import {
+  claimedSessionIds,
+  claimSessionId,
+  paneSpawnMs,
+  panesWithLockedSession,
+  paneWorkingDir,
+  lookupClaudeBySpawn,
+} from "../lib/session-dedup";
+import { useSessionContext } from "../hooks/useSessionContext";
 
-// Track session IDs already claimed by panes in this app instance.
-// Prevents multiple panes from claiming the same session file during disk lookup.
-// Exported (with the dedup maps + lookup helper below) so TerminalPaneNative
-// joins the SAME claim/dedup universe — xterm and native panes must never
-// resolve session ownership against separate state.
-export const claimedSessionIds = new Set<string>();
-
-/** Atomically claim a session ID. Returns true if this caller won the claim. */
-export function claimSessionId(id: string): boolean {
-  if (claimedSessionIds.has(id)) return false;
-  claimedSessionIds.add(id);
-  return true;
-}
-
-// Per-pane bookkeeping used to stop an EXISTING pane from "stealing" a
-// newly-added pane's session. Both late-detection and drift-detection look for
-// session files started after THIS pane's spawn with no upper bound, so when a
-// new resumable pane is added its fresh session (necessarily newer) gets grabbed
-// by an older pane during the brief window before the new pane claims it. The
-// result is the header session/model/cost text swapping between the existing
-// pane and the freshly-added one (bodies/PTYs are unaffected).
-export const paneSpawnMs = new Map<string, number>(); // terminalId -> first-seen (spawn) ms
-export const panesWithLockedSession = new Set<string>(); // terminalIds that locked their own session
-export const paneWorkingDir = new Map<string, string>(); // terminalId -> normalized workingDir
-
-/**
- * True when a resumable pane spawned AFTER `terminalId` still hasn't locked its
- * own session — a just-detected newer session most likely belongs to it, so we
- * defer adoption. Bounded to 60s so a pane that never locks can't block older
- * panes' legitimate drift forever.
- */
-function newerResumablePaneStillResolving(terminalId: string): boolean {
-  const mine = paneSpawnMs.get(terminalId);
-  if (mine == null) return false;
-  const now = Date.now();
-  for (const [id, spawn] of paneSpawnMs) {
-    if (id !== terminalId && spawn > mine && !panesWithLockedSession.has(id) && now - spawn < 60_000) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * True when another resumable pane shares this pane's working dir. In that case
- * the "__latest__" session fallback is ambiguous — the most-recent session for
- * the dir may belong to the sibling pane — so an UNLOCKED pane must not display
- * it (would show another pane's session/model/cost). Once the pane locks its own
- * session this no longer applies.
- */
-function otherResumablePaneSharesDir(terminalId: string, normalizedDir: string): boolean {
-  for (const [id, dir] of paneWorkingDir) {
-    if (id !== terminalId && dir === normalizedDir) return true;
-  }
-  return false;
-}
-
-// Session-resume diagnostics. Enable with `window.__madeSessionDebug = true` in
-// DevTools to trace every spawn-based lookup (inputs + result) and every dedup
-// adoption/defer decision — used to confirm in the field whether a residual
-// "not remembered" comes from clock skew, cwd casing, or the pane dedup race.
-export function sessionDebugEnabled(): boolean {
-  return typeof window !== "undefined" && !!(window as { __madeSessionDebug?: boolean }).__madeSessionDebug;
-}
-export function sessionDebug(msg: string, extra?: Record<string, unknown>) {
-  if (!sessionDebugEnabled()) return;
-  // eslint-disable-next-line no-console
-  console.debug(`[SessionResume] ${msg}`, extra ?? {});
-}
-
-/**
- * Precise (spawn-based) Claude session lookup across all backends. Threads the
- * Windows-clock `nowMs` so the WSL backend can correct the startedAt floor for
- * WSL↔Windows clock skew, and a `debug` flag so the backend emits per-file
- * diagnostics. Returns the matched sessionId or null.
- */
-export async function lookupClaudeBySpawn(
-  backend: string | undefined,
-  workingDir: string,
-  minStartedAt: number,
-  excludeIds: string[],
-  phase: string,
-): Promise<string | null> {
-  const debug = sessionDebugEnabled();
-  const nowMs = Date.now();
-  let id: string | null = null;
-  let projectPath = "";
-  if (backend === "native") {
-    projectPath = workingDir;
-    if (projectPath) id = await invoke<string | null>("get_claude_session_id_by_spawn_native", { projectPath, minStartedAtMs: minStartedAt, nowMs, excludeIds, debug });
-  } else if (backend === "windows") {
-    projectPath = workingDir;
-    if (projectPath) id = await invoke<string | null>("get_claude_session_id_by_spawn_windows", { projectPath, minStartedAtMs: minStartedAt, nowMs, excludeIds, debug });
-  } else {
-    projectPath = toWslPath(workingDir);
-    if (projectPath) id = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath, minStartedAtMs: minStartedAt, nowMs, excludeIds, debug });
-  }
-  sessionDebug(`${phase} by_spawn`, { backend: backend ?? "wsl", projectPath, minStartedAt, nowMs, excludeCount: excludeIds.length, result: id });
-  return id;
-}
+// Session claim/dedup state now lives in lib/session-dedup so the xterm pane,
+// the native pane and useSessionContext share ONE universe without an import
+// cycle. Re-exported here because existing call sites import them from this
+// module — xterm and native panes must never resolve ownership against
+// separate state.
+export {
+  claimedSessionIds,
+  claimSessionId,
+  paneSpawnMs,
+  panesWithLockedSession,
+  paneWorkingDir,
+  newerResumablePaneStillResolving,
+  otherResumablePaneSharesDir,
+  sessionDebugEnabled,
+  sessionDebug,
+  lookupClaudeBySpawn,
+} from "../lib/session-dedup";
 
 // Load Hack font via JS FontFace API — bypasses CSS @font-face which
 // can fail silently in Tauri's WebView due to URL resolution issues.
@@ -306,7 +231,6 @@ export default function TerminalPane({
   const [launchedWithYolo, setLaunchedWithYolo] = useState(() => !!useAppStore.getState().cliYolo[terminalType]);
   const [restartKey, setRestartKey] = useState(0);
   const [exited, setExited] = useState(false);
-  const [contextInfo, setContextInfo] = useState<ContextInfo | null>(null);
   const [composerOpen, setComposerOpen] = useState(false);
   const composerDidStealRef = useRef(false);
   const [commandBlocks, setCommandBlocks] = useState<CommandBlock[]>([]);
@@ -361,6 +285,23 @@ export default function TerminalPane({
   const ptySpawnTimeRef = useRef<number>(0);
   // Tracks whether we're waiting for PTY data after a restart (hides composer until loaded)
   const awaitingRestartDataRef = useRef(false);
+
+  // Header context (model / context % / cost / session name / rate limits) plus
+  // late-detection, drift-detection and registry auto-naming. Shared verbatim
+  // with TerminalPaneNative — see hooks/useSessionContext.
+  const { contextInfo, setContextInfo, refreshContext } = useSessionContext({
+    terminalId,
+    terminalType,
+    workingDir,
+    sessionResumeId,
+    serverIdRef,
+    backendRef,
+    workingDirRef,
+    ptySpawnTimeRef,
+    sessionResumeIdPropRef,
+    onSessionResumeIdRef,
+    setSessionTrusted,
+  });
 
   // --- Write-batching: coalesce PTY data chunks and flush once per animation frame ---
   const pendingChunksRef = useRef<Uint8Array[]>([]);
@@ -1625,199 +1566,6 @@ export default function TerminalPane({
     }
   }, [terminalType]);
 
-  // Periodically read context percentage from CLI session JSONL files.
-  // Starts immediately — backend searches all recent sessions when no
-  // specific session ID is available yet. Once sessionResumeId is
-  // discovered, polls switch to the specific session for precise data.
-  useEffect(() => {
-    const supported = terminalType === "claude" || terminalType === "codex" || terminalType === "gemini";
-    if (!supported) return;
-
-    let pollCount = 0;
-
-    const poll = async () => {
-      const isSsh = !!serverIdRef.current;
-      const backend = isSsh
-        ? "ssh"
-        : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
-      const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, isSsh ? workingDirRef.current : undefined);
-      if (info !== null) {
-        // When this pane hasn't locked its own session, `info` came from the
-        // "__latest__" fallback. That's only safe to display if no sibling
-        // resumable pane shares this working dir — otherwise it may be another
-        // pane's session. Suppress display (but keep late detection below).
-        const latestIsAmbiguous =
-          !sessionResumeId && otherResumablePaneSharesDir(terminalId, workingDir.replace(/\\/g, "/"));
-        if (latestIsAmbiguous) {
-          setContextInfo(null);
-        } else {
-          // Merge partial updates — rate_limits and info come from different
-          // server events. Keep previous rate_limits when new poll has none.
-          setContextInfo((prev) => ({
-            ...info,
-            rateLimitFiveHour: info.rateLimitFiveHour ?? prev?.rateLimitFiveHour ?? null,
-            rateLimitWeekly: info.rateLimitWeekly ?? prev?.rateLimitWeekly ?? null,
-          }));
-        }
-        // Auto-update session name in registry from CLI output.
-        // Claude: CUSTOM_TITLE only appears from /rename → authoritative (always overrides).
-        // Codex/Gemini: auto-generated titles → soft update (won't override MADE renames).
-        // Late session detection: if we still don't have a sessionResumeId,
-        // try precise (spawn-based) lookup first, then mtime-based as fallback.
-        if (!sessionResumeId && supportsSessionResume(terminalType)) {
-          try {
-            const type = terminalType;
-            const excludeIds = [...claimedSessionIds];
-            let id: string | null = null;
-            const isSsh = backend === "ssh";
-            const sshServer = isSsh
-              ? useAppStore.getState().servers.find((s) => s.id === serverIdRef.current)
-              : undefined;
-            // Precise spawn-based lookup for Claude (only session files started
-            // after this pane's PTY spawned, in this exact cwd). Skipped for SSH.
-            if (type === "claude" && ptySpawnTimeRef.current > 0 && !isSsh) {
-              id = await lookupClaudeBySpawn(backend, workingDir, ptySpawnTimeRef.current, excludeIds, "late");
-            }
-            // Fallback: mtime-based for Codex/Gemini, or Claude if precise lookup returned nothing.
-            if (!id) {
-              if (isSsh && sshServer && sshServer.authMethod === "ssh-key" && sshServer.sshKeyPath) {
-                const sshArgs = {
-                  host: sshServer.host,
-                  username: sshServer.username,
-                  identityFile: sshServer.sshKeyPath,
-                  remoteProjectPath: workingDir,
-                  excludeIds,
-                  maxAgeSecs: null,
-                };
-                if (type === "claude") id = await invoke<string | null>("get_claude_session_id_ssh", sshArgs);
-                else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_ssh", sshArgs);
-                else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_ssh", sshArgs);
-              } else if (backend === "native") {
-                const cwd = workingDir;
-                if (type === "claude") id = await invoke<string | null>("get_claude_session_id_native", { projectPath: cwd, excludeIds });
-                else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
-                else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_native", { projectPath: cwd, excludeIds });
-              } else if (backend === "windows") {
-                const cwd = workingDir;
-                if (type === "claude") id = await invoke<string | null>("get_claude_session_id_windows", { projectPath: cwd, excludeIds });
-                else if (type === "codex") id = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds });
-                else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: cwd, excludeIds });
-              } else {
-                const wslCwd = toWslPath(workingDir);
-                if (wslCwd) {
-                  if (type === "claude") id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
-                  else if (type === "codex") id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
-                  else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
-                }
-              }
-            }
-            if (id) {
-              const deferred = newerResumablePaneStillResolving(terminalId);
-              if (!deferred && claimSessionId(id)) {
-                console.log(`[SessionResume] late detection found: ${id.slice(0, 8)}`);
-                setSessionTrusted(true);
-                sessionResumeIdPropRef.current = id;
-                onSessionResumeIdRef.current?.(id);
-              } else {
-                sessionDebug("late detection NOT adopted", { id: id.slice(0, 8), deferredToNewerPane: deferred, alreadyClaimed: claimedSessionIds.has(id) });
-              }
-            }
-          } catch (e) {
-            console.error("[SessionResume] late detection failed:", e);
-          }
-        }
-        if (sessionResumeId) {
-          const store = useAppStore.getState();
-          const key = workingDir.replace(/\\/g, "/");
-          const existing = (store.projectSessions[key] ?? []).find((s) => s.id === sessionResumeId);
-          const autoName = info.sessionName || info.summary;
-
-          // Ensure session exists in registry (disk detection doesn't register)
-          if (!existing) {
-            store.registerProjectSession(workingDir, {
-              id: sessionResumeId,
-              name: autoName || "",
-              type: terminalType,
-              createdAt: Date.now(),
-              isRenamed: false,
-            });
-          } else if (autoName) {
-            if (terminalType === "claude") {
-              // Claude /rename is intentional — always override, even MADE user renames
-              if (existing.name !== autoName) {
-                store.renameProjectSession(workingDir, sessionResumeId, autoName);
-              }
-            } else {
-              // Codex/Gemini auto-titles — only update if user hasn't renamed in MADE
-              store.updateProjectSessionAutoName(workingDir, sessionResumeId, autoName);
-            }
-          }
-        }
-
-        // Session drift detection: every 6th poll (~30s), check if the CLI
-        // switched sessions via /resume. For Claude, only consider session
-        // files started AFTER this pane's PTY spawn — prevents stealing
-        // another pane's session.
-        pollCount++;
-        if (sessionResumeId && supportsSessionResume(terminalType) && pollCount % 6 === 0) {
-          try {
-            const type = terminalType;
-            const excludeIds = [...claimedSessionIds].filter((id) => id !== sessionResumeId);
-            let newId: string | null = null;
-            if (type === "claude" && ptySpawnTimeRef.current > 0) {
-              // Precise spawn-based drift check
-              newId = await lookupClaudeBySpawn(backend, workingDir, ptySpawnTimeRef.current, excludeIds, "drift");
-            } else {
-              // Codex/Gemini keep the mtime-based approach for drift
-              if (backend === "native") {
-                const cwd = workingDir;
-                if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
-                else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_native", { projectPath: cwd, excludeIds });
-              } else if (backend === "windows") {
-                const cwd = workingDir;
-                if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds });
-                else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: cwd, excludeIds });
-              } else {
-                const wslCwd = toWslPath(workingDir);
-                if (wslCwd) {
-                  if (type === "codex") newId = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
-                  else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
-                }
-              }
-            }
-            if (newId && newId !== sessionResumeId) {
-              const deferred = newerResumablePaneStillResolving(terminalId);
-              if (!deferred && claimSessionId(newId)) {
-                console.log(`[SessionResume] drift detected: ${sessionResumeId.slice(0, 8)} → ${newId.slice(0, 8)}`);
-                claimedSessionIds.delete(sessionResumeId);
-                setSessionTrusted(true);
-                sessionResumeIdPropRef.current = newId;
-                onSessionResumeIdRef.current?.(newId);
-              } else {
-                sessionDebug("drift NOT adopted", { from: sessionResumeId.slice(0, 8), to: newId.slice(0, 8), deferredToNewerPane: deferred, alreadyClaimed: claimedSessionIds.has(newId) });
-              }
-            }
-          } catch (e) {
-            console.error("[SessionResume] drift check failed:", e);
-          }
-        }
-      }
-      // On null, retain previous value (stale > absent)
-    };
-
-    // Short delay (2s) for WSL to be ready on cold start, then poll every 5s.
-    // If data isn't available yet, null is returned and we retain the previous value.
-    const startTimer = setTimeout(() => {
-      poll();
-      intervalId = setInterval(poll, 5000);
-    }, 2000);
-    let intervalId: ReturnType<typeof setInterval> | undefined;
-
-    return () => {
-      clearTimeout(startTimer);
-      if (intervalId) clearInterval(intervalId);
-    };
-  }, [terminalType, sessionResumeId]);
 
   // Register this resumable pane's spawn ordering + locked state so older panes
   // don't steal a newly-added pane's session (see newerResumablePaneStillResolving).
@@ -2162,31 +1910,6 @@ export default function TerminalPane({
     setSearchOpen(false);
     if (isActive) terminalRef.current?.focus();
   }, [isActive]);
-
-  // Manual context refresh — called when the user clicks the context-left
-  // percentage in TerminalHeader. Same read path as the periodic poll, minus
-  // the session-drift / registry side-effects (those stay on the timer).
-  const refreshContext = useCallback(async () => {
-    const supported = terminalType === "claude" || terminalType === "codex" || terminalType === "gemini";
-    if (!supported) return;
-    const isSsh = !!serverIdRef.current;
-    const backend = isSsh
-      ? "ssh"
-      : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
-    const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, isSsh ? workingDirRef.current : undefined);
-    if (info !== null) {
-      // Don't display an ambiguous "__latest__" result that may belong to a
-      // sibling pane in the same dir (see the poll for the full rationale).
-      if (!sessionResumeId && otherResumablePaneSharesDir(terminalId, workingDir.replace(/\\/g, "/"))) {
-        return;
-      }
-      setContextInfo((prev) => ({
-        ...info,
-        rateLimitFiveHour: info.rateLimitFiveHour ?? prev?.rateLimitFiveHour ?? null,
-        rateLimitWeekly: info.rateLimitWeekly ?? prev?.rateLimitWeekly ?? null,
-      }));
-    }
-  }, [terminalType, sessionResumeId, terminalId, workingDir]);
 
   // Register this pane's "open search" callback so the central Ctrl+F handler
   // in App.tsx can reach us regardless of xterm focus state.

@@ -1254,8 +1254,17 @@ function AnchoredMenu({
   // Modifier state rides along (Chromium fills MouseEvent modifiers from the
   // OS message even though this NOACTIVATE window never has keyboard focus) —
   // the URL popover uses ctrl-click for open-in-external-browser.
-  const runItem = (actionId: string, e?: { ctrlKey: boolean; metaKey: boolean }) => {
-    closeLocal(msg.id);
+  // `sticky` items keep the menu OPEN (mode toggles): no local close, so the
+  // overlay window is never hidden and re-shown — main just pushes an updated
+  // payload and the row's checkmark flips in place. Everything else keeps the
+  // optimistic local close (see closeLocal's docs: the region must be restored
+  // in the same commit, not after the overlay->main->overlay round-trip).
+  const runItem = (
+    actionId: string,
+    e?: { ctrlKey: boolean; metaKey: boolean },
+    sticky?: boolean,
+  ) => {
+    if (!sticky) closeLocal(msg.id);
     emitOverlayAction({
       id: msg.id,
       action: actionId,
@@ -1351,7 +1360,9 @@ function AnchoredMenu({
               <div
                 key={item.actionId}
                 onClick={
-                  item.disabled ? undefined : (e) => runItem(item.actionId, e)
+                  item.disabled
+                    ? undefined
+                    : (e) => runItem(item.actionId, e, item.sticky)
                 }
                 style={{
                   display: "flex",
