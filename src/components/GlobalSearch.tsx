@@ -123,7 +123,7 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
                 }}
-                title={filePath}
+                data-tooltip={filePath}
               >
                 {fileName}
               </div>

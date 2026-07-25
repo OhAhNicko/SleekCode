@@ -106,7 +106,7 @@ export default function PaneProgressBar({ termId }: PaneProgressBarProps) {
         backgroundColor: prog ? "var(--ezy-border-subtle)" : "transparent",
         overflow: "hidden",
       }}
-      title={
+      data-tooltip={
         !prog
           ? undefined
           : indeterminate

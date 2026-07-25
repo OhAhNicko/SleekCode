@@ -40,6 +40,7 @@ import DevServerRestoreToast from "./components/DevServerRestoreToast";
 import SettingsPane from "./components/SettingsPane";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
+import TooltipHost from "./components/TooltipHost";
 import UpdateBanner from "./components/UpdateBanner";
 import ChangelogModal from "./components/ChangelogModal";
 import VoiceHud from "./components/VoiceHud";
@@ -1134,6 +1135,7 @@ export default function App() {
       {VOICE_ENABLED && <VoiceHud />}
       {VOICE_ENABLED && <VoiceController />}
       <GlobalContextMenu />
+      <TooltipHost />
       <DevServerTerminalHost />
       <DevServerRestoreToast />
       {!onboardingCompleted && (

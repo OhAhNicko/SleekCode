@@ -542,7 +542,7 @@ export default function CommitPopover({
                 onClick={() => {
                   triggerAiGeneration();
                 }}
-                title="Regenerate commit message"
+                data-tooltip="Regenerate commit message" aria-label="Regenerate commit message"
                 style={{
                   position: "absolute",
                   top: 14,
@@ -576,7 +576,7 @@ export default function CommitPopover({
                   setMessage("");
                   textareaRef.current?.focus();
                 }}
-                title="Clear message"
+                data-tooltip="Clear message" aria-label="Clear message"
                 style={{
                   position: "absolute",
                   top: 14,

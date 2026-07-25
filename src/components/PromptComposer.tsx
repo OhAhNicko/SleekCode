@@ -2167,7 +2167,7 @@ export default function PromptComposer({
               border: `1px solid ${terminalCursor}`,
               flexShrink: 0,
             }}
-            title={`Image ${i + 1} attached — click to remove, right-click for options`}
+            data-tooltip={`Image ${i + 1} attached — click to remove, right-click for options`}
           >
             <img
               src={img.dataUri}
@@ -2247,7 +2247,7 @@ export default function PromptComposer({
           }}
           onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
           onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.9"; }}
-          title={`Insert ${consoleErrorCount} console error${consoleErrorCount > 1 ? "s" : ""} into prompt`}
+          data-tooltip={`Insert ${consoleErrorCount} console error${consoleErrorCount > 1 ? "s" : ""} into prompt`}
         >
           <FaBug size={10} color="#fff" />
           {consoleErrorCount}
@@ -2286,7 +2286,7 @@ export default function PromptComposer({
           onMouseLeave={(e) => {
             e.currentTarget.style.opacity = consoleSelectMode ? "1" : consoleEntryCount > 0 ? "0.6" : "0.2";
           }}
-          title={consoleSelectMode ? "Done selecting" : "Select console entries to insert"}
+          data-tooltip={consoleSelectMode ? "Done selecting" : "Select console entries to insert"}
         >
           <AiFillCode size={16} color={terminalCursor} />
         </div>
@@ -2315,7 +2315,7 @@ export default function PromptComposer({
             }}
             onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
             onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.4"; }}
-            title="Copy to clipboard"
+            data-tooltip="Copy to clipboard"
           >
             <FaCopy size={10} color={terminalCursor} />
           </div>
@@ -2345,7 +2345,7 @@ export default function PromptComposer({
             }}
             onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
             onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.4"; }}
-            title="Clear (Ctrl+Z to undo)"
+            data-tooltip="Clear (Ctrl+Z to undo)"
           >
             <FaDeleteLeft size={11} color={terminalCursor} />
           </div>
@@ -2384,7 +2384,7 @@ export default function PromptComposer({
         onMouseLeave={(e) => {
           e.currentTarget.style.opacity = promptifying ? "1" : value.trim() ? "0.6" : "0.2";
         }}
-        title="Promptify — rewrite as detailed prompt"
+        data-tooltip="Promptify — rewrite as detailed prompt"
       >
         {promptifying ? (
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" style={{ animation: "spin 1s linear infinite" }}>
@@ -2414,7 +2414,7 @@ export default function PromptComposer({
         onMouseLeave={(e) => {
           e.currentTarget.style.opacity = value.trim() ? "0.8" : "0.25";
         }}
-        title="Send (Enter)"
+        data-tooltip="Send (Enter)"
       >
         <BiSolidSend size={16} color={terminalCursor} />
       </div>

@@ -48,7 +48,7 @@ function SmallIconButton({
 }) {
   return (
     <div
-      title={title}
+      data-tooltip={title}
       style={{
         width: 22,
         height: 22,
@@ -464,7 +464,7 @@ function DevServerRow({ server }: { server: DevServer }) {
               <span
                 ref={urlSpanRef}
                 onClick={handleUrlClick}
-                title={
+                data-tooltip={
                   networkUrls.length > 0
                     ? `${serverUrl} — Click for preview / Ctrl+Click to open in browser\nHover 3s to see ${networkUrls.length} network address${networkUrls.length === 1 ? "" : "es"}`
                     : `${serverUrl} — Click for preview / Ctrl+Click to open in browser`
@@ -902,7 +902,7 @@ export default function DevServerTab() {
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
           {/* Remote servers toggle */}
           <div
-            title={showRemoteServers ? "Hide Remote Servers" : "Show Remote Servers"}
+            data-tooltip={showRemoteServers ? "Hide Remote Servers" : "Show Remote Servers"}
             style={{
               width: 20,
               height: 20,
@@ -922,7 +922,7 @@ export default function DevServerTab() {
           </div>
           {/* Add server button */}
           <div
-            title="Add dev server"
+            data-tooltip="Add dev server"
             style={{
               width: 20,
               height: 20,

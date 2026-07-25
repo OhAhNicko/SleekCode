@@ -244,7 +244,7 @@ export default function FloatingPaneWindow({
             e.stopPropagation();
             popoutPane(paneId);
           }}
-          title="Pop out to floating window"
+          data-tooltip="Pop out to floating window" aria-label="Pop out to floating window"
           className="p-1 rounded transition-colors hover:bg-[var(--ezy-border)]"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -261,7 +261,7 @@ export default function FloatingPaneWindow({
             e.stopPropagation();
             expandPane(paneId);
           }}
-          title="Expand to fullscreen"
+          data-tooltip="Expand to fullscreen" aria-label="Expand to fullscreen"
           className="p-1 rounded transition-colors hover:bg-[var(--ezy-border)]"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -278,7 +278,7 @@ export default function FloatingPaneWindow({
           e.stopPropagation();
           minimizePane(paneId);
         }}
-        title="Minimize back into grid"
+        data-tooltip="Minimize back into grid" aria-label="Minimize back into grid"
         className="p-1 rounded transition-colors hover:bg-[var(--ezy-border)]"
       >
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -291,7 +291,7 @@ export default function FloatingPaneWindow({
           e.stopPropagation();
           callbacks.onClose(paneId);
         }}
-        title="Close pane"
+        data-tooltip="Close pane" aria-label="Close pane"
         className="p-1 rounded transition-colors hover:bg-[var(--ezy-border)]"
       >
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" className="hover:!stroke-[var(--ezy-red)]">

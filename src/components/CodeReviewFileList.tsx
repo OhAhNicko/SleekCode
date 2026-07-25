@@ -52,7 +52,7 @@ export default function CodeReviewFileList({
           onClick={onToggleCollapse}
           className="p-1 rounded hover:opacity-80"
           style={{ color: "var(--ezy-text-muted)" }}
-          title="Expand file list"
+          data-tooltip="Expand file list" aria-label="Expand file list"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <path d="M6 4L10 8L6 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -92,7 +92,7 @@ export default function CodeReviewFileList({
           onClick={onToggleCollapse}
           className="p-0.5 rounded hover:opacity-80"
           style={{ color: "var(--ezy-text-muted)" }}
-          title="Collapse file list"
+          data-tooltip="Collapse file list" aria-label="Collapse file list"
         >
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <path d="M10 4L6 8L10 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />

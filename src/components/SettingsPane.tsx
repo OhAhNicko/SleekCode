@@ -398,7 +398,7 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
             {projects.map((p) => (
               <div
                 key={p.path}
-                title={p.path}
+                data-tooltip={p.path}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -942,7 +942,7 @@ function TestButton({ onClick, state }: { onClick: () => void; state: PingState 
         {label}
       </button>
       {state.status === "fail" && state.error && (
-        <span title={state.error} style={{ fontSize: 10, color, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span data-tooltip={state.error} style={{ fontSize: 10, color, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {state.error}
         </span>
       )}
@@ -1515,7 +1515,7 @@ export default function SettingsPane() {
                             ? "var(--ezy-accent)"
                             : "var(--ezy-red)",
                       }}
-                      title={notifChannelState.msg}
+                      data-tooltip={notifChannelState.msg}
                     >
                       {notifChannelState.status === "ok" ? "Applied" : "Failed"}
                     </span>
@@ -1813,7 +1813,7 @@ export default function SettingsPane() {
                       </label>
                       <button
                         onClick={() => removeCustomScaffold(scaffold.id)}
-                        title="Remove"
+                        data-tooltip="Remove" aria-label="Remove"
                         style={{
                           padding: "2px 8px",
                           fontSize: 14,
@@ -2089,7 +2089,7 @@ export default function SettingsPane() {
               />
               <button
                 type="button"
-                title="Close search (Esc)"
+                data-tooltip="Close search (Esc)" aria-label="Close search (Esc)"
                 onClick={closeSearch}
                 style={{
                   width: 16,
@@ -2119,7 +2119,7 @@ export default function SettingsPane() {
             <>
               <button
                 type="button"
-                title="Search settings"
+                data-tooltip="Search settings" aria-label="Search settings"
                 onClick={() => setSearchOpen(true)}
                 style={{
                   width: 22,
@@ -2153,7 +2153,7 @@ export default function SettingsPane() {
               </button>
               <button
                 type="button"
-                title="Reload (Ctrl+Shift+R)"
+                data-tooltip="Reload (Ctrl+Shift+R)" aria-label="Reload (Ctrl+Shift+R)"
                 onClick={() => window.location.reload()}
                 style={{
                   width: 22,

@@ -362,7 +362,7 @@ function SmallIconButton({
   const sz = compact ? 22 : 30;
   return (
     <div
-      title={title}
+      data-tooltip={title}
       onClick={disabled ? undefined : onClick}
       style={{
         width: sz,
@@ -676,7 +676,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
             )}
           </div>
           <div
-            title="Add remote server"
+            data-tooltip="Add remote server"
             style={{
               width: 18,
               height: 18,
@@ -835,7 +835,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                 </div>
                 <div
                   onClick={canRunWizard ? () => setSetupWizardOpen(true) : undefined}
-                  title={canRunWizard ? "Run claude setup-token over SSH and capture the token" : "Requires an SSH-key server with host, username and key set"}
+                  data-tooltip={canRunWizard ? "Run claude setup-token over SSH and capture the token" : "Requires an SSH-key server with host, username and key set"}
                   style={{
                     marginTop: 6,
                     padding: "4px 0",
@@ -958,7 +958,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                   </span>
                   <div style={{ display: "flex", alignItems: "center", gap: 1, flexShrink: 0 }}>
                     <div
-                      title="Test Connection"
+                      data-tooltip="Test Connection"
                       onClick={() => handleTestConnection(server)}
                       style={{
                         width: 20, height: 20,
@@ -973,7 +973,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       <HiMiniSignal size={11} color="var(--ezy-text-muted)" />
                     </div>
                     <div
-                      title="Edit"
+                      data-tooltip="Edit"
                       onClick={() => handleEdit(server)}
                       style={{
                         width: 20, height: 20,
@@ -987,7 +987,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       <FaPencil size={9} color="var(--ezy-text-muted)" />
                     </div>
                     <div
-                      title={deleteConfirm === server.id ? "Click again to confirm" : "Delete"}
+                      data-tooltip={deleteConfirm === server.id ? "Click again to confirm" : "Delete"}
                       onClick={() => handleDelete(server.id)}
                       style={{
                         width: 20, height: 20,
@@ -1030,7 +1030,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                     <FaKey size={7} />
                     <span style={{ opacity: 0.8 }}>Key configured</span>
                     <div
-                      title={copiedKey === server.sshKeyPath ? "Copied!" : "Copy public key"}
+                      data-tooltip={copiedKey === server.sshKeyPath ? "Copied!" : "Copy public key"}
                       onClick={() => handleCopyKey(server.sshKeyPath!)}
                       style={{ cursor: "pointer", display: "flex", alignItems: "center", marginLeft: 2 }}
                     >
@@ -1412,7 +1412,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                         <>
                           <FaKey size={9} color="var(--ezy-accent)" style={{ opacity: 0.6 }} title="SSH key configured" />
                           <div
-                            title={copiedKey === server.sshKeyPath ? "Copied!" : "Copy public key"}
+                            data-tooltip={copiedKey === server.sshKeyPath ? "Copied!" : "Copy public key"}
                             onClick={() => handleCopyKey(server.sshKeyPath!)}
                             style={{ cursor: "pointer", display: "flex", alignItems: "center" }}
                           >
@@ -1440,7 +1440,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       )}
                       <button
                         onClick={() => handleTestConnection(server)}
-                        title="Test Connection"
+                        data-tooltip="Test Connection" aria-label="Test Connection"
                         className="p-1.5 rounded transition-colors"
                         disabled={status === "testing"}
                         style={{ backgroundColor: "transparent" }}
@@ -1451,7 +1451,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       </button>
                       <button
                         onClick={() => handleEdit(server)}
-                        title="Edit"
+                        data-tooltip="Edit" aria-label="Edit"
                         className="p-1.5 rounded transition-colors"
                         style={{ backgroundColor: "transparent" }}
                         onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
@@ -1461,7 +1461,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       </button>
                       <button
                         onClick={() => handleDelete(server.id)}
-                        title={deleteConfirm === server.id ? "Click again to confirm" : "Delete"}
+                        data-tooltip={deleteConfirm === server.id ? "Click again to confirm" : "Delete"} aria-label={deleteConfirm === server.id ? "Click again to confirm" : "Delete"}
                         className="p-1.5 rounded transition-colors group"
                       >
                         <FaTrash

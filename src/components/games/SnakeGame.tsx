@@ -363,7 +363,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
             opacity: gameState === "playing" ? 0.5 : 1,
             transition: "color 150ms ease",
           }}
-          title={gameState === "playing" ? "Cannot change during game" : "Toggle wall death mode"}
+          data-tooltip={gameState === "playing" ? "Cannot change during game" : "Toggle wall death mode"}
         >
           {wallDeath ? "Walls: Kill" : "Walls: Wrap"}
         </span>

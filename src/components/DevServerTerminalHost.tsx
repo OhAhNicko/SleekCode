@@ -649,7 +649,7 @@ export default function DevServerTerminalHost() {
                 <div
                   role="group"
                   aria-label="Dev server shell"
-                  title="Which shell the dev server runs in. Tauri projects default to Windows so `npm run tauri:dev` uses the Windows toolchain instead of failing in WSL."
+                  data-tooltip="Which shell the dev server runs in. Tauri projects default to Windows so `npm run tauri:dev` uses the Windows toolchain instead of failing in WSL."
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -666,7 +666,7 @@ export default function DevServerTerminalHost() {
                     return (
                       <div
                         key={mode}
-                        title={mode === "windows" ? "Run in Windows PowerShell" : "Run in WSL bash"}
+                        data-tooltip={mode === "windows" ? "Run in Windows PowerShell" : "Run in WSL bash"}
                         onClick={() => switchBackend(expandedServer, mode)}
                         style={{
                           display: "flex",
@@ -692,7 +692,7 @@ export default function DevServerTerminalHost() {
               )}
               {/* Restart */}
               <div
-                title="Restart"
+                data-tooltip="Restart"
                 style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
                 onClick={() => {
                   restartServer(expandedServer.id, expandedServer.terminalId, expandedServer.command);
@@ -709,7 +709,7 @@ export default function DevServerTerminalHost() {
               {/* Stop / Play */}
               {expandedServer.status === "running" || expandedServer.status === "starting" ? (
                 <div
-                  title="Stop"
+                  data-tooltip="Stop"
                   style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
                   onClick={() => {
                     const write = getPtyWrite(expandedServer.terminalId);
@@ -730,7 +730,7 @@ export default function DevServerTerminalHost() {
                 </div>
               ) : (
                 <div
-                  title="Start"
+                  data-tooltip="Start"
                   style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
                   onClick={() => {
                     // Clear resolved state BEFORE triggering re-render so main effect re-registers listener

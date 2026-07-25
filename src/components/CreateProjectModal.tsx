@@ -506,7 +506,7 @@ function ScaffoldRowView({
             whiteSpace: "nowrap",
             minWidth: 0,
           }}
-          title={row.sourcePath || undefined}
+          data-tooltip={row.sourcePath || undefined}
         >
           {hint}
         </span>

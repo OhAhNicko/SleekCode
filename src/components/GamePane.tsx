@@ -679,7 +679,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
             }}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface-raised)")}
             onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-            title={paused ? "Resume" : "Pause"}
+            data-tooltip={paused ? "Resume" : "Pause"}
           >
             {paused ? <FaPlay size={10} color="var(--ezy-accent)" /> : <FaPause size={10} color="var(--ezy-text-muted)" />}
           </div>

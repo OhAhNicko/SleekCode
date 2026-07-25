@@ -253,7 +253,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
         }}
         onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}
         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-        title={branches.current}
+        data-tooltip={branches.current}
       >
         {/* Git branch icon */}
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
@@ -297,7 +297,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
         }}
         onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}
         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-        title="View changes"
+        data-tooltip="View changes"
       >
         <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
           <path
@@ -318,7 +318,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
             e.stopPropagation();
             if (!pulling) handlePull();
           }}
-          title={
+          data-tooltip={
             pullWithRebase
               ? `Pull with rebase — ${aheadBehind.behind} behind`
               : `Pull — ${aheadBehind.behind} behind`
@@ -410,7 +410,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
             overflow: "hidden",
             textOverflow: "ellipsis",
           }}
-          title={pullToast.msg}
+          data-tooltip={pullToast.msg}
         >
           {pullToast.msg}
         </div>

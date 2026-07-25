@@ -166,7 +166,7 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
           alignItems: "center",
           gap: 6,
         }}
-        title={`${server.username}@${server.host}:${rootDir}`}
+        data-tooltip={`${server.username}@${server.host}:${rootDir}`}
       >
         <span
           style={{

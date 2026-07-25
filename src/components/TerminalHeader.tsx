@@ -621,7 +621,7 @@ export default function TerminalHeader({
         }}
         onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.8"; }}
         onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.4"; }}
-        title="Drag to rearrange"
+        data-tooltip="Drag to rearrange"
       >
         <FaGripVertical size={12} color="var(--ezy-text-muted)" />
       </div>
@@ -685,7 +685,7 @@ export default function TerminalHeader({
           )}
           {isNativeRenderer && (
             <span
-              title="Drawn by the native GPU renderer"
+              data-tooltip="Drawn by the native GPU renderer"
               style={{
                 fontSize: 9,
                 fontWeight: 700,
@@ -723,8 +723,20 @@ export default function TerminalHeader({
             borderRadius: 3,
             padding: "1px 4px",
           }}
-          title={`${workingDir} — double-click to open in file manager`}
-          onDoubleClick={() => { void invoke("open_folder", { path: workingDir }).catch(() => {}); }}
+          data-tooltip={
+            serverId
+              ? `${workingDir} (on the remote host)`
+              : `${workingDir} — double-click to open in file manager`
+          }
+          onDoubleClick={() => {
+            // Remote panes: workingDir is a path on the SSH host, so opening it
+            // in the LOCAL file manager would either fail or open an unrelated
+            // local directory. Do nothing (the title says so).
+            if (serverId) return;
+            void invoke("open_folder", { path: workingDir }).catch((e) => {
+              console.error("[TerminalHeader] open_folder failed:", e);
+            });
+          }}
           onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-border)")}
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
         >
@@ -749,7 +761,7 @@ export default function TerminalHeader({
             >
               {terminalType === "gemini"
                 ? formatGeminiModel(contextInfo.model ?? "")
-                : (contextInfo.model?.replace(/^gpt-/i, "GPT ").replace(/\s*\([\d.]+[KMB]?\s*context\)/i, "") ?? "")}{contextInfo.window ? <span title={`Total context window: ${contextInfo.window.toLocaleString()} tokens`}>{` - ${formatContextWindow(contextInfo.window)}`}</span> : ""}{sl("effort") && contextInfo.effort ? ` - ${contextInfo.effort}` : ""}
+                : (contextInfo.model?.replace(/^gpt-/i, "GPT ").replace(/\s*\([\d.]+[KMB]?\s*context\)/i, "") ?? "")}{contextInfo.window ? <span data-tooltip={`Total context window: ${contextInfo.window.toLocaleString()} tokens`}>{` - ${formatContextWindow(contextInfo.window)}`}</span> : ""}{sl("effort") && contextInfo.effort ? ` - ${contextInfo.effort}` : ""}
             </span>
           )}
           {/* Claude: version */}
@@ -781,7 +793,7 @@ export default function TerminalHeader({
           {/* Claude: per-pane session cost + cost/hr (project total in tooltip) */}
           {sl("cost") && contextInfo.costUsd != null && (
             <span
-              title={(() => {
+              data-tooltip={(() => {
                 const parts: string[] = [`$${contextInfo.costUsd.toFixed(2)} this session`];
                 if (contextInfo.durationMs != null && contextInfo.durationMs > 0) {
                   parts.push(`$${(contextInfo.costUsd / (contextInfo.durationMs / 3_600_000)).toFixed(2)}/hr`);
@@ -808,7 +820,7 @@ export default function TerminalHeader({
           {/* Claude: compact count */}
           {sl("compactCount") && contextInfo.compactCount != null && contextInfo.compactCount > 0 && (
             <span
-              title={`Context compacted ${contextInfo.compactCount} time${contextInfo.compactCount !== 1 ? "s" : ""}`}
+              data-tooltip={`Context compacted ${contextInfo.compactCount} time${contextInfo.compactCount !== 1 ? "s" : ""}`}
               style={{
                 fontSize: 9,
                 fontVariantNumeric: "tabular-nums",
@@ -867,7 +879,7 @@ export default function TerminalHeader({
                   }}
                   onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
                   onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                  title={sessionDisplayName ? `${sessionDisplayName} — click to switch sessions, double-click to rename` : "Click to switch sessions"}
+                  data-tooltip={sessionDisplayName ? `${sessionDisplayName} — click to switch sessions, double-click to rename` : "Click to switch sessions"}
                 >
                   <span
                     style={{
@@ -885,7 +897,7 @@ export default function TerminalHeader({
                   {/* Green dot = sessionId detected (session will persist on restart) */}
                   {sessionResumeId && (
                     <span
-                      title="Session saved — will resume on restart"
+                      data-tooltip="Session saved — will resume on restart"
                       style={{
                         width: 5,
                         height: 5,
@@ -904,7 +916,7 @@ export default function TerminalHeader({
           {/* Fallback: show session name for non-resumable or when no sessions yet */}
           {sl("sessionPicker") && !isResumable && contextInfo.sessionName && (
             <span
-              title={contextInfo.sessionName}
+              data-tooltip={contextInfo.sessionName}
               style={{
                 fontSize: 9,
                 color: "var(--ezy-text-muted)",
@@ -922,7 +934,7 @@ export default function TerminalHeader({
           {/* Gemini: summary — hidden for resumable CLIs where it's already the session name */}
           {sl("summary") && contextInfo.summary && !isResumable && (
             <span
-              title={contextInfo.summary}
+              data-tooltip={contextInfo.summary}
               style={{
                 fontSize: 9,
                 color: "var(--ezy-text-muted)",
@@ -940,7 +952,7 @@ export default function TerminalHeader({
           {/* Gemini: thinking tokens */}
           {sl("thinkingTokens") && contextInfo.thinkingTokens != null && (
             <span
-              title={`Last response used ${contextInfo.thinkingTokens.toLocaleString()} thinking tokens`}
+              data-tooltip={`Last response used ${contextInfo.thinkingTokens.toLocaleString()} thinking tokens`}
               style={{
                 fontSize: 9,
                 fontVariantNumeric: "tabular-nums",
@@ -963,7 +975,7 @@ export default function TerminalHeader({
             const label = diffH > 0 ? `${diffH}h${diffM}m` : `${diffM}m`;
             return (
               <span
-                title={`Quota resets at ${reset.toLocaleTimeString()}`}
+                data-tooltip={`Quota resets at ${reset.toLocaleTimeString()}`}
                 style={{
                   fontSize: 9,
                   fontVariantNumeric: "tabular-nums",
@@ -986,7 +998,7 @@ export default function TerminalHeader({
               : `5h rate limit: ${left}% left (${contextInfo.rateLimitFiveHour}% used)`;
             return (
               <span
-                title={tooltip}
+                data-tooltip={tooltip}
                 style={{
                   fontSize: 9,
                   fontVariantNumeric: "tabular-nums",
@@ -1003,7 +1015,7 @@ export default function TerminalHeader({
             const left = Math.round((100 - contextInfo.rateLimitWeekly) * 100) / 100;
             return (
               <span
-                title={`Weekly rate limit: ${left}% left (${contextInfo.rateLimitWeekly}% used)`}
+                data-tooltip={`Weekly rate limit: ${left}% left (${contextInfo.rateLimitWeekly}% used)`}
                 style={{
                   fontSize: 9,
                   fontVariantNumeric: "tabular-nums",
@@ -1019,7 +1031,7 @@ export default function TerminalHeader({
           {/* Context bar + percentage — click to manually refresh */}
           {sl("contextBar") && <div
             className="flex items-center gap-2"
-            title={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%${onRefreshContext ? " — click to refresh" : ""}`}
+            data-tooltip={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%${onRefreshContext ? " — click to refresh" : ""}`}
             onClick={onRefreshContext ? handleContextRefreshClick : undefined}
             style={{
               flexShrink: 0,
@@ -1101,7 +1113,7 @@ export default function TerminalHeader({
               });
             }
           }}
-          title="Prompt history"
+          data-tooltip="Prompt history" aria-label="Prompt history"
           className={`p-1 rounded transition-colors hover:bg-[var(--ezy-border)] ${contextPercent == null ? "ml-auto" : ""}`}
           style={{ flexShrink: 0 }}
         >
@@ -1127,7 +1139,7 @@ export default function TerminalHeader({
         {onRestart && (
           <button
             onClick={onRestart}
-            title="Restart (same session)"
+            data-tooltip="Restart (same session)" aria-label="Restart (same session)"
             className="p-1 rounded transition-colors hover:bg-[var(--ezy-border)]"
           >
             <BiRefresh
@@ -1139,7 +1151,7 @@ export default function TerminalHeader({
         )}
         <button
           onClick={onClose}
-          title="Close Pane (Ctrl+Shift+W)"
+          data-tooltip="Close Pane (Ctrl+Shift+W)" aria-label="Close Pane (Ctrl+Shift+W)"
           className="p-1 rounded transition-colors hover:bg-[var(--ezy-border)]"
         >
           <FaXmark

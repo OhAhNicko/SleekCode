@@ -109,7 +109,7 @@ function NavButton({
     <div
       role="button"
       tabIndex={disabled ? -1 : 0}
-      title={title}
+      data-tooltip={title}
       onClick={disabled ? undefined : onClick}
       onKeyDown={(e) => {
         if (!disabled && (e.key === "Enter" || e.key === " ")) onClick();
@@ -928,7 +928,7 @@ export default function BrowserPreview({
               key={iframeKey}
               ref={iframeRef}
               src={iframeSrc}
-              title="Browser Preview"
+              data-tooltip="Browser Preview"
               className="w-full h-full border-none"
               style={{ backgroundColor: "#ffffff" }}
             />
@@ -950,7 +950,7 @@ export default function BrowserPreview({
           {/* Resize handle */}
           <div
             onMouseDown={startResize}
-            title="Drag to resize"
+            data-tooltip="Drag to resize"
             style={{
               height: 4,
               marginTop: -2,
@@ -1188,7 +1188,7 @@ export default function BrowserPreview({
                         overflow: "hidden", textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
                       }}
-                      title={entry.error ? `${entry.url}\n${entry.error}` : entry.url}
+                      data-tooltip={entry.error ? `${entry.url}\n${entry.error}` : entry.url}
                     >
                       {entry.url}
                     </span>
@@ -1387,7 +1387,7 @@ function StorageSection({
               overflow: "hidden", textOverflow: "ellipsis",
               whiteSpace: "nowrap",
             }}
-            title={key}
+            data-tooltip={key}
           >
             {key}
           </span>
@@ -1398,7 +1398,7 @@ function StorageSection({
               overflow: "hidden", textOverflow: "ellipsis",
               whiteSpace: "nowrap",
             }}
-            title={data[key]}
+            data-tooltip={data[key]}
           >
             {data[key]}
           </span>
@@ -1536,7 +1536,7 @@ function DevServerWaitingState({
               whiteSpace: "nowrap",
               fontVariantNumeric: "tabular-nums",
             }}
-            title={devServer.command}
+            data-tooltip={devServer.command}
           >
             {devServer.command}
           </div>

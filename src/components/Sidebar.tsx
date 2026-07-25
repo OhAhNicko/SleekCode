@@ -115,7 +115,7 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
             <button
               key={tab.id}
               onClick={() => setSidebarTab(tab.id)}
-              title={tab.label}
+              data-tooltip={tab.label} aria-label={tab.label}
               style={{
                 flex: 1,
                 display: "flex",
@@ -213,7 +213,7 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
                         color: "var(--ezy-text-muted)",
                         fontSize: 11,
                       }}
-                      title={term.workingDir}
+                      data-tooltip={term.workingDir}
                     >
                       {term.workingDir.split(/[\\/]/).pop() || term.workingDir}
                     </span>

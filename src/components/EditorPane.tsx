@@ -282,7 +282,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
         <div className="flex items-center gap-1">
           <button
             onClick={handleSave}
-            title="Save (Ctrl+S)"
+            data-tooltip="Save (Ctrl+S)" aria-label="Save (Ctrl+S)"
             disabled={!modified || saving}
             className="p-1 rounded transition-colors"
             style={{
@@ -311,7 +311,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
           <PaneExpandButton paneId={paneId} />
           <button
             onClick={onClose}
-            title="Close Editor"
+            data-tooltip="Close Editor" aria-label="Close Editor"
             className="p-1 rounded transition-colors group"
             style={{ border: "none", backgroundColor: "transparent", cursor: "pointer" }}
           >

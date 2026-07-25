@@ -169,7 +169,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
             e.stopPropagation();
             setSnipCtxMenu({ x: e.clientX, y: e.clientY });
           }}
-          title="Screenshot (Snipping Tool)"
+          data-tooltip="Screenshot (Snipping Tool)"
           style={{
             display: "flex",
             alignItems: "center",
@@ -209,7 +209,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
               transformOrigin: "center",
               transition: "transform 140ms ease, box-shadow 140ms ease",
             }}
-            title={composerEnabled ? "Click to attach to prompt" : "Click to insert path into active terminal"}
+            data-tooltip={composerEnabled ? "Click to attach to prompt" : "Click to insert path into active terminal"}
             onClick={() => attachToPrompt(img.id)}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -458,7 +458,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
                           e.stopPropagation();
                           attachToPrompt(img.id);
                         }}
-                        title={composerEnabled ? "Attach to prompt" : "Insert path into terminal"}
+                        data-tooltip={composerEnabled ? "Attach to prompt" : "Insert path into terminal"}
                         style={{
                           position: "absolute",
                           top: 0,

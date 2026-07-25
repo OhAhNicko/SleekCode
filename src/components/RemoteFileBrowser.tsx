@@ -171,7 +171,7 @@ export default function RemoteFileBrowser({
               <button
                 onClick={startCreateFolder}
                 disabled={creatingFolder || loading}
-                title="Create new folder in current directory"
+                data-tooltip="Create new folder in current directory" aria-label="Create new folder in current directory"
                 style={{
                   display: "flex",
                   alignItems: "center",

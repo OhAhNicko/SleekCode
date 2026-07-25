@@ -293,7 +293,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
               >
                 <span
                   onClick={openUrl}
-                  title={url}
+                  data-tooltip={url}
                   style={{
                     flex: 1,
                     fontSize: 12,

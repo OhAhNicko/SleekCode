@@ -229,7 +229,7 @@ export default function CommandBlockOverlay({
               {/* Explain Error button — only on failed blocks */}
               {isError && (
                 <span
-                  title={onExplainError ? "Explain Error with AI" : "Explain Error (coming soon)"}
+                  data-tooltip={onExplainError ? "Explain Error with AI" : "Explain Error (coming soon)"}
                   style={{ display: "inline-flex" }}
                 >
                   <svg

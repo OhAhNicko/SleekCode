@@ -174,7 +174,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
                   }}
                   onClick={() => handleCopy(entry.command)}
                   onDoubleClick={() => handleRerun(entry.command)}
-                  title="Click to copy, double-click to re-run"
+                  data-tooltip="Click to copy, double-click to re-run"
                 >
                   {/* Left gutter dot */}
                   <div

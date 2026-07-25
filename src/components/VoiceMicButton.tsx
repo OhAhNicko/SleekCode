@@ -57,7 +57,7 @@ export default function VoiceMicButton({ size = "topbar" }: { size?: "topbar" | 
         e.preventDefault();
         toggleSettings();
       }}
-      title={title}
+      data-tooltip={title}
       style={{
         display: "flex",
         alignItems: "center",

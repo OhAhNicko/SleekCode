@@ -350,7 +350,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
                     : "var(--ezy-text-secondary)",
                   lineHeight: 1.5,
                 }}
-                title={`${cl.number}. ${cl.clue}`}
+                data-tooltip={`${cl.number}. ${cl.clue}`}
               >
                 <strong>{cl.number}.</strong> {cl.clue}
               </div>
@@ -373,7 +373,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
                     : "var(--ezy-text-secondary)",
                   lineHeight: 1.5,
                 }}
-                title={`${cl.number}. ${cl.clue}`}
+                data-tooltip={`${cl.number}. ${cl.clue}`}
               >
                 <strong>{cl.number}.</strong> {cl.clue}
               </div>

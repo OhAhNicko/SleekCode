@@ -71,7 +71,7 @@ export default function ImagePreviewModal({
           <span
             className="text-xs truncate"
             style={{ color: "var(--ezy-text-muted)", maxWidth: 400 }}
-            title={winPath}
+            data-tooltip={winPath}
           >
             {fileName}
           </span>
@@ -99,7 +99,7 @@ export default function ImagePreviewModal({
             )}
             <button
               onClick={() => { void invoke("copy_image_to_clipboard", { path: winPath }).catch(() => {}); }}
-              title="Copy image to clipboard"
+              data-tooltip="Copy image to clipboard"
               aria-label="Copy image"
               style={{
                 width: 26,
@@ -123,7 +123,7 @@ export default function ImagePreviewModal({
             {onDelete && (
               <button
                 onClick={() => { onDelete(); onClose(); }}
-                title="Delete screenshot"
+                data-tooltip="Delete screenshot"
                 aria-label="Delete screenshot"
                 style={{
                   width: 26,

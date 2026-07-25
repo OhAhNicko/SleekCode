@@ -217,7 +217,7 @@ export default function CodeReviewDiffView({
                     fontSize: 10,
                   }}
                   onClick={() => onOpenInEditor(fileDiff.filePath)}
-                  title="Open in editor"
+                  data-tooltip="Open in editor"
                 >
                   <FaPencil size={9} />
                   <span>Edit</span>
@@ -329,7 +329,7 @@ function HunkBlock({
           onClick={onRevert}
           className="px-1.5 py-0.5 rounded text-[10px] bg-red-600 text-white hover:bg-red-700 transition-colors shrink-0"
           style={{ opacity: isHovered ? 1 : 0, pointerEvents: isHovered ? "auto" : "none" }}
-          title="Revert this hunk"
+          data-tooltip="Revert this hunk" aria-label="Revert this hunk"
         >
           Revert
         </button>

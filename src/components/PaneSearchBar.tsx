@@ -250,7 +250,7 @@ function NavButton({
 }) {
   return (
     <div
-      title={title}
+      data-tooltip={title}
       onClick={disabled ? undefined : onClick}
       style={{
         width: 24,
@@ -305,7 +305,7 @@ function ToggleButton({
 }) {
   return (
     <div
-      title={title}
+      data-tooltip={title}
       onClick={onClick}
       style={{
         height: 24,

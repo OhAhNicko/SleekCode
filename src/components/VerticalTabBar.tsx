@@ -201,7 +201,7 @@ export default function VerticalTabBar() {
           {/* Close (far left) */}
           <div
             onClick={handleClose}
-            title="Close"
+            data-tooltip="Close"
             style={{
               width: compact ? 20 : 40,
               display: "flex",
@@ -231,7 +231,7 @@ export default function VerticalTabBar() {
           {/* Maximize / Restore */}
           <div
             onClick={handleMaximizeToggle}
-            title={isMaximized ? "Restore" : "Maximize"}
+            data-tooltip={isMaximized ? "Restore" : "Maximize"}
             style={{
               width: compact ? 20 : 40,
               display: "flex",
@@ -259,7 +259,7 @@ export default function VerticalTabBar() {
           {/* Minimize */}
           <div
             onClick={handleMinimize}
-            title="Minimize"
+            data-tooltip="Minimize"
             style={{
               width: compact ? 20 : 40,
               display: "flex",
@@ -283,7 +283,7 @@ export default function VerticalTabBar() {
           {/* New tab (far right of controls row) */}
           <div
             onClick={() => window.dispatchEvent(new Event("made:new-tab"))}
-            title="New tab"
+            data-tooltip="New tab"
             style={{
               width: compact ? 20 : 32,
               display: "flex",
@@ -302,7 +302,7 @@ export default function VerticalTabBar() {
 
         {/* Sidebar toggle */}
         <div
-          title="Toggle sidebar"
+          data-tooltip="Toggle sidebar"
           style={{
             display: "flex",
             alignItems: "center",
@@ -331,7 +331,7 @@ export default function VerticalTabBar() {
         {/* Browser Preview — only meaningful for project tabs, but always visible for symmetry */}
         <div
           onClick={activeIsProject ? handleBrowserClick : undefined}
-          title="Browser Preview"
+          data-tooltip="Browser Preview"
           style={{
             display: "flex",
             alignItems: "center",
@@ -363,7 +363,7 @@ export default function VerticalTabBar() {
 
         {/* Dev Servers */}
         <div
-          title="Dev Servers"
+          data-tooltip="Dev Servers"
           style={{
             display: "flex",
             alignItems: "center",
@@ -445,7 +445,7 @@ export default function VerticalTabBar() {
                 aria-selected={isActive}
                 onClick={() => setActiveTab(tab.id)}
                 className="group"
-                title={compact ? label : undefined}
+                data-tooltip={compact ? label : undefined} aria-label={compact ? label : undefined}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -564,7 +564,7 @@ export default function VerticalTabBar() {
                 {/* Compact-mode WIP dot — small accent overlay on the right edge of the row */}
                 {compact && activeCount > 0 && (
                   <span
-                    title={`${activeCount} working`}
+                    data-tooltip={`${activeCount} working`}
                     style={{
                       position: "absolute",
                       top: 4,
@@ -678,7 +678,7 @@ export default function VerticalTabBar() {
             {showKanbanButton && (
               <div
                 onClick={handleTasksClick}
-                title="Tasks"
+                data-tooltip="Tasks"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -699,7 +699,7 @@ export default function VerticalTabBar() {
             {showMiniGamesButton && (
               <div
                 onClick={() => window.dispatchEvent(new CustomEvent("made:open-game"))}
-                title="Mini Games"
+                data-tooltip="Mini Games"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -743,7 +743,7 @@ export default function VerticalTabBar() {
           }}
         >
           <div
-            title="Settings"
+            data-tooltip="Settings"
             style={{
               flex: 1,
               minWidth: 0,
@@ -773,7 +773,7 @@ export default function VerticalTabBar() {
           {/* Compact-mode toggle — collapses (200→80) or expands (80→200) the strip */}
           <div
             onClick={() => setCompact(!compact)}
-            title={compact ? "Expand sidebar" : "Collapse sidebar"}
+            data-tooltip={compact ? "Expand sidebar" : "Collapse sidebar"}
             style={{
               width: compact ? 28 : 36,
               display: "flex",

@@ -505,7 +505,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
               <button
                 key={template.id}
                 disabled={isDisabledByKanban}
-                title={isDisabledByKanban ? "Max 3 rows when Kanban is enabled" : undefined}
+                data-tooltip={isDisabledByKanban ? "Max 3 rows when Kanban is enabled" : undefined} aria-label={isDisabledByKanban ? "Max 3 rows when Kanban is enabled" : undefined}
                 style={{
                   display: "flex",
                   flexDirection: "column",

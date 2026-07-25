@@ -43,7 +43,7 @@ export default function ClipboardImagePreview({
         <div
           className="text-[11px] truncate mt-0.5"
           style={{ color: "var(--ezy-text-muted)" }}
-          title={filePath}
+          data-tooltip={filePath}
         >
           {filePath}
         </div>

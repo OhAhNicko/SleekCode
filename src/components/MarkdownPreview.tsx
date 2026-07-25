@@ -182,7 +182,7 @@ export default function MarkdownPreview({ source, filePath }: MarkdownPreviewPro
           {...rest}
           href={href ?? "#"}
           onClick={handleLinkClick(href ?? "")}
-          title={href}
+          data-tooltip={href}
         >
           {children}
         </a>

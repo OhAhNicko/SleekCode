@@ -38,7 +38,7 @@ export default function PaneExpandButton({ paneId, className, title }: PaneExpan
   return (
     <button
       onClick={onClick}
-      title={title ?? "Expand to fullscreen"}
+      data-tooltip={title ?? "Expand to fullscreen"} aria-label={title ?? "Expand to fullscreen"}
       className={className ?? "p-1 rounded transition-colors hover:bg-[var(--ezy-border)]"}
     >
       <svg

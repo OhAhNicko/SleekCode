@@ -255,7 +255,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 setVertical(next);
               }
             }}
-            title={vertical ? "Horizontal layout" : "Vertical layout"}
+            data-tooltip={vertical ? "Horizontal layout" : "Vertical layout"} aria-label={vertical ? "Horizontal layout" : "Vertical layout"}
             style={{
               display: "flex",
               alignItems: "center",
@@ -327,7 +327,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
           {onClose && (
             <button
               onClick={onClose}
-              title="Close"
+              data-tooltip="Close" aria-label="Close"
               className="group"
               style={{
                 display: "flex",

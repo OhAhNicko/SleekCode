@@ -2052,7 +2052,7 @@ export default function TerminalPane({
           onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
           onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.85"; }}
           onClick={() => terminalRef.current?.scrollToBottom()}
-          title="Jump to bottom"
+          data-tooltip="Jump to bottom"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="2,3 6,7 10,3" />

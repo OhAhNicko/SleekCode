@@ -1707,8 +1707,25 @@ function VoiceHudCard({
 }
 
 /**
- * Generic display-only tooltip (kind "tooltip") — payload { x, y, text },
- * anchored top-center at the given point (tab-path hover tooltip).
+ * The app's hover tooltip (kind "tooltip"). Every `data-tooltip` element in the
+ * main webview routes here through TooltipHost — this is the ONLY tooltip
+ * surface, so restyle here and the whole app follows.
+ *
+ * Payload: { anchor: {left,top,right,bottom}, text, shortcut? }. The legacy
+ * { x, y, text } point form is still accepted (treated as a zero-size anchor).
+ *
+ * Inverted on purpose: a light chip on a dark workspace reads as system UI
+ * floating above the panes, and it needs no shadow to separate — the value
+ * contrast does that. Both colors come from existing tokens, swapped
+ * (surface = --ezy-text, ink = --ezy-bg), so a theme change carries through
+ * instead of stranding a hardcoded white.
+ *
+ * Geometry is set imperatively in a layout effect, NOT via state: OverlayRoot's
+ * region effect reads these rects in the same commit (child layout effects run
+ * before the parent's), so a state round-trip would clip the window region to
+ * the pre-positioned rect for a frame. The arrow lives INSIDE the registered
+ * wrapper for the same reason — anything outside that rect is outside the
+ * window region and simply is not drawn.
  */
 function Tooltip({
   msg,
@@ -1717,31 +1734,158 @@ function Tooltip({
   msg: OverlayPopupMsg;
   registerEl: (id: string, el: HTMLElement | null) => void;
 }) {
-  const p = (msg.payload ?? {}) as { x?: number; y?: number; text?: string };
+  const p = (msg.payload ?? {}) as {
+    x?: number;
+    y?: number;
+    text?: string;
+    shortcut?: string;
+    anchor?: { left: number; top: number; right: number; bottom: number };
+  };
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const chipRef = useRef<HTMLDivElement | null>(null);
+  const arrowRef = useRef<HTMLDivElement | null>(null);
   const ref = useCallback(
-    (el: HTMLElement | null) => registerEl(msg.id, el),
+    (el: HTMLDivElement | null) => {
+      wrapRef.current = el;
+      registerEl(msg.id, el);
+    },
     [registerEl, msg.id],
   );
+
+  const anchor = p.anchor ?? {
+    left: p.x ?? 0,
+    right: p.x ?? 0,
+    top: p.y ?? 0,
+    bottom: p.y ?? 0,
+  };
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    const chip = chipRef.current;
+    const arrow = arrowRef.current;
+    if (!wrap || !chip || !arrow) return;
+
+    const GAP = 6; // clear space between the chip edge and the anchor
+    const EDGE = 6; // minimum distance from the window edge
+    const ARROW = 6; // triangle half-width / height
+
+    const cw = chip.offsetWidth;
+    const ch = chip.offsetHeight;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Prefer above the anchor. The tooltip must never land under the cursor:
+    // its pixels belong to the overlay window, so hovering it would steal the
+    // pointer from the pane below and oscillate open/closed. Anchoring to the
+    // element rect (never the cursor) plus GAP guarantees clearance.
+    const totalH = ch + ARROW;
+    const below = anchor.top - GAP < totalH + EDGE;
+    const top = below ? anchor.bottom + GAP : anchor.top - GAP - totalH;
+
+    const centerX = (anchor.left + anchor.right) / 2;
+    const left = Math.max(EDGE, Math.min(centerX - cw / 2, vw - cw - EDGE));
+
+    // The arrow sits in wrapper padding, so the whole shape stays inside the
+    // registered rect (the window region is built from it — anything outside
+    // is clipped away and never painted).
+    wrap.style.paddingTop = below ? `${ARROW}px` : "0px";
+    wrap.style.paddingBottom = below ? "0px" : `${ARROW}px`;
+    wrap.style.left = `${Math.round(left)}px`;
+    wrap.style.top = `${Math.round(Math.max(EDGE, Math.min(top, vh - totalH - EDGE)))}px`;
+    wrap.style.visibility = "visible";
+
+    // Arrow tracks the anchor's centre even after the chip is clamped to the
+    // window edge, so it keeps pointing at the thing it describes.
+    const arrowX = Math.max(ARROW + 2, Math.min(centerX - left, cw - ARROW - 2));
+    arrow.style.left = `${Math.round(arrowX - ARROW)}px`;
+    if (below) {
+      // Points UP at the anchor above it.
+      arrow.style.top = "0px";
+      arrow.style.borderTopWidth = "0px";
+      arrow.style.borderBottomWidth = `${ARROW}px`;
+      arrow.style.borderBottomColor = "var(--ezy-text, #e6edf3)";
+    } else {
+      // Points DOWN at the anchor below it.
+      arrow.style.top = `${ch}px`;
+      arrow.style.borderBottomWidth = "0px";
+      arrow.style.borderTopWidth = `${ARROW}px`;
+      arrow.style.borderTopColor = "var(--ezy-text, #e6edf3)";
+    }
+  });
+
   return (
     <div
       ref={ref}
       style={{
         position: "fixed",
-        left: p.x ?? 0,
-        top: p.y ?? 0,
-        transform: "translateX(-50%)",
-        background: "var(--ezy-surface-raised, #1c2128)",
-        boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
-        borderRadius: 6,
-        padding: "4px 8px",
-        fontSize: 11,
-        color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
-        whiteSpace: "nowrap",
+        left: 0,
+        top: 0,
+        // max-content, not a measured width: an absolutely-positioned chip in a
+        // zero-width container would wrap every label to one character.
+        width: "max-content",
+        visibility: "hidden",
         pointerEvents: "none",
-        fontFamily: "Inter, system-ui, sans-serif",
+        // Placed in the layout effect above.
       }}
     >
-      {p.text ?? ""}
+      <div
+        ref={chipRef}
+        style={{
+          position: "relative",
+          background: "var(--ezy-text, #e6edf3)",
+          color: "var(--ezy-bg, #0d1117)",
+          borderRadius: 8,
+          padding: "5px 9px",
+          fontSize: 11.5,
+          fontWeight: 500,
+          lineHeight: 1.35,
+          letterSpacing: "0.01em",
+          maxWidth: 280,
+          // Long file paths are the common case here — wrap them instead of
+          // running off the edge of the window like the old nowrap chip did.
+          overflowWrap: "anywhere",
+          fontFamily: "Inter, system-ui, sans-serif",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          animation: "ezy-tip-in 90ms ease-out",
+        }}
+      >
+        <span>{p.text ?? ""}</span>
+        {p.shortcut && (
+          <span
+            style={{
+              flexShrink: 0,
+              background: "var(--ezy-text-secondary, #c9d1d9)",
+              color: "var(--ezy-bg, #0d1117)",
+              borderRadius: 4,
+              padding: "1px 5px",
+              fontSize: 10.5,
+              fontWeight: 600,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {p.shortcut}
+          </span>
+        )}
+      </div>
+      <div
+        ref={arrowRef}
+        style={{
+          position: "absolute",
+          width: 0,
+          height: 0,
+          borderLeftWidth: 6,
+          borderRightWidth: 6,
+          borderStyle: "solid",
+          borderLeftColor: "transparent",
+          borderRightColor: "transparent",
+          borderTopColor: "transparent",
+          borderBottomColor: "transparent",
+          borderTopWidth: 0,
+          borderBottomWidth: 0,
+        }}
+      />
     </div>
   );
 }

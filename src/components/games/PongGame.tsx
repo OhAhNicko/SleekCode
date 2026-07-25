@@ -507,7 +507,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
               transition: "background-color 150ms ease, color 150ms ease",
               userSelect: "none",
             }}
-            title={useMouse ? "Switch to keyboard controls" : "Switch to mouse controls"}
+            data-tooltip={useMouse ? "Switch to keyboard controls" : "Switch to mouse controls"}
           >
             {useMouse ? "MOUSE" : "KEYS"}
           </span>

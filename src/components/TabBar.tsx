@@ -214,26 +214,10 @@ export default function TabBar() {
     return () => clearInterval(id);
   }, []);
 
-  // Delayed path tooltip (2s hover)
-  const [pathTooltip, setPathTooltip] = useState<{ tabId: string; x: number; y: number } | null>(null);
-  const pathTooltipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Tab-path hover tooltip — overlay-rendered (kind "tooltip", display-only).
-  const pathTooltipTab = pathTooltip
-    ? tabs.find((t) => t.id === pathTooltip.tabId)
-    : null;
-  useOverlayViewportPopup({
-    id: "tabbar-path-tooltip",
-    kind: "tooltip",
-    open: !!pathTooltip && !!pathTooltipTab?.workingDir,
-    payload:
-      pathTooltip && pathTooltipTab?.workingDir
-        ? { x: pathTooltip.x, y: pathTooltip.y, text: pathTooltipTab.workingDir }
-        : null,
-  });
-  const clearPathTooltip = useCallback(() => {
-    if (pathTooltipTimer.current) { clearTimeout(pathTooltipTimer.current); pathTooltipTimer.current = null; }
-    setPathTooltip(null);
-  }, []);
+  // The tab's working-dir tooltip is now `data-tooltip` on the tab itself,
+  // driven by TooltipHost like every other tooltip in the app — this used to be
+  // a bespoke 2s timer publishing its own overlay popup, which made the tab bar
+  // the one surface with different tooltip timing and styling.
 
   const anyMenuOpen = showNewTabMenu || showRecentMenu;
   const closeAllMenus = useCallback(() => {
@@ -605,7 +589,7 @@ export default function TabBar() {
           const runningCount = devServers.filter((s) => s.status === "running" || s.status === "starting").length;
           return (
             <div
-              title="Dev Servers"
+              data-tooltip="Dev Servers"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -651,7 +635,7 @@ export default function TabBar() {
 
         {/* Settings toggle */}
         <div
-          title="Settings"
+          data-tooltip="Settings"
           style={{
             display: "flex",
             alignItems: "center",
@@ -792,19 +776,11 @@ export default function TabBar() {
                     borderBottom: tabColor ? `2px solid ${tabColor}` : "2px solid transparent",
                     userSelect: "none",
                   }}
+                  data-tooltip={tab.workingDir || undefined}
                   onMouseEnter={(e) => {
                     if (!isActive) {
                       e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.03)";
                       e.currentTarget.style.color = "var(--ezy-text-secondary)";
-                    }
-                    // Delayed path tooltip (2s)
-                    if (tab.workingDir) {
-                      clearPathTooltip();
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const tid = tab.id;
-                      pathTooltipTimer.current = setTimeout(() => {
-                        setPathTooltip({ tabId: tid, x: rect.left + rect.width / 2, y: rect.bottom + 4 });
-                      }, 2000);
                     }
                   }}
                   onMouseLeave={(e) => {
@@ -812,7 +788,6 @@ export default function TabBar() {
                       e.currentTarget.style.backgroundColor = "transparent";
                       e.currentTarget.style.color = "var(--ezy-text-muted)";
                     }
-                    clearPathTooltip();
                   }}
                 >
                   {/* Tab icon (special tabs only — no icon for regular project tabs) */}
@@ -1196,7 +1171,7 @@ export default function TabBar() {
               const newLayout = addKanbanPane(tab.layout);
               if (newLayout) store.updateTabLayout(tab.id, newLayout);
             }}
-            title="Tasks"
+            data-tooltip="Tasks"
             style={{
               display: "flex",
               alignItems: "center",
@@ -1256,7 +1231,7 @@ export default function TabBar() {
                 store.updateTabLayout(tab.id, newLayout);
               }
             }}
-            title="Browser Preview"
+            data-tooltip="Browser Preview"
             style={{
               display: "flex",
               alignItems: "center",
@@ -1291,7 +1266,7 @@ export default function TabBar() {
             onClick={() => {
               window.dispatchEvent(new CustomEvent("made:open-game"));
             }}
-            title="Mini Games"
+            data-tooltip="Mini Games"
             style={{
               display: "flex",
               alignItems: "center",
