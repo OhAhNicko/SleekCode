@@ -68,18 +68,27 @@ async function fetchReleaseNotes(version: string): Promise<string | null> {
 }
 
 function ToggleSwitch({ checked, onChange, color }: { checked: boolean; onChange: (v: boolean) => void; color?: string }) {
-  const bg = checked ? (color ?? "var(--ezy-accent)") : "transparent";
+  const accent = color ?? "var(--ezy-accent)";
+  // Border stays in both states so the track's inner box never shifts by 1px
+  // between off/on — that shift is what made the thumb read as off-center.
   return (
     <div
+      role="switch"
+      aria-checked={checked}
+      tabIndex={0}
       onClick={() => onChange(!checked)}
+      onKeyDown={(e) => {
+        if (e.key === " " || e.key === "Enter") { e.preventDefault(); onChange(!checked); }
+      }}
       style={{
+        boxSizing: "border-box",
         width: 36,
         height: 20,
-        borderRadius: 10,
-        backgroundColor: bg,
-        border: checked ? "none" : "1px solid var(--ezy-border-light)",
+        borderRadius: 999,
+        backgroundColor: checked ? accent : "transparent",
+        border: `1px solid ${checked ? accent : "var(--ezy-border-light)"}`,
         position: "relative",
-        transition: "background-color 150ms ease",
+        transition: "background-color 150ms ease, border-color 150ms ease",
         flexShrink: 0,
         cursor: "pointer",
       }}
@@ -91,11 +100,55 @@ function ToggleSwitch({ checked, onChange, color }: { checked: boolean; onChange
           borderRadius: "50%",
           backgroundColor: checked ? "#fff" : "var(--ezy-text-muted)",
           position: "absolute",
-          top: 2,
-          left: checked ? 18 : 2,
-          transition: "left 150ms ease",
+          top: 1,
+          left: 1,
+          transform: checked ? "translateX(16px)" : "translateX(0)",
+          transition: "transform 150ms ease, background-color 150ms ease",
         }}
       />
+    </div>
+  );
+}
+
+function FontSizeStepper({ value, onChange, min = 10, max = 24 }: {
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+}) {
+  const step = (delta: number, blocked: boolean) => (
+    <div
+      onClick={() => { if (!blocked) onChange(Math.min(max, Math.max(min, value + delta))); }}
+      style={{
+        width: 24,
+        height: 24,
+        borderRadius: 4,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: blocked ? "default" : "pointer",
+        opacity: blocked ? 0.3 : 1,
+        backgroundColor: "transparent",
+        border: "1px solid var(--ezy-border-light)",
+        color: "var(--ezy-text-secondary)",
+        fontSize: 14,
+        lineHeight: 1,
+        transition: "background-color 120ms ease",
+        userSelect: "none",
+      }}
+      onMouseEnter={(e) => { if (!blocked) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+    >
+      {delta < 0 ? "-" : "+"}
+    </div>
+  );
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      {step(-1, value <= min)}
+      <span style={{ fontSize: 13, color: "var(--ezy-text)", minWidth: 24, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
+        {value}
+      </span>
+      {step(1, value >= max)}
     </div>
   );
 }
@@ -683,7 +736,7 @@ function UpdatesSection() {
         <div style={{ borderTop: "1px solid var(--ezy-border)", paddingTop: 14, marginTop: 4 }}>
           <SettingsRow
             label="Show changelog popup after updates"
-            description="Display release notes the next time the app launches after an auto-update."
+            description="Shown on the next launch after an update."
           >
             <ToggleSwitch checked={showChangelogOnUpdate} onChange={setShowChangelogOnUpdate} />
           </SettingsRow>
@@ -1064,12 +1117,12 @@ function VoiceAgentSection() {
         title="Voice agent"
         description="Speak commands in English or Swedish. Audio goes to your self-hosted Whisper server, intent is mapped to actions by a local LLM, and an optional TTS endpoint speaks the reply."
       >
-        <SettingsRow label="Enable voice agent" description="Master switch. When off, the mic button and hotkey are inactive.">
+        <SettingsRow label="Enable voice agent" description="When off, the mic button and hotkey do nothing.">
           <ToggleSwitch checked={voiceEnabled} onChange={setVoiceEnabled} />
         </SettingsRow>
         <SettingsRow
           label="Activation"
-          description="Toggle: click the mic (or tap the hotkey) once to start, again to stop. Hold: press and hold the mic / hotkey while you speak; release to send."
+          description="Toggle: click once to start, again to stop. Hold: speak while held, release to send."
         >
           <SegmentedControl<VoiceActivationMode>
             options={[
@@ -1082,9 +1135,6 @@ function VoiceAgentSection() {
         </SettingsRow>
         <SettingsRow
           label={activationMode === "hold" ? "Hold-to-talk hotkey" : "Toggle hotkey"}
-          description={activationMode === "hold"
-            ? "Hold this combination to record; release to transcribe and act."
-            : "Press once to start recording; press again to stop."}
         >
           <HotkeyCapture value={pttHotkey} onChange={setPttHotkey} />
         </SettingsRow>
@@ -1093,7 +1143,7 @@ function VoiceAgentSection() {
             Hotkey "{pttHotkey}" is invalid. Click the field and press a new combination.
           </div>
         )}
-        <SettingsRow label="Language" description="Influences Whisper transcription and the agent's reply language.">
+        <SettingsRow label="Language" description="Used for transcription and the agent's replies.">
           <SegmentedControl<VoiceLanguage>
             options={[
               { value: "auto", label: "Auto" },
@@ -1104,7 +1154,7 @@ function VoiceAgentSection() {
             onChange={setLanguage}
           />
         </SettingsRow>
-        <SettingsRow label="Confirm destructive actions" description="Require a yes/no confirmation before closing tabs with content, etc.">
+        <SettingsRow label="Confirm destructive actions" description="Voice commands ask first before closing tabs with content.">
           <ToggleSwitch checked={confirmDestructive} onChange={setConfirmDestructive} />
         </SettingsRow>
       </SettingsSection>
@@ -1113,7 +1163,7 @@ function VoiceAgentSection() {
         <SettingsRow label="Endpoint URL">
           <TextInput value={whisperUrl} onChange={setWhisperUrl} placeholder="http://<mac-mini-tailscale>:8765/transcribe" monospace />
         </SettingsRow>
-        <SettingsRow label="Server format" description="Pick the API shape your MLX Whisper wrapper exposes.">
+        <SettingsRow label="Server format" description="The API shape your Whisper server exposes.">
           <SegmentedControl<VoiceWhisperFormat>
             options={[
               { value: "openai", label: "OpenAI-compat" },
@@ -1145,7 +1195,7 @@ function VoiceAgentSection() {
         <SettingsRow label="Endpoint URL">
           <TextInput value={ttsUrl} onChange={setTtsUrl} placeholder="http://mac-mini.tail-xxxxx.ts.net:5005/speak" monospace />
         </SettingsRow>
-        <SettingsRow label="Voice" description="Server-specific voice id (e.g. sv_SE-nst-medium for Piper). Leave blank for default.">
+        <SettingsRow label="Voice" description="Server-specific voice id. Blank uses the default.">
           <TextInput value={ttsVoice} onChange={setTtsVoice} placeholder="" monospace />
         </SettingsRow>
         <SettingsRow label="Test connection">
@@ -1160,6 +1210,7 @@ function VoiceAgentSection() {
 
 const NAV_SECTIONS = [
   { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
   { id: "terminal", label: "Terminal" },
   { id: "projects", label: "Projects" },
   { id: "editor", label: "Editor" },
@@ -1303,56 +1354,93 @@ export default function SettingsPane() {
         return (
           <>
             <SettingsSection id="behavior" title="Behavior" description="General application behavior and defaults.">
-              <SettingsRow label="Always show layout picker" description="Show the workspace template picker when creating new tabs.">
+              <SettingsRow label="Always show layout picker">
                 <ToggleSwitch checked={alwaysShowTemplatePicker} onChange={setAlwaysShowTemplatePicker} />
               </SettingsRow>
-              <SettingsRow label="Restore last session" description="Reopen tabs from the previous session on startup.">
+              <SettingsRow label="Restore last session">
                 <ToggleSwitch checked={restoreLastSession} onChange={setRestoreLastSession} />
               </SettingsRow>
-              <SettingsRow label="Auto-paste screenshots" description="Automatically insert clipboard images into AI context.">
+              <SettingsRow label="Auto-paste screenshots">
                 <ToggleSwitch checked={autoInsertClipboardImage} onChange={setAutoInsertClipboardImage} />
               </SettingsRow>
-              <SettingsRow label="Mask image paths in terminal (beta)" description="Show [Image #N] instead of the full file path when a screenshot is inserted. The CLI still receives the real path.">
+              <SettingsRow label="Mask image paths in terminal (beta)" description="Shows [Image #N] in place of the path. The CLI still receives the real path.">
                 <ToggleSwitch checked={maskImagePathsInTerminal} onChange={setMaskImagePathsInTerminal} />
               </SettingsRow>
-              <SettingsRow label="Show Kanban button in topbar" description="Display the Tasks/Kanban icon in the topbar for adding a Kanban pane to the active tab.">
+              <SettingsRow label="Show Kanban button in topbar">
                 <ToggleSwitch checked={showKanbanButton} onChange={setShowKanbanButton} />
               </SettingsRow>
-              <SettingsRow label="Copy on select" description="Automatically copy selected terminal text to clipboard.">
+              <SettingsRow label="Copy on select">
                 <ToggleSwitch checked={copyOnSelect} onChange={setCopyOnSelect} />
               </SettingsRow>
-              <SettingsRow label="Show path in tabs" description="Display the project path after the tab name. Double-click name to rename.">
+              <SettingsRow label="Show path in tabs" description="Double-click the name to rename it.">
                 <ToggleSwitch checked={showTabPath} onChange={setShowTabPath} />
               </SettingsRow>
-              <SettingsRow label="Confirm before quitting" description="Show a confirmation dialog when closing the app.">
+              <SettingsRow label="Confirm before quitting">
                 <ToggleSwitch checked={confirmQuit} onChange={setConfirmQuit} />
               </SettingsRow>
-              <SettingsRow label="Auto-rotate topbar in portrait" description="When the window is taller than wide, replace the horizontal topbar with a vertical tab strip on the left to give the main pane more vertical space.">
+              <SettingsRow label="Auto-rotate topbar in portrait" description="Taller than wide swaps the topbar for a vertical tab strip.">
                 <ToggleSwitch checked={verticalModeEnabled} onChange={setVerticalModeEnabled} />
               </SettingsRow>
-              <SettingsRow label="Slash command ghost text" description="Show inline autocomplete suggestions for slash commands.">
+              <SettingsRow label="Slash command ghost text" description="Inline suggestion as you type a slash command.">
                 <ToggleSwitch checked={slashCommandGhostText} onChange={setSlashCommandGhostText} />
               </SettingsRow>
-              <SettingsRow label="Open panes in background" description="New panes open without stealing focus from the current pane.">
+              <SettingsRow label="Open panes in background">
                 <ToggleSwitch checked={openPanesInBackground} onChange={setOpenPanesInBackground} />
               </SettingsRow>
-              <SettingsRow label="Wide grid layout" description="First 4 panes open side-by-side before stacking vertically.">
+              <SettingsRow label="Wide grid layout" description="First 4 panes go side-by-side before stacking.">
                 <ToggleSwitch checked={wideGridLayout} onChange={setWideGridLayout} />
               </SettingsRow>
-              <SettingsRow label="Redistribute space on pane close" description="When a pane closes, give every remaining pane an equal share of the freed space. Off: only the immediate sibling absorbs the space.">
+              <SettingsRow label="Redistribute space on pane close" description="Off: only the neighbouring pane absorbs the space.">
                 <ToggleSwitch checked={redistributeOnClose} onChange={setRedistributeOnClose} />
               </SettingsRow>
-              <SettingsRow label="Auto-hide games when AI done" description="Minimize game pane when AI task completes.">
+              <SettingsRow label="Auto-hide games when AI done">
                 <ToggleSwitch checked={autoMinimizeGameOnAiDone} onChange={setAutoMinimizeGameOnAiDone} />
               </SettingsRow>
-              <SettingsRow label="Auto-start server command" description="Restore dev server commands when reopening projects.">
+              <SettingsRow label="Auto-start server command" description="Reopening a project restarts its dev server.">
                 <ToggleSwitch checked={autoStartServerCommand} onChange={setAutoStartServerCommand} />
               </SettingsRow>
-              <SettingsRow label="Prefer rebase when pulling" description="Use `git pull --rebase` instead of a merge pull when syncing with remote from the Pull button.">
+              <SettingsRow label="Prefer rebase when pulling" description="Replays local commits instead of making a merge commit.">
                 <ToggleSwitch checked={pullWithRebase} onChange={setPullWithRebase} />
               </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="theme" title="Theme" description="Choose a color theme for the application.">
+            <SettingsSection id="danger-zone" title="Danger Zone" description="Clear MADE's local storage. Your files on disk are not affected.">
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
+                <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
+                  <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Clear local data</div>
+                  <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                    Wipe preferences, history, recent projects, game scores, or cached CLI paths. Choose what to clear in the next step.
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowClearModal(true)}
+                  style={{
+                    height: 30,
+                    padding: "0 14px",
+                    borderRadius: 6,
+                    border: "none",
+                    backgroundColor: "var(--ezy-red, #e55)",
+                    color: "#fff",
+                    fontSize: 12,
+                    fontWeight: 600,
+                    fontFamily: "inherit",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                    transition: "opacity 120ms ease",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.85"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
+                >
+                  Clear data...
+                </button>
+              </div>
+            </SettingsSection>
+          </>
+        );
+
+      case "appearance":
+        return (
+          <>
+            <SettingsSection id="theme" title="Theme">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8, marginBottom: 16 }}>
                 {THEMES.map((t) => {
                   const isSelected = t.id === themeId;
@@ -1393,40 +1481,35 @@ export default function SettingsPane() {
                   );
                 })}
               </div>
-              <SettingsRow label="Vibrant colors" description="Use brighter, more saturated accent colors throughout the UI.">
+              <SettingsRow label="Vibrant colors">
                 <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
               </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="danger-zone" title="Danger Zone" description="Clear MADE's local storage. Your files on disk are not affected.">
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
-                <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
-                  <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Clear local data</div>
-                  <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
-                    Wipe preferences, history, recent projects, game scores, or cached CLI paths. Choose what to clear in the next step.
-                  </div>
-                </div>
-                <button
-                  onClick={() => setShowClearModal(true)}
-                  style={{
-                    height: 30,
-                    padding: "0 14px",
-                    borderRadius: 6,
-                    border: "none",
-                    backgroundColor: "var(--ezy-red, #e55)",
-                    color: "#fff",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    fontFamily: "inherit",
-                    cursor: "pointer",
-                    flexShrink: 0,
-                    transition: "opacity 120ms ease",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.85"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
-                >
-                  Clear data...
-                </button>
-              </div>
+            <SettingsSection id="fonts" title="Fonts">
+              {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => (
+                <SettingsRow key={cliType} label={`${TERMINAL_CONFIGS[cliType].label} font size`}>
+                  <FontSizeStepper
+                    value={cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE}
+                    onChange={(v) => setCliFontSize(cliType, v)}
+                  />
+                </SettingsRow>
+              ))}
+            </SettingsSection>
+            <SettingsSection id="cursor" title="Cursor" description="Applies to the native terminal renderer.">
+              <SettingsRow label="Cursor style">
+                <SegmentedControl<"bar" | "block" | "underline">
+                  options={[
+                    { value: "bar", label: "Bar" },
+                    { value: "block", label: "Block" },
+                    { value: "underline", label: "Underline" },
+                  ]}
+                  value={nativeCursorStyle}
+                  onChange={setNativeCursorStyle}
+                />
+              </SettingsRow>
+              <SettingsRow label="Cursor blink">
+                <ToggleSwitch checked={nativeCursorBlink} onChange={setNativeCursorBlink} />
+              </SettingsRow>
             </SettingsSection>
           </>
         );
@@ -1449,13 +1532,13 @@ export default function SettingsPane() {
               </SettingsSection>
             )}
             <SettingsSection id="native-renderer" title="Native renderer" description="Experimental GPU-accelerated terminal renderer. When off, MADE uses the classic xterm panes.">
-              <SettingsRow label="Native terminal renderer (beta)" description="Render terminals with the native GPU renderer instead of the classic xterm panes. When off, MADE uses the proven xterm renderer. Open terminals reload when you change this.">
+              <SettingsRow label="Native terminal renderer (beta)" description="GPU renderer instead of xterm panes. Open terminals reload.">
                 <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
               </SettingsRow>
               <SettingsRow
                 vertical
                 label="Report terminal type to AI CLIs (TERM_PROGRAM)"
-                description="Claude enables synchronized output, progress reporting and automatic notifications only for terminals it recognises. These are the names it knows — if a feature stays quiet, pick another. Applies to the next pane you open. Leave the version blank unless you need to override it."
+                description="Claude enables synchronized output, progress and notifications only for terminals it recognises. If a feature stays quiet, pick another. Applies to the next pane you open."
               >
                 <div className="flex items-center gap-2">
                   <Dropdown<string>
@@ -1478,7 +1561,7 @@ export default function SettingsPane() {
               <SettingsRow
                 vertical
                 label="Claude notification channel"
-                description="Which escape sequence Claude sends when it wants your attention. MADE turns iTerm2 (OSC 9), Kitty (OSC 99) and Ghostty (OSC 777) into an in-app toast; Ghostty is richest, being the only one that also carries a title. Terminal Bell carries no message, so it produces nothing. This writes notifChannel into Claude's own settings.json and applies to newly started sessions."
+                description="Which escape sequence Claude sends when it wants your attention. MADE turns iTerm2, Kitty and Ghostty into an in-app toast — Ghostty also carries a title; Terminal Bell carries no message. Applies to new sessions."
               >
                 <div className="flex items-center gap-2">
                   <Dropdown<ClaudeNotifChannel | "">
@@ -1522,30 +1605,15 @@ export default function SettingsPane() {
                   )}
                 </div>
               </SettingsRow>
-              <SettingsRow label="Mouse wheel acceleration" description="Scroll faster with the wheel to travel further per notch, like Warp. Applies to a native pane's own scrollback. Fullscreen CLIs (Claude's /tui fullscreen) receive raw wheel events and do their own acceleration, so this does not affect them.">
+              <SettingsRow label="Mouse wheel acceleration" description="Scroll faster to travel further per notch. Fullscreen CLIs do their own acceleration.">
                 <ToggleSwitch checked={wheelAcceleration} onChange={setWheelAcceleration} />
               </SettingsRow>
-              <SettingsRow label="Scroll thumb acceleration" description="When dragging a native pane's scrollbar in a fullscreen CLI (Claude's /tui fullscreen), drag faster to scroll further per pixel. Off gives a strict 1:1 mapping, so dragging the thumb to the top lands exactly at the top. Applies to native panes only.">
+              <SettingsRow label="Scroll thumb acceleration" description="Off is a strict 1:1 drag, so the top of the bar is the top of the buffer.">
                 <ToggleSwitch checked={scrollThumbAcceleration} onChange={setScrollThumbAcceleration} />
               </SettingsRow>
-              <SettingsRow label="Native terminal cursor style" description="Applies to native terminal renderer only.">
-                <SegmentedControl<"bar" | "block" | "underline">
-                  options={[
-                    { value: "bar", label: "Bar" },
-                    { value: "block", label: "Block" },
-                    { value: "underline", label: "Underline" },
-                  ]}
-                  value={nativeCursorStyle}
-                  onChange={setNativeCursorStyle}
-                />
-              </SettingsRow>
-              <SettingsRow label="Native terminal cursor blink" description="Applies to native terminal renderer only.">
-                <ToggleSwitch checked={nativeCursorBlink} onChange={setNativeCursorBlink} />
-              </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="cli" title="CLI Options" description="Per-CLI font size and YOLO mode settings.">
+            <SettingsSection id="cli" title="CLI Options" description="YOLO mode and statusline for each CLI.">
             {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
-              const currentSize = cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE;
               const isYolo = !!cliYolo[cliType];
               const label = TERMINAL_CONFIGS[cliType].label;
               const isExpanded = cliExpanded[cliType] ?? false;
@@ -1581,60 +1649,6 @@ export default function SettingsPane() {
                   </div>
                   {isExpanded && (
                   <div style={{ paddingBottom: 16 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>Font size</span>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <div
-                        onClick={() => setCliFontSize(cliType, Math.max(10, currentSize - 1))}
-                        style={{
-                          width: 24,
-                          height: 24,
-                          borderRadius: 4,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          cursor: currentSize <= 10 ? "default" : "pointer",
-                          opacity: currentSize <= 10 ? 0.3 : 1,
-                          backgroundColor: "transparent",
-                          border: "1px solid var(--ezy-border-light)",
-                          color: "var(--ezy-text-secondary)",
-                          fontSize: 14,
-                          lineHeight: 1,
-                          transition: "background-color 120ms ease",
-                        }}
-                        onMouseEnter={(e) => { if (currentSize > 10) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                      >
-                        -
-                      </div>
-                      <span style={{ fontSize: 13, color: "var(--ezy-text)", minWidth: 24, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
-                        {currentSize}
-                      </span>
-                      <div
-                        onClick={() => setCliFontSize(cliType, Math.min(24, currentSize + 1))}
-                        style={{
-                          width: 24,
-                          height: 24,
-                          borderRadius: 4,
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          cursor: currentSize >= 24 ? "default" : "pointer",
-                          opacity: currentSize >= 24 ? 0.3 : 1,
-                          backgroundColor: "transparent",
-                          border: "1px solid var(--ezy-border-light)",
-                          color: "var(--ezy-text-secondary)",
-                          fontSize: 14,
-                          lineHeight: 1,
-                          transition: "background-color 120ms ease",
-                        }}
-                        onMouseEnter={(e) => { if (currentSize < 24) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                      >
-                        +
-                      </div>
-                    </div>
-                  </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       {isYolo ? (
@@ -1726,24 +1740,24 @@ export default function SettingsPane() {
       case "projects":
         return (
           <SettingsSection id="projects" title="Projects" description="Configure default project directory and template files for new projects.">
-            <SettingsRow label="Projects directory" description="Default folder where new projects are created.">
+            <SettingsRow label="Projects directory">
               <PathPicker value={projectsDir} onChange={setProjectsDir} directory />
             </SettingsRow>
-            <SettingsRow label="Default CLAUDE.md" description="Template file copied to new projects as CLAUDE.md (Claude Code).">
+            <SettingsRow label="Default CLAUDE.md" description="Copied into new projects, for Claude Code.">
               <PathPicker value={defaultClaudeMdPath} onChange={setDefaultClaudeMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
             </SettingsRow>
-            <SettingsRow label="Default AGENTS.md" description="Template file copied to new projects as AGENTS.md (Codex, cross-agent standard).">
+            <SettingsRow label="Default AGENTS.md" description="Copied into new projects, for Codex and other agents.">
               <PathPicker value={defaultAgentsMdPath} onChange={setDefaultAgentsMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
             </SettingsRow>
-            <SettingsRow label="Default GEMINI.md" description="Template file copied to new projects as GEMINI.md (Gemini CLI).">
+            <SettingsRow label="Default GEMINI.md" description="Copied into new projects, for Gemini CLI.">
               <PathPicker value={defaultGeminiMdPath} onChange={setDefaultGeminiMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
             </SettingsRow>
-            <SettingsRow label="Single source + pointers by default" description="When enabled, new projects keep canonical instructions in AGENTS.md and write CLAUDE.md / GEMINI.md as small pointer files that reference it. You can override per project.">
+            <SettingsRow label="Single source + pointers by default" description="AGENTS.md holds the instructions; the others become pointers to it.">
               <ToggleSwitch checked={defaultUseSingleSourcePointers} onChange={setDefaultUseSingleSourcePointers} />
             </SettingsRow>
             <SettingsRow
               label="Custom scaffolds"
-              description="Extra .md templates to optionally include when creating a new project (e.g. STYLE.md, OPERATIONS.md). Filenames must not contain path characters."
+              description="Extra .md templates offered when creating a project. No path characters in filenames."
               vertical
             >
               <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
@@ -1858,13 +1872,13 @@ export default function SettingsPane() {
             <SettingsSection id="texteditor" title="Text Editor" description="How the file editor behaves across your open projects.">
               <SettingsRow
                 label="Wrap long lines"
-                description="Continue long lines on the next row instead of running off the edge behind a horizontal scrollbar. Applies to editing; the markdown preview always wraps."
+                description="The markdown preview always wraps, whatever this is set to."
               >
                 <ToggleSwitch checked={editorWordWrap} onChange={setEditorWordWrap} />
               </SettingsRow>
               <SettingsRow
                 label="Separate editor per project"
-                description="Off: one shared editor — files open in every project and the close button closes it everywhere. On: each project keeps its own editor and its own open files."
+                description="Off: one shared editor — closing it closes it everywhere."
               >
                 <ToggleSwitch checked={perProjectEditor} onChange={setPerProjectEditor} />
               </SettingsRow>
@@ -1875,10 +1889,10 @@ export default function SettingsPane() {
               </SettingsRow>
               {promptComposerEnabled && (
                 <>
-                  <SettingsRow label="Always visible" description="Keep the composer visible at all times instead of toggle.">
+                  <SettingsRow label="Always visible">
                     <ToggleSwitch checked={promptComposerAlwaysVisible} onChange={setPromptComposerAlwaysVisible} />
                   </SettingsRow>
-                  <SettingsRow label="Expansion direction" description="How the composer expands when typing long prompts.">
+                  <SettingsRow label="Expansion direction">
                     <SegmentedControl
                       options={[
                         { value: "up" as ComposerExpansion, label: "Up" },
@@ -1893,15 +1907,15 @@ export default function SettingsPane() {
               )}
             </SettingsSection>
             <SettingsSection id="preview" title="Preview Panes" description="Configure browser preview pane behavior.">
-              <SettingsRow label="Full column" description="Browser pane takes a full column width in split layouts.">
+              <SettingsRow label="Full column" description="Browser pane takes a whole column in split layouts.">
                 <ToggleSwitch checked={browserFullColumn} onChange={setBrowserFullColumn} />
               </SettingsRow>
-              <SettingsRow label="Spawn on left" description="Open browser preview on the left side instead of right.">
+              <SettingsRow label="Spawn on left">
                 <ToggleSwitch checked={browserSpawnLeft} onChange={setBrowserSpawnLeft} />
               </SettingsRow>
             </SettingsSection>
             <SettingsSection id="codereview" title="Code Review" description="Configure the built-in code review experience.">
-              <SettingsRow label="Collapse all files" description="Start with all file diffs collapsed in code review.">
+              <SettingsRow label="Collapse all files" description="Diffs start collapsed.">
                 <ToggleSwitch checked={codeReviewCollapseAll} onChange={setCodeReviewCollapseAll} />
               </SettingsRow>
               <SettingsRow label="Commit message mode">

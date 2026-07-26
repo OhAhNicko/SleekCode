@@ -23,6 +23,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { toWslPath } from "../lib/terminal-config";
 import { recordTerminalActivity, recordTerminalWrite, recordTerminalResize, clearTerminalActivity } from "../lib/terminal-activity";
 import { applyImageMask, clearImageMasks } from "../lib/image-mask";
+import XtermTuiScrollbar from "./XtermTuiScrollbar";
 import TerminalHeader from "./TerminalHeader";
 import CommandBlockOverlay from "./CommandBlockOverlay";
 import ClipboardImagePreview from "./ClipboardImagePreview";
@@ -246,6 +247,9 @@ export default function TerminalPane({
   const [searchFocusBump, setSearchFocusBump] = useState(0);
   const xtermSearch = useXtermSearch(searchAddon);
   const jumpBtnRef = useRef<HTMLDivElement>(null);
+  // Bumped on prompt submit; re-zeroes the TUI scrollbar's estimate,
+  // because a submitted prompt lands the transcript at the bottom.
+  const [xtermSubmitNonce, setXtermSubmitNonce] = useState(0);
   const scrollToPromptRef = useRef<() => void>(() => {});
   const scrollToNextPromptRef = useRef<() => void>(() => {});
   // Track prompts submitted via PromptComposer with their buffer line + timestamp
@@ -1395,8 +1399,42 @@ export default function TerminalPane({
     // Ctrl+Scroll wheel — zoom font size (per terminal type)
     const MIN_FONT_SIZE = 8;
     const MAX_FONT_SIZE = 32;
+
+    // Velocity-ramped scrollback wheel, mirroring the native pane's curve
+    // (win32.rs WM_MOUSEWHEEL) so both renderers feel identical: notches
+    // arriving <120ms apart compound the multiplier, a pause resets it, so
+    // slow scrolling stays exactly LINES_PER_NOTCH and only a flick travels.
+    const LINES_PER_NOTCH = 3;
+    const ACCEL_WINDOW_MS = 120;
+    const ACCEL_GROWTH = 1.6;
+    const ACCEL_MAX = 18;
+    let wheelStreak = 1;
+    let lastWheelAt = 0;
+
     function handleWheel(e: WheelEvent) {
-      if (!e.ctrlKey) return;
+      if (!e.ctrlKey) {
+        const term = terminalRef.current;
+        if (!term || !useAppStore.getState().wheelAcceleration) return;
+        // Only MADE's own scrollback. In the alternate screen there is nothing
+        // to scroll, and when the program is mouse-tracking the wheel belongs
+        // to it — accelerating either would fight the application.
+        if (term.buffer.active.type === "alternate") return;
+        if (term.modes.mouseTrackingMode !== "none") return;
+        if (e.shiftKey || e.deltaY === 0) return;
+
+        const now = e.timeStamp;
+        const fast = lastWheelAt > 0 && now - lastWheelAt < ACCEL_WINDOW_MS;
+        lastWheelAt = now;
+        wheelStreak = fast ? Math.min(wheelStreak * ACCEL_GROWTH, ACCEL_MAX) : 1;
+
+        // deltaMode 1 = lines, 0 = pixels (the common case).
+        const notches = e.deltaMode === 1 ? e.deltaY : e.deltaY / 100;
+        const lines = Math.round(notches * LINES_PER_NOTCH * wheelStreak);
+        if (lines === 0) return;
+        e.preventDefault();
+        term.scrollLines(lines);
+        return;
+      }
       e.preventDefault(); // prevent browser zoom
       const store = useAppStore.getState();
       const currentSize = store.cliFontSizes[terminalTypeRef.current] ?? DEFAULT_CLI_FONT_SIZE;
@@ -1740,6 +1778,7 @@ export default function TerminalPane({
   }, [pastedImage, dismissPreview]);
 
   const handleComposerSubmit = useCallback((text: string) => {
+    setXtermSubmitNonce((n) => n + 1);
     const isCli = terminalType === "codex" || terminalType === "gemini" || terminalType === "claude";
 
     // Record prompt with buffer line + timestamp for prompt history dropdown
@@ -2030,6 +2069,19 @@ export default function TerminalPane({
             {Math.round((zoomIndicator / DEFAULT_CLI_FONT_SIZE) * 100)}%
           </div>
         )}
+        {/* Fullscreen-TUI scrollbar. Renders only while the pane is in the
+            alternate screen AND the program is mouse-tracking — i.e. Claude's
+            fullscreen view, where xterm's own scrollbar has nothing to show
+            because the alt buffer has no scrollback. */}
+        <XtermTuiScrollbar
+          terminal={terminalRef.current}
+          terminalType={terminalType}
+          write={write}
+          sessionId={sessionResumeId}
+          workingDir={workingDir}
+          backend={backend}
+          submitNonce={xtermSubmitNonce}
+        />
         {/* Jump-to-bottom button — appears below scrollbar thumb when scrolled up */}
         <div
           ref={jumpBtnRef}

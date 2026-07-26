@@ -2254,8 +2254,17 @@ unsafe extern "system" fn wnd_proc(
             let notches_signed = delta_raw / WHEEL_DELTA;
             let accel = if (*state_ptr).wheel_accel {
                 const ACCEL_WINDOW_MS: u128 = 120; // gap below which a flick "continues"
-                const ACCEL_GROWTH: f32 = 1.35; // multiplier gain per fast notch
-                const ACCEL_MAX: f32 = 6.0;
+                // Growth per fast notch, and the ceiling. Raised from 1.35/6.0
+                // after hardware feedback that a sustained fast scroll still
+                // crawled: at 1.35 the multiplier needs ~6 notches to reach 4x
+                // and caps at 6x, so a long flick spent most of its notches
+                // ramping instead of covering ground. 1.6 reaches the old cap
+                // in half the notches and tops out 3x higher, which is where a
+                // "throw" through a long buffer actually feels fast. Slow
+                // scrolling is untouched: one notch after a pause is still
+                // exactly LINES_PER_NOTCH.
+                const ACCEL_GROWTH: f32 = 1.6;
+                const ACCEL_MAX: f32 = 18.0;
                 let now = std::time::Instant::now();
                 let fast = (*state_ptr)
                     .last_wheel_at

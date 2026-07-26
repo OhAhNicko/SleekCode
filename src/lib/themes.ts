@@ -368,11 +368,14 @@ const monokaiTheme: MadeTheme = {
   },
 };
 
-// ─── Gruvbox Dark ───────────────────────────────────────────────────
+// ─── Gruvbox Dark Hard ──────────────────────────────────────────────
+//
+// The *hard* contrast variant (#1d2021). `id` stays "gruvbox-dark" so
+// anyone who already had this selected keeps it — only the label moved.
 
-const gruvboxDarkTheme: MadeTheme = {
+const gruvboxDarkHardTheme: MadeTheme = {
   id: "gruvbox-dark",
-  name: "Gruvbox Dark",
+  name: "Gruvbox Dark Hard",
   terminal: {
     background: "#1d2021",
     foreground: "#ebdbb2",
@@ -411,6 +414,64 @@ const gruvboxDarkTheme: MadeTheme = {
     accent: "#b8bb26",
     accentHover: "#d5c67a",
     accentDim: "#98971a",
+    accentGlow: "rgba(255, 255, 255, 0.06)",
+    red: "#fb4934",
+    cyan: "#8ec07c",
+  },
+};
+
+// ─── Gruvbox Dark (measured from Warp) ──────────────────────────────
+//
+// Sampled pixel-for-pixel out of a Warp screenshot rather than copied from
+// the gruvbox spec, because the Hard variant above uses the *hard*
+// background (#1d2021) while Warp ships the *medium* one. Measured: canvas
+// #282828, chrome #31302e, active tab #43413b, block cursor #fc802d, text
+// #ebdbb2. The 16 ANSI colors are canonical gruvbox — Warp matches there.
+//
+// `id` keeps its original "-v2" suffix on purpose: it is persisted in
+// localStorage, so renaming it would reset everyone using this theme.
+
+const gruvboxDarkTheme: MadeTheme = {
+  id: "gruvbox-dark-v2",
+  name: "Gruvbox Dark",
+  terminal: {
+    background: "#282828",
+    foreground: "#ebdbb2",
+    cursor: "#fc802d",
+    cursorAccent: "#282828",
+    selectionBackground: "#504945",
+    selectionForeground: "#ebdbb2",
+    selectionInactiveBackground: "#50494588",
+    black: "#282828",
+    red: "#cc241d",
+    green: "#98971a",
+    yellow: "#d79921",
+    blue: "#458588",
+    magenta: "#b16286",
+    cyan: "#689d6a",
+    white: "#a89984",
+    brightBlack: "#928374",
+    brightRed: "#fb4934",
+    brightGreen: "#b8bb26",
+    brightYellow: "#fabd2f",
+    brightBlue: "#83a598",
+    brightMagenta: "#d3869b",
+    brightCyan: "#8ec07c",
+    brightWhite: "#ebdbb2",
+  },
+  surface: {
+    bg: "#282828",
+    surface: "#31302e",
+    surfaceRaised: "#43413b",
+    border: "#504945",
+    borderSubtle: "#3c3836",
+    borderLight: "#665c54",
+    text: "#ebdbb2",
+    textSecondary: "#d5c4a1",
+    textMuted: "#928374",
+    accent: "#fc802d",
+    accentHover: "#fd9753",
+    accentDim: "#d65d0e",
     accentGlow: "rgba(255, 255, 255, 0.06)",
     red: "#fb4934",
     cyan: "#8ec07c",
@@ -512,6 +573,185 @@ const blackSteelTheme: MadeTheme = {
     accentGlow: "rgba(255, 255, 255, 0.06)",
     red: "#ef4444",
     cyan: "#71717a",
+  },
+};
+
+// ─── Graphite (monochrome) ──────────────────────────────────────────
+//
+// Every surface token is exactly neutral (r === g === b). The hierarchy is
+// carried by brightness alone: near-white ink is the loudest thing on
+// screen, controls sit a step below it in silver. The accent is
+// deliberately mid-grey rather than white — the ToggleSwitch thumb is
+// #fff, so a white track would swallow it (this keeps ~3:1 against it).
+//
+// The 16 ANSI colors keep just enough chroma (~30% saturation) that
+// `git diff` red/green and error text still read at a glance; MADE's own
+// danger color stays properly red for the same reason.
+
+const graphiteTheme: MadeTheme = {
+  id: "graphite",
+  name: "Graphite",
+  terminal: {
+    background: "#101010",
+    foreground: "#e6e6e6",
+    cursor: "#e6e6e6",
+    cursorAccent: "#101010",
+    selectionBackground: "#333333",
+    selectionForeground: "#f2f2f2",
+    selectionInactiveBackground: "#33333388",
+    black: "#2a2a2a",
+    red: "#a85b5b",
+    green: "#7f9a6b",
+    yellow: "#a89264",
+    blue: "#6b8299",
+    magenta: "#8e7a94",
+    cyan: "#6f9090",
+    white: "#b8b8b8",
+    brightBlack: "#4d4d4d",
+    brightRed: "#c47a7a",
+    brightGreen: "#9db98a",
+    brightYellow: "#c7b184",
+    brightBlue: "#8aa0b8",
+    brightMagenta: "#ad99b3",
+    brightCyan: "#8fb0b0",
+    brightWhite: "#f2f2f2",
+  },
+  surface: {
+    bg: "#101010",
+    surface: "#171717",
+    surfaceRaised: "#202020",
+    border: "#2b2b2b",
+    borderSubtle: "#1c1c1c",
+    borderLight: "#3d3d3d",
+    text: "#f2f2f2",
+    textSecondary: "#b8b8b8",
+    textMuted: "#7a7a7a",
+    accent: "#949494",
+    accentHover: "#b5b5b5",
+    accentDim: "#6b6b6b",
+    accentGlow: "rgba(255, 255, 255, 0.06)",
+    red: "#c25b5b",
+    cyan: "#c9c9c9",
+  },
+};
+
+// ─── Goldphite (monochrome + gold) ──────────────────────────────────
+//
+// Graphite with a single warm accent. The gold is a deep antique tone
+// rather than a bright metallic one for the same reason Graphite's accent
+// is silver: the ToggleSwitch thumb is #fff, and anything lighter than
+// ~#959595-equivalent luminance swallows it. #b08d3a keeps 3.1:1 against
+// the thumb while still reading 6:1 as text on the background. The
+// brighter #d4af37 is reserved for hover and the terminal cursor, where
+// nothing sits on top of it.
+
+const goldphiteTheme: MadeTheme = {
+  id: "goldphite",
+  name: "Goldphite",
+  terminal: {
+    background: "#101010",
+    foreground: "#e6e6e6",
+    cursor: "#d4af37",
+    cursorAccent: "#101010",
+    selectionBackground: "#333333",
+    selectionForeground: "#f2f2f2",
+    selectionInactiveBackground: "#33333388",
+    black: "#2a2a2a",
+    red: "#a85b5b",
+    green: "#7f9a6b",
+    yellow: "#a89264",
+    blue: "#6b8299",
+    magenta: "#8e7a94",
+    cyan: "#6f9090",
+    white: "#b8b8b8",
+    brightBlack: "#4d4d4d",
+    brightRed: "#c47a7a",
+    brightGreen: "#9db98a",
+    brightYellow: "#c7b184",
+    brightBlue: "#8aa0b8",
+    brightMagenta: "#ad99b3",
+    brightCyan: "#8fb0b0",
+    brightWhite: "#f2f2f2",
+  },
+  surface: {
+    bg: "#101010",
+    surface: "#171717",
+    surfaceRaised: "#202020",
+    border: "#2b2b2b",
+    borderSubtle: "#1c1c1c",
+    borderLight: "#3d3d3d",
+    text: "#f2f2f2",
+    textSecondary: "#b8b8b8",
+    textMuted: "#7a7a7a",
+    accent: "#b08d3a",
+    accentHover: "#d4af37",
+    accentDim: "#7d6427",
+    accentGlow: "rgba(255, 255, 255, 0.06)",
+    red: "#c25b5b",
+    cyan: "#c9c9c9",
+  },
+};
+
+// ─── Panini (light) ─────────────────────────────────────────────────
+//
+// MADE's only light theme. Palette borrowed from the `panini` token set in
+// the wc-draft project (src/ui/theme/tokens.css, read-only reference):
+// warm sticker-album paper #f3ecd8, ink #1b1a17, sticker red #e8462b,
+// pitch green #2f7d4f, gold #c8a24b, paper line #d8cfb4, deep cyan
+// #0f8fa6. The ANSI set is darkened from those hues so it stays legible on
+// cream — on a light background "bright" means more contrast, i.e. darker,
+// which is why brightWhite is ink rather than white.
+//
+// accentGlow must be a DARK wash here: every dark theme uses a white one,
+// which is invisible on paper.
+
+const paniniTheme: MadeTheme = {
+  id: "panini",
+  name: "Panini",
+  terminal: {
+    background: "#f3ecd8",
+    foreground: "#1b1a17",
+    cursor: "#e8462b",
+    cursorAccent: "#f3ecd8",
+    selectionBackground: "#dfd3ad",
+    selectionForeground: "#1b1a17",
+    selectionInactiveBackground: "#dfd3ad88",
+    // Darkened from the panini hues until each clears 4.5:1 on paper for the
+    // normal set and 4.0:1 for bright — the source palette was built for
+    // large UI shapes, not 13px terminal text.
+    black: "#1b1a17",
+    red: "#c43921",
+    green: "#2d794c",
+    yellow: "#876618",
+    blue: "#1f6f8a",
+    magenta: "#9c3f6b",
+    cyan: "#0c7588",
+    white: "#6b6452",
+    brightBlack: "#797263",
+    brightRed: "#d03f26",
+    brightGreen: "#1a8435",
+    brightYellow: "#8a7034",
+    brightBlue: "#2e7b9c",
+    brightMagenta: "#b4527c",
+    brightCyan: "#1d7e90",
+    brightWhite: "#2f2b23",
+  },
+  surface: {
+    bg: "#f3ecd8",
+    surface: "#ffffff",
+    surfaceRaised: "#fbf5e4",
+    border: "#d8cfb4",
+    borderSubtle: "#e7dfc4",
+    borderLight: "#bfb492",
+    text: "#1b1a17",
+    textSecondary: "#4a453a",
+    textMuted: "#6b6452",
+    accent: "#e8462b",
+    accentHover: "#cf3a21",
+    accentDim: "#a82d18",
+    accentGlow: "rgba(27, 26, 23, 0.06)",
+    red: "#d23b22",
+    cyan: "#0f8fa6",
   },
 };
 
@@ -637,8 +877,12 @@ export const THEMES: MadeTheme[] = [
   auroraTheme,
   monokaiTheme,
   gruvboxDarkTheme,
+  gruvboxDarkHardTheme,
   solarizedDarkTheme,
   blackSteelTheme,
+  graphiteTheme,
+  goldphiteTheme,
+  paniniTheme,
 ];
 
 export const THEMES_MAP: Record<string, MadeTheme> = Object.fromEntries(

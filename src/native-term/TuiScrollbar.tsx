@@ -50,103 +50,21 @@ import {
 } from "../lib/native-term-bridge";
 import { readSessionPrompts } from "../lib/sessions-index";
 import { useAppStore } from "../store";
+import {
+  ANCHOR_SETTLE_MS,
+  AT_BOTTOM_MARKER,
+  CTRL_END,
+  JUMP_MAX_STEPS,
+  JUMP_SETTLE_MS,
+  JUMP_STEP_NOTCHES,
+  NOTCHES_PER_PAGE,
+  PAGE_DOWN,
+  PAGE_UP,
+  computeSpan,
+  matchPromptIndex,
+} from "./tui-scroll-model";
 import type { TerminalBackend, TerminalType } from "../types";
 import { useOverlayPopupAnchor } from "./useOverlayPopupAnchor";
-
-/** Ctrl+End — Claude's `scroll:bottom`. Same bytes MADE's key encoder emits
- * for a physical Ctrl+End (key_encoding.rs: VK_END is cursor_key('F'), ctrl
- * gives modifier param 5). */
-const CTRL_END = "\x1b[1;5F";
-
-/** Page keys — fallback only, for a TUI that scrolls but never enabled mouse
- * reporting. */
-const PAGE_UP = "\x1b[5~";
-const PAGE_DOWN = "\x1b[6~";
-
-/**
- * Scrollbar span, in wheel notches — the total scrollback the thumb maps
- * across. The TUI never reports its length, so this is learned in two stages:
- *
- *  UNKNOWN (default): the top is unproven, so the span is `pos + HEADROOM`.
- *    The thumb rises monotonically toward — but never reaches — the top, which
- *    is honest: we do not know how much is above you, only that there is more.
- *
- *  KNOWN: the top anchor fired (a scroll-up left the screen unchanged), so the
- *    distance travelled IS the total. The span is pinned to it and the thumb
- *    reaches the top exactly when you are at the top.
- *
- * An earlier version defined the span as "deepest point reached", which is
- * degenerate: while scrolling up, the deepest point IS the current position,
- * so pos/span collapsed to 1 and the thumb slammed to the top after
- * MIN_SPAN_NOTCHES and stayed pinned there regardless of remaining content.
- */
-const MIN_SPAN_NOTCHES = 30;
-
-/**
- * Assumed remaining scrollback ABOVE the current position while the top is
- * still unproven, in notches. The span is `pos + this`, so:
- *
- *   frac = pos / (pos + HEADROOM)
- *
- * which rises monotonically and approaches 1 without ever reaching it — the
- * thumb always responds to scrolling, and only the proven top pins it.
- *
- * It must be an ADDITIVE constant, not a multiple of `pos`. Two earlier
- * versions made the span proportional and both were degenerate:
- *   span = pos        -> frac = 1        (thumb slammed to the top)
- *   span = pos * 1.5  -> frac = 0.667    (thumb froze two-thirds up)
- * Anything of the form `pos * k` cancels the position out entirely.
- */
-const UNKNOWN_HEADROOM_NOTCHES = 40;
-
-/**
- * NOTE ON SPEED. There is no rate knob here on purpose.
- *
- * Earlier versions converted "pointer is at X% of the track" into a target and
- * then walked toward it, which meant MADE had to invent a scroll RATE — and
- * every hardware round was a guess at that number (too fast, then too fast
- * again). The drag is now RELATIVE: the overlay turns pointer MOVEMENT into
- * notches, so the user's hand sets the rate exactly as it does on a physical
- * wheel. Notches are forwarded the moment they arrive, unbuffered.
- *
- * This also sidesteps Claude's wheel acceleration
- * (`wheelScrollAccelerationEnabled`, "Ramp mouse-wheel scroll speed during
- * fast scrolls"): a fast drag produces a fast notch stream and Claude ramps it
- * the same way it would ramp a fast flick of the real wheel — which is the
- * behaviour the user is already used to, rather than something MADE imposed.
- */
-
-/**
- * Ground-truth anchor. Claude paints its scroll state INTO the screen: while
- * you are scrolled up the transcript shows a "Jump to bottom" affordance
- * (confirmed in the binary beside `scroll:bottom`, and visible on hardware).
- * Its ABSENCE means we are at the bottom — an exact anchor, which lets the
- * dead-reckoned estimate be corrected instead of drifting forever.
- *
- * Matched case-insensitively against the visible rows. If Claude reworded this
- * the check simply stops firing and we fall back to pure dead reckoning — it
- * degrades, it does not break.
- */
-const AT_BOTTOM_MARKER = "jump to bottom";
-
-/** Idle delay before sampling the screen. Long enough that a burst of drag
- * notches has landed and the TUI has repainted, short enough to feel instant. */
-const ANCHOR_SETTLE_MS = 150;
-
-/**
- * Message-jump (Ctrl+Up / Ctrl+Down) tuning. Claude's TUI has no
- * "scroll to previous message" command, so the jump is performed by scrolling
- * until its STICKY PROMPT row (the pinned, greyed copy of the user message you
- * are inside) changes. Coarse steps first, since a long message can be many
- * screens; capped so a jump can never run away.
- */
-const JUMP_STEP_NOTCHES = 4;
-const JUMP_MAX_STEPS = 60;
-/** Let the TUI repaint between steps before re-reading the row. */
-const JUMP_SETTLE_MS = 24;
-
-/** Notches assumed per page key, to keep the estimate honest in the fallback. */
-const NOTCHES_PER_PAGE = 10;
 
 /**
  * Claude Code ONLY (user decision 2026-07-25). Everything here is built on
@@ -157,34 +75,6 @@ const NOTCHES_PER_PAGE = 10;
  */
 function scrollbarEnabledFor(type: TerminalType): boolean {
   return type === "claude";
-}
-
-/** Reduce a line to comparable form: lowercase alphanumerics only. Strips the
- * sticky row's leading glyph/indent and any box-drawing, so a truncated header
- * still prefix-matches its full prompt. */
-function normalizeForMatch(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-/**
- * Which prompt is the sticky row showing? Returns -1 when unknown.
- *
- * The sticky row is truncated to the pane width, so this is a PREFIX match. A
- * short prefix is ambiguous across prompts that open the same way, so anything
- * under MIN_MATCH_CHARS is refused outright rather than guessed — a wrong match
- * would jump the thumb somewhere false, which is worse than leaving it on dead
- * reckoning. When several prompts share the prefix the LAST is taken: repeated
- * prompts are usually follow-ups, and the later one is the likelier read.
- */
-export function matchPromptIndex(sticky: string, prompts: string[]): number {
-  const MIN_MATCH_CHARS = 12;
-  const key = normalizeForMatch(sticky);
-  if (key.length < MIN_MATCH_CHARS || prompts.length === 0) return -1;
-  let found = -1;
-  for (let i = 0; i < prompts.length; i++) {
-    if (normalizeForMatch(prompts[i]).startsWith(key)) found = i;
-  }
-  return found;
 }
 
 interface TuiScrollbarProps {
@@ -309,7 +199,7 @@ export default function TuiScrollbar({
       if (stickyIdx >= 0 && total > 1) {
         // stickyIdx 0 = oldest message = top of the scrollback.
         const frac = (total - 1 - stickyIdx) / (total - 1);
-        const spanNow = knownSpanRef.current ?? Math.max(MIN_SPAN_NOTCHES, posRef.current + UNKNOWN_HEADROOM_NOTCHES);
+        const spanNow = computeSpan(posRef.current, knownSpanRef.current);
         const calibrated = Math.round(frac * spanNow);
         posRef.current = calibrated;
         setPos(calibrated);
@@ -495,10 +385,7 @@ export default function TuiScrollbar({
   // wheel events — so a Claude pane that is NOT taking mouse input is not in
   // the fullscreen conversation view and must not show this bar.
   const open = enabled && altScreen && mouseReporting && termId != null;
-  const span =
-    knownSpan !== null
-      ? Math.max(MIN_SPAN_NOTCHES, knownSpan)
-      : Math.max(MIN_SPAN_NOTCHES, pos + UNKNOWN_HEADROOM_NOTCHES);
+  const span = computeSpan(pos, knownSpan);
 
   useOverlayPopupAnchor({
     id: `tui-scrollbar-${termId}`,
