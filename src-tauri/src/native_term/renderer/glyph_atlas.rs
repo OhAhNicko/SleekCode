@@ -32,15 +32,13 @@ use wgpu::{Device, MultisampleState, Queue, RenderPass, TextureFormat};
 // cell advance, and that measurement must shape against the bundled face.
 // License: MIT-style + Bitstream Vera (redistribution permitted with license
 // text) — see `src-tauri/assets/fonts/HACK-LICENSE.md`.
-const HACK_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Hack-Regular.ttf");
-const HACK_BOLD: &[u8] = include_bytes!("../../../assets/fonts/Hack-Bold.ttf");
-const HACK_ITALIC: &[u8] = include_bytes!("../../../assets/fonts/Hack-Italic.ttf");
-const HACK_BOLD_ITALIC: &[u8] = include_bytes!("../../../assets/fonts/Hack-BoldItalic.ttf");
 
 /// All glyphon state needed to layout-and-draw a single native_term pane.
 /// One instance per pane.
 pub struct GlyphStack {
-    pub font_system: FontSystem,
+    /// Shared with every other pane — see renderer/fonts.rs. NOT per pane:
+    /// building one cost 60-76ms of system-font parsing each time.
+    pub font_system: std::sync::Arc<std::sync::Mutex<FontSystem>>,
     pub swash_cache: SwashCache,
     pub atlas: TextAtlas,
     pub viewport: Viewport,
@@ -72,6 +70,9 @@ pub struct GlyphStack {
     /// fractional advance — correct beats pretty). Refreshed by
     /// `set_font_scaled`.
     pub cell_advance_px: f32,
+    /// Memo for `fits_cell`, cleared on every metric re-derivation. Keyed by
+    /// char because the answer depends only on (char, current font metrics).
+    cell_fit: std::collections::HashMap<char, bool>,
 }
 
 impl GlyphStack {
@@ -85,31 +86,11 @@ impl GlyphStack {
         font_logical_px: f32,
         dpr: f32,
     ) -> Self {
-        let mut font_system = FontSystem::new();
-        // P5b: register the embedded Hack faces BEFORE any shaping or
-        // measurement (the `set_font_scaled` call at the bottom of this
-        // constructor measures the cell advance). fontdb parses each blob
-        // and indexes the contained face; per-glyph fallback for missing
-        // coverage (CJK, emoji) is cosmic-text's job and unaffected.
-        {
-            let db = font_system.db_mut();
-            db.load_font_data(HACK_REGULAR.to_vec());
-            db.load_font_data(HACK_BOLD.to_vec());
-            db.load_font_data(HACK_ITALIC.to_vec());
-            db.load_font_data(HACK_BOLD_ITALIC.to_vec());
-        }
-        // Once per pane (GlyphStack is one-per-pane): confirm the embed took.
-        // A system-installed Hack can push this above 4; below 4 means the
-        // embedded blobs failed to parse and the family bug is back.
-        let hack_faces = font_system
-            .db()
-            .faces()
-            .filter(|face| face.families.iter().any(|(name, _)| name == "Hack"))
-            .count();
-        eprintln!(
-            "[native_term] glyph_atlas: {} 'Hack' faces in fontdb after embed (expect 4)",
-            hack_faces
-        );
+        // The FontSystem is process-wide (renderer/fonts.rs): building one per
+        // pane cost 60-76ms of system-font enumeration, for an identical result.
+        let t0 = std::time::Instant::now();
+        let font_system = super::fonts::shared();
+        let t_fontsystem = t0.elapsed();
         let swash_cache = SwashCache::new();
         let cache = Cache::new(device);
         // ColorMode::Web disables glyphon's sRGB→linear text conversion so glyph
@@ -144,8 +125,19 @@ impl GlyphStack {
             font_size_px: font_logical_px.max(1.0),
             line_height_px: (font_logical_px.max(1.0) * 1.2).ceil(),
             cell_advance_px: font_logical_px.max(1.0) * 0.6,
+            cell_fit: std::collections::HashMap::new(),
         };
+        let t_gpu = t0.elapsed();
         stack.set_font_scaled(&font_family, font_logical_px, dpr);
+        let line = format!(
+            "[native_term] glyph_atlas: {:.1}ms = shared FontSystem {:.1} + gpu objects {:.1} + measure {:.1}",
+            t0.elapsed().as_secs_f32() * 1000.0,
+            t_fontsystem.as_secs_f32() * 1000.0,
+            (t_gpu - t_fontsystem).as_secs_f32() * 1000.0,
+            (t0.elapsed() - t_gpu).as_secs_f32() * 1000.0,
+        );
+        eprintln!("{line}");
+        crate::debug_log::dlog(&line);
         stack
     }
 
@@ -165,11 +157,51 @@ impl GlyphStack {
     /// text, then add to `prepare()`'s TextArea list. Allocation isn't free
     /// but cheap enough to do per-frame for the spike — R1.d will pool these
     /// per-row if profiling shows it matters.
-    pub fn make_buffer(&mut self) -> Buffer {
-        Buffer::new(
-            &mut self.font_system,
-            Metrics::new(self.font_size_px, self.line_height_px),
-        )
+    /// Does `ch` shape to exactly one cell width in the current font?
+    ///
+    /// Rows are shaped as STRINGS (`set_rich_text`), so cosmic-text lays each
+    /// glyph out at its own natural advance and a glyph that is not exactly one
+    /// cell wide shifts every glyph after it in that row. Hack's own glyphs are
+    /// all one cell, so this only bites text that falls back to another face —
+    /// most visibly Claude Code's animated spinner (✻ ✽ ✳ …), which swaps glyph
+    /// every frame and made the whole status row slide back and forth
+    /// (user-reported 2026-07-26). Callers give a non-fitting glyph its own run
+    /// anchored at its own cell x, so it can only ever shift itself.
+    ///
+    /// ASCII short-circuits: the primary family is monospace by contract, so
+    /// every ASCII char is one cell and never needs measuring. Everything else
+    /// is measured once and memoised — the answer changes only with the font
+    /// metrics, and `set_font_scaled` clears the memo.
+    pub fn fits_cell(&mut self, ch: char) -> bool {
+        if ch.is_ascii() {
+            return true;
+        }
+        if let Some(&hit) = self.cell_fit.get(&ch) {
+            return hit;
+        }
+        let adv = {
+            let mut fs = self.font_system.lock().expect("fonts: shared FontSystem poisoned");
+            measure_char_advance(
+                &mut fs,
+                &self.family_name,
+                self.font_size_px,
+                self.line_height_px,
+                ch,
+            )
+        };
+        // A tolerance rather than equality: the advance quantization in
+        // `set_font_scaled` leaves sub-pixel slack, and a fraction of a pixel
+        // never reads as movement. Anything past a few percent of a cell does.
+        let fits = (adv - self.cell_advance_px).abs() <= self.cell_advance_px * 0.05;
+        self.cell_fit.insert(ch, fits);
+        fits
+    }
+
+    /// `make_buffer` for a caller that ALREADY holds the FontSystem guard.
+    /// The mutex is not reentrant, so a row-shaping loop must take the guard
+    /// once and use this instead of `make_buffer`.
+    pub fn make_buffer_with(fs: &mut FontSystem, font_size_px: f32, line_height_px: f32) -> Buffer {
+        Buffer::new(fs, Metrics::new(font_size_px, line_height_px))
     }
 
     /// Single-shot prepare+render path for a list of `TextArea`s. The
@@ -181,17 +213,20 @@ impl GlyphStack {
         text_areas: &[TextArea<'pass>],
         pass: &mut RenderPass<'pass>,
     ) -> Result<(), String> {
-        self.renderer
-            .prepare(
-                device,
-                queue,
-                &mut self.font_system,
-                &mut self.atlas,
-                &self.viewport,
-                text_areas.iter().cloned(),
-                &mut self.swash_cache,
-            )
-            .map_err(|e| format!("glyphon prepare: {e:?}"))?;
+        {
+            let mut fs = self.font_system.lock().expect("fonts: shared FontSystem poisoned");
+            self.renderer
+                .prepare(
+                    device,
+                    queue,
+                    &mut fs,
+                    &mut self.atlas,
+                    &self.viewport,
+                    text_areas.iter().cloned(),
+                    &mut self.swash_cache,
+                )
+                .map_err(|e| format!("glyphon prepare: {e:?}"))?;
+        }
         self.renderer
             .render(&self.atlas, &self.viewport, pass)
             .map_err(|e| format!("glyphon render: {e:?}"))?;
@@ -233,6 +268,8 @@ impl GlyphStack {
     /// single-channel alpha) — do not attempt it here.
     pub fn set_font_scaled(&mut self, family: &str, logical_px: f32, dpr: f32) {
         self.font_family = family.to_string();
+        // Every cached answer was measured against the OLD metrics.
+        self.cell_fit.clear();
         // P5b: parse the primary family name once per swap — every shaping
         // and measure site below (and in grid.rs) uses `Family::Name` with
         // this, so the measured advance and the drawn glyphs come from the
@@ -242,12 +279,10 @@ impl GlyphStack {
         let logical_px = logical_px.max(1.0);
         let font_px_raw = logical_px * dpr;
         let line_h_raw = (font_px_raw * 1.2).ceil();
-        let advance_raw = measure_cell_advance(
-            &mut self.font_system,
-            &self.family_name,
-            font_px_raw,
-            line_h_raw,
-        );
+        let advance_raw = {
+            let mut fs = self.font_system.lock().expect("fonts: shared FontSystem poisoned");
+            measure_cell_advance(&mut fs, &self.family_name, font_px_raw, line_h_raw)
+        };
         let advance_int = {
             let rounded = advance_raw.round().max(1.0);
             // Warp-parity bias: never quantize the font DOWN — shrinking to
@@ -264,12 +299,10 @@ impl GlyphStack {
         let scale = (advance_int / advance_raw).clamp(1.0, 1.06);
         let font_px = font_px_raw * scale;
         let line_h_scaled = (font_px * 1.2).ceil();
-        let advance_check = measure_cell_advance(
-            &mut self.font_system,
-            &self.family_name,
-            font_px,
-            line_h_scaled,
-        );
+        let advance_check = {
+            let mut fs = self.font_system.lock().expect("fonts: shared FontSystem poisoned");
+            measure_cell_advance(&mut fs, &self.family_name, font_px, line_h_scaled)
+        };
         if (advance_check - advance_int).abs() > 0.05 {
             // Verify failed — the face doesn't scale linearly enough (or the
             // 5% clamp stopped short of the integer). Keep the RAW physical
@@ -319,23 +352,44 @@ fn measure_cell_advance(
     size_px: f32,
     line_h_px: f32,
 ) -> f32 {
+    let adv = measure_char_advance(font_system, family_name, size_px, line_h_px, 'M');
+    if adv > 0.0 {
+        adv
+    } else {
+        size_px * 0.6
+    }
+}
+
+/// Total shaped advance of a single char, in the same physical px as
+/// `cell_advance_px`. Returns 0.0 if the char shapes to nothing.
+///
+/// Sums the run's glyph widths rather than taking the first: one char can shape
+/// to several glyphs, and it is the TOTAL advance that decides how far the rest
+/// of the row gets pushed.
+fn measure_char_advance(
+    font_system: &mut FontSystem,
+    family_name: &str,
+    size_px: f32,
+    line_h_px: f32,
+    ch: char,
+) -> f32 {
+    let mut tmp = [0u8; 4];
     let mut buf = Buffer::new(font_system, Metrics::new(size_px, line_h_px));
     // Give the buffer effectively-unbounded width so the shaper doesn't wrap.
     buf.set_size(font_system, Some(f32::INFINITY), Some(line_h_px));
     buf.set_text(
         font_system,
-        "M",
+        ch.encode_utf8(&mut tmp),
         Attrs::new().family(Family::Name(family_name)),
         Shaping::Advanced,
     );
+    let mut total = 0.0;
     for run in buf.layout_runs() {
-        if let Some(g) = run.glyphs.first() {
-            if g.w > 0.0 {
-                return g.w;
-            }
+        for g in run.glyphs {
+            total += g.w;
         }
     }
-    size_px * 0.6
+    total
 }
 
 /// Default text bounds: no clipping. R1.d will compute pane-rect bounds.

@@ -33,7 +33,10 @@ struct SurfaceUniform {
 }
 
 pub struct QuadPipeline {
-    pipeline: wgpu::RenderPipeline,
+    /// Shared with the other passes on this device (and, when panes share a
+    /// device, with every pane). `Arc` because wgpu 22's `RenderPipeline` is
+    /// not itself clonable.
+    program: std::sync::Arc<QuadProgram>,
     uniform_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     /// Growable instance buffer. Resized (recreated) when the per-frame
@@ -86,12 +89,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 "#;
 
 impl QuadPipeline {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("native_term quad shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
-        });
-
+    /// Build the per-pass state around an ALREADY-COMPILED program.
+    ///
+    /// A2: the shader module + pipeline used to be built inside this function,
+    /// so a pane compiled the same WGSL five times (bg, decor, cursor, block,
+    /// search) — ~70ms of a pane's ~230ms. They now come from a `QuadProgram`
+    /// that is compiled once per device and shared by all five passes; what
+    /// stays here is genuinely per-pass: the surface uniform, its bind group,
+    /// and the instance buffer.
+    pub fn new(device: &wgpu::Device, program: std::sync::Arc<QuadProgram>) -> Self {
         let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("native_term quad surface uniform"),
             contents: bytemuck::bytes_of(&SurfaceUniform {
@@ -100,68 +106,15 @@ impl QuadPipeline {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("native_term quad bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("native_term quad bg"),
-            layout: &bgl,
+            layout: &program.bgl,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: uniform_buf.as_entire_binding(),
             }],
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("native_term quad layout"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
-        });
-
-        // Instance buffer layout: rect (vec4) @ location 0, color (vec4) @ 1.
-        let instance_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
-        let instance_buf_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<QuadInstance>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &instance_attrs,
-        };
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("native_term quad pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                compilation_options: Default::default(),
-                buffers: &[instance_buf_layout],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
 
         let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("native_term quad instances"),
@@ -171,7 +124,7 @@ impl QuadPipeline {
         });
 
         Self {
-            pipeline,
+            program,
             uniform_buf,
             bind_group,
             instance_buf,
@@ -222,9 +175,89 @@ impl QuadPipeline {
         if self.pending == 0 {
             return;
         }
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(&self.program.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.set_vertex_buffer(0, self.instance_buf.slice(..));
         pass.draw(0..6, 0..self.pending);
+    }
+}
+
+/// The expensive, pane-independent half of a quad pipeline: the compiled shader
+/// and the render pipeline built from it, plus the bind-group layout they need.
+///
+/// Compiled ONCE per (device, surface format) and shared by every pass — and,
+/// when panes share a device, by every pane in the app. Cloning is cheap: wgpu
+/// 22's `RenderPipeline` and `BindGroupLayout` are refcounted handles.
+///
+/// A program is only valid on the device that created it. Never hand one built
+/// on device A to a pane rendering on device B — wgpu rejects cross-device
+/// resources, so the cache that stores these is keyed per device.
+pub struct QuadProgram {
+    pipeline: wgpu::RenderPipeline,
+    bgl: wgpu::BindGroupLayout,
+}
+
+impl QuadProgram {
+    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("native_term quad shader"),
+            source: wgpu::ShaderSource::Wgsl(SHADER_SRC.into()),
+        });
+
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("native_term quad bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("native_term quad layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+
+        // Instance buffer layout: rect (vec4) @ location 0, color (vec4) @ 1.
+        let instance_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+        let instance_buf_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<QuadInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &instance_attrs,
+        };
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("native_term quad pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                compilation_options: Default::default(),
+                buffers: &[instance_buf_layout],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        Self { pipeline, bgl }
     }
 }

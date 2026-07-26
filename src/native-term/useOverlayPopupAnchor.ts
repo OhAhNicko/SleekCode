@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { emitOverlayPopup, listenOverlayAction } from "../lib/overlay-bridge";
+import { useAnyModalOpen } from "../store/modalCoordinationSlice";
+import { useDismissOnOutsidePointer } from "../lib/overlay-dismiss";
 
 /**
  * Emit a pane/element-anchored popup's live state to the overlay webview while
@@ -13,6 +15,19 @@ import { emitOverlayPopup, listenOverlayAction } from "../lib/overlay-bridge";
  * emits `overlay:popup` on change (position AND size — a bare ResizeObserver
  * misses position-only moves, same reasoning as the native geometry driver).
  * On close/unmount it emits `open:false` so the overlay drops it.
+ *
+ * ## Fullscreen modals force-close every popup
+ *
+ * These render in the overlay webview, a separate always-on-top window. No DOM
+ * z-index in the MAIN webview can cover it, so a fullscreen modal that dims the
+ * app still gets the TUI scrollbar, the jump-to-bottom button and the exit
+ * banner painted on top of it — chrome for panes the user cannot even see.
+ *
+ * `useModalWhen` already hides the native panes themselves through
+ * `native-term/visibility.ts`; this applies the same rule to the popups that
+ * float above them, in the one place they are all published from. Every kind
+ * routed through here is anchored to app UI that a fullscreen modal covers, so
+ * none of them has a reason to outlive one.
  */
 export function useOverlayPopupAnchor(opts: {
   id: string;
@@ -24,12 +39,30 @@ export function useOverlayPopupAnchor(opts: {
   /** Called with actions the overlay popup bounces back (interactive popups). */
   onAction?: (action: string, data?: unknown) => void;
 }): void {
-  const { id, kind, open, anchorRef } = opts;
+  const { id, kind, anchorRef } = opts;
+  // MUST be called unconditionally. Writing this as
+  //     opts.open && !useAnyModalOpen()
+  // short-circuits: when `opts.open` is false the hook never runs, so the hook
+  // COUNT changes between renders. React then hands the remaining hooks the
+  // wrong slots — which is why a popup whose `open` toggles (TuiScrollbar,
+  // driven by alt-screen) produced both "change in the order of Hooks" and a
+  // TypeError reading a store field off undefined.
+  const anyModalOpen = useAnyModalOpen();
+  const open = opts.open && !anyModalOpen;
   // Serialize so a new inline object each render doesn't restart the effect.
   const payloadJson = JSON.stringify(opts.payload ?? null);
   // Ref so a new inline closure each render doesn't resubscribe the listener.
   const onActionRef = useRef(opts.onAction);
   onActionRef.current = opts.onAction;
+
+  // Outside-click dismissal (see lib/overlay-dismiss.ts): the overlay no longer
+  // covers the screen to catch it, so it comes from the main webview and is
+  // reported as the same "__dismiss__" action the backdrop used to send.
+  useDismissOnOutsidePointer(
+    opts.open,
+    () => onActionRef.current?.("__dismiss__"),
+    opts.anchorRef,
+  );
 
   useEffect(() => {
     if (!open) return;

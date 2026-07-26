@@ -332,6 +332,28 @@ pub fn emit_focus_gained(app: &AppHandle, term_id: u32) {
     );
 }
 
+/// A mouse button went down on this pane (WM_LBUTTONDOWN). No payload.
+///
+/// Exists for ONE reason: dismissing floating popups. The overlay used to
+/// catch outside clicks by covering the whole client area and being
+/// hit-testable everywhere ("backdrop mode"), which forced the window to be
+/// hidden/regioned around every popup and produced the ghost-frame bugs (see
+/// docs/learnings/2026-07-26-overlay-popup-lifecycle-races.md). With that gone,
+/// a click on a native pane has to reach JS some other way — and nothing else
+/// covers it: `focus_gained` only fires on a CHANGE of focus, so clicking an
+/// ALREADY-focused pane was silent. Emitted unconditionally (clicks are rare);
+/// JS ignores it when no popup is open.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PointerDown {}
+
+pub fn emit_pointer_down(app: &AppHandle, term_id: u32) {
+    let _ = app.emit(
+        &format!("native_term:{}:pointer_down", term_id),
+        PointerDown {},
+    );
+}
+
 /// The native HWND lost keyboard focus (WM_KILLFOCUS). No payload. Needed
 /// because on Windows the tauri window `onFocusChanged` event mirrors the
 /// WEBVIEW's focus, not the OS window's — while a native pane holds Win32

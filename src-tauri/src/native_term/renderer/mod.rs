@@ -1,6 +1,8 @@
 pub mod cursor;
 pub mod damage;
+pub mod fonts;
 pub mod glyph_atlas;
+pub mod gpu;
 pub mod grid;
 pub mod link_scan;
 pub mod pipeline;
@@ -25,6 +27,13 @@ pub struct ThemeColors {
     pub cursor: [u8; 4],
     pub cursor_accent: [u8; 4],
     pub selection: [u8; 4],
+    /// Replacement for xterm indices 16..=255, in order. `None` uses the
+    /// standard cube/greyscale maths.
+    ///
+    /// A fixed array rather than a `Vec` so `ThemeColors` stays `Copy` — the
+    /// frame builder snapshots it by value under a short read lock, and the
+    /// per-cell hot path reads that stack copy.
+    pub extended: Option<[[u8; 4]; 240]>,
 }
 
 impl ThemeColors {
@@ -56,6 +65,7 @@ impl ThemeColors {
             cursor: [0xDB, 0xD6, 0xCF, 0xCC],
             cursor_accent: [0x0D, 0x0D, 0x11, 0xFF],
             selection: [0x44, 0x55, 0x6B, 0xFF],
+            extended: None,
         }
     }
 }

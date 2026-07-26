@@ -32,6 +32,11 @@ pub struct CreateOpts {
     /// re-asserts the live value via `native_term_set_focused` on any change.
     #[serde(default)]
     pub focused: bool,
+    /// Opt in to the process-wide Device/Queue (Settings toggle). Travels per
+    /// pane so flipping the toggle affects only panes created afterwards —
+    /// existing panes keep the device they were built with.
+    #[serde(default)]
+    pub shared_gpu: bool,
 }
 
 /// xterm.js-compatible theme. 16 ANSI + cursor/selection/bg/fg colors.
@@ -59,6 +64,14 @@ pub struct TerminalTheme {
     pub ansi13: String,
     pub ansi14: String,
     pub ansi15: String,
+    /// Optional replacement for xterm indices 16..=255 (240 entries, in order).
+    ///
+    /// Light themes need this: the 256-color cube is a fixed set of constants
+    /// chosen for dark canvases, so on paper backgrounds CLI output renders at
+    /// ~1.2:1 and is effectively invisible. The JS side sends a palette adapted
+    /// to the canvas; `None` keeps the standard xterm cube.
+    #[serde(default, rename = "extendedAnsi")]
+    pub extended_ansi: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

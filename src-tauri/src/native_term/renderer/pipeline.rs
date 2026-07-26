@@ -16,22 +16,17 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use alacritty_terminal::term::Term;
-use glyphon::{Attrs, Buffer, Family, Shaping, TextArea, TextBounds};
+use glyphon::TextArea;
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use super::super::parser_bridge::TermListener;
 use super::super::window::Rect;
 use super::cursor::CursorStyle;
 use super::glyph_atlas::GlyphStack;
+use super::gpu;
 use super::grid::{CellGrid, TermFrameInfo};
-use super::quad_pipeline::{QuadInstance, QuadPipeline};
+use super::quad_pipeline::{QuadInstance, QuadPipeline, QuadProgram};
 use super::ThemeColors;
-
-/// Static text shown on the no-Term placeholder path (pre-`attach_term`).
-/// Shared by construction and `rebuild_placeholder` so the two build sites
-/// can never drift.
-const PLACEHOLDER_TEXT: &str =
-    "Hello, MADE — native_term R1.b alive\n(no PTY attached yet)";
 
 /// P3a frame-scheduler stage 1: externally-visible state that can change the
 /// rendered output WITHOUT marking any row in the damage bitset. Compared
@@ -84,15 +79,21 @@ pub enum RenderOutcome {
     SkippedLost,
 }
 
+/// How many consecutive lost frames mean "the device is gone", not "the
+/// swapchain went stale". A resize or a monitor change produces one or two;
+/// a dead device produces them forever.
+const LOST_FRAMES_UNTIL_DEVICE_VERDICT: u32 = 10;
+
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
+    /// `Arc` so a pane can hold the SHARED device (wgpu 22's handles are not
+    /// clonable). In per-pane mode this is simply an Arc of its own device.
+    device: std::sync::Arc<wgpu::Device>,
+    queue: std::sync::Arc<wgpu::Queue>,
     config: wgpu::SurfaceConfiguration,
     glyph: GlyphStack,
-    /// Optional attached parser-bridge Term. When None, render the static
-    /// "Hello, MADE" placeholder buffer so the spike pane has something to
-    /// show during R1.b before R1.c wires `attach_term`.
+    /// Optional attached parser-bridge Term. When None, the pane renders as
+    /// an empty terminal (the pass clear alone) until `attach_term` lands.
     grid: Option<CellGrid>,
     term: Option<Arc<Mutex<Term<TermListener>>>>,
     /// P2a: dedicated instanced-quad pipeline for the cursor pass (focused
@@ -113,9 +114,6 @@ pub struct Renderer {
     /// it owns its own uploaded instance buffer (same rationale as
     /// `search_quads`). See `CellGrid::build_block_quads`.
     block_quads: QuadPipeline,
-    /// Placeholder Buffer used in the no-Term path. Pre-built once in `new`
-    /// so render() doesn't re-shape every frame.
-    placeholder_buffer: Buffer,
     /// Surface clear color used as the default background. Cells whose bg
     /// matches this color skip emitting a quad (saves overdraw on blank
     /// regions); cells with a non-default bg are filled by `bg_quads`.
@@ -174,6 +172,13 @@ pub struct Renderer {
     /// reconfigure-and-skip path deliberately leaves it (and the damage bits
     /// + `last_snapshot`) untouched so the retry frame stays dirty.
     force_render: bool,
+    /// Consecutive `get_current_texture` failures. A device-loss detector —
+    /// see the Lost/Outdated arm in `render`.
+    consecutive_lost: u32,
+    /// Latched once `consecutive_lost` crosses the verdict threshold. Read by
+    /// the win32 paint path, which rebuilds this renderer in place — the flag
+    /// stays set so a rebuild is attempted once per verdict, not per frame.
+    device_lost: bool,
     /// True between the first WM_SIZE of a drag and the resize-settle
     /// commit. While set, `desired_maximum_frame_latency` drops to 1 (D5):
     /// still Fifo — presents stay vsync-phase-coherent with DWM's
@@ -218,17 +223,29 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// `shared_gpu` selects the Device/Queue source: the process-wide pair
+    /// (fast — nothing per pane but the surface) or a fresh one for this pane
+    /// (the original behaviour). Both paths stay live; the choice comes from a
+    /// Settings toggle and travels per pane in `CreateOpts`, so open panes keep
+    /// whatever they were built with.
     pub fn new(
         rwh: RawWindowHandle,
         rdh: RawDisplayHandle,
         width_px: u32,
         height_px: u32,
         dpr: f32,
+        shared_gpu: bool,
     ) -> Result<Self, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::DX12 | wgpu::Backends::VULKAN | wgpu::Backends::METAL,
-            ..Default::default()
-        });
+        // Startup profiling: this whole constructor runs synchronously inside
+        // `native_term_create`, so its cost lands directly on the "open a pane"
+        // latency. One line per pane on stderr + the dlog; cheap enough to keep
+        // permanently, and it is the evidence any further work is measured
+        // against.
+        let t_start = Instant::now();
+        // A3: the Instance is process-wide (see renderer/gpu.rs) and the driver
+        // is warmed at app start, so this costs ~0 instead of ~180ms.
+        let instance = gpu::instance()?;
+        let t_instance = t_start.elapsed();
 
         // SAFETY: caller (window/win32.rs) ensures the underlying HWND lives
         // at least as long as this Renderer. Renderer is dropped BEFORE
@@ -263,21 +280,57 @@ impl Renderer {
         }
         .map_err(|e| format!("create_surface_unsafe: {e}"))?;
 
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }))
-        .or_else(|| {
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::LowPower,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: true,
-            }))
-        })
-        .ok_or_else(|| "no compatible wgpu adapter".to_string())?;
+        // Adapter and Device must come from the SAME source — a device built on
+        // one adapter cannot configure a surface validated against another, and
+        // wgpu enforces that with a validation panic that ABORTS the process
+        // (it fires inside a wnd_proc callback, which cannot unwind). Choose
+        // both together, or neither:
+        //
+        //   shared adapter usable  → shared adapter, and the shared device if
+        //                            the pane opted in;
+        //   not usable             → this pane builds its own adapter AND its
+        //                            own device, ignoring the toggle.
+        let (adapter, shared) = match gpu::shared_adapter_for(&instance, &surface) {
+            Ok(a) => {
+                let dev = if shared_gpu {
+                    match gpu::shared_device(&a) {
+                        Ok(d) => Some(d),
+                        Err(e) => {
+                            eprintln!("[native_term] gpu: shared device unavailable ({e}) — per-pane device");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                (a, dev)
+            }
+            Err(e) => {
+                eprintln!(
+                    "[native_term] gpu: {e} — this pane builds its own adapter and device"
+                );
+                let a = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                }))
+                .or_else(|| {
+                    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference: wgpu::PowerPreference::LowPower,
+                        compatible_surface: Some(&surface),
+                        force_fallback_adapter: true,
+                    }))
+                })
+                .ok_or_else(|| "no compatible wgpu adapter".to_string())?;
+                (std::sync::Arc::new(a), None)
+            }
+        };
+        let t_adapter = t_start.elapsed();
 
-        let (device, queue) = pollster::block_on(adapter.request_device(
+        let (device, queue) = if let Some(s) = shared.as_ref() {
+            (s.device.clone(), s.queue.clone())
+        } else {
+            let (d, q) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("native_term R1 device"),
                 required_features: wgpu::Features::empty(),
@@ -292,7 +345,10 @@ impl Renderer {
             },
             None,
         ))
-        .map_err(|e| format!("request_device: {e}"))?;
+            .map_err(|e| format!("request_device: {e}"))?;
+            (std::sync::Arc::new(d), std::sync::Arc::new(q))
+        };
+        let t_device = t_start.elapsed();
 
         let caps = surface.get_capabilities(&adapter);
         // Pick a NON-sRGB (linear) surface explicitly so the GPU performs no
@@ -304,6 +360,14 @@ impl Renderer {
         // first), which was non-deterministic across backends and broke the
         // text-vs-background color match. Choosing the format here makes it
         // deterministic.
+        // An empty format list means this adapter cannot present to this
+        // surface at all. Bail with an error rather than indexing `formats[0]`
+        // (index panic) or configuring anyway (validation panic) — both abort
+        // the process from inside the wnd_proc, which cannot unwind. Returning
+        // Err just fails this pane's creation, which the caller reports.
+        if caps.formats.is_empty() {
+            return Err("surface reports no supported formats on this adapter".to_string());
+        }
         let format = [
             wgpu::TextureFormat::Bgra8Unorm,
             wgpu::TextureFormat::Rgba8Unorm,
@@ -335,7 +399,7 @@ impl Renderer {
         // GlyphStack::set_font_scaled derives the physical rasterization size
         // from logical × dpr with advance quantization.
         let dpr = if dpr > 0.0 { dpr } else { 1.0 };
-        let mut glyph = GlyphStack::new(
+        let glyph = GlyphStack::new(
             &device,
             &queue,
             format,
@@ -345,26 +409,37 @@ impl Renderer {
             14.0,
             dpr,
         );
+        let t_glyph = t_start.elapsed();
 
-        // Build the static placeholder buffer once. Visible in the spike pane
-        // until R1.c calls `attach_term`.
-        let mut placeholder_buffer = glyph.make_buffer();
-        // P5b: shape with the parsed primary family (construction just set
-        // it via `set_font_scaled`) — `Family::Monospace` ignored the
-        // requested family and rendered whatever mono face fontdb ranked
-        // first. Disjoint field borrows of `glyph` keep this one call.
-        placeholder_buffer.set_text(
-            &mut glyph.font_system,
-            PLACEHOLDER_TEXT,
-            Attrs::new().family(Family::Name(&glyph.family_name)),
-            Shaping::Advanced,
+        // A2: compile the quad shader + pipeline ONCE and share it across all
+        // five passes, instead of five identical compiles per pane. On the
+        // shared device it goes further — the program is cached per format, so
+        // pane 2..N compiles nothing at all.
+        let program = match shared.as_ref() {
+            Some(s) => s.program(format),
+            None => std::sync::Arc::new(QuadProgram::new(&device, format)),
+        };
+        let cursor_quads = QuadPipeline::new(&device, program.clone());
+        let bg_quads = QuadPipeline::new(&device, program.clone());
+        let decor_quads = QuadPipeline::new(&device, program.clone());
+        let block_quads = QuadPipeline::new(&device, program.clone());
+        let search_quads = QuadPipeline::new(&device, program);
+        let t_pipelines = t_start.elapsed();
+        // Deltas, not cumulative stamps — the interesting number is what each
+        // stage COSTS. `instance` is measured from entry, the rest from the
+        // previous stage.
+        let line = format!(
+            "[native_term] Renderer::new mode={} {:.1}ms = instance {:.1} + adapter {:.1} + device {:.1} + glyph/atlas {:.1} + pipelines {:.1}",
+            if shared.is_some() { "shared" } else { "per-pane" },
+            t_pipelines.as_secs_f32() * 1000.0,
+            t_instance.as_secs_f32() * 1000.0,
+            (t_adapter - t_instance).as_secs_f32() * 1000.0,
+            (t_device - t_adapter).as_secs_f32() * 1000.0,
+            (t_glyph - t_device).as_secs_f32() * 1000.0,
+            (t_pipelines - t_glyph).as_secs_f32() * 1000.0,
         );
-
-        let cursor_quads = QuadPipeline::new(&device, format);
-        let bg_quads = QuadPipeline::new(&device, format);
-        let decor_quads = QuadPipeline::new(&device, format);
-        let block_quads = QuadPipeline::new(&device, format);
-        let search_quads = QuadPipeline::new(&device, format);
+        eprintln!("{line}");
+        crate::debug_log::dlog(&line);
 
         let theme_init = ThemeColors::default_tango();
         let bg_clear = color_to_wgpu(theme_init.background);
@@ -382,7 +457,6 @@ impl Renderer {
             bg_quads,
             decor_quads,
             block_quads,
-            placeholder_buffer,
             bg_clear,
             theme,
             cursor_style: CursorStyle::Bar,
@@ -397,6 +471,8 @@ impl Renderer {
             // yet). `last_snapshot: None` would catch it too — belt and
             // suspenders.
             force_render: true,
+            consecutive_lost: 0,
+            device_lost: false,
             interactive_resize: false,
             last_snapshot: None,
             search_gen: 0,
@@ -454,32 +530,9 @@ impl Renderer {
         if let Some(grid) = self.grid.as_mut() {
             grid.rebuild_buffers(&mut self.glyph);
         }
-        // The pre-attach placeholder is a Buffer too — same stale-Metrics
-        // rule as the grid rows.
-        self.rebuild_placeholder();
-        // P3a: font swap is externally visible even on the no-grid
-        // placeholder path (metrics changed) — never let the clean-frame
-        // early-out swallow it.
+        // P3a: font swap is externally visible even with no grid attached
+        // (metrics changed) — never let the clean-frame early-out swallow it.
         self.force_render = true;
-    }
-
-    /// Rebuild the pre-attach placeholder Buffer with the CURRENT glyph
-    /// metrics + primary family — the same construction path `new` uses.
-    /// Buffers bake the Metrics they were created with, so every metric
-    /// re-derivation (`set_font`, `set_scale`) must rebuild this one too or
-    /// the no-Term placeholder keeps rendering at construction-time size
-    /// after a hot-swap.
-    fn rebuild_placeholder(&mut self) {
-        self.placeholder_buffer = self.glyph.make_buffer();
-        // P5b: shape with the parsed primary family, mirroring `new` —
-        // disjoint field borrows of `glyph` (mut font_system + shared
-        // family_name) keep this one call.
-        self.placeholder_buffer.set_text(
-            &mut self.glyph.font_system,
-            PLACEHOLDER_TEXT,
-            Attrs::new().family(Family::Name(&self.glyph.family_name)),
-            Shaping::Advanced,
-        );
     }
 
     /// Read the current per-cell metrics (horizontal advance, line height) in
@@ -513,9 +566,6 @@ impl Renderer {
         if let Some(grid) = self.grid.as_mut() {
             grid.rebuild_buffers(&mut self.glyph);
         }
-        // Same stale-Metrics rule as the grid rows: the placeholder Buffer
-        // baked the pre-rescale Metrics.
-        self.rebuild_placeholder();
         self.force_render = true;
     }
 
@@ -672,6 +722,12 @@ impl Renderer {
     /// an Arc to the parser-bridge's Term so it can read the live grid.
     /// `cols`/`rows` are the terminal-cell dimensions (NOT pixels).
     #[allow(dead_code)] // R1.c consumer
+    /// Has this renderer's device been declared lost? The win32 paint path
+    /// polls this and rebuilds the renderer in place.
+    pub fn device_lost(&self) -> bool {
+        self.device_lost
+    }
+
     pub fn attach_term(&mut self, term: Arc<Mutex<Term<TermListener>>>, cols: usize, rows: usize) {
         let grid = CellGrid::new(&mut self.glyph, cols, rows, Arc::clone(&self.theme));
         self.term = Some(term);
@@ -754,10 +810,29 @@ impl Renderer {
                 // arm schedules a bounded retry.
                 self.surface.configure(&self.device, &self.config);
                 self.configures += 1;
+                // A reconfigure fixes a stale swapchain. It does NOT fix a lost
+                // DEVICE (driver reset / TDR / GPU hot-swap), where every frame
+                // fails forever and the pane just stays black — which was true
+                // of the per-pane path too, long before any sharing. Treat a
+                // run of consecutive failures as that verdict and drop the
+                // shared context, so panes opened afterwards build a healthy
+                // device instead of inheriting the dead one. Any success resets
+                // the counter, so ordinary resize churn never trips it.
+                self.consecutive_lost += 1;
+                if self.consecutive_lost == LOST_FRAMES_UNTIL_DEVICE_VERDICT {
+                    eprintln!(
+                        "[native_term] {} consecutive lost frames — treating the device as lost",
+                        self.consecutive_lost
+                    );
+                    self.device_lost = true;
+                    gpu::invalidate_device();
+                    gpu::invalidate();
+                }
                 return Ok(RenderOutcome::SkippedLost);
             }
             Err(e) => return Err(format!("get_current_texture: {e:?}")),
         };
+        self.consecutive_lost = 0;
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut enc = self
             .device
@@ -941,18 +1016,15 @@ impl Renderer {
         self.cursor_quads
             .upload(&self.device, &self.queue, surface_w, surface_h, &cursor_instances);
 
-        let text_areas: Vec<TextArea> = if let Some(grid) = self.grid.as_ref() {
-            grid.text_areas(line_h)
-        } else {
-            vec![TextArea {
-                buffer: &self.placeholder_buffer,
-                left: 16.0,
-                top: 16.0,
-                scale: 1.0,
-                bounds: TextBounds::default(),
-                default_color: glyphon::Color::rgba(0xE6, 0xE6, 0xE6, 0xFF),
-                custom_glyphs: &[],
-            }]
+        // No Term attached yet (the window exists, the PTY has not landed):
+        // draw NOTHING. The pass already clears to `bg_clear`, the theme
+        // background, so the pane comes up as an empty terminal rather than
+        // announcing itself. This used to paint an R1.b spike banner
+        // ("Hello, MADE — native_term R1.b alive"), which shipped and was
+        // visible on every pane start (removed 2026-07-26).
+        let text_areas: Vec<TextArea> = match self.grid.as_ref() {
+            Some(grid) => grid.text_areas(line_h),
+            None => Vec::new(),
         };
 
         {

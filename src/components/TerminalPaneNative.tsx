@@ -11,6 +11,8 @@ import {
   subscribeResized,
   subscribeExit,
   subscribeRButton,
+  subscribeSelection,
+  subscribeAltScreen,
   subscribeMousePassthrough,
   subscribeKeyDownPreview,
   subscribeScroll,
@@ -38,6 +40,13 @@ import {
 } from "../lib/native-term-bridge";
 import { useNativeCommandBlocks } from "../hooks/useNativeCommandBlocks";
 import { useNativeFileLinks } from "../native-term/useNativeFileLinks";
+import {
+  setPaneSelection,
+  setPaneAltScreen,
+  setPaneExited,
+  clearPaneState,
+} from "../lib/pane-state-registry";
+import { registerTerminalActions, unregisterTerminalActions } from "../lib/terminal-actions";
 import { usePtyNative } from "../hooks/usePtyNative";
 import type { NativeRendererSlice } from "../store/nativeRendererSlice";
 import ImeCompositionPopup from "../native-term/ImeCompositionPopup";
@@ -47,7 +56,16 @@ import PaneNotification from "../native-term/PaneNotification";
 import PaneProgressBar from "../native-term/PaneProgressBar";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { queueGeom } from "../native-term/frameSync";
-import { forgetPane, setPaneLayoutVisible } from "../native-term/visibility";
+import {
+  forgetPane,
+  setPaneLayoutVisible,
+  setPaneOccluded,
+} from "../native-term/visibility";
+import {
+  anyFloatingWindow,
+  isOccluded,
+  OCCLUDER_SELECTOR,
+} from "../native-term/occlusion";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
 import PromptComposer from "./PromptComposer";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
@@ -135,10 +153,17 @@ const FALLBACK_ANSI: Record<string, string> = {
 /// with) to the native_term wire-format TerminalTheme. xterm ITheme uses
 /// `selectionBackground` / `black`/.../`brightWhite`; the Rust side wants
 /// `selection` and `ansi0..15`. Defensive fallbacks for undeclared keys.
-function madeThemeToNative(t: Record<string, string | undefined>): NativeTermTheme {
+function madeThemeToNative(
+  t: Record<string, string | undefined>,
+  extendedAnsi?: string[],
+): NativeTermTheme {
   const pick = (key: string, fallback: string): string =>
     t[key] ?? fallback;
   return {
+    // Only light themes carry one — see getEffectiveTerminalTheme. Without it
+    // the renderer falls back to the standard xterm cube, whose constants are
+    // built for dark canvases and sit at ~1.2:1 on paper.
+    ...(extendedAnsi ? { extendedAnsi } : {}),
     background: pick("background", "#0d0d11"),
     foreground: pick("foreground", "#d3d7cf"),
     cursor: pick("cursor", "#dbd6cf"),
@@ -161,6 +186,24 @@ function madeThemeToNative(t: Record<string, string | undefined>): NativeTermThe
     ansi14: pick("brightCyan", FALLBACK_ANSI.ansi14),
     ansi15: pick("brightWhite", FALLBACK_ANSI.ansi15),
   };
+}
+
+/** Effective theme for a pane, in the native wire format.
+ *
+ *  Exists so neither call site can drop `extendedAnsi`: both used to cast the
+ *  ITheme to `Record<string, string | undefined>`, which silently discards it
+ *  (it is a `string[]`). That cast is why light themes rendered their 256-color
+ *  output at dark-theme values. */
+function nativeThemeFor(
+  themeId: string,
+  vibrant: boolean,
+  isActive: boolean,
+): NativeTermTheme {
+  const eff = getEffectiveTerminalTheme(themeId, vibrant, isActive);
+  return madeThemeToNative(
+    eff as Record<string, string | undefined>,
+    eff.extendedAnsi,
+  );
 }
 
 // Phase 1 J1 — native-mode terminal pane.
@@ -427,6 +470,15 @@ export default function TerminalPaneNative({
   // Legacy-pane parity: vibrant ANSI + active-pane background lift ride the
   // effective theme (same helper the xterm pane uses). Ref for the create
   // path; the hot-swap effect below reads the live values.
+  // EXPERIMENTAL shared-wgpu-device opt-in. Mirrored into a ref because the
+  // HWND lifecycle effect is create-once: the value is read when a pane is
+  // built and never re-read, which is exactly the "new panes only" semantics
+  // the toggle promises.
+  const nativeSharedGpu = useAppStore(
+    (s) => (s as AppStoreWithNative).nativeSharedGpu,
+  );
+  const sharedGpuRef = useRef(nativeSharedGpu);
+  useEffect(() => { sharedGpuRef.current = nativeSharedGpu; }, [nativeSharedGpu]);
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const vibrantColorsRef = useRef(vibrantColors);
   useEffect(() => { vibrantColorsRef.current = vibrantColors; }, [vibrantColors]);
@@ -544,11 +596,19 @@ export default function TerminalPaneNative({
     let cancelled = false;
     let createdId: NativeTermId | null = null;
     let raf2Id = 0;
+    // Startup profiling, JS half. Pairs with the `[native_term] create` and
+    // `Renderer::new` lines on stderr: this measures what the RUST timings
+    // cannot see — the two rAFs we wait before even asking for a window, the
+    // IPC round-trips, and the propose_dimensions handshake. All of it is on
+    // the "open a pane" critical path.
+    const tMount = performance.now();
+    let tCreateStart = 0;
 
     const raf1 = requestAnimationFrame(() => {
       raf2Id = requestAnimationFrame(async () => {
         if (cancelled) return;
         try {
+          tCreateStart = performance.now();
           // P7a: ONE `native_term_create` carries the full CreateOpts —
           // theme, font (Hack + the user's CLI font size), cursor
           // style/blink, scrollback and the live focus state — so the
@@ -560,12 +620,10 @@ export default function TerminalPaneNative({
           const id = await nativeTermCreate({
             rect: surfaceRectOf(el),
             dpr: window.devicePixelRatio,
-            theme: madeThemeToNative(
-              getEffectiveTerminalTheme(
-                themeIdRef.current,
-                vibrantColorsRef.current,
-                isActiveRef.current,
-              ) as Record<string, string | undefined>,
+            theme: nativeThemeFor(
+              themeIdRef.current,
+              vibrantColorsRef.current,
+              isActiveRef.current,
             ),
             font: {
               family: TERMINAL_FONT_FAMILY,
@@ -575,12 +633,17 @@ export default function TerminalPaneNative({
             cursorBlink: nativeCursorBlinkRef.current,
             scrollback: 10000,
             focused: isActiveRef.current && appWindowFocusedRef.current,
+            // Read through a ref, ONCE, at create: flipping the Settings
+            // toggle must not disturb panes that are already running on the
+            // device they were built with.
+            sharedGpu: sharedGpuRef.current,
           });
           if (cancelled) {
             void nativeTermDestroy(id).catch(() => {});
             return;
           }
           createdId = id;
+          const tCreated = performance.now();
           registerNativeTerm(id);
           // ── P1c: initial-size handshake (kills the 80x24 flash) ────────
           // Re-read the anchor rect: during pane-grid mount the div can
@@ -622,6 +685,15 @@ export default function TerminalPaneNative({
           setRows(dims.rows);
           setTermId(id);
           setPtyReady(true);
+          const tDone = performance.now();
+          // console.log, NOT console.debug: DevTools files `debug` under the
+          // Verbose level, which is hidden unless you go turn it on.
+          console.log(
+            `[native-term] pane ready ${(tDone - tMount).toFixed(1)}ms = ` +
+              `rAF wait ${(tCreateStart - tMount).toFixed(1)} + ` +
+              `create ${(tCreated - tCreateStart).toFixed(1)} + ` +
+              `propose+rect ${(tDone - tCreated).toFixed(1)}`,
+          );
         } catch (err) {
           console.error("[TerminalPaneNative] create failed", err);
         }
@@ -649,10 +721,33 @@ export default function TerminalPaneNative({
       // visibility owner (it hides, and re-shows only when the modal gate
       // also allows it) and clear the geometry guard so the next visible
       // frame re-pushes even if the rect is unchanged.
-      if (rect.width <= 0 || rect.height <= 0) {
+      // `visibility: hidden` — which DevServerTerminalHost uses to park every
+      // non-expanded dev server — leaves the bounding rect INTACT, unlike
+      // `display: none`. A rect check alone therefore keeps a DOM-invisible
+      // pane's HWND on screen, painting over whatever is in front of it.
+      // checkVisibility covers visibility, display and content-visibility.
+      const domVisible = el.checkVisibility
+        ? el.checkVisibility({ visibilityProperty: true })
+        : true;
+      if (!domVisible || rect.width <= 0 || rect.height <= 0) {
         setPaneLayoutVisible(createdId, false);
         lastGeomJson = "";
         return;
+      }
+      // An expanded / floating pane window is DOM, so it cannot cover this
+      // HWND — without this the grid panes paint over its title bar, border
+      // and backdrop scrim. `closest` identifies the floating window's OWN
+      // content, which must never hide itself. Measured on the anchor's real
+      // border box, not the clamped surface rect, since occlusion is about
+      // what the user sees.
+      if (anyFloatingWindow()) {
+        const floatHost = el.closest<HTMLElement>(OCCLUDER_SELECTOR);
+        setPaneOccluded(
+          createdId,
+          isOccluded(rect, floatHost?.dataset.floatingMode ?? null),
+        );
+      } else {
+        setPaneOccluded(createdId, false);
       }
       const dpr = window.devicePixelRatio;
       const json = JSON.stringify([rect, dpr]);
@@ -728,6 +823,7 @@ export default function TerminalPaneNative({
         // fires first (this native-renderer event or usePtyNative's onExit →
         // handlePtyExit). setExited is idempotent, so both firing is safe.
         setExited(true);
+        setPaneExited(terminalId, true);
         onPtyExit?.(p.code);
       });
       unlistens.push(u2);
@@ -766,6 +862,24 @@ export default function TerminalPaneNative({
         target.dispatchEvent(evt);
       });
       unlistens.push(u3);
+
+      // Context-menu state mirror. Rust already pushes every selection change
+      // and every alt-screen transition; mirroring them here is what lets a
+      // right-click menu answer "is Copy available?" / "is there scrollback to
+      // scroll?" synchronously while it builds its item list. Asking Rust at
+      // menu-build time (native_term_get_selection) would be an async invoke
+      // arriving long after the menu has painted.
+      const uSel = await subscribeSelection(termId, (p) => {
+        if (cancelled) return;
+        setPaneSelection(terminalId, p.text);
+      });
+      unlistens.push(uSel);
+
+      const uAlt = await subscribeAltScreen(termId, (p) => {
+        if (cancelled) return;
+        setPaneAltScreen(terminalId, p);
+      });
+      unlistens.push(uAlt);
 
       // Splitter mouse-passthrough bridge.
       // TODO(J-track): real wiring. This project uses
@@ -892,6 +1006,15 @@ export default function TerminalPaneNative({
     };
   }, [termId, onPtyExit]);
 
+  // Drop this pane's context-menu state mirror when the pane goes away.
+  // Deliberately its own effect rather than a line in the subscription
+  // cleanup above: that one re-runs whenever `termId` changes (renderer
+  // hot-swap) while the pane lives on, and clearing there would blank the
+  // selection out from under an open menu.
+  useEffect(() => {
+    return () => clearPaneState(terminalId);
+  }, [terminalId]);
+
   // ── Notify parent of PTY readiness once create + spawn both resolved ──
   useEffect(() => {
     if (ptyReady && termId != null) onPtyReady?.();
@@ -911,12 +1034,7 @@ export default function TerminalPaneNative({
     // changes exactly like the legacy renderer.
     void nativeTermSetTheme(
       termId,
-      madeThemeToNative(
-        getEffectiveTerminalTheme(themeId, vibrantColors, isActive) as Record<
-          string,
-          string | undefined
-        >,
-      ),
+      nativeThemeFor(themeId, vibrantColors, isActive),
     ).catch(
       (e) => console.error("[TerminalPaneNative] set_theme update failed", e),
     );
@@ -1660,6 +1778,7 @@ export default function TerminalPaneNative({
     // Capture current YOLO state at restart time — updates badge + forceYolo for spawn
     setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
     setExited(false);
+    setPaneExited(terminalId, false);
     setContextInfo(null);
     promptTimestampsRef.current = [];
     // Hide composer and search bar until the fresh PTY produces output again
@@ -1676,6 +1795,21 @@ export default function TerminalPaneNative({
     }
     setRestartKey((k) => k + 1);
   }, [terminalType, setContextInfo]);
+
+  // Imperative actions the context menu calls. Same registry the xterm pane
+  // uses, so one menu item serves both renderers.
+  useEffect(() => {
+    if (termId == null) return;
+    registerTerminalActions(terminalId, {
+      // Line 0 = oldest buffered line; the native renderer takes an absolute
+      // line, not a viewport delta.
+      scrollToTop: () => void nativeTermScrollToLine(termId, 0).catch(() => {}),
+      scrollToBottom: () => void nativeTermScrollToBottom(termId).catch(() => {}),
+      restart: handleRestart,
+    });
+    return () => unregisterTerminalActions(terminalId);
+  }, [terminalId, termId, handleRestart]);
+
   const handleSwitchSession = useCallback(
     (sid: string | undefined) => {
       // Claim bookkeeping parity with TerminalPaneXterm.handleSwitchSession:
@@ -1837,6 +1971,7 @@ export default function TerminalPaneNative({
         data-native-term-anchor
         data-pane-id={terminalId}
         data-terminal-id={terminalId}
+        data-terminal-renderer="native"
         style={{
           flex: 1,
           minHeight: 0,

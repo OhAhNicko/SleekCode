@@ -71,7 +71,8 @@ use tauri::AppHandle;
 use super::super::events::{
     emit_cell_hover, emit_cell_hover_end, emit_focus_gained, emit_focus_lost,
     emit_ime_composition, emit_key_down_preview, emit_link_click, emit_link_hover,
-    emit_mouse_passthrough, emit_r_button, emit_resized, emit_scroll, emit_selection,
+    emit_mouse_passthrough, emit_pointer_down, emit_r_button, emit_resized, emit_scroll,
+    emit_selection,
     emit_tui_prompt_nav, emit_tui_scroll, CellHover, ImeComposition, KeyDownPreview, KeyEventDto, KeyModifiers,
     LinkClick, LinkHover, MousePassthrough, RButton, Resized, Scroll as ScrollEvt,
     Selection as SelectionEvent, TuiPromptNav, TuiScroll,
@@ -288,6 +289,26 @@ struct ChildState {
     /// wnd_proc's BLINK arm can guard against a stale WM_TIMER that was
     /// already posted when focus was lost (timer killed, message in flight).
     focused: bool,
+    /// Last values pushed through the setters, kept so a renderer REBUILD
+    /// (device loss) can restore the pane exactly instead of coming back on
+    /// renderer defaults — wrong theme, wrong font size, no cursor style.
+    last_theme: Option<super::super::renderer::ThemeColors>,
+    last_font: Option<(String, f32)>,
+    last_cursor: Option<(String, bool)>,
+    /// Whether this pane opted into the shared GPU device, so a rebuild lands
+    /// in the same mode it was created in.
+    shared_gpu: bool,
+    /// Bounded rebuild attempts. A device that keeps dying must not spin the
+    /// paint path rebuilding forever — after this many tries the pane stays
+    /// blank and says so, which is recoverable by reopening it.
+    rebuild_attempts: u32,
+    /// Does this HWND actually own Win32 keyboard focus? Maintained by the
+    /// WM_SETFOCUS / WM_KILLFOCUS arms. ORed with `focused` to get the caret
+    /// visual — see `apply_focus_visual` for why JS alone is not enough.
+    win32_focus: bool,
+    /// Last focus visual pushed to the renderer (`focused || win32_focus`),
+    /// so a repeated push costs nothing and cannot re-arm the blink phase.
+    focus_visual: bool,
     /// S12/S13: JS-authoritative "a link is under the cursor" flag (the URL /
     /// file-path regexes run in React). WM_SETCURSOR shows IDC_HAND while
     /// this is set AND Ctrl is held — the Ctrl+Click affordance.
@@ -388,7 +409,12 @@ pub struct PlatformWindow {
 unsafe impl Send for PlatformWindow {}
 
 impl PlatformWindow {
-    pub fn new(parent_hwnd: isize, rect: Rect, dpr: f32) -> Result<Self, String> {
+    pub fn new(
+        parent_hwnd: isize,
+        rect: Rect,
+        dpr: f32,
+        shared_gpu: bool,
+    ) -> Result<Self, String> {
         unsafe {
             ensure_class_registered()?;
 
@@ -424,7 +450,14 @@ impl PlatformWindow {
                 mouse_tracking: false,
                 cell_w_px: CELL_W_PX,
                 cell_h_px: CELL_H_PX,
+                last_theme: None,
+                last_font: None,
+                last_cursor: None,
+                shared_gpu,
+                rebuild_attempts: 0,
                 focused: false,
+                win32_focus: false,
+                focus_visual: false,
                 hover_link_active: false,
                 wake: None,
                 last_seen_batches: 0,
@@ -509,6 +542,7 @@ impl PlatformWindow {
                 win_w as u32,
                 win_h as u32,
                 dpr,
+                shared_gpu,
             )
             .map_err(|e| {
                 // Roll back the window we just created.
@@ -1146,6 +1180,7 @@ impl NativeTermWindow for PlatformWindow {
         let colors = parse_theme(theme)?;
         unsafe {
             let state = self.state.as_mut();
+            state.last_theme = Some(colors.clone());
             if let Some(r) = state.renderer.as_mut() {
                 r.set_theme(colors);
             }
@@ -1161,6 +1196,7 @@ impl NativeTermWindow for PlatformWindow {
         // so wnd_proc's mouse / cell-coord math stays consistent.
         unsafe {
             let state = self.state.as_mut();
+            state.last_font = Some((family.to_string(), size_px));
             if let Some(r) = state.renderer.as_mut() {
                 r.set_font(family.to_string(), size_px);
                 let (cw, ch) = r.cell_metrics();
@@ -1194,6 +1230,7 @@ impl NativeTermWindow for PlatformWindow {
         // on the WM_TIMER tick.
         unsafe {
             let state = self.state.as_mut();
+            state.last_cursor = Some((style.to_string(), blink));
             if let Some(r) = state.renderer.as_mut() {
                 r.set_cursor_style(style, blink);
             }
@@ -1208,17 +1245,14 @@ impl NativeTermWindow for PlatformWindow {
 
     fn set_focused(&mut self, focused: bool) -> Result<(), String> {
         // P2a: JS-authoritative focus flag. Only the focused pane blinks its
-        // cursor; unfocused panes render a static hollow outline. Store the
-        // flag (ChildState mirror + renderer), re-evaluate the BLINK timer,
-        // and repaint so the cursor swaps solid/hollow immediately.
+        // cursor; unfocused panes render a static hollow outline. The visual
+        // is the OR of this flag and real Win32 focus (see
+        // `apply_focus_visual`), which also re-evaluates the BLINK timer and
+        // repaints so the cursor swaps solid/hollow immediately.
         unsafe {
             let state = self.state.as_mut();
             state.focused = focused;
-            if let Some(r) = state.renderer.as_mut() {
-                r.set_focused(focused);
-            }
-            update_blink_timer(state, self.hwnd);
-            let _ = InvalidateRect(self.hwnd, None, BOOL(0));
+            apply_focus_visual(state, self.hwnd);
         }
         Ok(())
     }
@@ -1441,10 +1475,131 @@ unsafe fn render_with_retry(state: &mut ChildState, hwnd: HWND) {
             outcome,
             Ok(RenderOutcome::Presented | RenderOutcome::SkippedClean)
         );
+        // A lost device never recovers by retrying — reconfiguring a surface
+        // whose device is gone fails forever, which is why a pane used to stay
+        // black until the app restarted. Rebuild it in place instead.
+        if r.device_lost() {
+            if let Err(e) = rebuild_renderer(state, hwnd) {
+                eprintln!("[native_term] renderer rebuild failed: {e}");
+            }
+            return;
+        }
         if !presented_or_clean {
             SetTimer(hwnd, SURFACE_RETRY_TIMER_ID, SURFACE_RETRY_MS, None);
         }
     }
+}
+
+/// Maximum in-place renderer rebuilds before a pane gives up. A GPU that keeps
+/// dying must not turn the paint path into a rebuild loop.
+const MAX_RENDERER_REBUILDS: u32 = 3;
+
+/// Rebuild this pane's renderer after a device-loss verdict.
+///
+/// The old renderer is dropped FIRST: it owns a `Surface` borrowed from this
+/// HWND, and two live surfaces for one window is not a thing wgpu allows. Then
+/// the pane's visual state is pushed back in the same order `native_term_create`
+/// applies it, and the Term is re-attached so the grid — which is CPU-side and
+/// survived the device loss entirely — starts drawing again.
+unsafe fn rebuild_renderer(state: &mut ChildState, hwnd: HWND) -> Result<(), String> {
+    if state.rebuild_attempts >= MAX_RENDERER_REBUILDS {
+        return Err(format!(
+            "giving up after {MAX_RENDERER_REBUILDS} rebuilds — reopen the pane"
+        ));
+    }
+    state.rebuild_attempts += 1;
+    let attempt = state.rebuild_attempts;
+
+    // Drop the dead renderer (and its surface) before creating another.
+    state.renderer = None;
+
+    let (w, h) = state.client_px;
+    let hwnd_isize = hwnd.0 as isize;
+    let mut win32_handle = Win32WindowHandle::new(
+        std::num::NonZeroIsize::new(hwnd_isize).ok_or("zero HWND")?,
+    );
+    win32_handle.hinstance = std::num::NonZeroIsize::new(0);
+    let rwh = RawWindowHandle::Win32(win32_handle);
+    let rdh = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
+
+    let mut renderer = super::super::renderer::Renderer::new(
+        rwh,
+        rdh,
+        (w.max(1)) as u32,
+        (h.max(1)) as u32,
+        state.dpr,
+        state.shared_gpu,
+    )?;
+
+    // Restore what the setters recorded. Order mirrors create: theme, font,
+    // cursor, focus.
+    if let Some(colors) = state.last_theme.clone() {
+        renderer.set_theme(colors);
+    }
+    if let Some((family, size)) = state.last_font.clone() {
+        renderer.set_font(family, size);
+    }
+    if let Some((style, blink)) = state.last_cursor.clone() {
+        renderer.set_cursor_style(&style, blink);
+    }
+    renderer.set_focused(state.focused || state.win32_focus);
+
+    // Re-attach the live Term at its CURRENT dimensions — the parser and its
+    // scrollback are untouched by a device loss, so the pane comes back with
+    // its content intact rather than blank.
+    if let Some(term) = state.term.clone() {
+        let (cols, rows) = {
+            let t = term.lock().expect("rebuild: term poisoned");
+            let g = t.grid();
+            (g.columns(), g.screen_lines())
+        };
+        renderer.attach_term(term, cols, rows);
+    }
+
+    renderer.force_next_frame();
+    state.renderer = Some(renderer);
+    // Refresh the metric mirrors: the rebuilt GlyphStack re-derived them.
+    if let Some(r) = state.renderer.as_ref() {
+        let (cw, ch) = r.cell_metrics();
+        state.cell_w_px = cw.max(0.001);
+        state.cell_h_px = ch.max(0.001);
+    }
+    let _ = InvalidateRect(hwnd, None, BOOL(0));
+    eprintln!("[native_term] renderer rebuilt after device loss (attempt {attempt})");
+    Ok(())
+}
+
+/// Push the effective caret-focus visual: `focused || win32_focus`.
+///
+/// JS owns this normally, and must: a pane stays "focused" while the MADE
+/// composer or the pane-search input holds WEBVIEW focus, which Win32 sees as
+/// this HWND having lost focus. So Win32 focus can only ever ADD focus here,
+/// never remove it — WM_KILLFOCUS falls back to whatever JS last said.
+///
+/// The OR exists because the JS flag can be wrong in exactly one direction.
+/// `focus_gained` is delivered to a listener registered by an async effect, and
+/// Tauri does not buffer events, so a WM_SETFOCUS that lands before `listen()`
+/// resolves is dropped forever — which the P7b auto focus-routing makes easy to
+/// hit, since it takes keyboard focus the moment a pane becomes active. JS then
+/// sits at focused=false (and, with the webview blurred, appWindowFocused=false)
+/// while this window genuinely owns the keyboard: a hollow, unblinking caret in
+/// the pane the user is typing into (user-reported 2026-07-26). Receiving
+/// WM_SETFOCUS is proof of focus that cannot be lost in transit, so the visual
+/// self-heals no matter which events JS missed.
+///
+/// Early-returns on an unchanged value so repeated pushes cannot restart the
+/// blink phase mid-blink.
+unsafe fn apply_focus_visual(state: &mut ChildState, hwnd: HWND) {
+    let want = state.focused || state.win32_focus;
+    if state.focus_visual == want {
+        return;
+    }
+    state.focus_visual = want;
+    if let Some(r) = state.renderer.as_mut() {
+        r.set_focused(want);
+    }
+    update_blink_timer(state, hwnd);
+    let _ = InvalidateRect(hwnd, None, BOOL(0));
 }
 
 /// P2a: single decision point for the cursor-blink timer. Arms the BLINK
@@ -1822,9 +1977,16 @@ unsafe extern "system" fn wnd_proc(
                     // phase that the kill path just pinned visible —
                     // stranding a focused non-blinking pane's cursor
                     // invisible with no timer left to flip it back.
+                    //
+                    // Gate on `focus_visual` (what was actually pushed to the
+                    // renderer), NOT the raw JS `focused` flag: when JS missed
+                    // a focus_gained and Win32 focus is carrying the visual,
+                    // the raw flag is false and this arm would refuse to flip
+                    // the phase — a solid, dead caret in the pane being typed
+                    // into, which is only half a fix for the hollow one.
                     let state_ptr =
                         GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
-                    if !state_ptr.is_null() && (*state_ptr).focused {
+                    if !state_ptr.is_null() && (*state_ptr).focus_visual {
                         let attached = (*state_ptr).term.is_some();
                         let visible = IsWindowVisible(hwnd).as_bool();
                         let wants = (*state_ptr)
@@ -1932,6 +2094,15 @@ unsafe extern "system" fn wnd_proc(
             let _ = SetFocus(hwnd);
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
             if !state_ptr.is_null() {
+                // Popup dismissal signal — see events::emit_pointer_down. Must
+                // be emitted for EVERY click, including on an already-focused
+                // pane (focus_gained only fires on a change), because the
+                // overlay no longer covers the screen to catch outside clicks.
+                if let (Some(app), Some(tid)) =
+                    ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                {
+                    emit_pointer_down(app, tid);
+                }
                 let x_px = (lparam.0 as i16) as i32;
                 let y_px = ((lparam.0 >> 16) as i16) as i32;
                 let ctrl = (GetKeyState(VK_CONTROL_RAW as i32) as u16 & 0x8000) != 0;
@@ -2052,11 +2223,14 @@ unsafe extern "system" fn wnd_proc(
                 // intentionally clear any prior selection (Shift-click extending
                 // an existing selection is a future enhancement). Capture the
                 // mouse so we keep receiving WM_MOUSEMOVE even when the cursor
-                // leaves the child HWND mid-drag.
-                if let Some(point) = mouse_to_point(&*state_ptr, x_px, y_px) {
+                // leaves the child HWND mid-drag. The anchor takes the REAL
+                // sub-cell side (see `mouse_to_point_side`) — a press in the
+                // right half must anchor `Right`, or the drag branch's side
+                // disagrees with it and a motionless click paints a cell.
+                if let Some((point, side)) = mouse_to_point_side(&*state_ptr, x_px, y_px) {
                     if let Some(term) = (*state_ptr).term.as_ref() {
                         let mut t = term.lock().expect("term lock poisoned");
-                        t.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+                        t.selection = Some(Selection::new(SelectionType::Simple, point, side));
                         drop(t);
                     }
                 }
@@ -2101,9 +2275,24 @@ unsafe extern "system" fn wnd_proc(
                     return LRESULT(0);
                 }
 
+                // Backstop for the stray one-cell block: a selection that
+                // yields no text has nothing to copy and nothing to show, so
+                // drop it on release instead of leaving the overlay painted.
+                // Covers the residual case the side fix can't — a jitter that
+                // genuinely crosses a BLANK cell's midpoint. Repaint only when
+                // we actually dropped something.
                 let text = if let Some(term) = (*state_ptr).term.as_ref() {
-                    let t = term.lock().expect("term lock poisoned");
-                    t.selection_to_string().filter(|s| !s.is_empty())
+                    let mut t = term.lock().expect("term lock poisoned");
+                    let text = t.selection_to_string().filter(|s| !s.is_empty());
+                    let drop_empty = text.is_none() && t.selection.is_some();
+                    if drop_empty {
+                        t.selection = None;
+                    }
+                    drop(t);
+                    if drop_empty {
+                        let _ = InvalidateRect(hwnd, None, BOOL(0));
+                    }
+                    text
                 } else {
                     None
                 };
@@ -2263,8 +2452,10 @@ unsafe extern "system" fn wnd_proc(
                 // "throw" through a long buffer actually feels fast. Slow
                 // scrolling is untouched: one notch after a pause is still
                 // exactly LINES_PER_NOTCH.
-                const ACCEL_GROWTH: f32 = 1.6;
-                const ACCEL_MAX: f32 = 18.0;
+                // NOTE: these two are mirrored in TerminalPaneXterm.tsx so both
+                // renderers scroll identically — change them together.
+                const ACCEL_GROWTH: f32 = 1.75;
+                const ACCEL_MAX: f32 = 34.0;
                 let now = std::time::Instant::now();
                 let fast = (*state_ptr)
                     .last_wheel_at
@@ -2446,6 +2637,56 @@ unsafe extern "system" fn wnd_proc(
             // hold the term lock across snap_to_bottom_on_input.
             let app_cursor = !state_ptr.is_null() && term_app_cursor(&*state_ptr);
 
+            // Windows-standard word editing, translated to what Claude's
+            // input layer actually understands. Its binary carries readline
+            // tokens (ctrl+a, ctrl+e, ctrl+w, meta+d) and NO ctrl+backspace or
+            // ctrl+left, so it is an emacs/readline reader: it responds to
+            // control characters and ESC-prefixed keys, not to named
+            // modifier+key combos. That is exactly why Alt+Backspace already
+            // worked (it sends ESC DEL = backward-kill-word) while
+            // Ctrl+Backspace did not (it sends ^H, which readline treats as a
+            // plain backspace).
+            //
+            // Gated on the same per-pane opt-in as Shift+Enter, so shell,
+            // Codex, Gemini and Claude's non-fullscreen mode keep stock
+            // behaviour.
+            if ctrl
+                && !shift
+                && !alt
+                && !state_ptr.is_null()
+                && (*state_ptr).prompt_nav
+                && term_alt_screen(&*state_ptr)
+            {
+                //   Ctrl+Backspace -> ESC DEL   backward-kill-word
+                //   Ctrl+Delete    -> ESC d     kill-word (forward)
+                //   Ctrl+Left      -> ESC b     backward-word
+                //   Ctrl+Right     -> ESC f     forward-word
+                let seq: Option<&[u8]> = match vk {
+                    0x08 => Some(&[0x1b, 0x7f]), // VK_BACK   backward-kill-word
+                    0x2E => Some(b"\x1bd"),      // VK_DELETE kill-word (forward)
+                    0x25 => Some(b"\x1bb"),      // VK_LEFT   backward-word
+                    0x27 => Some(b"\x1bf"),      // VK_RIGHT  forward-word
+                    // Ctrl+Z -> 0x1f (ctrl+_), readline UNDO, which Claude
+                    // binds. Untranslated it is SIGTSTP: it would suspend the
+                    // CLI and leave a dead pane, which is never the intent of
+                    // pressing "undo" on Windows. Only inside a fullscreen
+                    // Claude pane — a shell pane keeps job control.
+                    0x5A => Some(&[0x1f]), // VK_Z
+                    _ => None,
+                };
+                if let Some(bytes) = seq {
+                    if let Some(pid) = (*state_ptr).pty_id {
+                        let _ = crate::pty::write_to_pty_sync(pid, bytes);
+                        // Backspace also yields a WM_CHAR via TranslateMessage;
+                        // swallow it or the PTY sees a second, plain delete.
+                        if vk_also_yields_char(vk) {
+                            (*state_ptr).swallow_next_char = true;
+                        }
+                    }
+                    return LRESULT(0);
+                }
+            }
+
             // Shift+Enter inserts a newline instead of submitting, but ONLY in
             // an opted-in fullscreen pane. Claude's `/terminal-setup` binds
             // Shift+Enter to ESC CR for the terminals it can configure; every
@@ -2613,17 +2854,24 @@ unsafe extern "system" fn wnd_proc(
                 let x_px = (lparam.0 as i16) as i32;
                 let y_px = ((lparam.0 >> 16) as i16) as i32;
 
-                // R4-mouse: when xterm mouse mode is active and Shift is not
-                // held, forward the right-click to the PTY and SUPPRESS the
-                // `r_button` event — TUI apps (lazygit, htop) expect raw
-                // button-2 reports here, and showing the React context menu
-                // on top of them is confusing. Shift bypasses to keep the
-                // context-menu escape hatch.
+                // R4-mouse: right-click belongs to MADE. Even when a TUI has
+                // xterm mouse mode on (Claude's /tui, lazygit, htop), a plain
+                // right-click opens MADE's context menu; only SHIFT+right-click
+                // forwards the raw button-2 report to the app.
+                //
+                // This inverts the original rule, which forwarded by default
+                // and hid the menu behind Shift. In practice that meant
+                // right-click silently did nothing useful in the app's most-used
+                // pane — Claude Code's fullscreen TUI enables mouse reporting,
+                // so the click became a paste inside the CLI and MADE's menu was
+                // unreachable without knowing about an undocumented modifier.
+                // Right-click is app chrome on Windows; the TUI escape hatch is
+                // the thing that deserves the modifier.
                 let shift = (GetKeyState(VK_SHIFT_RAW as i32) as u16 & 0x8000) != 0;
                 let ctrl = (GetKeyState(VK_CONTROL_RAW as i32) as u16 & 0x8000) != 0;
                 let alt = (GetKeyState(VK_MENU_RAW as i32) as u16 & 0x8000) != 0;
                 let modes = read_mouse_modes(&*state_ptr);
-                if modes.clicks_enabled && !shift {
+                if modes.clicks_enabled && shift {
                     let (x_cell, y_cell) = px_to_cell_1based(x_px, y_px, (*state_ptr).cell_w_px, (*state_ptr).cell_h_px);
                     let fmt = mouse_format(modes);
                     if let Some(bytes) = encode_mouse_event(
@@ -2636,23 +2884,29 @@ unsafe extern "system" fn wnd_proc(
                     return LRESULT(0);
                 }
 
-                // Outside mouse mode the press is swallowed; `r_button` (→ the
-                // React context menu) is emitted on WM_RBUTTONUP instead. The
-                // Windows convention is menus-on-release, and emitting on press
-                // raced the overlay webview: its full-window dismiss region
-                // arrived before the user released, so the release landed on
-                // the overlay backdrop (Chromium fires `contextmenu` on
-                // button-UP) and instantly dismissed the just-opened menu.
+                // Every other case swallows the press; `r_button` (→ the React
+                // context menu) is emitted on WM_RBUTTONUP instead. The Windows
+                // convention is menus-on-release, and emitting on press raced
+                // the overlay webview: its full-window dismiss region arrived
+                // before the user released, so the release landed on the
+                // overlay backdrop (Chromium fires `contextmenu` on button-UP)
+                // and instantly dismissed the just-opened menu.
             }
             LRESULT(0)
         }
         WM_RBUTTONUP => {
-            // R4-mouse: forward right-button release when mouse mode is on.
-            // Outside mouse mode this is where `r_button` (→ the React context
-            // menu) fires — on RELEASE, the Windows menu convention. Emitting
-            // on press raced the overlay webview's full-window dismiss region
-            // (see WM_RBUTTONDOWN). We still never call DefWindowProc, so no
-            // WM_CONTEXTMENU is synthesized.
+            // R4-mouse: forward right-button release only on SHIFT+right-click
+            // while mouse mode is on. Every other right-click — including
+            // inside a fullscreen TUI — emits `r_button` (→ the React context
+            // menu) here, on RELEASE.
+            //
+            // Release, not press, is load-bearing: Chromium fires the DOM
+            // `contextmenu` event on button-UP, so emitting on press let the
+            // overlay webview's full-window dismiss region arrive before the
+            // user released — the release then landed on the backdrop and
+            // instantly dismissed the just-opened menu. Do not move this.
+            // We still never call DefWindowProc, so no WM_CONTEXTMENU is
+            // synthesized.
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
             if !state_ptr.is_null() {
                 let shift = (GetKeyState(VK_SHIFT_RAW as i32) as u16 & 0x8000) != 0;
@@ -2661,7 +2915,7 @@ unsafe extern "system" fn wnd_proc(
                 let modes = read_mouse_modes(&*state_ptr);
                 let x_px = (lparam.0 as i16) as i32;
                 let y_px = ((lparam.0 >> 16) as i16) as i32;
-                if modes.clicks_enabled && !shift {
+                if modes.clicks_enabled && shift {
                     let (x_cell, y_cell) = px_to_cell_1based(x_px, y_px, (*state_ptr).cell_w_px, (*state_ptr).cell_h_px);
                     let fmt = mouse_format(modes);
                     let btn = if fmt == MouseFormat::Sgr { 2 } else { 3 };
@@ -2932,11 +3186,11 @@ unsafe extern "system" fn wnd_proc(
                 // Cheap: brief lock, mutate the existing Selection, invalidate.
                 // Skipped while the TUI owns the mouse (drag belongs to it).
                 if !mouse_mode_active && (*state_ptr).lbutton_down {
-                    if let Some(point) = mouse_to_point(&*state_ptr, x_px, y_px) {
+                    if let Some((point, side)) = mouse_to_point_side(&*state_ptr, x_px, y_px) {
                         if let Some(term) = (*state_ptr).term.as_ref() {
                             let mut t = term.lock().expect("term lock poisoned");
                             if let Some(sel) = t.selection.as_mut() {
-                                sel.update(point, Side::Right);
+                                sel.update(point, side);
                             }
                             drop(t);
                             let _ = InvalidateRect(hwnd, None, BOOL(0));
@@ -3120,6 +3374,11 @@ unsafe extern "system" fn wnd_proc(
             // (click-to-focus path) so it can mark this pane active and its
             // focus effect can call native_term_set_focused.
             if !state_ptr.is_null() {
+                // Owning the keyboard is proof the caret must look focused,
+                // and unlike the event below it cannot be lost in transit —
+                // see `apply_focus_visual`.
+                (*state_ptr).win32_focus = true;
+                apply_focus_visual(&mut *state_ptr, hwnd);
                 if let (Some(app), Some(tid)) =
                     ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
                 {
@@ -3150,6 +3409,13 @@ unsafe extern "system" fn wnd_proc(
             // before WM_SETFOCUS (new pane), so focus_lost → focus_gained
             // arrive in order and the store converges on focused=true.
             if !state_ptr.is_null() {
+                // Hand the visual back to JS's flag — do NOT force it off.
+                // The composer and the pane-search input take webview focus
+                // while their pane stays active, and that arrives here as a
+                // plain WM_KILLFOCUS; forcing false would blank the caret of
+                // the pane the user is typing into from the composer.
+                (*state_ptr).win32_focus = false;
+                apply_focus_visual(&mut *state_ptr, hwnd);
                 if let (Some(app), Some(tid)) =
                     ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
                 {
@@ -3508,10 +3774,11 @@ fn encode_mouse_event(
     }
 }
 
-/// Translate physical mouse coords (LPARAM x/y) into an alacritty grid Point.
-/// Uses the cached cell metrics (mirrored from the renderer's hardcoded font)
-/// and clamps to the visible grid. Returns None if no Term is attached or the
-/// grid has zero columns/rows (defensive — shouldn't happen post-attach).
+/// Translate physical mouse coords (LPARAM x/y) into an alacritty grid Point
+/// plus the cell SIDE the pointer sits on. Uses the cached cell metrics
+/// (mirrored from the renderer's hardcoded font) and clamps to the visible
+/// grid. Returns None if no Term is attached or the grid has zero
+/// columns/rows (defensive — shouldn't happen post-attach).
 ///
 /// P6a scrollback: the renderer now honours display_offset (visible row y
 /// shows grid line `y - offset`), so this fn subtracts the offset to hand
@@ -3519,7 +3786,16 @@ fn encode_mouse_event(
 /// rows. Matches the cell_hover / link-click math and the snapshot's
 /// selection-containment convention, so selections anchor to content and
 /// stay correct while scrolled.
-unsafe fn mouse_to_point(state: &ChildState, x_px: i32, y_px: i32) -> Option<Point> {
+///
+/// The side is alacritty's own rule — left half of the cell → `Side::Left`,
+/// right half → `Side::Right` — and it is what makes a selection anchored by
+/// a plain click COLLAPSE. Both endpoints then carry the same side, so
+/// `Selection::is_empty()` holds and `to_range` yields None (nothing painted).
+/// Hardcoding the sides (press `Left`, drag `Right`) instead made every click
+/// with a pixel of hand jitter a non-empty ONE-CELL selection, which the grid
+/// painted as a stray `theme.selection` block that then sat there forever in
+/// any pane quiet enough never to scroll it away (fixed 2026-07-26).
+unsafe fn mouse_to_point_side(state: &ChildState, x_px: i32, y_px: i32) -> Option<(Point, Side)> {
     let term = state.term.as_ref()?;
     let cell_w = state.cell_w_px.max(0.001);
     let line_h = state.cell_h_px.max(0.001);
@@ -3535,7 +3811,18 @@ unsafe fn mouse_to_point(state: &ChildState, x_px: i32, y_px: i32) -> Option<Poi
     let row_raw = (y_px as f32 / line_h).floor() as i32;
     let col = col_raw.clamp(0, (cols as i32).saturating_sub(1)) as usize;
     let row = row_raw.clamp(0, (rows as i32).saturating_sub(1));
-    Some(Point::new(Line(row - display_offset), Column(col)))
+    // Off the grid horizontally (drag past an edge): pin the side to the edge
+    // we ran off, so the clamped cell is included in the direction of travel.
+    let side = if col_raw < 0 {
+        Side::Left
+    } else if col_raw >= cols as i32 {
+        Side::Right
+    } else if x_px as f32 - col_raw as f32 * cell_w > cell_w / 2.0 {
+        Side::Right
+    } else {
+        Side::Left
+    };
+    Some((Point::new(Line(row - display_offset), Column(col)), side))
 }
 
 /// M2: does this keystroke request a clipboard paste? Ctrl+V (Shift allowed —
@@ -3764,6 +4051,19 @@ fn parse_theme(theme: &TerminalTheme) -> Result<ThemeColors, String> {
         parse_hex_color(&theme.ansi14, "ansi14")?,
         parse_hex_color(&theme.ansi15, "ansi15")?,
     ];
+    // Indices 16..=255, when the JS side supplies a canvas-adapted palette.
+    // A wrong-length list is ignored rather than rejected: a bad palette should
+    // cost you themed 256-colors, not the whole theme swap.
+    let extended = match theme.extended_ansi.as_ref() {
+        Some(list) if list.len() == 240 => {
+            let mut out = [[0u8; 4]; 240];
+            for (i, hex) in list.iter().enumerate() {
+                out[i] = parse_hex_color(hex, "extendedAnsi")?;
+            }
+            Some(out)
+        }
+        _ => None,
+    };
     Ok(ThemeColors {
         ansi,
         foreground: parse_hex_color(&theme.foreground, "foreground")?,
@@ -3771,5 +4071,6 @@ fn parse_theme(theme: &TerminalTheme) -> Result<ThemeColors, String> {
         cursor: parse_hex_color(&theme.cursor, "cursor")?,
         cursor_accent: parse_hex_color(&theme.cursor_accent, "cursorAccent")?,
         selection: parse_hex_color(&theme.selection, "selection")?,
+        extended,
     })
 }

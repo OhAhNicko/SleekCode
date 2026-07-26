@@ -7,6 +7,8 @@ import { wslReady } from "../lib/wsl-cache";
 import { windowsReady } from "../lib/windows-cli-cache";
 import { nativeReady } from "../lib/macos-cli-cache";
 import { useAppStore } from "../store";
+import { takePendingPrompt } from "../store/terminalSlice";
+import { nameTicketSession } from "../lib/jira-session";
 import type { TerminalBackend } from "../types";
 import { getShellIntegrationCommand } from "../lib/shell-integration";
 import { installStatuslineWrapper } from "../lib/statusline-setup";
@@ -219,7 +221,18 @@ export function usePty({
         if (assigned.sessionId) {
           extraArgs.push(...assigned.args);
           onSessionIdAssignedRef.current?.(assigned.sessionId);
+          nameTicketSession(termId, assigned.sessionId, currentWorkingDir || "");
         }
+        // First prompt for a Jira ticket pane, handed over as the CLI's
+        // POSITIONAL argument so the investigation is already running when the
+        // pane appears — no waiting for the TUI to become interactive, no
+        // synthetic typing to race with it.
+        //
+        // Must be pushed LAST: getTerminalConfig emits `<extraArgs> <resumeArgs>`,
+        // and a positional placed before `--session-id <uuid>` would swallow the
+        // uuid as a second positional.
+        const pendingPrompt = takePendingPrompt(termId);
+        if (pendingPrompt) extraArgs.push(pendingPrompt);
         cwd = currentWorkingDir || undefined;
 
         if (backend === "native") {

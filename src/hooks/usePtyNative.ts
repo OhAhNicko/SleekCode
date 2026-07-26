@@ -7,6 +7,8 @@ import { wslReady } from "../lib/wsl-cache";
 import { windowsReady } from "../lib/windows-cli-cache";
 import { nativeReady } from "../lib/macos-cli-cache";
 import { useAppStore } from "../store";
+import { takePendingPrompt } from "../store/terminalSlice";
+import { nameTicketSession } from "../lib/jira-session";
 import { getShellIntegrationCommand } from "../lib/shell-integration";
 import { installStatuslineWrapper } from "../lib/statusline-setup";
 import type { NativeTermId } from "../lib/native-term-bridge";
@@ -200,7 +202,13 @@ export function usePtyNative({
         if (assigned.sessionId) {
           extraArgs.push(...assigned.args);
           onSessionIdAssignedRef.current?.(assigned.sessionId);
+          nameTicketSession(termId, assigned.sessionId, currentWorkingDir || "");
         }
+        // First prompt for a Jira ticket pane — see the twin in usePty.ts. Must
+        // stay LAST in extraArgs: getTerminalConfig emits `<extraArgs> <resume>`,
+        // so a positional placed earlier would swallow `--session-id`'s uuid.
+        const pendingPrompt = takePendingPrompt(termId);
+        if (pendingPrompt) extraArgs.push(pendingPrompt);
         cwd = currentWorkingDir || undefined;
 
         if (backend === "native") {

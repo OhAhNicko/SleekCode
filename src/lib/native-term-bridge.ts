@@ -75,6 +75,10 @@ export interface TerminalTheme {
   ansi13: string;
   ansi14: string;
   ansi15: string;
+  /** Optional replacement for xterm indices 16..=255 — exactly 240 entries, in
+   *  order. Light themes send a canvas-adapted palette here; omitting it keeps
+   *  the renderer's standard xterm cube. */
+  extendedAnsi?: string[];
 }
 
 export interface FontSpec {
@@ -94,6 +98,9 @@ export interface CreateOpts {
   // create time). Rust serde-defaults this to false when omitted; the
   // set_focused effect re-asserts the live value on any later change.
   focused: boolean;
+  /** Opt in to the process-wide wgpu Device/Queue (Settings toggle). Read once
+   *  at create, so flipping the toggle only affects panes opened afterwards. */
+  sharedGpu: boolean;
 }
 
 export interface ViewportState {
@@ -256,6 +263,11 @@ export interface CellHoverEndEvent {}
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface FocusGainedEvent {}
 
+/** A mouse button went down on this pane. Payload-less; used only to dismiss
+ *  floating popups (see emit_pointer_down in native_term/events.rs — nothing
+ *  else reports a click on an ALREADY-focused pane). */
+export interface PointerDownEvent {}
+
 // P2b: the native HWND lost keyboard focus (WM_KILLFOCUS). No payload. On
 // Windows the tauri onFocusChanged event mirrors WEBVIEW focus only, so when
 // a native pane holds Win32 focus an Alt-Tab away produces no JS blur — this
@@ -343,6 +355,7 @@ export type NativeTermEventKind =
   | "cell_hover"
   | "cell_hover_end"
   | "focus_gained"
+  | "pointer_down"
   | "focus_lost"
   | "alt_screen"
   | "tui_scroll"
@@ -368,6 +381,7 @@ export interface NativeTermEventPayloadMap {
   cell_hover: CellHoverEvent;
   cell_hover_end: CellHoverEndEvent;
   focus_gained: FocusGainedEvent;
+  pointer_down: PointerDownEvent;
   focus_lost: FocusLostEvent;
   alt_screen: AltScreenEvent;
   tui_scroll: TuiScrollEvent;
@@ -935,6 +949,13 @@ export function subscribeFocusGained(
   cb: () => void,
 ): Promise<Unlisten> {
   return subscribe(id, "focus_gained", () => cb());
+}
+
+export function subscribePointerDown(
+  id: NativeTermId,
+  cb: () => void,
+): Promise<Unlisten> {
+  return subscribe(id, "pointer_down", () => cb());
 }
 
 export function subscribeFocusLost(

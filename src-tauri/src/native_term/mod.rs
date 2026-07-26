@@ -35,12 +35,17 @@ pub struct ProposedDimensions {
 
 #[tauri::command]
 pub fn native_term_create(app: tauri::AppHandle, opts: CreateOpts) -> Result<u32, String> {
+    // Startup profiling (see the Renderer::new breakdown for the inner split).
+    // This whole command is synchronous, so its duration IS the Rust half of
+    // the "open a pane" latency.
+    let t_start = std::time::Instant::now();
     let parent = registry::parent_hwnd()
         .ok_or_else(|| "native_term: parent HWND not captured yet".to_string())?;
     // PlatformWindow::new stays minimal (rect+dpr only); every other
     // CreateOpts field is applied through the same mutators the hot-swap
     // commands use, so create and hot-swap can never drift apart.
-    let mut win = PlatformWindow::new(parent, opts.rect, opts.dpr)?;
+    let mut win = PlatformWindow::new(parent, opts.rect, opts.dpr, opts.shared_gpu)?;
+    let t_window = t_start.elapsed();
     // O2-B: hand the AppHandle to PlatformWindow so the wnd_proc can emit
     // per-pane events (ime_composition, r_button, mouse_passthrough).
     win.set_app_handle(app);
@@ -70,6 +75,21 @@ pub fn native_term_create(app: tauri::AppHandle, opts: CreateOpts) -> Result<u32
     let id = registry::alloc_id();
     win.set_term_id(id);
     registry::insert(id, Box::new(win));
+    // window = HWND + the whole Renderer (wgpu init, see its own line);
+    // setup = theme/font/cursor/focus, which re-derive glyph metrics.
+    let total = t_start.elapsed();
+    let line = format!(
+        "[native_term] create id={id} requested={} {:.1}ms = window+renderer {:.1} + setup {:.1}",
+        if opts.shared_gpu { "shared" } else { "per-pane" },
+        total.as_secs_f32() * 1000.0,
+        t_window.as_secs_f32() * 1000.0,
+        (total - t_window).as_secs_f32() * 1000.0,
+    );
+    // Both sinks on purpose: stderr for whoever is watching the dev console,
+    // and the shared dlog file so the timings can be read back afterwards
+    // without anyone having to copy them out of a terminal.
+    eprintln!("{line}");
+    crate::debug_log::dlog(&line);
     Ok(id)
 }
 

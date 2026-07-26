@@ -82,7 +82,14 @@ fn dim_toward(fg: [u8; 3], bg: [u8; 3]) -> [u8; 3] {
 }
 
 /// Map an xterm 256-color index to RGB. Caller guarantees `i >= 16`.
-fn indexed_256_to_rgb(i: u8) -> [u8; 3] {
+///
+/// A theme may replace the whole 16..=255 range — light themes must, since the
+/// standard cube is a fixed set of constants picked for dark canvases and
+/// renders at ~1.2:1 on paper.
+fn indexed_256_to_rgb(i: u8, theme: &ThemeColors) -> [u8; 3] {
+    if let Some(ext) = theme.extended.as_ref() {
+        return rgb3(ext[(i - 16) as usize]);
+    }
     if i <= 231 {
         let n = (i - 16) as usize;
         let r = XTERM_CUBE_LEVELS[(n / 36) % 6];
@@ -102,7 +109,7 @@ fn ansi_color_to_rgb(c: AnsiColor, default: [u8; 3], theme: &ThemeColors) -> [u8
         AnsiColor::Spec(Rgb { r, g, b }) => [r, g, b],
         AnsiColor::Named(n) => named_to_rgb(n, theme).unwrap_or(default),
         AnsiColor::Indexed(i) if (i as usize) < 16 => rgb3(theme.ansi[i as usize]),
-        AnsiColor::Indexed(i) => indexed_256_to_rgb(i),
+        AnsiColor::Indexed(i) => indexed_256_to_rgb(i, theme),
     }
 }
 
@@ -205,6 +212,15 @@ struct RowRun {
     text: String,
     color: [u8; 3],
     attrs: CellAttrs,
+    /// Column this run starts at. Anchors the run's shaped text to the cell
+    /// grid instead of letting it inherit the previous run's accumulated
+    /// advances.
+    col: u16,
+    /// This run is a SINGLE glyph that does not shape to one cell width (an
+    /// emoji/symbol/CJK glyph from a fallback face — see
+    /// `GlyphStack::fits_cell`). It gets its own buffer at its own cell x so
+    /// its odd advance can only shift itself, never the rest of the row.
+    anchored: bool,
 }
 
 /// One contiguous background segment within a row. Built only for cells
@@ -275,7 +291,11 @@ pub struct TermFrameInfo {
 /// shape caches.
 pub struct CellGrid {
     /// Per-visible-row Buffer storage. Index 0 = top of screen.
-    row_buffers: Vec<Buffer>,
+    /// Per row, the shaped buffers and the x (physical px) each is drawn at.
+    /// Normally ONE entry per row covering the whole line; a row containing a
+    /// glyph that is not one cell wide splits into a buffer per anchored glyph
+    /// plus one per span between them (see `RowRun::anchored`).
+    row_buffers: Vec<Vec<(f32, Buffer)>>,
     /// Per-row run snapshot used to skip re-shape when unchanged.
     row_runs: Vec<Vec<RowRun>>,
     /// Per-row background segments. Recomputed alongside row_runs whenever a
@@ -312,12 +332,12 @@ pub struct CellGrid {
 
 impl CellGrid {
     pub fn new(
-        glyph: &mut GlyphStack,
+        _glyph: &mut GlyphStack,
         cols: usize,
         rows: usize,
         theme: Arc<RwLock<ThemeColors>>,
     ) -> Self {
-        let row_buffers = (0..rows).map(|_| glyph.make_buffer()).collect();
+        let row_buffers = (0..rows).map(|_| Vec::new()).collect();
         let row_runs = vec![Vec::new(); rows];
         let row_bg = vec![Vec::new(); rows];
         let row_decor = vec![Vec::new(); rows];
@@ -419,8 +439,8 @@ impl CellGrid {
 
     /// Grid size changed. Tear down old buffers and rebuild — cosmic-text
     /// Buffers' Metrics depend on font size which can also be changing.
-    pub fn resize(&mut self, glyph: &mut GlyphStack, cols: usize, rows: usize) {
-        self.row_buffers = (0..rows).map(|_| glyph.make_buffer()).collect();
+    pub fn resize(&mut self, _glyph: &mut GlyphStack, cols: usize, rows: usize) {
+        self.row_buffers = (0..rows).map(|_| Vec::new()).collect();
         self.row_runs = vec![Vec::new(); rows];
         self.row_bg = vec![Vec::new(); rows];
         self.row_decor = vec![Vec::new(); rows];
@@ -436,8 +456,12 @@ impl CellGrid {
     /// new font_size / line_height baked into Metrics::new is picked up. Also
     /// clears the per-row run/bg/decor caches so the next `sync_from_term`
     /// re-shapes every row instead of short-circuiting on stale identity.
-    pub fn rebuild_buffers(&mut self, glyph: &mut GlyphStack) {
-        self.row_buffers = (0..self.rows).map(|_| glyph.make_buffer()).collect();
+    pub fn rebuild_buffers(&mut self, _glyph: &mut GlyphStack) {
+        // Empty, not pre-made: buffers are now built per span in
+        // `sync_from_term`, which the `row_valid` reset below forces to re-run
+        // for every row. Pre-allocating one buffer per row would just be
+        // thrown away — and would bake the OLD metrics.
+        self.row_buffers = (0..self.rows).map(|_| Vec::new()).collect();
         for v in self.row_valid.iter_mut() {
             *v = false;
         }
@@ -467,7 +491,7 @@ impl CellGrid {
         glyph: &mut GlyphStack,
         term: &Arc<Mutex<Term<TermListener>>>,
     ) -> TermFrameInfo {
-        let (snapshot, info) = self.snapshot_rows(term);
+        let (snapshot, info) = self.snapshot_rows(glyph, term);
 
         // P6a-rotate: shift the slot-keyed caches by the offset delta so
         // scrolling only re-shapes the newly-exposed rows (the fallback
@@ -486,6 +510,15 @@ impl CellGrid {
         // shaper, so most machines rendered the system-default mono instead
         // of Hack.
         let family_name = glyph.family_name.clone();
+        // ONE guard for the whole sync. The shared FontSystem's mutex is not
+        // reentrant, so nothing inside this loop may call a GlyphStack method
+        // that locks (`make_buffer`) — `make_buffer_with` takes the guard we
+        // already hold. Uncontended in practice: all panes shape on the UI
+        // thread.
+        let mut font_guard = glyph
+            .font_system
+            .lock()
+            .expect("fonts: shared FontSystem poisoned");
 
         let len = snapshot.len().min(self.rows);
         for (y, row) in snapshot.into_iter().enumerate().take(len) {
@@ -503,24 +536,6 @@ impl CellGrid {
             {
                 continue;
             }
-            // Apply text/Attrs to buffer via set_rich_text. We need a vec of
-            // (&str, Attrs) borrowed from `runs` — build it just-in-time.
-            let spans: Vec<(&str, Attrs)> = runs
-                .iter()
-                .map(|r| {
-                    let [cr, cg, cb] = r.color;
-                    let mut attrs = Attrs::new()
-                        .family(Family::Name(family_name.as_str()))
-                        .color(Color::rgba(cr, cg, cb, 0xFF));
-                    if r.attrs.bold {
-                        attrs = attrs.weight(Weight::BOLD);
-                    }
-                    if r.attrs.italic {
-                        attrs = attrs.style(Style::Italic);
-                    }
-                    (r.text.as_str(), attrs)
-                })
-                .collect();
             // Default Attrs used for any text not covered by a span; with
             // contiguous spans this never fires, but cosmic-text requires it.
             let fg_default = self.fg_default();
@@ -532,12 +547,53 @@ impl CellGrid {
                     fg_default[2],
                     0xFF,
                 ));
-            self.row_buffers[y].set_rich_text(
-                &mut glyph.font_system,
-                spans.iter().copied(),
-                default_attrs,
-                Shaping::Advanced,
-            );
+            // Shape the row into as FEW buffers as correctness allows: one per
+            // maximal span of ordinary runs (which keeps the common all-ASCII
+            // row at exactly one `set_rich_text`, as before), plus one per
+            // anchored glyph. Each buffer records the x it must be drawn at, so
+            // a glyph with an odd advance cannot push the next span off-grid.
+            let cell_w = glyph.cell_advance_px;
+            let mut built: Vec<(f32, Buffer)> = Vec::new();
+            let mut i = 0usize;
+            while i < runs.len() {
+                let start = i;
+                if runs[i].anchored {
+                    i += 1;
+                } else {
+                    while i < runs.len() && !runs[i].anchored {
+                        i += 1;
+                    }
+                }
+                let spans: Vec<(&str, Attrs)> = runs[start..i]
+                    .iter()
+                    .map(|r| {
+                        let [cr, cg, cb] = r.color;
+                        let mut attrs = Attrs::new()
+                            .family(Family::Name(family_name.as_str()))
+                            .color(Color::rgba(cr, cg, cb, 0xFF));
+                        if r.attrs.bold {
+                            attrs = attrs.weight(Weight::BOLD);
+                        }
+                        if r.attrs.italic {
+                            attrs = attrs.style(Style::Italic);
+                        }
+                        (r.text.as_str(), attrs)
+                    })
+                    .collect();
+                let mut buf = GlyphStack::make_buffer_with(
+                    &mut font_guard,
+                    glyph.font_size_px,
+                    glyph.line_height_px,
+                );
+                buf.set_rich_text(
+                    &mut font_guard,
+                    spans.iter().copied(),
+                    default_attrs,
+                    Shaping::Advanced,
+                );
+                built.push((runs[start].col as f32 * cell_w, buf));
+            }
+            self.row_buffers[y] = built;
             self.row_runs[y] = runs;
             self.row_bg[y] = bg;
             self.row_decor[y] = decor;
@@ -572,12 +628,18 @@ impl CellGrid {
     /// dropped from runs to avoid shaping blank suffixes. P3a: also captures
     /// cursor + viewport state (`TermFrameInfo`) under the SAME lock — the
     /// renderer's only Term lock acquisition per frame.
+    /// `glyph` is taken mutably only for `fits_cell`, which measures a char's
+    /// advance the first time it is seen and memoises it — the Term lock below
+    /// is held across that, but a measurement happens at most once per distinct
+    /// non-ASCII char per font.
     fn snapshot_rows(
         &self,
+        glyph: &mut GlyphStack,
         term: &Arc<Mutex<Term<TermListener>>>,
     ) -> (Vec<RowSnapshot>, TermFrameInfo) {
         // Snapshot theme under its own (very short) read lock. We copy the
-        // ~88-byte struct so the inner loop reads from the stack — avoids
+        // struct (~88 bytes, or ~1KB once a theme carries an adapted 256-color
+        // palette) so the inner loop reads from the stack — avoids
         // holding both the term mutex and a theme RwLock guard at once and
         // keeps the per-cell hot path allocation-free.
         let theme = *self.theme.read().expect("theme poisoned");
@@ -688,6 +750,7 @@ impl CellGrid {
             let mut current_color: Option<[u8; 3]> = None;
             let mut current_attrs: CellAttrs = CellAttrs::default();
             let mut current_text = String::new();
+            let mut current_col: u16 = 0;
             // Run accumulators for bg/decoration (separate from text runs:
             // a bg run spans cells regardless of fg color).
             let mut bg_run: Option<(u16, [u8; 3])> = None; // (start_col, color)
@@ -771,7 +834,36 @@ impl CellGrid {
                 // and must not break the current run either, or a wide
                 // char's spacer would split its own run on color identity.
                 if !is_spacer {
-                    if Some(text_fg) == current_color && text_attrs == current_attrs {
+                    // A glyph that does not shape to one cell drags everything
+                    // after it along the row (the animated-spinner jitter).
+                    // Give it its own run so it is anchored at its own cell and
+                    // the text after it resumes at ITS cell — the shift can no
+                    // longer propagate. Blanks are never worth the test.
+                    let anchored = text_ch != ' ' && !glyph.fits_cell(text_ch);
+                    if anchored {
+                        if !current_text.is_empty() {
+                            runs.push(RowRun {
+                                text: std::mem::take(&mut current_text),
+                                color: current_color.unwrap_or(fg_default_rgb),
+                                attrs: current_attrs,
+                                col: current_col,
+                                anchored: false,
+                            });
+                        }
+                        runs.push(RowRun {
+                            text: text_ch.to_string(),
+                            color: text_fg,
+                            attrs: text_attrs,
+                            col: x as u16,
+                            anchored: true,
+                        });
+                        // Force the next cell to open a fresh run at its own
+                        // column: leaving `current_color` set would let the
+                        // following text merge into a run that starts here.
+                        current_color = None;
+                        current_attrs = CellAttrs::default();
+                        current_col = x as u16 + 1;
+                    } else if Some(text_fg) == current_color && text_attrs == current_attrs {
                         current_text.push(text_ch);
                     } else {
                         if !current_text.is_empty() {
@@ -779,10 +871,13 @@ impl CellGrid {
                                 text: std::mem::take(&mut current_text),
                                 color: current_color.unwrap_or(fg_default_rgb),
                                 attrs: current_attrs,
+                                col: current_col,
+                                anchored: false,
                             });
                         }
                         current_color = Some(text_fg);
                         current_attrs = text_attrs;
+                        current_col = x as u16;
                         current_text.push(text_ch);
                     }
                 }
@@ -860,6 +955,8 @@ impl CellGrid {
                     text: current_text,
                     color: current_color.unwrap_or(fg_default_rgb),
                     attrs: current_attrs,
+                    col: current_col,
+                    anchored: false,
                 });
             }
             if let Some((start, c)) = bg_run {
@@ -915,14 +1012,19 @@ impl CellGrid {
         self.row_buffers
             .iter()
             .enumerate()
-            .map(|(y, buf)| TextArea {
-                buffer: buf,
-                left: 0.0,
-                top: y as f32 * line_height_px,
-                scale: 1.0,
-                bounds: TextBounds::default(),
-                default_color,
-                custom_glyphs: &[],
+            .flat_map(|(y, bufs)| {
+                bufs.iter().map(move |(left, buf)| TextArea {
+                    buffer: buf,
+                    // Baked at build time from the run's start column, so a
+                    // fallback glyph's odd advance cannot leak into the next
+                    // span's origin.
+                    left: *left,
+                    top: y as f32 * line_height_px,
+                    scale: 1.0,
+                    bounds: TextBounds::default(),
+                    default_color,
+                    custom_glyphs: &[],
+                })
             })
             .collect()
     }

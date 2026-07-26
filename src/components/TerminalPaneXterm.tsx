@@ -14,6 +14,11 @@ import type { TerminalType } from "../types";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { CommandBlockParser, type CommandBlock } from "../lib/command-block-parser";
 import { shouldInjectShellIntegration } from "../lib/shell-integration";
+import {
+  registerPaneStateProbe,
+  setPaneExited,
+  clearPaneState,
+} from "../lib/pane-state-registry";
 import { supportsSessionResume } from "../lib/session-resume";
 import { createFilePathLinkProvider } from "../lib/file-link-provider";
 import { attachLinkUnderlines } from "../lib/xterm-link-underline";
@@ -32,6 +37,7 @@ import PromptComposer from "./PromptComposer";
 import PaneSearchBar from "./PaneSearchBar";
 import { useXtermSearch } from "../hooks/usePaneSearch";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
+import { registerTerminalActions, unregisterTerminalActions } from "../lib/terminal-actions";
 import hackRegularUrl from "../fonts/hack-regular.woff2?url";
 import hackBoldUrl from "../fonts/hack-bold.woff2?url";
 import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
@@ -551,6 +557,7 @@ export default function TerminalPane({
 
   const handlePtyExit = useCallback((exitCode: number) => {
     setExited(true);
+    setPaneExited(terminalId, true);
     clearTerminalActivity(terminalId);
     sessionRetryCancelRef.current?.();
     terminalRef.current?.write("\r\n\x1b[38;2;139;148;158m[Process exited]\x1b[0m\r\n");
@@ -708,6 +715,17 @@ export default function TerminalPane({
       const sel = term.getSelection();
       if (sel) navigator.clipboard.writeText(sel).catch(() => {});
     });
+
+    // Context-menu state probe. Unlike a native pane (whose state lives in
+    // another process and is pushed over event channels), everything the menu
+    // needs is readable straight off this Terminal — and xterm.js fires no
+    // event for mode changes, so reading on demand is both simpler and fresher
+    // than mirroring on a timer.
+    registerPaneStateProbe(terminalId, () => ({
+      selection: term.getSelection(),
+      altScreen: term.buffer.active.type === "alternate",
+      mouseReporting: term.modes.mouseTrackingMode !== "none",
+    }));
 
     // Unicode 11 for correct emoji widths — must load after open()
     try {
@@ -1406,8 +1424,9 @@ export default function TerminalPane({
     // slow scrolling stays exactly LINES_PER_NOTCH and only a flick travels.
     const LINES_PER_NOTCH = 3;
     const ACCEL_WINDOW_MS = 120;
-    const ACCEL_GROWTH = 1.6;
-    const ACCEL_MAX = 18;
+    // Mirrored in win32.rs (WM_MOUSEWHEEL) — change them together.
+    const ACCEL_GROWTH = 1.75;
+    const ACCEL_MAX = 34;
     let wheelStreak = 1;
     let lastWheelAt = 0;
 
@@ -1535,6 +1554,9 @@ export default function TerminalPane({
       setSearchAddon(null);
       clearTerminalActivity(terminalId);
       clearImageMasks(terminalId);
+      // Drop the probe before disposing — it closes over `term`, and a menu
+      // built after dispose would otherwise reach into a dead instance.
+      clearPaneState(terminalId);
       term.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -1597,6 +1619,7 @@ export default function TerminalPane({
         terminalRef.current.reset();
       }
       setExited(false);
+      setPaneExited(terminalId, false);
       setContextInfo(null);
       setCommandBlocks([]);
       sessionRetryCancelRef.current?.();
@@ -1833,6 +1856,7 @@ export default function TerminalPane({
     // Capture current YOLO state at restart time — updates badge + forceYolo for spawn
     setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
     setExited(false);
+    setPaneExited(terminalId, false);
     setContextInfo(null);
     setCommandBlocks([]);
     promptTimestampsRef.current = [];
@@ -1875,6 +1899,7 @@ export default function TerminalPane({
     }
     setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
     setExited(false);
+    setPaneExited(terminalId, false);
     setContextInfo(null);
     setCommandBlocks([]);
     promptTimestampsRef.current = [];
@@ -1960,6 +1985,60 @@ export default function TerminalPane({
     return () => unregisterPaneSearch(terminalId);
   }, [terminalId]);
 
+  // Imperative actions the context menu calls. Registered rather than driven by
+  // events so an item can never be wired to a listener that doesn't exist.
+  useEffect(() => {
+    registerTerminalActions(terminalId, {
+      scrollToTop: () => terminalRef.current?.scrollToTop(),
+      scrollToBottom: () => terminalRef.current?.scrollToBottom(),
+      restart: handleRestart,
+    });
+    return () => unregisterTerminalActions(terminalId);
+  }, [terminalId, handleRestart]);
+
+  // Right-click ownership, matching the native renderer's rule exactly
+  // (see the WM_RBUTTONDOWN/UP arms in src-tauri/.../window/win32.rs):
+  // plain right-click belongs to MADE's context menu, SHIFT+right-click is
+  // forwarded to the TUI as a raw button-2 report.
+  //
+  // xterm.js and the native pane were asymmetric here. The native pane returns
+  // early from its wnd_proc, so it is strictly either/or; xterm.js reports on
+  // `mousedown` while Chromium raises `contextmenu` independently on button-up,
+  // so a right-click in a mouse-tracking TUI produced BOTH a button-2 report
+  // and MADE's menu. Two capture-phase listeners on the pane root reconcile it:
+  // capture runs ancestor-first, so stopping propagation here prevents xterm's
+  // own listener (on a descendant) from ever seeing the event.
+  const paneRootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const root = paneRootRef.current;
+    if (!root) return;
+
+    const tracking = () => terminalRef.current?.modes.mouseTrackingMode !== "none";
+
+    // Plain right-press: swallow before xterm can emit a mouse report.
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 2 || e.shiftKey) return;
+      if (!tracking()) return;
+      e.stopPropagation();
+    };
+
+    // Shift+right-click: the report went to the TUI, so MADE must NOT also
+    // open a menu on top of it.
+    const onContextMenu = (e: MouseEvent) => {
+      if (!e.shiftKey) return;
+      if (!tracking()) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+
+    root.addEventListener("mousedown", onMouseDown, true);
+    root.addEventListener("contextmenu", onContextMenu, true);
+    return () => {
+      root.removeEventListener("mousedown", onMouseDown, true);
+      root.removeEventListener("contextmenu", onContextMenu, true);
+    };
+  }, []);
+
   const handleClose = useCallback(() => {
     kill();
     onClose();
@@ -1967,9 +2046,11 @@ export default function TerminalPane({
 
   return (
     <div
+      ref={paneRootRef}
       className={`terminal-pane flex flex-col h-full w-full ${isActive ? "pane-active" : ""}`}
       style={{ backgroundColor: containerBg }}
       data-terminal-id={terminalId}
+      data-terminal-renderer="xterm"
       onClick={onFocus}
     >
       {!hideChrome && (

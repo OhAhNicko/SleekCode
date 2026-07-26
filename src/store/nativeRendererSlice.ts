@@ -10,7 +10,39 @@ export interface NativeRendererTelemetry {
 }
 
 export interface NativeRendererSlice {
+  /** Browser pane engine for LOCALHOST urls only.
+   *
+   *  The browser pane's surface is normally a native wry webview, which is the
+   *  only engine that can actually browse the web: the old iframe path points at
+   *  a single-origin proxy, so it cannot follow a cross-origin redirect and
+   *  cannot open even google.se (any real site's X-Frame-Options refuses the
+   *  frame once navigation escapes the proxy).
+   *
+   *  The iframe is still the proven path for the dev-server preview it was built
+   *  for, so it keeps serving localhost while the native surface earns parity.
+   *  Defaults ON for that reason. Scoped to localhost deliberately — a global
+   *  switch would be a footgun, since flipping it would silently break external
+   *  browsing rather than degrade it. Flip off (then delete the iframe path)
+   *  once native is signed off. */
+  browserIframeForLocalhost: boolean;
+  /** The native browser pane's webview holds real Win32 focus while you type in
+   *  it, which blurs MADE's main webview. Without folding this into
+   *  `appWindowFocused` the app reads as unfocused and drops its accent ring the
+   *  moment you click into a page. Transient — deliberately NOT persisted. */
+  browserViewFocused: boolean;
+  /** Ask before saving a download (shelf shows Save/Block), or save straight away.
+   *
+   *  Defaults to asking: nothing reaches disk until you approve it. Turning it
+   *  off reproduces Chrome's default, and is also the only mode that issues a
+   *  SINGLE request — approving re-issues the download so it can pick up cookies,
+   *  which a one-time-token or POST download will not survive. */
+  browserAskBeforeDownload: boolean;
   useNativeTerminalRenderer: boolean;
+  /** EXPERIMENTAL: native panes share ONE wgpu Device/Queue instead of building
+   *  their own. Much faster to open a pane; the trade is that a lost device
+   *  takes every shared pane with it rather than one. Applies to panes opened
+   *  after the flip — existing panes keep the device they were built with. */
+  nativeSharedGpu: boolean;
   /** Sticky mode for the tab bar's "Add pane" dropdown: when on, panes opened
    * from that menu are stamped `renderer: "native"` on their layout leaf. Does
    * NOT touch already-open panes — that's the whole point of it existing
@@ -69,7 +101,11 @@ export interface NativeRendererSlice {
   overlayFocused: boolean;
   appWindowFocused: boolean;
 
+  setBrowserIframeForLocalhost: (v: boolean) => void;
+  setBrowserViewFocused: (v: boolean) => void;
+  setBrowserAskBeforeDownload: (v: boolean) => void;
   setUseNativeTerminalRenderer: (v: boolean) => void;
+  setNativeSharedGpu: (v: boolean) => void;
   setNewPaneNativeRenderer: (v: boolean) => void;
   setScrollThumbAcceleration: (v: boolean) => void;
   setWheelAcceleration: (v: boolean) => void;
@@ -92,7 +128,11 @@ export const createNativeRendererSlice: StateCreator<
   [],
   NativeRendererSlice
 > = (set, get) => ({
+  browserIframeForLocalhost: true,
+  browserViewFocused: false,
+  browserAskBeforeDownload: true,
   useNativeTerminalRenderer: false,
+  nativeSharedGpu: false,
   newPaneNativeRenderer: false,
   scrollThumbAcceleration: true,
   wheelAcceleration: true,
@@ -106,7 +146,23 @@ export const createNativeRendererSlice: StateCreator<
   overlayFocused: false,
   appWindowFocused: true,
 
+  setBrowserIframeForLocalhost: (v) => set({ browserIframeForLocalhost: v }),
+
+  setBrowserAskBeforeDownload: (v) => set({ browserAskBeforeDownload: v }),
+
+  setBrowserViewFocused: (focused) => {
+    const s = get();
+    if (s.browserViewFocused === focused) return;
+    set({
+      browserViewFocused: focused,
+      appWindowFocused:
+        s.webviewFocused || s.nativePaneFocused || s.overlayFocused || focused,
+    });
+  },
+
   setUseNativeTerminalRenderer: (v) => set({ useNativeTerminalRenderer: v }),
+
+  setNativeSharedGpu: (v) => set({ nativeSharedGpu: v }),
 
   setNewPaneNativeRenderer: (v) => set({ newPaneNativeRenderer: v }),
 
@@ -130,7 +186,8 @@ export const createNativeRendererSlice: StateCreator<
     set({
       webviewFocused: focused,
       nativePaneFocused,
-      appWindowFocused: focused || nativePaneFocused || s.overlayFocused,
+      appWindowFocused:
+        focused || nativePaneFocused || s.overlayFocused || s.browserViewFocused,
     });
   },
 
@@ -139,7 +196,8 @@ export const createNativeRendererSlice: StateCreator<
     if (s.nativePaneFocused === focused) return;
     set({
       nativePaneFocused: focused,
-      appWindowFocused: s.webviewFocused || focused || s.overlayFocused,
+      appWindowFocused:
+        s.webviewFocused || focused || s.overlayFocused || s.browserViewFocused,
     });
   },
 
@@ -148,7 +206,8 @@ export const createNativeRendererSlice: StateCreator<
     if (s.overlayFocused === focused) return;
     set({
       overlayFocused: focused,
-      appWindowFocused: s.webviewFocused || s.nativePaneFocused || focused,
+      appWindowFocused:
+        s.webviewFocused || s.nativePaneFocused || focused || s.browserViewFocused,
     });
   },
 
