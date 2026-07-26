@@ -58,6 +58,29 @@ fn rgb3(rgba: [u8; 4]) -> [u8; 3] {
     [rgba[0], rgba[1], rgba[2]]
 }
 
+/// SGR 2 (dim / faint): fade a resolved foreground halfway to the background
+/// it sits on.
+///
+/// `alacritty_terminal` parses SGR 2 into `Flags::DIM`, but the color
+/// resolution above is flag-blind — so every dim run painted at FULL
+/// foreground brightness. Most visibly, Claude Code's TAB-to-complete ghost
+/// suggestion looked like text the user had already typed (reported
+/// 2026-07-26).
+///
+/// Halfway-to-background rather than alacritty's `* 0.66`: xterm.js draws dim
+/// as 50% alpha over the cell background, and MADE runs both renderers side by
+/// side, so parity beats matching alacritty. It is also the only one of the
+/// two that stays correct on light themes — a multiply drives text toward
+/// black, i.e. toward MORE contrast on light paper, which is backwards.
+#[inline]
+fn dim_toward(fg: [u8; 3], bg: [u8; 3]) -> [u8; 3] {
+    [
+        ((fg[0] as u16 + bg[0] as u16) / 2) as u8,
+        ((fg[1] as u16 + bg[1] as u16) / 2) as u8,
+        ((fg[2] as u16 + bg[2] as u16) / 2) as u8,
+    ]
+}
+
 /// Map an xterm 256-color index to RGB. Caller guarantees `i >= 16`.
 fn indexed_256_to_rgb(i: u8) -> [u8; 3] {
     if i <= 231 {
@@ -701,7 +724,18 @@ impl CellGrid {
                 // (xterm semantics: swap the two final colors, not the inputs).
                 let raw_fg = ansi_color_to_rgb(cell.fg, fg_default_rgb, &theme);
                 let raw_bg = ansi_color_to_rgb_bg(cell.bg, &theme);
-                let (fg, mut bg) = if inverse { (raw_bg, raw_fg) } else { (raw_fg, raw_bg) };
+                let (mut fg, mut bg) = if inverse { (raw_bg, raw_fg) } else { (raw_fg, raw_bg) };
+
+                // SGR 2, applied AFTER the inverse swap so it always fades the
+                // colour that ends up as ink, against the one that ends up as
+                // paper. Selection (below) overrides bg afterwards on purpose:
+                // xterm.js likewise computes dim against the cell's own
+                // background, not against the selection overlay. Runs are keyed
+                // on the resolved colour, so a dim span splits from its
+                // neighbours here without needing a flag in `CellAttrs`.
+                if cell.flags.contains(Flags::DIM) {
+                    fg = dim_toward(fg, bg);
+                }
 
                 // R3-mouse: selection overlay. Override bg to the selection
                 // color when this cell falls inside the active selection.

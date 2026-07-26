@@ -49,3 +49,23 @@ where
 pub fn take(id: u32) -> Option<Box<dyn NativeTermWindow>> {
     registry().lock().expect("registry poisoned").remove(&id)
 }
+
+/// Drain EVERY registered window, handing ownership to the caller.
+///
+/// The registry outlives the webview: it is a process-wide static, so a page
+/// reload (F5, devtools reload, a Vite full reload in dev) drops all the JS
+/// that owned these windows WITHOUT running any React cleanup, and their
+/// HWNDs stay alive and visible on top of the freshly booted page. This is
+/// the reaper for exactly that — see `native_term_reap_all`.
+///
+/// Returns owned boxes rather than destroying in place so the caller can drop
+/// the registry lock BEFORE running `destroy`, which does Win32 teardown and
+/// must never re-enter the registry while it is held.
+pub fn take_all() -> Vec<Box<dyn NativeTermWindow>> {
+    registry()
+        .lock()
+        .expect("registry poisoned")
+        .drain()
+        .map(|(_, w)| w)
+        .collect()
+}

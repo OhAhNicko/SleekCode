@@ -7,7 +7,7 @@ import {
   type NativeTermId,
   type SearchResult,
   type TerminalTheme as NativeTermTheme,
-  rectOf,
+  surfaceRectOf,
   subscribeResized,
   subscribeExit,
   subscribeRButton,
@@ -92,6 +92,19 @@ import {
 // the slice interface. Patch plan in J1 wrap-up adds the slice; the cast
 // can be removed afterwards.
 type AppStoreWithNative = ReturnType<typeof useAppStore.getState> & NativeRendererSlice;
+
+/**
+ * Breathing room between the pane edge and the terminal surface, in logical
+ * px. Left + bottom only — the header already separates the top and the right
+ * edge butts against the splitter, so a gap there would read as a misaligned
+ * pane rather than as padding.
+ *
+ * Values are xterm's, so a native pane and an xterm pane side by side inset
+ * their text identically: `.terminal-pane .xterm` uses
+ * `padding: 6px 0 6px 10px` (index.css).
+ */
+const PANE_PAD_LEFT = 10;
+const PANE_PAD_BOTTOM = 6;
 
 // Fallback ANSI palette mirrored from the Rust default in
 // renderer/mod.rs::ThemeColors::default_tango. Used to fill in any slot a
@@ -417,6 +430,17 @@ export default function TerminalPaneNative({
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const vibrantColorsRef = useRef(vibrantColors);
   useEffect(() => { vibrantColorsRef.current = vibrantColors; }, [vibrantColors]);
+  // Background for the pane's breathing-room strips (PANE_PAD_LEFT/BOTTOM).
+  // Those strips are DOM, not native surface, so they must paint the EXACT
+  // background the HWND paints — active-pane lift and vibrant overlay
+  // included, via the same helper the theme hot-swap effect uses — or the
+  // gap reads as a seam instead of as part of the terminal.
+  const surfaceBg = useMemo(
+    () =>
+      getEffectiveTerminalTheme(themeId, vibrantColors, isActive).background ??
+      "#0d1117",
+    [themeId, vibrantColors, isActive],
+  );
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
   // Mirror cursor settings into refs so the create effect can read the
@@ -534,7 +558,7 @@ export default function TerminalPaneNative({
           // stays create-once; live changes flow through the dedicated
           // hot-swap effects below.
           const id = await nativeTermCreate({
-            rect: rectOf(el),
+            rect: surfaceRectOf(el),
             dpr: window.devicePixelRatio,
             theme: madeThemeToNative(
               getEffectiveTerminalTheme(
@@ -565,7 +589,7 @@ export default function TerminalPaneNative({
           // (learnings: pty-spawn-dimensions-race). On exhaustion we still
           // call propose — its Rust-side floors (cols>=20, rows>=1) keep
           // the spawn sane.
-          let rect = rectOf(el);
+          let rect = surfaceRectOf(el);
           for (
             let attempt = 0;
             attempt < 10 && (rect.width <= 0 || rect.height <= 0);
@@ -573,7 +597,7 @@ export default function TerminalPaneNative({
           ) {
             await new Promise<void>((r) => requestAnimationFrame(() => r()));
             if (cancelled) return;
-            rect = rectOf(el);
+            rect = surfaceRectOf(el);
           }
           // Ask Rust for the real cols/rows for this rect (LOGICAL px —
           // rectOf convention; Rust multiplies by its cached dpr).
@@ -609,7 +633,7 @@ export default function TerminalPaneNative({
     // changes — e.g. the header settling into flow pushes this inner div down
     // without changing its size, so the surface stayed at the pane top and the
     // header drew over the first rows. RO also coalesces during a fast divider
-    // drag, so the native surface lagged the DOM header. Re-reading rectOf(el)
+    // drag, so the native surface lagged the DOM header. Re-reading surfaceRectOf(el)
     // every frame and pushing only on change fixes both. Mirrors the existing
     // region driver in useNativePaneRegion.ts:47-103.
     let geomRafId = 0;
@@ -617,7 +641,7 @@ export default function TerminalPaneNative({
     const pushGeom = () => {
       geomRafId = requestAnimationFrame(pushGeom);
       if (createdId == null || !el.isConnected) return;
-      const rect = rectOf(el);
+      const rect = surfaceRectOf(el);
       // A zero-size anchor means this pane is not laid out: its tab is behind
       // App.tsx's `display: none` (tab/project switch) or the pane collapsed.
       // The HWND is an OS window — CSS can't hide it, so it would keep
@@ -844,7 +868,7 @@ export default function TerminalPaneNative({
       if (cancelled) return;
       const el = terminalDivRef.current;
       if (el) {
-        const rect = rectOf(el);
+        const rect = surfaceRectOf(el);
         if (rect.width > 0 && rect.height > 0) {
           try {
             const dims = await nativeTermProposeDimensions(
@@ -1774,6 +1798,10 @@ export default function TerminalPaneNative({
         flexDirection: "column",
         minHeight: 0,
         minWidth: 0,
+        // Paints the breathing-room strips the anchor's margins open up
+        // (left + bottom). The header draws its own background over the top
+        // of this, so only the gap is affected.
+        background: surfaceBg,
       }}
     >
       {!hideChrome && (
@@ -1815,6 +1843,21 @@ export default function TerminalPaneNative({
           minWidth: 0,
           position: "relative",
           background: "transparent",
+          // Breathing room, xterm parity: `.terminal-pane .xterm` uses
+          // `padding: 6px 0 6px 10px`, and we take the left + bottom of that
+          // (no top/bottom-of-header gap, no right gap — per the design call).
+          //
+          // MARGINS, not padding, and on the ANCHOR itself: the HWND is sized
+          // from this div's bounding rect, so its border box has to BE the
+          // surface. Padding would leave the rect unchanged and the native
+          // surface would just cover the padding again. Margins shrink the
+          // border box, so the gap falls outside the HWND (painted by the
+          // pane root above) and every overlay anchored to this div — IME
+          // popup, file-link tooltip, TUI scrollbar, composer — keeps its
+          // grid origin exactly on the surface origin. cols/rows follow the
+          // smaller rect automatically; no Rust-side change.
+          marginLeft: PANE_PAD_LEFT,
+          marginBottom: PANE_PAD_BOTTOM,
         }}
       />
       {/* IME pre-edit overlay. Subscribes to ime_composition + cursor

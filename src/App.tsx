@@ -20,6 +20,7 @@ import CommandHistory from "./components/CommandHistory";
 import Sidebar from "./components/Sidebar";
 import WindowResizeHandles from "./components/WindowResizeHandles";
 import { NativePaneVisibilityCoordinator } from "./native-term/NativePaneVisibilityCoordinator";
+import { ensureFreshSession } from "./lib/native-term-bridge";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
@@ -109,6 +110,18 @@ export default function App() {
       if (activeTabId === "dev-server-tab" && !devServerPanelOpen) useAppStore.getState().toggleDevServerPanel();
     }
   }, [activeTabId, projectTabs, isRedirectableSystemTab, devServerPanelOpen]);
+
+  // Reap native panes orphaned by a PREVIOUS page load (reload / devtools
+  // reload / Vite full reload) — their HWNDs outlive the webview and would
+  // otherwise sit on top of this page, surfacing whenever the live panes move.
+  //
+  // `nativeTermCreate` already awaits the same memoised call, so this is only
+  // here for the case where this page opens with NO native pane at all: then
+  // nothing would ever trigger the reap and the corpses would stay on screen.
+  // Whoever gets there first wins; the other awaits the same promise.
+  useEffect(() => {
+    void ensureFreshSession();
+  }, []);
 
   // Settings panel and sidebars are mutually exclusive
   useEffect(() => {

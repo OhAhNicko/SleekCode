@@ -8,6 +8,41 @@ export function rectOf(el: Element): Rect {
   return { x: r.x, y: r.y, width: r.width, height: r.height };
 }
 
+/** Thickness of the frameless window's invisible resize border. Mirrors
+ * `HANDLE` in components/WindowResizeHandles.tsx — keep the two in step. */
+const WINDOW_RESIZE_EDGE_PX = 6;
+
+/**
+ * `rectOf` for a native pane's ANCHOR, pulled back off the window's resize
+ * edges.
+ *
+ * The resize handles are DOM (`position: fixed`, z-index 9999), but a native
+ * pane is a child HWND and sits above ALL webview content — so a pane flush
+ * with the window's right edge swallowed the East handle and the window simply
+ * could not be resized from that side (user-reported 2026-07-26).
+ *
+ * Only the far edges are trimmed, never the origin: shrinking width/height
+ * keeps the surface origin on the anchor's origin, so everything that
+ * positions itself off the anchor — IME popup, file-link tooltip, TUI
+ * scrollbar, composer — stays aligned with the grid. Moving x/y instead would
+ * silently shift all of them.
+ *
+ * The vacated strip is painted by the pane root in the terminal background, so
+ * it is invisible; only that pane's column count changes.
+ *
+ * Left and top need no trim: the pane's own left gap clears the West handle,
+ * and the tab bar owns the top.
+ */
+export function surfaceRectOf(el: Element): Rect {
+  const r = rectOf(el);
+  const overRight = r.x + r.width - (window.innerWidth - WINDOW_RESIZE_EDGE_PX);
+  if (overRight > 0) r.width = Math.max(1, r.width - overRight);
+  const overBottom =
+    r.y + r.height - (window.innerHeight - WINDOW_RESIZE_EDGE_PX);
+  if (overBottom > 0) r.height = Math.max(1, r.height - overBottom);
+  return r;
+}
+
 // ===========================================================================
 // Phase 1 surface — types only. invoke()/listen() wrappers land once
 // workstream-R confirms the Rust signatures (sent for review).
@@ -359,6 +394,7 @@ export function nativeTermEventChannel(
 export type NativeTermCmd =
   | "native_term_create"
   | "native_term_destroy"
+  | "native_term_reap_all"
   | "native_term_show"
   | "native_term_hide"
   | "native_term_resize"
@@ -391,7 +427,58 @@ export type NativeTermCmd =
 
 // --- Lifecycle ---
 
-export function nativeTermCreate(opts: CreateOpts): Promise<NativeTermId> {
+/**
+ * One-shot reap of native terms left behind by a PREVIOUS page load.
+ *
+ * The Rust registry is process-wide and outlives the webview, but every window
+ * in it is owned by a React effect. A reload (F5, devtools reload, a Vite full
+ * reload in dev) discards that JS without running cleanup, so the old page's
+ * HWNDs stay alive and visible over the new one — they lurk behind the new
+ * panes until something moves those panes (opening the settings sidebar, a
+ * browser preview) and then a dead "no PTY attached yet" pane appears from
+ * nowhere.
+ *
+ * ORDERING, not just timing: `nativeTermCreate` awaits this, so the reap is
+ * guaranteed to complete before the first pane of this page exists. Firing it
+ * from a boot effect instead would race the first pane's create — and reaping
+ * a live pane is a worse bug than the one being fixed.
+ *
+ * Idempotent per page: the promise is memoised, so later creates await an
+ * already-settled promise. A failure is swallowed and NOT retried — a retry
+ * loop could reap this page's own panes once they exist.
+ *
+ * The memo lives on `window`, NOT in a module-level `let`: in dev, Vite can
+ * hot-replace THIS module while the page keeps running, which would reset a
+ * module-level flag and let the next create reap the panes this very page is
+ * using. A page reload gets a fresh `window`; an HMR swap does not — which is
+ * exactly the distinction that matters here.
+ */
+const REAP_KEY = "__madeNativeTermReaped";
+
+type ReapHost = { [REAP_KEY]?: Promise<void> };
+
+export function ensureFreshSession(): Promise<void> {
+  const host = window as unknown as ReapHost;
+  let sessionReap = host[REAP_KEY];
+  if (!sessionReap) {
+    sessionReap = invoke<number>("native_term_reap_all")
+      .then((n) => {
+        if (n > 0) {
+          console.warn(
+            `[native-term] reaped ${n} orphaned pane(s) from a previous page load`,
+          );
+        }
+      })
+      .catch((e) => {
+        console.error("[native-term] reap of orphaned panes failed", e);
+      });
+    host[REAP_KEY] = sessionReap;
+  }
+  return sessionReap;
+}
+
+export async function nativeTermCreate(opts: CreateOpts): Promise<NativeTermId> {
+  await ensureFreshSession();
   return invoke<NativeTermId>("native_term_create", { opts });
 }
 

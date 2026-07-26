@@ -81,6 +81,39 @@ pub fn native_term_destroy(id: u32) -> Result<(), String> {
     }
 }
 
+/// Destroy every native term in the registry. Returns how many were reaped.
+///
+/// Called ONCE per page load, before the first `native_term_create` (the JS
+/// side orders it — see `ensureFreshSession` in native-term-bridge.ts).
+///
+/// Why this has to exist: the registry is process-wide and outlives the
+/// webview, but every window in it is owned by a React effect. A page reload
+/// (F5, devtools reload, a Vite full reload in dev) throws that JS away
+/// WITHOUT running any cleanup, so the previous page's HWNDs survive —
+/// visible, parented to the main window, still painting their last frame.
+/// They hide behind the new page's panes (create/show re-assert z-order) until
+/// something moves those panes, e.g. opening the settings sidebar, and then a
+/// dead pane "appears" out of nowhere (user-reported 2026-07-26). Restarting
+/// the app cleared it because that restarts this process.
+///
+/// A live page never calls this after boot, so it cannot reap a pane in use.
+#[tauri::command]
+pub fn native_term_reap_all() -> Result<usize, String> {
+    // Lock is dropped inside take_all before any destroy() runs.
+    let orphans = registry::take_all();
+    let n = orphans.len();
+    for w in orphans {
+        // One bad teardown must not strand the rest — log and keep going.
+        if let Err(e) = w.destroy() {
+            eprintln!("[native_term] reap: destroy failed: {e}");
+        }
+    }
+    if n > 0 {
+        eprintln!("[native_term] reaped {n} orphaned pane(s) from a previous page load");
+    }
+    Ok(n)
+}
+
 #[tauri::command]
 pub fn native_term_show(id: u32) -> Result<(), String> {
     registry::with_window(id, |w| w.show())
