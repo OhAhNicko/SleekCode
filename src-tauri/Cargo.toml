@@ -1,6 +1,6 @@
 [package]
 name = "made"
-version = "0.1.80"
+version = "0.2.0"
 description = "AI Terminal Workspace"
 authors = ["you"]
 edition = "2021"
@@ -15,6 +15,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-opener = "2"
+# Recycle Bin deletes for the file-tree context menu (never remove_dir_all).
+trash = "5"
 tauri-plugin-dialog = "2"
 tauri-plugin-os = "2"
 portable-pty = "0.8"
@@ -59,6 +61,22 @@ regex = "1"
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38.2"
 windows-webview2 = { package = "windows", version = "0.61.3", features = ["Win32_Foundation"] }
+
+# browser_view: the native browser pane hosts its webview with wry DIRECTLY
+# rather than through Tauri. This is a SECURITY decision, not a convenience one —
+# a Tauri-hosted webview injects the invoke key into every page's main frame with
+# no origin gate (tauri manager/webview.rs:176) over an IPC transport any page can
+# reach (wry webview2/mod.rs:880-886), and app commands skip the ACL entirely
+# because MADE declares no app manifest (tauri webview/mod.rs:1802, build.rs).
+# A visited site could therefore read __TAURI_INVOKE_KEY__ and call read_file /
+# write_file / pty_spawn. Hosting with wry means no Tauri bootstrap, no invoke key
+# and no command bridge exist in that webview at all; the only IPC is the single
+# DevTools envelope validated in browser_view::policy.
+#
+# PINNED to the exact version tauri-runtime-wry already resolves (see Cargo.lock)
+# so the process has ONE WebView2 integration, not two. Re-check on every tauri
+# bump: a drift here means two wry copies and two WebView2 environments.
+wry = "=0.54.2"
 
 # Unix (macOS/Linux) only: alacritty_terminal 0.24 -> rustix-openpty 0.1.1 pulls
 # rustix 0.38 WITHOUT its `std` feature, so rustix falls back to its no_std
