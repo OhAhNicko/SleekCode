@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { emitOverlayPopup, listenOverlayAction } from "./overlay-bridge";
+import { useDismissOnOutsidePointer } from "./overlay-dismiss";
 import type { OverlayMenuPayload } from "./overlay-menu-model";
 
 /**
@@ -111,6 +112,10 @@ export function useOverlayMenu(opts: {
       cancelAnimationFrame(raf);
     };
   }, [id, open, anchorRef, payloadJson, pointJson]);
+
+  // Outside-click dismissal. The overlay no longer covers the screen to catch
+  // it (see overlay-dismiss.ts), so it arrives from the main webview instead.
+  useDismissOnOutsidePointer(open, () => onCloseRef.current(), anchorRef);
 
   useEffect(() => {
     if (!open) return;
