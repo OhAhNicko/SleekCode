@@ -82,6 +82,11 @@ export interface ProjectSession {
   type: TerminalType;  // claude | codex | gemini
   createdAt: number;
   isRenamed: boolean;   // true = user manually renamed, prevents auto-name override
+  /** Jira ticket key (`SUPPORT-24920`) when this session was opened from a Jira
+   *  project. Its presence is what makes the session a ticket row in the rail —
+   *  an ordinary Claude session in the same repo has none and never shows up
+   *  there. `name` mirrors it, so the pane header shows the key for free. */
+  ticket?: string;
 }
 
 /** Entry from Claude CLI's sessions-index.json */
@@ -176,6 +181,12 @@ export interface Tab {
   isServersTab?: boolean;
   isKanbanTab?: boolean;
   isSettingsTab?: boolean;
+  /** Jira project: an ORDINARY project tab (real workingDir, real layout,
+   *  normal restore) that additionally shows the ticket rail and keeps a
+   *  browser pinned right. Deliberately not a system tab like the four above —
+   *  those are fixed-id singletons without a workingDir, and are filtered out
+   *  of the project render path, which is the opposite of what this needs. */
+  isJiraProject?: boolean;
   isPinned?: boolean;
   customName?: string;
   serverId?: string;

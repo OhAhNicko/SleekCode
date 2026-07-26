@@ -75,25 +75,15 @@ pub fn overlay_set_region(
             .lock()
             .map_err(|_| "LAST_REGION poisoned".to_string())?;
 
-        if backdrop.unwrap_or(false) {
-            if last.is_some() {
-                // A tight region is installed (an ambient popup was open).
-                // Hide -> clear -> show: the SetWindowRgn lands on a hidden
-                // window, so nothing beneath gets invalidated.
-                win32::set_shown(hwnd, false);
-                win32::clear_region(hwnd)?;
-                *last = None;
-            }
-            win32::set_shown(hwnd, true);
-            return Ok(());
-        }
-
-        if rects.is_empty() {
-            win32::set_shown(hwnd, false);
-            return Ok(());
-        }
+        // `backdrop` is accepted for wire compatibility and ignored — the mode
+        // it selected no longer exists (see the module docs).
+        let _ = backdrop;
 
         let scale = overlay.scale_factor().map_err(|e| e.to_string())?;
+        // No popups => PARKED. An empty rect list produces a zero-area region
+        // (set_region ORs pieces onto an empty base), which clips every pixel
+        // away and is click-through everywhere — while the window keeps
+        // WS_VISIBLE, so Chromium keeps painting and no frame is ever frozen.
         let px: Vec<(i32, i32, i32, i32, i32)> = rects
             .iter()
             .map(|r| {
@@ -112,20 +102,21 @@ pub fn overlay_set_region(
             })
             .collect();
 
+        // Every region change is now popup-sized (parked <-> popup rects), so
+        // it stays on the LIVE path the tight->tight case always used: only the
+        // small changed areas are invalidated. The forbidden op was the
+        // whole-window flip (empty <-> full/regionless), which invalidated
+        // everything beneath and raced DWM into dropping main's child visuals
+        // (docs/learnings/2026-07-24-overlay-region-flicker.md).
         if last.as_ref() != Some(&px) {
-            // Regionless->tight while visible would be a live SetWindowRgn on
-            // a fully-composed window — hide across the change instead.
-            // Tight->tight while visible stays LIVE: anchored popups stream
-            // their rect while a pane moves, and hide/show per update would
-            // strobe the popup itself; a tight->tight change only invalidates
-            // the small popup-rect areas.
-            if last.is_none() && win32::is_shown(hwnd) {
-                win32::set_shown(hwnd, false);
-            }
             win32::set_region(hwnd, &px)?;
             *last = Some(px);
         }
-        win32::set_shown(hwnd, true);
+        // Shown ONCE and then left alone: hiding is what froze a stale frame
+        // and re-composited it on the next show (the ghost menu).
+        if !win32::is_shown(hwnd) {
+            win32::set_shown(hwnd, true);
+        }
         Ok(())
     }
     #[cfg(not(target_os = "windows"))]

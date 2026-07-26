@@ -41,18 +41,27 @@ export function generateTerminalId(): string {
   return `term-${Date.now()}-${++paneCounter}`;
 }
 
+/**
+ * Split the pane `targetId` in two, placing `newLeaf` beside it.
+ *
+ * `insertBefore` decides which side the new pane lands on. Without it the new
+ * leaf is always `children[1]` — i.e. right of a horizontal split, below a
+ * vertical one — which is why "split left" and "split up" did not exist as
+ * concepts anywhere in the app until the context-menu work needed them.
+ */
 export function splitPane(
   layout: PaneLayout,
   targetId: string,
   direction: "horizontal" | "vertical",
-  newLeaf: PaneLayout
+  newLeaf: PaneLayout,
+  insertBefore = false
 ): PaneLayout {
   if (layout.id === targetId) {
     const split: PaneSplit = {
       type: "split",
       id: generatePaneId(),
       direction,
-      children: [layout, newLeaf],
+      children: insertBefore ? [newLeaf, layout] : [layout, newLeaf],
       sizes: [50, 50],
     };
     return split;
@@ -62,8 +71,8 @@ export function splitPane(
     return {
       ...layout,
       children: [
-        splitPane(layout.children[0], targetId, direction, newLeaf),
-        splitPane(layout.children[1], targetId, direction, newLeaf),
+        splitPane(layout.children[0], targetId, direction, newLeaf, insertBefore),
+        splitPane(layout.children[1], targetId, direction, newLeaf, insertBefore),
       ] as [PaneLayout, PaneLayout],
     };
   }

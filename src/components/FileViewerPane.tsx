@@ -17,6 +17,7 @@ import { watchFile } from "../lib/file-watcher";
 import type { Extension } from "@codemirror/state";
 import PaneSearchBar from "./PaneSearchBar";
 import MarkdownPreview from "./MarkdownPreview";
+import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import { useCodeMirrorSearch } from "../hooks/usePaneSearch";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import PaneExpandButton from "./PaneExpandButton";
@@ -241,6 +242,18 @@ export default function FileViewerPane({
     []
   );
 
+  // Expose editor-tab handlers to the context menu.
+  const edRef = useRef<Record<string, (id: string) => void>>({});
+  useEffect(() => {
+    registerSurfaceActions("editor-tab", {
+      save: () => edRef.current.save?.(""),
+      close: (id) => edRef.current.close?.(id),
+      closeOthers: (id) => edRef.current.closeOthers?.(id),
+      togglePreview: (id) => edRef.current.togglePreview?.(id),
+    });
+    return () => unregisterSurfaceActions("editor-tab");
+  }, []);
+
   const handleSave = useCallback(async () => {
     if (contentRef.current === null && !viewRef.current) return;
     setSaving(true);
@@ -462,6 +475,16 @@ export default function FileViewerPane({
       [activeFile]: !(prev[activeFile] ?? true),
     }));
   }, [activeFile]);
+  // handleCloseTab only uses the event for stopPropagation (it is wired to a
+  // click on the tab's X, inside the tab's own click handler). The menu path
+  // has no event, so pass a stand-in rather than reshaping the handler.
+  const noEvent = { stopPropagation() {} } as React.MouseEvent;
+  edRef.current = {
+    save: () => void handleSave(),
+    close: (fp) => handleCloseTab(fp, noEvent),
+    closeOthers: (fp) => { for (const other of files.filter((f) => f !== fp)) handleCloseTab(other, noEvent); },
+    togglePreview: () => togglePreview(),
+  };
 
   const previewSource = useMemo(() => content ?? "", [content]);
 
@@ -490,6 +513,10 @@ export default function FileViewerPane({
             return (
               <div
                 key={fp}
+                data-ctx-surface="editor-tab"
+                data-ctx-id={fp}
+                data-ctx-label={name}
+                data-ctx-dirty={isActive && modified ? "1" : ""}
                 onClick={() => handleTabClick(fp)}
                 className="flex items-center gap-1.5 px-3 cursor-pointer shrink-0 relative group"
                 style={{

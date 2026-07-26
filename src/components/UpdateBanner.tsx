@@ -270,7 +270,7 @@ function DismissButton({ onClick }: { onClick: () => void }) {
     <div
       onClick={onClick}
       role="button"
-      data-tooltip="Dismiss"
+     
       style={{
         display: "flex",
         alignItems: "center",

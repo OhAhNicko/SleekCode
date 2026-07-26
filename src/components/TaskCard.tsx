@@ -10,6 +10,9 @@ interface TaskCardProps {
 export default function TaskCard({ task, onRun, onRemove, onDragStart }: TaskCardProps) {
   return (
     <div
+      data-ctx-surface="kanban-card"
+      data-ctx-id={task.id}
+      data-ctx-label={task.title}
       draggable
       onDragStart={onDragStart}
       style={{

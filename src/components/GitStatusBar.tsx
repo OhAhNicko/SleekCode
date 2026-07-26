@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useId } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitBranchInfo, GitDiffStats, GitAheadBehind } from "../types";
+import { setCachedBranch } from "../lib/git-branch-cache";
 import { useAppStore } from "../store";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { validateBranchName } from "../lib/git-branch-validate";
@@ -46,6 +47,9 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
     try {
       const repo = await invoke<boolean>("git_is_repo", { directory: workingDir });
       setIsGitRepo(repo);
+      // Publish to the shared branch cache so the right-click menu can show the
+      // branch synchronously instead of filling it in after the menu is open.
+      if (!repo) setCachedBranch(workingDir, { isRepo: false });
       if (!repo) return;
 
       const [br, ds, ab] = await Promise.allSettled([
@@ -53,7 +57,10 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
         invoke<GitDiffStats>("git_diff_stats", { directory: workingDir }),
         invoke<GitAheadBehind>("git_ahead_behind", { directory: workingDir }),
       ]);
-      if (br.status === "fulfilled") setBranches(br.value);
+      if (br.status === "fulfilled") {
+        setBranches(br.value);
+        setCachedBranch(workingDir, { isRepo: true, branch: br.value.current });
+      }
       if (ds.status === "fulfilled") {
         setDiffStats(ds.value);
       } else {

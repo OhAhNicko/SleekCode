@@ -177,7 +177,7 @@ export default function CreatePullRequestModal({
           <div
             role="button"
             tabIndex={0}
-            data-tooltip="Close"
+           
             onClick={() => {
               if (!submitting) onClose();
             }}

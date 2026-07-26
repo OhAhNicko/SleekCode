@@ -6,6 +6,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { KNOWN_TERM_PROGRAMS } from "../lib/terminal-config";
 import { setClaudeNotifChannel, type ClaudeNotifChannel } from "../lib/sessions-index";
 import { useAppStore } from "../store";
+import { useModalWhen } from "../store/modalCoordinationSlice";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
 import { THEMES, getTheme } from "../lib/themes";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
@@ -26,46 +27,6 @@ import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 // ─── Internal sub-components ───────────────────────────────────────────────
 
 const SettingsSearchContext = createContext<{ query: string }>({ query: "" });
-
-// Repo hosting the GitHub releases the updater pulls from (mirrors the
-// updater endpoint in tauri.conf.json).
-const RELEASES_REPO = "OhAhNicko/SleekCode";
-
-// The ChangelogModal renders notes as pre-wrap PLAIN TEXT, so strip the
-// markdown the GitHub release body is written in (headings, emphasis, code,
-// links) — otherwise the modal shows literal `##`/`**` characters.
-function markdownToPlainText(md: string): string {
-  return md
-    .replace(/\r\n/g, "\n")
-    .replace(/^\s*#{1,6}\s+/gm, "") // headings -> text
-    .replace(/\*\*(.+?)\*\*/g, "$1") // bold -> text
-    .replace(/`([^`]+)`/g, "$1") // inline code -> text
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1: $2") // links -> "text: url"
-    .replace(/\n{3,}/g, "\n\n") // collapse blank runs
-    .trim();
-}
-
-// The Tauri updater's `Update.body` is sourced from latest.json's `notes`
-// field, which CI hardcodes to a placeholder ("See the assets below…"). The
-// real changelog lives in the GitHub *release body*, which the updater never
-// fetches. Pull it directly from the GitHub API (public repo, CSP allows
-// https: connect-src) so the ChangelogModal shows real notes. Returns null on
-// any failure so the caller can fall back to the updater body.
-async function fetchReleaseNotes(version: string): Promise<string | null> {
-  try {
-    const resp = await fetch(
-      `https://api.github.com/repos/${RELEASES_REPO}/releases/tags/v${version}`,
-      { headers: { Accept: "application/vnd.github+json" } },
-    );
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as { body?: unknown };
-    if (typeof data.body !== "string") return null;
-    const plain = markdownToPlainText(data.body);
-    return plain.length > 0 ? plain : null;
-  } catch {
-    return null;
-  }
-}
 
 function ToggleSwitch({ checked, onChange, color }: { checked: boolean; onChange: (v: boolean) => void; color?: string }) {
   const accent = color ?? "var(--ezy-accent)";
@@ -597,20 +558,10 @@ function UpdatesSection() {
             break;
         }
       });
-      // Cache release notes for ChangelogModal to pick up post-relaunch.
-      // Prefer the real GitHub release body (fetched live) over the updater's
-      // `body`, which is only latest.json's placeholder `notes`. Fall back to
-      // the updater body if the fetch fails (offline / rate-limited).
-      const notes =
-        (await fetchReleaseNotes(pendingUpdate.version)) ??
-        pendingUpdate.body ??
-        "";
-      if (notes.trim().length > 0) {
-        useAppStore.getState().setPendingChangelog({
-          version: pendingUpdate.version,
-          notes,
-        });
-      }
+      // Nothing is cached for the ChangelogModal here: a store write followed
+      // by relaunch() never reaches disk (WebView2 flushes localStorage on a
+      // delay, the process dies first). App.tsx fetches the release body on
+      // the next launch instead.
       await relaunch();
     } catch (err) {
       setCheckStatus("error");
@@ -625,7 +576,7 @@ function UpdatesSection() {
   const isUpdating = checkStatus === "downloading" || checkStatus === "installing";
 
   return (
-    <SettingsSection id="updates" title="Updates" description="Check for new versions of MADE.">
+    <SettingsSection id="updates" title="Updates">
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {appVersion && (
           <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>
@@ -687,17 +638,24 @@ function UpdatesSection() {
               Update Now
             </button>
           )}
+          {/* Status sits on the button's baseline rather than on its own line
+              below — it reads as the button's answer, not a new paragraph. */}
+          {checkStatus === "up-to-date" && (
+            <span style={{ fontSize: 13, color: "var(--ezy-accent)", lineHeight: 1 }}>
+              Up to date
+            </span>
+          )}
+          {checkStatus === "available" && latestVersion && (
+            <span style={{ fontSize: 13, color: "var(--ezy-accent)", lineHeight: 1 }}>
+              v{latestVersion} is available
+            </span>
+          )}
+          {checkStatus === "installing" && (
+            <span style={{ fontSize: 13, color: "var(--ezy-accent)", lineHeight: 1 }}>
+              Installing update, restarting...
+            </span>
+          )}
         </div>
-        {checkStatus === "up-to-date" && (
-          <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
-            Up to date
-          </span>
-        )}
-        {checkStatus === "available" && latestVersion && (
-          <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
-            v{latestVersion} is available
-          </span>
-        )}
         {checkStatus === "downloading" && (
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{
@@ -722,11 +680,6 @@ function UpdatesSection() {
               </span>
             )}
           </div>
-        )}
-        {checkStatus === "installing" && (
-          <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
-            Installing update, restarting...
-          </span>
         )}
         {checkStatus === "error" && (
           <span style={{ fontSize: 12, color: "var(--ezy-red)" }}>
@@ -779,6 +732,7 @@ function Dropdown<T extends string>({
   const [open, setOpen] = useState(false);
   const [rect, setRect] = useState<{ left: number; top: number; width: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
+  const popRef = useRef<HTMLDivElement | null>(null);
 
   const measure = useCallback(() => {
     const el = btnRef.current;
@@ -790,23 +744,40 @@ function Dropdown<T extends string>({
   useEffect(() => {
     if (!open) return;
     measure();
-    const close = () => setOpen(false);
+    // These listeners are on `window` in the CAPTURE phase, so they run before
+    // the event ever reaches React's root container — a React
+    // `stopPropagation` on the popup cannot hold them off. Both dismissals
+    // therefore have to test the target themselves:
+    //   - pointerdown fired first and unmounted the popup before the option's
+    //     click could land, so no option was ever selectable;
+    //   - scroll fired for the popup's OWN overflow container, so it closed
+    //     the moment you tried to scroll the list.
+    const inside = (t: EventTarget | null) =>
+      t instanceof Node &&
+      (popRef.current?.contains(t) === true || btnRef.current?.contains(t) === true);
+    const onPointerDown = (e: Event) => {
+      if (!inside(e.target)) setOpen(false);
+    };
+    const onScroll = (e: Event) => {
+      if (!inside(e.target)) setOpen(false);
+    };
+    // A resize invalidates the measured anchor outright, so always dismiss.
+    const onResize = () => setOpen(false);
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         setOpen(false);
       }
     };
-    // Capture phase so a click anywhere else dismisses before it acts.
-    window.addEventListener("pointerdown", close, true);
+    window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("keydown", onKey, true);
-    window.addEventListener("resize", close);
-    window.addEventListener("scroll", close, true);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("scroll", onScroll, true);
     return () => {
-      window.removeEventListener("pointerdown", close, true);
+      window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("keydown", onKey, true);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("scroll", onScroll, true);
     };
   }, [open, measure]);
 
@@ -819,7 +790,8 @@ function Dropdown<T extends string>({
         ref={btnRef}
         type="button"
         onPointerDown={(e) => {
-          // Stop the capture-phase dismiss above from firing on our own click.
+          // Keep the press off any ancestor drag/press handlers. The dismiss
+          // listener above ignores this button by ref, not by propagation.
           e.stopPropagation();
         }}
         onClick={() => {
@@ -876,8 +848,8 @@ function Dropdown<T extends string>({
       </button>
       {open && rect && (
         <div
+          ref={popRef}
           className="ezy-popup-scroll"
-          onPointerDown={(e) => e.stopPropagation()}
           style={{
             position: "fixed",
             left: rect.left,
@@ -1115,7 +1087,7 @@ function VoiceAgentSection() {
       <SettingsSection
         id="voice"
         title="Voice agent"
-        description="Speak commands in English or Swedish. Audio goes to your self-hosted Whisper server, intent is mapped to actions by a local LLM, and an optional TTS endpoint speaks the reply."
+        description="Speak commands in English or Swedish. Whisper transcribes, a local LLM maps intent to actions."
       >
         <SettingsRow label="Enable voice agent" description="When off, the mic button and hotkey do nothing.">
           <ToggleSwitch checked={voiceEnabled} onChange={setVoiceEnabled} />
@@ -1179,7 +1151,7 @@ function VoiceAgentSection() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection id="voice-llm" title="LLM (intent → action)" description="OpenAI-compatible chat-completions endpoint with native tool calling. Both Mistral Nemo and Qwen 2.5 handle Swedish well.">
+      <SettingsSection id="voice-llm" title="LLM (intent → action)" description="OpenAI-compatible endpoint with tool calling. Mistral Nemo and Qwen 2.5 handle Swedish well.">
         <SettingsRow label="Endpoint URL">
           <TextInput value={llmUrl} onChange={setLlmUrl} placeholder="http://<mac-mini-tailscale>:8765/v1/chat/completions" monospace />
         </SettingsRow>
@@ -1191,7 +1163,7 @@ function VoiceAgentSection() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection id="voice-tts" title="Text-to-speech (optional)" description="Self-hosted TTS endpoint that returns audio bytes. Leave blank for visual-only feedback.">
+      <SettingsSection id="voice-tts" title="Text-to-speech (optional)" description="Leave blank for visual-only feedback.">
         <SettingsRow label="Endpoint URL">
           <TextInput value={ttsUrl} onChange={setTtsUrl} placeholder="http://mac-mini.tail-xxxxx.ts.net:5005/speak" monospace />
         </SettingsRow>
@@ -1212,6 +1184,7 @@ const NAV_SECTIONS = [
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },
   { id: "terminal", label: "Terminal" },
+  { id: "browser", label: "Browser" },
   { id: "projects", label: "Projects" },
   { id: "editor", label: "Editor" },
   { id: "ai", label: "AI" },
@@ -1224,6 +1197,15 @@ const NAV_SECTIONS = [
 export default function SettingsPane() {
   const [activeSection, setActiveSection] = useState(NAV_SECTIONS[0]?.id ?? "behavior");
   const [showClearModal, setShowClearModal] = useState(false);
+  const [showReloadConfirm, setShowReloadConfirm] = useState(false);
+  const [reloadRemember, setReloadRemember] = useState(false);
+  // Native panes are child HWNDs — OS windows layered above the whole WebView.
+  // No z-index can put DOM over them, so a fullscreen modal has to HIDE them
+  // instead. Registering here is what drives NativePaneVisibilityCoordinator;
+  // without it the dialog is buried, visible only in the gaps between panes.
+  // useModalWhen (not useModal) because SettingsPane stays mounted when the
+  // dialog is closed.
+  useModalWhen("settings-reload-confirm", showReloadConfirm);
   const [cliExpanded, setCliExpanded] = useState<Partial<Record<TerminalType, boolean>>>({});
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1258,6 +1240,14 @@ export default function SettingsPane() {
   const setAutoInsertClipboardImage = useAppStore((s) => s.setAutoInsertClipboardImage);
   const maskImagePathsInTerminal = useAppStore((s) => s.maskImagePathsInTerminal);
   const setMaskImagePathsInTerminal = useAppStore((s) => s.setMaskImagePathsInTerminal);
+  const screenshotsRevampEnabled = useAppStore((s) => s.screenshotsRevampEnabled ?? false);
+  const setScreenshotsRevampEnabled = useAppStore((s) => s.setScreenshotsRevampEnabled);
+  const watchScreenshotsFolder = useAppStore((s) => s.watchScreenshotsFolder ?? false);
+  const setWatchScreenshotsFolder = useAppStore((s) => s.setWatchScreenshotsFolder);
+  const screenshotsFolderOverride = useAppStore((s) => s.screenshotsFolderOverride ?? "");
+  const setScreenshotsFolderOverride = useAppStore((s) => s.setScreenshotsFolderOverride);
+  const rememberScreenshotWindow = useAppStore((s) => s.rememberScreenshotWindow ?? false);
+  const setRememberScreenshotWindow = useAppStore((s) => s.setRememberScreenshotWindow);
   const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
   const setShowKanbanButton = useAppStore((s) => s.setShowKanbanButton);
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
@@ -1269,6 +1259,10 @@ export default function SettingsPane() {
   const showTabPath = useAppStore((s) => s.showTabPath);
   const setShowTabPath = useAppStore((s) => s.setShowTabPath);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
+  const confirmReloadPanes = useAppStore((s) => s.confirmReloadPanes ?? true);
+  const setConfirmReloadPanes = useAppStore((s) => s.setConfirmReloadPanes);
+  const claudeNotifChannel = useAppStore((s) => s.claudeNotifChannel ?? "");
+  const setClaudeNotifChannelPref = useAppStore((s) => s.setClaudeNotifChannelPref);
   const setConfirmQuit = useAppStore((s) => s.setConfirmQuit);
   const slashCommandGhostText = useAppStore((s) => s.slashCommandGhostText);
   const setSlashCommandGhostText = useAppStore((s) => s.setSlashCommandGhostText);
@@ -1314,6 +1308,12 @@ export default function SettingsPane() {
   const setCommitMsgMode = useAppStore((s) => s.setCommitMsgMode);
   const shadowAiCli = useAppStore((s) => s.shadowAiCli ?? "claude");
   const setShadowAiCli = useAppStore((s) => s.setShadowAiCli);
+  const jiraBaseUrl = useAppStore((s) => s.jiraBaseUrl ?? "");
+  const setJiraBaseUrl = useAppStore((s) => s.setJiraBaseUrl);
+  const jiraPromptTemplate = useAppStore((s) => s.jiraPromptTemplate ?? "");
+  const setJiraPromptTemplate = useAppStore((s) => s.setJiraPromptTemplate);
+  const jiraReplyInSwedish = useAppStore((s) => s.jiraReplyInSwedish ?? false);
+  const setJiraReplyInSwedish = useAppStore((s) => s.setJiraReplyInSwedish);
   const cliFontSizes = useAppStore((s) => s.cliFontSizes);
   const setCliFontSize = useAppStore((s) => s.setCliFontSize);
   const cliYolo = useAppStore((s) => s.cliYolo);
@@ -1341,6 +1341,12 @@ export default function SettingsPane() {
   const setWheelAcceleration = useAppStore((s) => s.setWheelAcceleration);
   const setScrollThumbAcceleration = useAppStore((s) => s.setScrollThumbAcceleration);
   const setUseNativeTerminalRenderer = useAppStore((s) => s.setUseNativeTerminalRenderer);
+  const nativeSharedGpu = useAppStore((s) => s.nativeSharedGpu);
+  const setNativeSharedGpu = useAppStore((s) => s.setNativeSharedGpu);
+  const browserIframeForLocalhost = useAppStore((s) => s.browserIframeForLocalhost);
+  const setBrowserIframeForLocalhost = useAppStore((s) => s.setBrowserIframeForLocalhost);
+  const browserAskBeforeDownload = useAppStore((s) => s.browserAskBeforeDownload);
+  const setBrowserAskBeforeDownload = useAppStore((s) => s.setBrowserAskBeforeDownload);
   const aiTimeBursts = useAppStore((s) => s.aiTimeBursts);
   const clearAiTimeStats = useAppStore((s) => s.clearAiTimeStats);
   const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
@@ -1353,7 +1359,7 @@ export default function SettingsPane() {
       case "general":
         return (
           <>
-            <SettingsSection id="behavior" title="Behavior" description="General application behavior and defaults.">
+            <SettingsSection id="behavior" title="Behavior">
               <SettingsRow label="Always show layout picker">
                 <ToggleSwitch checked={alwaysShowTemplatePicker} onChange={setAlwaysShowTemplatePicker} />
               </SettingsRow>
@@ -1366,6 +1372,39 @@ export default function SettingsPane() {
               <SettingsRow label="Mask image paths in terminal (beta)" description="Shows [Image #N] in place of the path. The CLI still receives the real path.">
                 <ToggleSwitch checked={maskImagePathsInTerminal} onChange={setMaskImagePathsInTerminal} />
               </SettingsRow>
+              <SettingsRow
+                label="Revamped screenshots viewer (beta)"
+                description="Double-click or Ctrl+Click a thumbnail to attach instead of open."
+              >
+                <ToggleSwitch checked={screenshotsRevampEnabled} onChange={setScreenshotsRevampEnabled} />
+              </SettingsRow>
+              <SettingsRow
+                label="Remember the screenshot viewer's size"
+                description="Off: it reopens centred at its default size every time. On: your last drag and resize stick."
+              >
+                <ToggleSwitch
+                  checked={rememberScreenshotWindow}
+                  onChange={setRememberScreenshotWindow}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Watch the Screenshots folder"
+                description="Catches snips that never reach the clipboard."
+              >
+                <ToggleSwitch checked={watchScreenshotsFolder} onChange={setWatchScreenshotsFolder} />
+              </SettingsRow>
+              {watchScreenshotsFolder && (
+                <SettingsRow
+                  label="Screenshots folder"
+                  description="Leave empty to use the folder Windows reports."
+                >
+                  <PathPicker
+                    value={screenshotsFolderOverride}
+                    onChange={setScreenshotsFolderOverride}
+                    directory
+                  />
+                </SettingsRow>
+              )}
               <SettingsRow label="Show Kanban button in topbar">
                 <ToggleSwitch checked={showKanbanButton} onChange={setShowKanbanButton} />
               </SettingsRow>
@@ -1377,6 +1416,12 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Confirm before quitting">
                 <ToggleSwitch checked={confirmQuit} onChange={setConfirmQuit} />
+              </SettingsRow>
+              <SettingsRow
+                label="Confirm before reloading panes"
+                description="Turn back on to undo Remember in the reload dialog."
+              >
+                <ToggleSwitch checked={confirmReloadPanes} onChange={setConfirmReloadPanes} />
               </SettingsRow>
               <SettingsRow label="Auto-rotate topbar in portrait" description="Taller than wide swaps the topbar for a vertical tab strip.">
                 <ToggleSwitch checked={verticalModeEnabled} onChange={setVerticalModeEnabled} />
@@ -1454,7 +1499,15 @@ export default function SettingsPane() {
                         gap: 10,
                         padding: "10px 12px",
                         borderRadius: 8,
-                        border: isSelected ? `2px solid var(--ezy-accent)` : "1px solid var(--ezy-border)",
+                        // The border stays 1px in every state. It used to go to
+                        // 2px when selected, and since these cards are
+                        // auto-height that added 2px of box on selection — every
+                        // card in the grid shifted as you clicked around. The
+                        // selected ring is an inset shadow instead: same look,
+                        // zero layout cost.
+                        border: "1px solid",
+                        borderColor: isSelected ? "var(--ezy-accent)" : "var(--ezy-border)",
+                        boxShadow: isSelected ? "inset 0 0 0 1px var(--ezy-accent)" : "none",
                         backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
                         cursor: "pointer",
                         fontFamily: "inherit",
@@ -1485,16 +1538,6 @@ export default function SettingsPane() {
                 <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
               </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="fonts" title="Fonts">
-              {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => (
-                <SettingsRow key={cliType} label={`${TERMINAL_CONFIGS[cliType].label} font size`}>
-                  <FontSizeStepper
-                    value={cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE}
-                    onChange={(v) => setCliFontSize(cliType, v)}
-                  />
-                </SettingsRow>
-              ))}
-            </SettingsSection>
             <SettingsSection id="cursor" title="Cursor" description="Applies to the native terminal renderer.">
               <SettingsRow label="Cursor style">
                 <SegmentedControl<"bar" | "block" | "underline">
@@ -1511,108 +1554,7 @@ export default function SettingsPane() {
                 <ToggleSwitch checked={nativeCursorBlink} onChange={setNativeCursorBlink} />
               </SettingsRow>
             </SettingsSection>
-          </>
-        );
-
-      case "terminal":
-        return (
-          <>
-            {isWindows() && (
-              <SettingsSection id="terminal-backend" title="Backend" description="Fallback for projects whose path doesn't clearly indicate WSL vs Windows. Per-project preference (in Recent Projects) wins when set.">
-                <SettingsRow label="Terminal backend">
-                  <SegmentedControl
-                    options={[
-                      { value: "wsl" as const, label: "WSL" },
-                      { value: "windows" as const, label: "Windows" },
-                    ]}
-                    value={terminalBackend as "wsl" | "windows"}
-                    onChange={(v) => setTerminalBackend(v)}
-                  />
-                </SettingsRow>
-              </SettingsSection>
-            )}
-            <SettingsSection id="native-renderer" title="Native renderer" description="Experimental GPU-accelerated terminal renderer. When off, MADE uses the classic xterm panes.">
-              <SettingsRow label="Native terminal renderer (beta)" description="GPU renderer instead of xterm panes. Open terminals reload.">
-                <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
-              </SettingsRow>
-              <SettingsRow
-                vertical
-                label="Report terminal type to AI CLIs (TERM_PROGRAM)"
-                description="Claude enables synchronized output, progress and notifications only for terminals it recognises. If a feature stays quiet, pick another. Applies to the next pane you open."
-              >
-                <div className="flex items-center gap-2">
-                  <Dropdown<string>
-                    value={termProgram}
-                    onChange={setTermProgram}
-                    options={[
-                      { value: "", label: "Off — report nothing" },
-                      ...KNOWN_TERM_PROGRAMS.map((n) => ({ value: n as string, label: n })),
-                    ]}
-                    width={200}
-                  />
-                  <TextInput
-                    value={termProgramVersion}
-                    onChange={setTermProgramVersion}
-                    placeholder="version (blank = default)"
-                    monospace
-                  />
-                </div>
-              </SettingsRow>
-              <SettingsRow
-                vertical
-                label="Claude notification channel"
-                description="Which escape sequence Claude sends when it wants your attention. MADE turns iTerm2, Kitty and Ghostty into an in-app toast — Ghostty also carries a title; Terminal Bell carries no message. Applies to new sessions."
-              >
-                <div className="flex items-center gap-2">
-                  <Dropdown<ClaudeNotifChannel | "">
-                    value=""
-                    onChange={(v) => {
-                      if (!v) return;
-                      setNotifChannelState({ status: "idle" });
-                      void setClaudeNotifChannel(v as ClaudeNotifChannel, "wsl")
-                        .then((path) =>
-                          setNotifChannelState({ status: "ok", msg: `Set to "${v}" in ${path}` }),
-                        )
-                        .catch((e) =>
-                          setNotifChannelState({ status: "fail", msg: String(e) }),
-                        );
-                    }}
-                    options={[
-                      { value: "", label: "Choose a channel to apply…" },
-                      { value: "ghostty", label: "Ghostty (OSC 777) — recommended" },
-                      { value: "iterm2", label: "iTerm2 (OSC 9)" },
-                      { value: "kitty", label: "Kitty (OSC 99)" },
-                      { value: "iterm2+bell", label: "iTerm2 w/ Bell" },
-                      { value: "auto", label: "Auto (follow terminal type)" },
-                      { value: "bell", label: "Terminal Bell — no toast" },
-                      { value: "none", label: "Disabled" },
-                    ]}
-                    width={280}
-                  />
-                  {notifChannelState.status !== "idle" && (
-                    <span
-                      style={{
-                        fontSize: 11,
-                        color:
-                          notifChannelState.status === "ok"
-                            ? "var(--ezy-accent)"
-                            : "var(--ezy-red)",
-                      }}
-                      data-tooltip={notifChannelState.msg}
-                    >
-                      {notifChannelState.status === "ok" ? "Applied" : "Failed"}
-                    </span>
-                  )}
-                </div>
-              </SettingsRow>
-              <SettingsRow label="Mouse wheel acceleration" description="Scroll faster to travel further per notch. Fullscreen CLIs do their own acceleration.">
-                <ToggleSwitch checked={wheelAcceleration} onChange={setWheelAcceleration} />
-              </SettingsRow>
-              <SettingsRow label="Scroll thumb acceleration" description="Off is a strict 1:1 drag, so the top of the bar is the top of the buffer.">
-                <ToggleSwitch checked={scrollThumbAcceleration} onChange={setScrollThumbAcceleration} />
-              </SettingsRow>
-            </SettingsSection>
-            <SettingsSection id="cli" title="CLI Options" description="YOLO mode and statusline for each CLI.">
+            <SettingsSection id="cli" title="CLI Options">
             {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
               const isYolo = !!cliYolo[cliType];
               const label = TERMINAL_CONFIGS[cliType].label;
@@ -1649,6 +1591,13 @@ export default function SettingsPane() {
                   </div>
                   {isExpanded && (
                   <div style={{ paddingBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>Font size</span>
+                    <FontSizeStepper
+                      value={cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE}
+                      onChange={(v) => setCliFontSize(cliType, v)}
+                    />
+                  </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       {isYolo ? (
@@ -1737,9 +1686,144 @@ export default function SettingsPane() {
           </>
         );
 
+      case "browser":
+        return (
+          <>
+            <SettingsSection id="browser" title="Browser">
+              <SettingsRow
+                label="Use the legacy preview for dev servers"
+                description="Only affects localhost. Websites always use the native browser — the legacy preview cannot load them."
+              >
+                <ToggleSwitch checked={browserIframeForLocalhost} onChange={setBrowserIframeForLocalhost} />
+              </SettingsRow>
+              <SettingsRow
+                label="Ask before saving a download"
+                description="Off saves straight to Downloads like Chrome. On keeps files off disk until you approve, but it re-requests the file, which some one-time download links will not allow."
+              >
+                <ToggleSwitch checked={browserAskBeforeDownload} onChange={setBrowserAskBeforeDownload} />
+              </SettingsRow>
+            </SettingsSection>
+          </>
+        );
+
+      case "terminal":
+        return (
+          <>
+            {isWindows() && (
+              <SettingsSection id="terminal-backend" title="Backend" description="Fallback when a project's path doesn't say WSL or Windows. A per-project setting overrides it.">
+                <SettingsRow label="Terminal backend">
+                  <SegmentedControl
+                    options={[
+                      { value: "wsl" as const, label: "WSL" },
+                      { value: "windows" as const, label: "Windows" },
+                    ]}
+                    value={terminalBackend as "wsl" | "windows"}
+                    onChange={(v) => setTerminalBackend(v)}
+                  />
+                </SettingsRow>
+              </SettingsSection>
+            )}
+            <SettingsSection id="native-renderer" title="Native renderer">
+              <SettingsRow label="Native terminal renderer (beta)" description="GPU renderer instead of xterm panes. Open terminals reload.">
+                <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
+              </SettingsRow>
+              <SettingsRow
+                label="Share one GPU device (experimental)"
+                description="Native panes share a single GPU device instead of building their own — measured ~4x faster to open a pane. The trade: a driver reset affects every shared pane at once instead of one. Applies to panes you open after flipping this; open panes keep the device they started with."
+              >
+                <ToggleSwitch checked={nativeSharedGpu} onChange={setNativeSharedGpu} />
+              </SettingsRow>
+              <SettingsRow
+                vertical
+                label="Report terminal type to AI CLIs (TERM_PROGRAM)"
+                description="Claude enables synchronized output, progress and notifications only for terminals it recognises. If a feature stays quiet, pick another. Applies to the next pane you open."
+              >
+                <div className="flex items-center gap-2">
+                  <Dropdown<string>
+                    value={termProgram}
+                    onChange={setTermProgram}
+                    options={[
+                      { value: "", label: "Off — report nothing" },
+                      ...KNOWN_TERM_PROGRAMS.map((n) => ({ value: n as string, label: n })),
+                    ]}
+                    width={200}
+                  />
+                  <TextInput
+                    value={termProgramVersion}
+                    onChange={setTermProgramVersion}
+                    placeholder="version (blank = default)"
+                    monospace
+                  />
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                vertical
+                label="Claude notification channel"
+                description="Which escape sequence Claude sends when it wants your attention. MADE turns iTerm2, Kitty and Ghostty into an in-app toast; Terminal Bell carries no message. Applies to new sessions."
+              >
+                <div className="flex items-center gap-2">
+                  <Dropdown<ClaudeNotifChannel | "">
+                    // Mirrors what MADE last wrote into Claude's settings.json.
+                    // This used to be hardcoded to "" with a placeholder option,
+                    // so the control snapped back to "Choose a channel…" after
+                    // every pick and looked like it never saved. There is no
+                    // read-back command (setters only), hence the local mirror.
+                    value={claudeNotifChannel as ClaudeNotifChannel | ""}
+                    placeholder="Not set"
+                    onChange={(v) => {
+                      if (!v) return;
+                      const prev = claudeNotifChannel;
+                      setNotifChannelState({ status: "idle" });
+                      setClaudeNotifChannelPref(v); // optimistic — reverted below on failure
+                      void setClaudeNotifChannel(v as ClaudeNotifChannel, "wsl")
+                        .then((path) =>
+                          setNotifChannelState({ status: "ok", msg: `Set to "${v}" in ${path}` }),
+                        )
+                        .catch((e) => {
+                          setClaudeNotifChannelPref(prev);
+                          setNotifChannelState({ status: "fail", msg: String(e) });
+                        });
+                    }}
+                    options={[
+                      { value: "ghostty", label: "Ghostty (OSC 777) — recommended" },
+                      { value: "iterm2", label: "iTerm2 (OSC 9)" },
+                      { value: "kitty", label: "Kitty (OSC 99)" },
+                      { value: "iterm2+bell", label: "iTerm2 w/ Bell" },
+                      { value: "auto", label: "Auto (follow terminal type)" },
+                      { value: "bell", label: "Terminal Bell — no toast" },
+                      { value: "none", label: "Disabled" },
+                    ]}
+                    width={280}
+                  />
+                  {notifChannelState.status !== "idle" && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color:
+                          notifChannelState.status === "ok"
+                            ? "var(--ezy-accent)"
+                            : "var(--ezy-red)",
+                      }}
+                      data-tooltip={notifChannelState.msg}
+                    >
+                      {notifChannelState.status === "ok" ? "Applied" : "Failed"}
+                    </span>
+                  )}
+                </div>
+              </SettingsRow>
+              <SettingsRow label="Mouse wheel acceleration" description="Scroll faster to travel further per notch. Fullscreen CLIs do their own acceleration.">
+                <ToggleSwitch checked={wheelAcceleration} onChange={setWheelAcceleration} />
+              </SettingsRow>
+              <SettingsRow label="Scroll thumb acceleration" description="Off is a strict 1:1 drag, so the top of the bar is the top of the buffer.">
+                <ToggleSwitch checked={scrollThumbAcceleration} onChange={setScrollThumbAcceleration} />
+              </SettingsRow>
+            </SettingsSection>
+          </>
+        );
+
       case "projects":
         return (
-          <SettingsSection id="projects" title="Projects" description="Configure default project directory and template files for new projects.">
+          <SettingsSection id="projects" title="Projects">
             <SettingsRow label="Projects directory">
               <PathPicker value={projectsDir} onChange={setProjectsDir} directory />
             </SettingsRow>
@@ -1827,7 +1911,7 @@ export default function SettingsPane() {
                       </label>
                       <button
                         onClick={() => removeCustomScaffold(scaffold.id)}
-                        data-tooltip="Remove" aria-label="Remove"
+                        aria-label="Remove"
                         style={{
                           padding: "2px 8px",
                           fontSize: 14,
@@ -1869,7 +1953,7 @@ export default function SettingsPane() {
       case "editor":
         return (
           <>
-            <SettingsSection id="texteditor" title="Text Editor" description="How the file editor behaves across your open projects.">
+            <SettingsSection id="texteditor" title="Text Editor">
               <SettingsRow
                 label="Wrap long lines"
                 description="The markdown preview always wraps, whatever this is set to."
@@ -1883,7 +1967,7 @@ export default function SettingsPane() {
                 <ToggleSwitch checked={perProjectEditor} onChange={setPerProjectEditor} />
               </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="composer" title="MadeComposer" description="Configure the prompt composer overlay (Ctrl+I).">
+            <SettingsSection id="composer" title="MadeComposer" description="The prompt composer overlay (Ctrl+I).">
               <SettingsRow label="Enable MadeComposer">
                 <ToggleSwitch checked={promptComposerEnabled} onChange={setPromptComposerEnabled} />
               </SettingsRow>
@@ -1906,7 +1990,7 @@ export default function SettingsPane() {
                 </>
               )}
             </SettingsSection>
-            <SettingsSection id="preview" title="Preview Panes" description="Configure browser preview pane behavior.">
+            <SettingsSection id="preview" title="Preview Panes">
               <SettingsRow label="Full column" description="Browser pane takes a whole column in split layouts.">
                 <ToggleSwitch checked={browserFullColumn} onChange={setBrowserFullColumn} />
               </SettingsRow>
@@ -1914,7 +1998,7 @@ export default function SettingsPane() {
                 <ToggleSwitch checked={browserSpawnLeft} onChange={setBrowserSpawnLeft} />
               </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="codereview" title="Code Review" description="Configure the built-in code review experience.">
+            <SettingsSection id="codereview" title="Code Review">
               <SettingsRow label="Collapse all files" description="Diffs start collapsed.">
                 <ToggleSwitch checked={codeReviewCollapseAll} onChange={setCodeReviewCollapseAll} />
               </SettingsRow>
@@ -1985,7 +2069,7 @@ export default function SettingsPane() {
       case "ai":
         return (
           <>
-            <SettingsSection id="ai" title="AI Sessions" description="Configure shadow AI provider for background tasks.">
+            <SettingsSection id="ai" title="AI Sessions">
               <SettingsRow label="Shadow AI provider" description="Subscription used for Promptifier and AI commit messages.">
                 <SegmentedControl
                   options={[
@@ -1995,6 +2079,47 @@ export default function SettingsPane() {
                   ]}
                   value={shadowAiCli}
                   onChange={(v) => setShadowAiCli(v as "claude" | "codex")}
+                />
+              </SettingsRow>
+            </SettingsSection>
+            <SettingsSection id="jira" title="Jira">
+              <SettingsRow label="Jira address">
+                <TextInput
+                  value={jiraBaseUrl}
+                  onChange={setJiraBaseUrl}
+                  placeholder="https://yourcompany.atlassian.net"
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Ticket prompt"
+                description="{ticket} is replaced with the ticket number."
+                vertical
+              >
+                <textarea
+                  value={jiraPromptTemplate}
+                  onChange={(e) => setJiraPromptTemplate(e.target.value)}
+                  rows={4}
+                  spellCheck={false}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    padding: "6px 8px",
+                    fontSize: 12,
+                    lineHeight: 1.5,
+                    fontFamily: "inherit",
+                    resize: "vertical",
+                    color: "var(--ezy-text)",
+                    backgroundColor: "var(--ezy-surface)",
+                    border: "1px solid var(--ezy-border)",
+                    borderRadius: 5,
+                    outline: "none",
+                  }}
+                />
+              </SettingsRow>
+              <SettingsRow label="Reply in Swedish">
+                <ToggleSwitch
+                  checked={jiraReplyInSwedish}
+                  onChange={setJiraReplyInSwedish}
                 />
               </SettingsRow>
             </SettingsSection>
@@ -2029,6 +2154,12 @@ export default function SettingsPane() {
       <style>{`
         [data-settings-search-active] [data-settings-section]:not(:has([data-settings-row])) {
           display: none;
+        }
+        /* Inter-section spacing, but none trailing the last one — the scroll
+           container's own padding closes out the page. !important because the
+           32px lives in an inline style. */
+        [data-settings-section]:last-of-type {
+          padding-bottom: 0 !important;
         }
       `}</style>
       {/* Left nav sidebar */}
@@ -2133,7 +2264,7 @@ export default function SettingsPane() {
             <>
               <button
                 type="button"
-                data-tooltip="Search settings" aria-label="Search settings"
+                aria-label="Search settings"
                 onClick={() => setSearchOpen(true)}
                 style={{
                   width: 22,
@@ -2167,8 +2298,15 @@ export default function SettingsPane() {
               </button>
               <button
                 type="button"
-                data-tooltip="Reload (Ctrl+Shift+R)" aria-label="Reload (Ctrl+Shift+R)"
-                onClick={() => window.location.reload()}
+                data-tooltip="Reload all panes (CTRL+SHIFT+R)" aria-label="Reload all panes (CTRL+SHIFT+R)"
+                onClick={() => {
+                  if (confirmReloadPanes) {
+                    setReloadRemember(false);
+                    setShowReloadConfirm(true);
+                  } else {
+                    window.location.reload();
+                  }
+                }}
                 style={{
                   width: 22,
                   height: 22,
@@ -2235,18 +2373,136 @@ export default function SettingsPane() {
       <div ref={contentScrollRef} style={{
         flex: 1,
         overflowY: "auto",
-        padding: "24px 24px 60px",
+        // Was "24px 24px 60px", which stacked on top of the last section's own
+        // 32px padding — 92px of empty space that pushed a scrollbar onto tabs
+        // that otherwise fit. The last section's padding is zeroed in the style
+        // block above, so the trailing gap now matches the leading one.
+        padding: 24,
       }}>
         <SettingsSearchContext.Provider value={{ query: trimmedQuery }}>
           {isSearching
             ? NAV_SECTIONS.map((s) => (
                 <Fragment key={s.id}>{renderSection(s.id)}</Fragment>
               ))
-            : renderSection(activeSection)}
+            : (
+                // Keyed by section so switching tabs REMOUNTS the subtree.
+                // Without it React reconciles positionally and reuses the same
+                // DOM nodes, so a toggle landing where a differently-valued one
+                // sat animates its knob across on arrival — the transition is
+                // doing exactly what it should, on an element that should never
+                // have been recycled.
+                <Fragment key={activeSection}>{renderSection(activeSection)}</Fragment>
+              )}
         </SettingsSearchContext.Provider>
       </div>
 
       {showClearModal && <ClearDataModal onClose={() => setShowClearModal(false)} />}
+
+      {/* Reload confirmation — same shape as TabBar's quit dialog so the two
+          destructive confirmations look and behave identically. */}
+      {showReloadConfirm && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(0,0,0,0.55)",
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowReloadConfirm(false); }}
+        >
+          <div
+            style={{
+              backgroundColor: "var(--ezy-surface-raised)",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: 10,
+              boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
+              padding: "24px 28px 20px",
+              width: 340,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ezy-text)" }}>
+              Are you sure you want to reload all panes?
+            </div>
+            {/* Remember shares the action row: the choice and the buttons that
+                commit it belong on one line, and it saves a row of height. */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, marginTop: 4 }}>
+              <div
+                style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", minWidth: 0 }}
+                onClick={() => setReloadRemember((v) => !v)}
+              >
+                <div
+                  style={{
+                    width: 15,
+                    height: 15,
+                    borderRadius: 3,
+                    border: reloadRemember ? "none" : "1px solid var(--ezy-border-light)",
+                    backgroundColor: reloadRemember ? "var(--ezy-accent)" : "transparent",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                    transition: "background-color 120ms ease",
+                  }}
+                >
+                  {reloadRemember && <FaCheck size={9} color="#fff" />}
+                </div>
+                <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>Remember</span>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              <div
+                onClick={() => setShowReloadConfirm(false)}
+                style={{
+                  padding: "6px 16px",
+                  fontSize: 12,
+                  fontWeight: 500,
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  border: "1px solid var(--ezy-border-light)",
+                  color: "var(--ezy-text-secondary)",
+                  backgroundColor: "transparent",
+                  transition: "background-color 120ms ease",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+              >
+                Cancel
+              </div>
+              <div
+                onClick={() => {
+                  // Persist the opt-out BEFORE the reload tears the page down.
+                  // Unlike relaunch(), location.reload() keeps the process alive,
+                  // so WebView2 still commits the localStorage write.
+                  if (reloadRemember) setConfirmReloadPanes(false);
+                  setShowReloadConfirm(false);
+                  window.location.reload();
+                }}
+                style={{
+                  padding: "6px 16px",
+                  fontSize: 12,
+                  fontWeight: 500,
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  border: "none",
+                  color: "#fff",
+                  backgroundColor: "var(--ezy-accent-dim)",
+                  transition: "background-color 120ms ease",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-hover)"}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-dim)"}
+              >
+                OK
+              </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

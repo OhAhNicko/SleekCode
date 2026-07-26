@@ -1,23 +1,15 @@
-// Shared model for the global right-click context menu.
+// Shared ICON REGISTRY for menus rendered by either webview.
 //
-// The MAIN webview owns the action closures (they dispatch window events / call
-// the store) and the OVERLAY webview renders the menu — so both must agree on
-// the item list. This module holds the display model (label / shortcut / icon /
-// action id) and the icons; the closures live in GlobalContextMenu keyed by the
-// same `actionId`. Icons are shared JSX so they render identically in either
-// webview bundle.
+// Icons are shared JSX so a row looks identical whether the MAIN webview or the
+// OVERLAY webview bundle renders it. 16x16 viewBox, `currentColor`.
+//
+// This file used to also carry the global menu's item list
+// (`buildContextMenuSections`) and its own `CtxMenuItem` type. Both are gone:
+// menu content now comes from per-surface providers in `src/lib/menu/`, and the
+// display model is the richer `OverlayMenuItem` (which supports disabled rows,
+// section titles and danger styling — none of which the old type could express).
 
 import type { ReactNode } from "react";
-
-export const CTX_MENU_WIDTH = 240;
-
-export type CtxMenuItem = {
-  actionId: string;
-  label: string;
-  shortcut: string;
-  iconId: string;
-};
-export type CtxMenuSection = { items: CtxMenuItem[] };
 
 // ---- icons (16x16 viewBox, currentColor) -----------------------------------
 
@@ -124,47 +116,50 @@ CTX_ICONS["cli-shell"] = (
   </svg>
 );
 
-// ---- model builder ----------------------------------------------------------
+// ---- context-menu provider icons -------------------------------------------
+// Added for the per-surface menus. Same 16x16 / currentColor / filled-path
+// convention as the block above so rows stay visually uniform.
+//
+// split-left and split-up reuse the split-right/split-down frames with the
+// TARGET half filled, because a mirrored two-cell frame is geometrically
+// identical to its original — four indistinguishable glyphs would be worse
+// than none.
 
-/** The display model (no closures). Must stay in sync with `actionsFor` in
- *  GlobalContextMenu.tsx (matched by `actionId`). */
-export function buildContextMenuSections(isTerminal: boolean): CtxMenuSection[] {
-  const sections: CtxMenuSection[] = [];
+const P = (d: string) => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+    <path d={d} />
+  </svg>
+);
 
-  sections.push({
-    items: [
-      { actionId: "copy", label: "Copy", shortcut: "Ctrl+Shift+C", iconId: "copy" },
-      { actionId: "paste", label: "Paste", shortcut: "Ctrl+Shift+V", iconId: "paste" },
-    ],
-  });
-
-  if (isTerminal) {
-    sections.push({
-      items: [
-        { actionId: "clear", label: "Clear Terminal", shortcut: "Ctrl+L", iconId: "clear" },
-        { actionId: "split-right", label: "Split Right", shortcut: "Ctrl+D", iconId: "split-right" },
-        { actionId: "split-down", label: "Split Down", shortcut: "Ctrl+Shift+D", iconId: "split-down" },
-        { actionId: "close-pane", label: "Close Pane", shortcut: "Ctrl+W", iconId: "close-pane" },
-      ],
-    });
-  }
-
-  sections.push({
-    items: [
-      { actionId: "new-tab", label: "New Tab", shortcut: "Ctrl+Shift+T", iconId: "new-tab" },
-      { actionId: "palette", label: "Command Palette", shortcut: "Ctrl+K", iconId: "palette" },
-      { actionId: "toggle-sidebar", label: "Toggle Sidebar", shortcut: "Ctrl+B", iconId: "sidebar" },
-      { actionId: "settings", label: "Settings", shortcut: "Ctrl+,", iconId: "settings" },
-    ],
-  });
-
-  sections.push({
-    items: [
-      { actionId: "prompt-search", label: "Search Prompt History", shortcut: "Ctrl+R", iconId: "search" },
-      { actionId: "shortcuts", label: "Keyboard Shortcuts", shortcut: "Ctrl+/", iconId: "keyboard" },
-      { actionId: "devtools", label: "Open DevTools", shortcut: "F12", iconId: "devtools" },
-    ],
-  });
-
-  return sections;
-}
+CTX_ICONS["split-left"] = (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M1.5 2A1.5 1.5 0 000 3.5v9A1.5 1.5 0 001.5 14h13a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0014.5 2h-13zm7.25 1.5h5.75v9H8.75v-9z" />
+    <path d="M1.5 3.5h5.75v9H1.5z" />
+  </svg>
+);
+CTX_ICONS["split-up"] = (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+    <path d="M1.5 2A1.5 1.5 0 000 3.5v9A1.5 1.5 0 001.5 14h13a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0014.5 2h-13zm0 6.75h13v3.75H1.5V8.75z" />
+    <path d="M1.5 3.5h13v3.75H1.5z" />
+  </svg>
+);
+CTX_ICONS["expand"] = P("M1.75 1a.75.75 0 00-.75.75v3.5a.75.75 0 001.5 0V2.5h2.75a.75.75 0 000-1.5h-3.5zm8.5 0a.75.75 0 000 1.5H13v2.75a.75.75 0 001.5 0v-3.5a.75.75 0 00-.75-.75h-3.5zM1.75 10a.75.75 0 01.75.75V13.5h2.75a.75.75 0 010 1.5h-3.5a.75.75 0 01-.75-.75v-3.5A.75.75 0 011.75 10zm12.5 0a.75.75 0 01.75.75v3.5a.75.75 0 01-.75.75h-3.5a.75.75 0 010-1.5H13v-2.75a.75.75 0 01.75-.75z");
+CTX_ICONS["popout"] = P("M2.75 2A1.75 1.75 0 001 3.75v8.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0013 12.25v-3a.75.75 0 00-1.5 0v3a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-8.5a.25.25 0 01.25-.25h3a.75.75 0 000-1.5h-3zM9.75 1a.75.75 0 000 1.5h2.19L7.22 7.22a.75.75 0 101.06 1.06L13 3.56v2.19a.75.75 0 001.5 0v-4a.75.75 0 00-.75-.75h-4z");
+CTX_ICONS["restart"] = P("M8 2.5a5.5 5.5 0 104.9 3 .75.75 0 011.34-.68A7 7 0 118 1a.75.75 0 010 1.5z M8 .5a.75.75 0 01.53.22l1.75 1.75a.75.75 0 010 1.06L8.53 5.28A.75.75 0 017.25 4.75V1.25A.75.75 0 018 .5z");
+CTX_ICONS["branch"] = P("M4 2.5a1.5 1.5 0 10-.75 1.3v7.4a1.5 1.5 0 101.5 0V9.6c.4.25.87.4 1.38.4h2.62a3 3 0 002.98-2.7 1.5 1.5 0 10-1.52-.05A1.5 1.5 0 018.75 8.5H6.13c-.5 0-.97.15-1.38.4V3.8c.15-.09.28-.2.4-.32A1.49 1.49 0 004 2.5z");
+CTX_ICONS["scroll-top"] = P("M2 1.75A.75.75 0 012.75 1h10.5a.75.75 0 010 1.5H2.75A.75.75 0 012 1.75zm6 2.5a.75.75 0 01.53.22l3.5 3.5a.75.75 0 11-1.06 1.06L8.75 6.81v7.44a.75.75 0 01-1.5 0V6.81L5.03 9.03a.75.75 0 01-1.06-1.06l3.5-3.5A.75.75 0 018 4.25z");
+CTX_ICONS["scroll-bottom"] = P("M2 14.25a.75.75 0 01.75-.75h10.5a.75.75 0 010 1.5H2.75a.75.75 0 01-.75-.75zM8 1a.75.75 0 01.75.75v7.44l2.22-2.22a.75.75 0 111.06 1.06l-3.5 3.5a.75.75 0 01-1.06 0l-3.5-3.5a.75.75 0 011.06-1.06l2.22 2.22V1.75A.75.75 0 018 1z");
+CTX_ICONS["rename"] = P("M11.013 1.427a1.75 1.75 0 012.474 0l1.086 1.086a1.75 1.75 0 010 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 01-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61zm1.414 1.06a.25.25 0 00-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 000-.354l-1.086-1.086zM11.189 6.25L9.75 4.81l-6.286 6.287a.25.25 0 00-.064.108l-.558 1.953 1.953-.558a.25.25 0 00.108-.064L11.189 6.25z");
+CTX_ICONS["trash"] = P("M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zM11 3V1.75C11 .784 10.216 0 9.25 0h-2.5C5.784 0 5 .784 5 1.75V3H2.75a.75.75 0 000 1.5h.3l.815 10.185A1.75 1.75 0 005.61 16h4.78a1.75 1.75 0 001.745-1.315L12.95 4.5h.3a.75.75 0 000-1.5H11zm.451 1.5l-.808 10.06a.25.25 0 01-.249.19H5.61a.25.25 0 01-.249-.19L4.552 4.5h6.898z");
+CTX_ICONS["folder-open"] = P("M.513 1.513A1.75 1.75 0 011.75 1h3.5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 00.2.1h4.5A1.75 1.75 0 0114 4.75v.5h.75a1.25 1.25 0 011.238 1.44l-.9 5.75A1.75 1.75 0 0113.35 14H1.75A1.75 1.75 0 010 12.25v-9.5c0-.464.184-.909.513-1.237zM1.5 12.25c0 .138.112.25.25.25h.14l.9-5.75A1.25 1.25 0 013.99 5.75H12.5v-1a.25.25 0 00-.25-.25h-4.5a1.75 1.75 0 01-1.4-.7l-.9-1.2a.25.25 0 00-.2-.1h-3.5a.25.25 0 00-.25.25v9.5z");
+CTX_ICONS["file-plus"] = P("M2 1.75C2 .784 2.784 0 3.75 0h5.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v3.086a.75.75 0 01-1.5 0V5H9.75A1.75 1.75 0 018 3.25V1.5H3.75a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h3.5a.75.75 0 010 1.5h-3.5A1.75 1.75 0 012 14.25V1.75zM12 10.75a.75.75 0 00-1.5 0V12H9.25a.75.75 0 000 1.5h1.25v1.25a.75.75 0 001.5 0V13.5h1.25a.75.75 0 000-1.5H12v-1.25z");
+CTX_ICONS["folder-plus"] = P("M1.75 1A1.75 1.75 0 000 2.75v10.5c0 .966.784 1.75 1.75 1.75h5.5a.75.75 0 000-1.5h-5.5a.25.25 0 01-.25-.25v-10.5a.25.25 0 01.25-.25h3.5a.25.25 0 01.2.1l.9 1.2c.33.44.85.7 1.4.7h4.5a.25.25 0 01.25.25v3a.75.75 0 001.5 0v-3A1.75 1.75 0 0012.25 3h-4.5a.25.25 0 01-.2-.1l-.9-1.2A1.75 1.75 0 005.25 1h-3.5zM13 10.75a.75.75 0 00-1.5 0V12h-1.25a.75.75 0 000 1.5h1.25v1.25a.75.75 0 001.5 0V13.5h1.25a.75.75 0 000-1.5H13v-1.25z");
+CTX_ICONS["external-link"] = P("M3.75 2A1.75 1.75 0 002 3.75v8.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0014 12.25v-3.5a.75.75 0 00-1.5 0v3.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-8.5a.25.25 0 01.25-.25h3.5a.75.75 0 000-1.5h-3.5zM9.5 2a.75.75 0 000 1.5h1.94L7.72 7.22a.75.75 0 001.06 1.06l3.72-3.72V6.5a.75.75 0 001.5 0v-3.75A.75.75 0 0013.25 2H9.5z");
+CTX_ICONS["pin"] = P("M9.5.75a.75.75 0 01.75-.75h.25a3.5 3.5 0 013.5 3.5v.25a.75.75 0 01-1.5 0V3.5a2 2 0 00-2-2h-.25a.75.75 0 01-.75-.75zM6.72 1.22a.75.75 0 011.06 0l7 7a.75.75 0 01-1.06 1.06l-.72-.72-2.53 2.53a3.5 3.5 0 01-.66 4.06l-.53.53a.75.75 0 01-1.06 0L4.5 12.06l-3.22 3.22a.75.75 0 01-1.06-1.06l3.22-3.22L.94 8.5a.75.75 0 010-1.06l.53-.53a3.5 3.5 0 014.06-.66L8.06 3.72l-.72-.72a.75.75 0 010-1.06z");
+CTX_ICONS["duplicate"] = P("M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5zM5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm5.75 1a.75.75 0 00-1.5 0V4.5H7.5a.75.75 0 000 1.5h1.75v1.75a.75.75 0 001.5 0V6h1.75a.75.75 0 000-1.5H10.75V2.75z");
+CTX_ICONS["arrow-left"] = P("M7.78 3.22a.75.75 0 010 1.06L4.81 7.25h8.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 11-1.06 1.06l-4.25-4.25a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 0z");
+CTX_ICONS["arrow-right"] = P("M8.22 3.22a.75.75 0 000 1.06l2.97 2.97H2.75a.75.75 0 000 1.5h8.44l-2.97 2.97a.75.75 0 101.06 1.06l4.25-4.25a.75.75 0 000-1.06L9.28 3.22a.75.75 0 00-1.06 0z");
+CTX_ICONS["save-config"] = P("M2.75 1A1.75 1.75 0 001 2.75v10.5c0 .966.784 1.75 1.75 1.75h10.5A1.75 1.75 0 0015 13.25V5.164a1.75 1.75 0 00-.513-1.237l-2.414-2.414A1.75 1.75 0 0010.836 1H2.75zm0 1.5h1.5v3.25c0 .414.336.75.75.75h5a.75.75 0 00.75-.75V2.56l2.427 2.427a.25.25 0 01.073.177v8.086a.25.25 0 01-.25.25H12.5V10.5a1.5 1.5 0 00-1.5-1.5H5a1.5 1.5 0 00-1.5 1.5v3H2.75a.25.25 0 01-.25-.25V2.75a.25.25 0 01.25-.25zM5 13.5v-3h6v3H5zm.75-8V2.5h3.5v3h-3.5z");
+CTX_ICONS["attach"] = P("M8.5 1.5a3.5 3.5 0 013.5 3.5v6a2.5 2.5 0 01-5 0V5a1.5 1.5 0 013 0v5.5a.75.75 0 01-1.5 0V5.5a.75.75 0 00-1.5 0V11a1 1 0 002 0V5a2 2 0 10-4 0v6a4 4 0 008 0V5a.75.75 0 011.5 0v6a5.5 5.5 0 01-11 0V5A3.5 3.5 0 018.5 1.5z");
+CTX_ICONS["filter"] = P("M.75 3a.75.75 0 000 1.5h14.5a.75.75 0 000-1.5H.75zM3 7.75A.75.75 0 013.75 7h8.5a.75.75 0 010 1.5h-8.5A.75.75 0 013 7.75zm2.75 3.75a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5h-4.5z");
+CTX_ICONS["terminal"] = P("M1.75 2A1.75 1.75 0 000 3.75v8.5c0 .966.784 1.75 1.75 1.75h12.5A1.75 1.75 0 0016 12.25v-8.5A1.75 1.75 0 0014.25 2H1.75zm2.53 3.22a.75.75 0 10-1.06 1.06L4.94 8 3.22 9.72a.75.75 0 101.06 1.06l2.25-2.25a.75.75 0 000-1.06L4.28 5.22zM8.75 9.5a.75.75 0 000 1.5h3.5a.75.75 0 000-1.5h-3.5z");

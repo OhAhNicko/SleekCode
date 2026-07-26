@@ -2167,7 +2167,8 @@ export default function PromptComposer({
               border: `1px solid ${terminalCursor}`,
               flexShrink: 0,
             }}
-            data-tooltip={`Image ${i + 1} attached — click to remove, right-click for options`}
+            data-tooltip={`Image ${i + 1} attached`}
+            data-tooltip-hint="Click to remove · right-click for options"
           >
             <img
               src={img.dataUri}
@@ -2315,7 +2316,7 @@ export default function PromptComposer({
             }}
             onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
             onMouseLeave={(e) => { e.currentTarget.style.opacity = "0.4"; }}
-            data-tooltip="Copy to clipboard"
+           
           >
             <FaCopy size={10} color={terminalCursor} />
           </div>

@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useAppStore } from "./store";
 import { getTheme } from "./lib/themes";
+import { fetchReleaseNotes } from "./lib/release-notes";
 import TabBar from "./components/TabBar";
 import VerticalTabBar from "./components/VerticalTabBar";
 import TemplatePicker, { type ExtraPaneType } from "./components/TemplatePicker";
@@ -20,6 +21,7 @@ import CommandHistory from "./components/CommandHistory";
 import Sidebar from "./components/Sidebar";
 import WindowResizeHandles from "./components/WindowResizeHandles";
 import { NativePaneVisibilityCoordinator } from "./native-term/NativePaneVisibilityCoordinator";
+import { OverlayDismissOwner } from "./native-term/OverlayDismissOwner";
 import { ensureFreshSession } from "./lib/native-term-bridge";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -28,6 +30,7 @@ import { resolveWindowsCliPaths } from "./lib/windows-cli-cache";
 import { resolveNativeCliPaths } from "./lib/macos-cli-cache";
 import { installStatuslineWrapper } from "./lib/statusline-setup";
 import { useClipboardWatcher } from "./hooks/useClipboardWatcher";
+import { useScreenshotFolderWatcher } from "./hooks/useScreenshotFolderWatcher";
 import { useFileDrop } from "./hooks/useFileDrop";
 import { useAiTimeTracker } from "./hooks/useAiTimeTracker";
 import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
@@ -41,6 +44,9 @@ import DevServerRestoreToast from "./components/DevServerRestoreToast";
 import SettingsPane from "./components/SettingsPane";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
+import { matchCommand, probeKeybinding, MIGRATED } from "./lib/keybindings";
+import { runCommand } from "./lib/commands";
+import PromptModal from "./components/PromptModal";
 import TooltipHost from "./components/TooltipHost";
 import UpdateBanner from "./components/UpdateBanner";
 import ChangelogModal from "./components/ChangelogModal";
@@ -245,9 +251,15 @@ export default function App() {
       )
     : null;
 
-  // On mount, detect a version bump and surface the cached changelog if the
-  // auto-updater installed a new build. First-ever launches (null lastSeenVersion
-  // with no pending cache) silently initialise without showing the modal.
+  // On mount, detect a version bump and surface the new release's notes.
+  //
+  // The notes are FETCHED here rather than handed over by the install that just
+  // ran. The old flow stashed them in the persisted store and then immediately
+  // called relaunch(); WebView2 commits localStorage to disk on a delay, so the
+  // write died with the process every single time — `pendingChangelog` never
+  // once reached disk and the popup never appeared.
+  //
+  // First-ever launches (null lastSeenVersion) silently initialise.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -260,18 +272,29 @@ export default function App() {
       if (cancelled) return;
       const store = useAppStore.getState();
       if (current === store.lastSeenVersion) return;
-      const pending = store.pendingChangelog;
-      const shouldShow =
-        store.showChangelogOnUpdate &&
-        !!pending &&
-        pending.version === current &&
-        !!pending.notes &&
-        pending.notes.trim().length > 0;
-      if (shouldShow) {
-        setChangelogToShow({ version: pending!.version, notes: pending!.notes });
-      } else {
+
+      const settle = () => {
         store.setLastSeenVersion(current);
         store.setPendingChangelog(null);
+      };
+
+      // Fresh install, or the popup is switched off — record and move on.
+      if (store.lastSeenVersion === null || !store.showChangelogOnUpdate) {
+        settle();
+        return;
+      }
+
+      // Always fetched, never read from the store: a build before this fix
+      // could have left a `pendingChangelog` holding latest.json's placeholder
+      // ("See the assets below…"), and that must not win over the real body.
+      const notes = await fetchReleaseNotes(current);
+      if (cancelled) return;
+
+      if (notes) {
+        setChangelogToShow({ version: current, notes });
+      } else {
+        // Offline or the tag has no body — don't nag on every later launch.
+        settle();
       }
     })();
     return () => {
@@ -566,6 +589,9 @@ export default function App() {
   // Watch Windows clipboard for new images (adds to TabBar strip automatically)
   useClipboardWatcher();
 
+  // Also pick up snips saved straight to the OS Screenshots folder (opt-in)
+  useScreenshotFolderWatcher();
+
   // Handle file drops from OS onto terminal panes / MadeComposer
   useFileDrop();
 
@@ -679,6 +705,20 @@ export default function App() {
       const { ctrlKey, shiftKey, altKey, key } = e;
       // Helper: prevent default AND stop propagation (capture phase blocks xterm)
       const consume = () => { e.preventDefault(); e.stopPropagation(); };
+
+      // Keybinding-table migration. `probeKeybinding` is a DEV-only read-only
+      // instrument (step B): it reports what the table WOULD resolve, so the
+      // table can be proven against real usage before any behaviour moves.
+      // The MIGRATED gate (step C) is the actual handover — a command added to
+      // that set stops reaching the legacy switch below and runs through
+      // runCommand instead. It starts empty, so today this changes nothing.
+      probeKeybinding(e);
+      const matched = matchCommand(e);
+      if (matched && MIGRATED.has(matched)) {
+        consume();
+        runCommand(matched);
+        return;
+      }
 
       // Voice activation: hotkey behaviour depends on voiceActivationMode.
       //   "toggle" — pressing the hotkey starts; pressing again stops.
@@ -994,6 +1034,7 @@ export default function App() {
     <div className="flex flex-col h-full w-full" style={{ backgroundColor: "var(--ezy-bg)" }}>
       <WindowResizeHandles />
       <NativePaneVisibilityCoordinator />
+      <OverlayDismissOwner />
       {!isVertical && <TabBar />}
       <UpdateBanner {...updateState} />
       <div className="flex-1 min-h-0 flex">
@@ -1148,6 +1189,7 @@ export default function App() {
       {VOICE_ENABLED && <VoiceHud />}
       {VOICE_ENABLED && <VoiceController />}
       <GlobalContextMenu />
+      <PromptModal />
       <TooltipHost />
       <DevServerTerminalHost />
       <DevServerRestoreToast />

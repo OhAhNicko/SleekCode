@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { FaTrash, FaKey, FaChevronDown } from "react-icons/fa";
+import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import { FaPlus, FaPencil, FaXmark, FaCheck } from "react-icons/fa6";
 import { HiMiniSignal } from "react-icons/hi2";
 import { BiCopy } from "react-icons/bi";
@@ -432,6 +433,21 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
     setShowToken(false);
   }, []);
 
+  // Expose row handlers to the context menu. Delete deliberately routes
+  // through the SAME two-click confirm the inline button uses — a menu item
+  // that bypassed it would be a one-click destructive action.
+  const srvRef = useRef<Record<string, (id: string) => void>>({});
+  useEffect(() => {
+    registerSurfaceActions("server", {
+      test: (id) => srvRef.current.test?.(id),
+      edit: (id) => srvRef.current.edit?.(id),
+      delete: (id) => srvRef.current.delete?.(id),
+      setupKey: (id) => srvRef.current.setupKey?.(id),
+      copyKey: (id) => srvRef.current.copyKey?.(id),
+    });
+    return () => unregisterSurfaceActions("server");
+  }, []);
+
   const handleEdit = useCallback((server: RemoteServer) => {
     setFormData({
       name: server.name,
@@ -588,6 +604,17 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
       setKeySetupStatus((s) => ({ ...s, [serverId]: "error" }));
     }
   }, [updateServer, refreshKeys]);
+
+  srvRef.current = {
+    test: (id) => { const sv = servers.find((x) => x.id === id); if (sv) handleTestConnection(sv); },
+    edit: (id) => { const sv = servers.find((x) => x.id === id); if (sv) handleEdit(sv); },
+    delete: (id) => handleDelete(id),
+    copyKey: (id) => { const sv = servers.find((x) => x.id === id); if (sv?.sshKeyPath) handleCopyKey(sv.sshKeyPath); },
+    setupKey: (id) => {
+      const sv = servers.find((x) => x.id === id);
+      if (sv) handleSetupKey(sv.id, sv.name, sv.host, sv.username);
+    },
+  };
 
   /** Save (if new) then run key setup wizard directly from the form */
   const handleSetupKeyFromForm = useCallback(() => {
@@ -937,6 +964,12 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
             return (
               <div
                 key={server.id}
+                data-ctx-surface="server"
+                data-ctx-id={server.id}
+                data-ctx-label={server.name}
+                data-ctx-host={server.host}
+                data-ctx-user={server.username}
+                data-ctx-has-key={hasKey ? "1" : ""}
                 style={{ borderBottom: "1px solid var(--ezy-border-subtle)" }}
               >
                 {/* Row 1: status dot + name + actions */}
@@ -973,7 +1006,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       <HiMiniSignal size={11} color="var(--ezy-text-muted)" />
                     </div>
                     <div
-                      data-tooltip="Edit"
+                     
                       onClick={() => handleEdit(server)}
                       style={{
                         width: 20, height: 20,
@@ -1451,7 +1484,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       </button>
                       <button
                         onClick={() => handleEdit(server)}
-                        data-tooltip="Edit" aria-label="Edit"
+                        aria-label="Edit"
                         className="p-1.5 rounded transition-colors"
                         style={{ backgroundColor: "transparent" }}
                         onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}

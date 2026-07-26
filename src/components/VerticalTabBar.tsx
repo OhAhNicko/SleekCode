@@ -201,7 +201,7 @@ export default function VerticalTabBar() {
           {/* Close (far left) */}
           <div
             onClick={handleClose}
-            data-tooltip="Close"
+           
             style={{
               width: compact ? 20 : 40,
               display: "flex",
@@ -259,7 +259,7 @@ export default function VerticalTabBar() {
           {/* Minimize */}
           <div
             onClick={handleMinimize}
-            data-tooltip="Minimize"
+           
             style={{
               width: compact ? 20 : 40,
               display: "flex",
@@ -283,7 +283,7 @@ export default function VerticalTabBar() {
           {/* New tab (far right of controls row) */}
           <div
             onClick={() => window.dispatchEvent(new Event("made:new-tab"))}
-            data-tooltip="New tab"
+           
             style={{
               width: compact ? 20 : 32,
               display: "flex",
@@ -302,7 +302,7 @@ export default function VerticalTabBar() {
 
         {/* Sidebar toggle */}
         <div
-          data-tooltip="Toggle sidebar"
+         
           style={{
             display: "flex",
             alignItems: "center",
@@ -743,7 +743,7 @@ export default function VerticalTabBar() {
           }}
         >
           <div
-            data-tooltip="Settings"
+           
             style={{
               flex: 1,
               minWidth: 0,

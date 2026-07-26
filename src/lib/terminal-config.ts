@@ -358,11 +358,19 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
   const cliPath = getCachedCliPath(type);
   const distro = getCachedDistro();
 
+  // An argument containing whitespace (the Jira ticket pane's positional first
+  // prompt — a whole sentence) must NOT go through the fast path below: that
+  // hands argv straight to wsl.exe, whose parser is exactly what the resume
+  // comment says mangles multi-token args. The bash -lic path `sh()`-quotes
+  // every argument, so the prompt survives as one word. Flag-shaped args, which
+  // is everything else MADE passes, never trip this.
+  const hasSpacedArg = extra.some((a) => /\s/.test(a));
+
   // When resuming a session, always use bash -lic (slow path).
   // wsl.exe -e /usr/bin/env passes --resume as separate args which can get
   // mangled by wsl.exe's argument parser. bash -lic wraps everything in a
   // single shell command string, matching manual `claude --resume <uuid>`.
-  if (cachedPath && cliPath && resumeArgs.length === 0) {
+  if (cachedPath && cliPath && resumeArgs.length === 0 && !hasSpacedArg) {
     // Fast path: skip bash entirely, use dash (sh) for env + exec.
     const distroArgs = distro ? ["-d", distro] : [];
     const envArgs = [

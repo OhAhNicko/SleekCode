@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { emitOverlayPopup, listenOverlayAction } from "./overlay-bridge";
+import { useDismissOnOutsidePointer } from "./overlay-dismiss";
 
 /**
  * Payload for the overlay's generic "toast" renderer (OverlayRoot). Covers all
@@ -45,6 +46,11 @@ export function useOverlayViewportPopup(opts: {
   // Keep the latest handler without resubscribing the action listener.
   const onActionRef = useRef(opts.onAction);
   onActionRef.current = opts.onAction;
+
+  // Outside-click dismissal (see overlay-dismiss.ts): report it as the same
+  // "__dismiss__" action the overlay used to bounce back from its backdrop, so
+  // owners need no new branch.
+  useDismissOnOutsidePointer(open, () => onActionRef.current?.("__dismiss__"));
 
   // Close only on open→false / unmount (payloadJson deliberately excluded —
   // payload updates must overwrite the popup in place, not close/reopen it).

@@ -311,7 +311,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
           <PaneExpandButton paneId={paneId} />
           <button
             onClick={onClose}
-            data-tooltip="Close Editor" aria-label="Close Editor"
+            aria-label="Close Editor"
             className="p-1 rounded transition-colors group"
             style={{ border: "none", backgroundColor: "transparent", cursor: "pointer" }}
           >

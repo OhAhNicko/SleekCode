@@ -64,7 +64,7 @@ export interface TabSlice {
   tabs: Tab[];
   activeTabId: string;
   addTab: (name: string, workingDir: string, serverId?: string) => void;
-  addTabWithLayout: (name: string, workingDir: string, layout: PaneLayout | null, serverId?: string) => string;
+  addTabWithLayout: (name: string, workingDir: string, layout: PaneLayout | null, serverId?: string, options?: { isJiraProject?: boolean }) => string;
   removeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabLayout: (tabId: string, layout: PaneLayout | null) => void;
@@ -145,13 +145,13 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
     window.scrollTo(0, 0);
   },
 
-  addTabWithLayout: (name, workingDir, layout, serverId?) => {
+  addTabWithLayout: (name, workingDir, layout, serverId?, options?) => {
     const tabId = `tab-${Date.now()}`;
     const backend = resolveBackend(workingDir, serverId, get() as unknown as Record<string, unknown>);
     set((state) => ({
       tabs: [
         ...state.tabs,
-        { id: tabId, name, workingDir, layout, serverId, backend } as Tab,
+        { id: tabId, name, workingDir, layout, serverId, backend, isJiraProject: options?.isJiraProject } as Tab,
       ],
       activeTabId: tabId,
       ...(workingDir ? { lastActiveProjectPath: workingDir } : {}),

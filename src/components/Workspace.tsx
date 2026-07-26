@@ -1,6 +1,7 @@
-import { useCallback, useState, useRef, useMemo, useEffect } from "react";
+import { useCallback, useState, useRef, useMemo, useEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { Tab, TerminalType, PaneLayout, TerminalRenderer } from "../types";
+import JiraTicketRail from "./JiraTicketRail";
 import { useAppStore } from "../store";
 import {
   addPaneAsGrid,
@@ -18,6 +19,7 @@ import {
   repositionKanbanPane,
 } from "../lib/layout-utils";
 import { getPtyWrite } from "../store/terminalSlice";
+import { pasteTextToTerminal } from "../lib/terminal-paste";
 import { snapshotPane } from "../store/undoCloseStore";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import type { CommandBlock } from "../lib/command-block-parser";
@@ -233,16 +235,48 @@ export default function Workspace({ tab }: WorkspaceProps) {
       .querySelectorAll("[data-browser-pane-id]")
       .forEach((el) => ro.observe(el));
 
-    // rAF loop runs continuously but only does work while a WAAPI animation
-    // is in flight (FLIP open/close/expand/float). Idle ticks are near-free;
-    // active ticks track the animated transform from grid-rect to final-rect.
+    // rAF loop. Two reasons to do work:
+    //
+    //  1. A WAAPI animation is in flight (FLIP open/close/expand/float) — track
+    //     the animated transform from grid-rect to final-rect.
+    //  2. A placeholder MOVED without resizing. ResizeObserver is blind to pure
+    //     movement, and there is no animation either, so opening the Settings
+    //     sidebar (which shifts panes sideways at unchanged width) left the slot
+    //     — and the native webview parked on it — at the old position, sitting
+    //     over the CLI panes. The comment that RO covers "sidebar collapse" was
+    //     simply wrong.
+    //
+    // The position probe is one getBoundingClientRect per browser pane per frame
+    // (there is at most one), which is what every native pane's driver already
+    // does; the reflow storm this loop was written to avoid came from tearing
+    // down and recreating the observers, not from measuring.
+    const movedSinceLastSync = () => {
+      for (const [id, slot] of browserSlotMapRef.current) {
+        if (slot.style.display === "none") continue;
+        const placeholder = document.querySelector(
+          `[data-browser-pane-id="${id}"]`
+        ) as HTMLElement | null;
+        if (!placeholder) return true;
+        const r = placeholder.getBoundingClientRect();
+        if (
+          Math.round(r.left) !== Math.round(parseFloat(slot.style.left || "0")) ||
+          Math.round(r.top) !== Math.round(parseFloat(slot.style.top || "0")) ||
+          Math.round(r.width) !== Math.round(parseFloat(slot.style.width || "0")) ||
+          Math.round(r.height) !== Math.round(parseFloat(slot.style.height || "0"))
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
     let rafId = requestAnimationFrame(function tick() {
       const anims = document.getAnimations();
       let anyRunning = false;
       for (let i = 0; i < anims.length; i++) {
         if (anims[i].playState === "running") { anyRunning = true; break; }
       }
-      if (anyRunning) syncAll();
+      if (anyRunning || movedSinceLastSync()) syncAll();
       rafId = requestAnimationFrame(tick);
     });
 
@@ -298,8 +332,10 @@ export default function Workspace({ tab }: WorkspaceProps) {
   }, []);
 
   const handleSpawnTerminal = useCallback(
-    (terminalId: string, type: TerminalType, serverId?: string) => {
-      addTerminal(terminalId, type, tab.workingDir, serverId ?? tab.serverId);
+    (terminalId: string, type: TerminalType, serverId?: string, workingDir?: string) => {
+      // `workingDir` override: the file tree's "Open terminal here" names a
+      // folder. Everything else omits it and inherits the tab's directory.
+      addTerminal(terminalId, type, workingDir || tab.workingDir, serverId ?? tab.serverId);
       if (tab.layout) {
         updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, terminalId, type));
       }
@@ -456,8 +492,16 @@ export default function Workspace({ tab }: WorkspaceProps) {
       // those panes follow the global Settings toggle. Lives on the leaf, so
       // it persists with the layout and dies with the pane.
       const renderer = detail?.renderer as TerminalRenderer | undefined;
-      const newTerminalId = generateTerminalId();
-      const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type, renderer };
+      // A caller that has to know the terminal id BEFORE the pane exists can
+      // supply it (the Jira flow stashes the first prompt against it, and
+      // registers the ticket's session under it). Everyone else omits it and
+      // gets a fresh one, exactly as before.
+      const newTerminalId = (detail?.terminalId as string | undefined) ?? generateTerminalId();
+      // Resuming a named session — a closed Jira ticket being reopened. Lives
+      // on the leaf, so the pane spawns with `--resume <uuid>` and the previous
+      // conversation comes back.
+      const sessionResumeId = detail?.sessionResumeId as string | undefined;
+      const newLeaf = { type: "terminal" as const, id: generatePaneId(), terminalId: newTerminalId, terminalType: type, renderer, sessionResumeId };
 
       const focusNewPane = !useAppStore.getState().openPanesInBackground;
 
@@ -471,19 +515,44 @@ export default function Workspace({ tab }: WorkspaceProps) {
       // handleSpawnTerminal here because it short-circuits when tab.layout
       // is null (the layout-write would no-op).
       if (!tab.layout) {
-        addTerminal(newTerminalId, type, tab.workingDir, tab.serverId);
+        addTerminal(newTerminalId, type, (detail?.workingDir as string | undefined) || tab.workingDir, tab.serverId);
         handleLayoutChange(newLeaf);
         if (focusNewPane) handleTerminalFocus(newTerminalId);
         else refocusPrevious();
         return;
       }
 
-      handleSpawnTerminal(newTerminalId, type, tab.serverId);
+      handleSpawnTerminal(newTerminalId, type, tab.serverId, detail?.workingDir as string | undefined);
 
-      if (detail?.direction === "vertical" && activeTerminalId) {
-        const paneId = findPaneIdForTerminal(tab.layout, activeTerminalId);
-        if (paneId) {
-          handleLayoutChange(splitPane(tab.layout, paneId, "vertical", newLeaf));
+      // Direction: "left" | "right" | "up" | "down" from the context menu,
+      // plus the legacy "vertical" (= down) that every existing dispatcher
+      // sends. Anything else falls through to the grid add below.
+      const dir = detail?.direction as string | undefined;
+      const axis: "horizontal" | "vertical" | null =
+        dir === "left" || dir === "right" ? "horizontal"
+        : dir === "up" || dir === "down" || dir === "vertical" ? "vertical"
+        : null;
+
+      if (axis) {
+        // Splits must land on a real pane. An explicit `targetTerminalId`
+        // (context menu — the pane actually right-clicked) wins over the
+        // focused pane. `activeTerminalId` can be null (nothing focused yet) or
+        // point at a pane that has since been closed — in both cases
+        // findPaneIdForTerminal returns null. Falling through to the grid add
+        // then silently produced a side-by-side pane, which is the "Split Down
+        // only works sometimes" report: the user asked to stack and got a grid.
+        // Fall back to the last pane in the layout so the intent is honoured.
+        const requested = (detail?.targetTerminalId as string | undefined) ?? activeTerminalId;
+        const target =
+          (requested && findPaneIdForTerminal(tab.layout, requested)) ||
+          (() => {
+            const ids = findAllTerminalIds(tab.layout);
+            const last = ids[ids.length - 1];
+            return last ? findPaneIdForTerminal(tab.layout, last) : null;
+          })();
+        if (target) {
+          const insertBefore = dir === "left" || dir === "up";
+          handleLayoutChange(splitPane(tab.layout, target, axis, newLeaf, insertBefore));
           if (focusNewPane) handleTerminalFocus(newTerminalId);
           else refocusPrevious();
           return;
@@ -496,14 +565,26 @@ export default function Workspace({ tab }: WorkspaceProps) {
     };
     window.addEventListener("made:split-terminal", handler);
     return () => window.removeEventListener("made:split-terminal", handler);
-  }, [tab.id, tab.layout, tab.serverId, handleLayoutChange, handleSpawnTerminal, handleTerminalFocus, refocusPrevious]);
+    // activeTerminalId MUST stay in this list. Without it the handler closed
+    // over whichever pane was focused the last time one of the other deps
+    // changed, so Split Down stacked under the wrong pane — or, if that pane
+    // had been closed, degraded to a grid add. It appeared to work "sometimes"
+    // because any layout change refreshes the closure. Every other effect in
+    // this file already lists it.
+  }, [tab.id, tab.layout, tab.serverId, activeTerminalId, handleLayoutChange, handleSpawnTerminal, handleTerminalFocus, refocusPrevious]);
 
-  // Listen for close-pane events (Ctrl+W)
+  // Listen for close-pane events (Ctrl+W, context menu)
   useEffect(() => {
-    const handler = () => {
+    const handler = (e: Event) => {
       if (useAppStore.getState().activeTabId !== tab.id) return;
-      if (!activeTerminalId) return;
-      handleTerminalClose(activeTerminalId);
+      // An explicit target wins over the focused pane. The keyboard shortcut
+      // sends no detail and keeps the old behaviour; the context menu names
+      // the pane that was actually right-clicked, which is not necessarily the
+      // focused one — closing the focused pane instead is destructive.
+      const detail = (e as CustomEvent).detail;
+      const targetId = (detail?.terminalId as string | undefined) ?? activeTerminalId;
+      if (!targetId) return;
+      handleTerminalClose(targetId);
     };
     window.addEventListener("made:close-pane", handler);
     return () => window.removeEventListener("made:close-pane", handler);
@@ -574,16 +655,38 @@ export default function Workspace({ tab }: WorkspaceProps) {
     return unsub;
   }, [tab.id, activeTerminalId]);
 
-  // Listen for clear-terminal events (Ctrl+L)
+  // Listen for clear-terminal events (Ctrl+L, context menu)
   useEffect(() => {
-    const handler = () => {
+    const handler = (e: Event) => {
       if (useAppStore.getState().activeTabId !== tab.id) return;
-      if (!activeTerminalId) return;
-      const writeFn = getPtyWrite(activeTerminalId);
+      const detail = (e as CustomEvent).detail;
+      const targetId = (detail?.terminalId as string | undefined) ?? activeTerminalId;
+      if (!targetId) return;
+      const writeFn = getPtyWrite(targetId);
       if (writeFn) writeFn("\x0c"); // Send form-feed (Ctrl+L) to PTY
     };
     window.addEventListener("made:clear-terminal", handler);
     return () => window.removeEventListener("made:clear-terminal", handler);
+  }, [tab.id, activeTerminalId]);
+
+  // Listen for paste-text events (Ctrl+Shift+V, context menu).
+  //
+  // This listener did not exist. `made:paste-text` had two dispatchers
+  // (App.tsx's Ctrl+Shift+V and the context menu's Paste item) and zero
+  // listeners, so both were silently inert — Paste has never worked from
+  // either entry point.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if (useAppStore.getState().activeTabId !== tab.id) return;
+      const detail = (e as CustomEvent).detail;
+      const text = detail?.text as string | undefined;
+      if (!text) return;
+      const targetId = (detail?.terminalId as string | undefined) ?? activeTerminalId;
+      if (!targetId) return;
+      pasteTextToTerminal(targetId, text);
+    };
+    window.addEventListener("made:paste-text", handler);
+    return () => window.removeEventListener("made:paste-text", handler);
   }, [tab.id, activeTerminalId]);
 
   // Listen for font-zoom events (Ctrl++/Ctrl+-)
@@ -643,6 +746,44 @@ export default function Workspace({ tab }: WorkspaceProps) {
       }))
     );
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A Jira project keeps its rail visible in every state — including the empty
+  // one, since the rail is where "new ticket" lives. So each return below is
+  // wrapped rather than returned bare.
+  const withRail = (content: ReactNode) => {
+    if (!tab.isJiraProject) return content;
+    return (
+      <div className="h-full w-full flex" style={{ minWidth: 0 }}>
+        <JiraTicketRail tab={tab} onFocusTerminal={handleTerminalFocus} />
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>{content}</div>
+      </div>
+    );
+  };
+
+  // A Jira project with no panes yet: the rail already offers "new ticket", so
+  // the middle just says so. The generic launchers below would spawn panes that
+  // aren't tickets, which would sit outside the rail's model entirely.
+  if (tab.isJiraProject && (needsInitialTerminal || !tab.layout)) {
+    return withRail(
+      <div
+        className="h-full w-full flex items-center justify-center"
+        style={{ backgroundColor: "var(--ezy-bg)" }}
+      >
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--ezy-text-muted)",
+            textAlign: "center",
+            lineHeight: 1.6,
+          }}
+        >
+          No ticket open.
+          <br />
+          Add one from the rail to start investigating.
+        </div>
+      </div>,
+    );
+  }
 
   // Show tool selector for brand new tab
   if (needsInitialTerminal) {
@@ -710,7 +851,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
     return <EmptyTabLauncher />;
   }
 
-  return (
+  return withRail(
     <div className="h-full w-full workspace-enter">
       <PaneGrid
         layout={tab.layout}
@@ -778,6 +919,6 @@ export default function Workspace({ tab }: WorkspaceProps) {
           pane.id
         );
       })}
-    </div>
+    </div>,
   );
 }

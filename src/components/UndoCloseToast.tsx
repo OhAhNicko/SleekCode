@@ -49,7 +49,9 @@ export default function UndoCloseToast() {
     ? ""
     : lastClosed.type === "tab"
       ? `Closed tab "${lastClosed.tab.name}"`
-      : "Closed pane";
+      : lastClosed.type === "tabs"
+        ? `Closed ${lastClosed.tabs.length} tabs`
+        : "Closed pane";
 
   useOverlayToast({
     id: "undo-close-toast",

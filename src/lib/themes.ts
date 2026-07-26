@@ -618,11 +618,11 @@ const graphiteTheme: MadeTheme = {
   },
   surface: {
     bg: "#101010",
-    surface: "#171717",
-    surfaceRaised: "#202020",
-    border: "#2b2b2b",
-    borderSubtle: "#1c1c1c",
-    borderLight: "#3d3d3d",
+    surface: "#242424",
+    surfaceRaised: "#303030",
+    border: "#3d3d3d",
+    borderSubtle: "#292929",
+    borderLight: "#525252",
     text: "#f2f2f2",
     textSecondary: "#b8b8b8",
     textMuted: "#7a7a7a",
@@ -675,11 +675,11 @@ const goldphiteTheme: MadeTheme = {
   },
   surface: {
     bg: "#101010",
-    surface: "#171717",
-    surfaceRaised: "#202020",
-    border: "#2b2b2b",
-    borderSubtle: "#1c1c1c",
-    borderLight: "#3d3d3d",
+    surface: "#242424",
+    surfaceRaised: "#303030",
+    border: "#3d3d3d",
+    borderSubtle: "#292929",
+    borderLight: "#525252",
     text: "#f2f2f2",
     textSecondary: "#b8b8b8",
     textMuted: "#7a7a7a",
@@ -752,6 +752,120 @@ const paniniTheme: MadeTheme = {
     accentGlow: "rgba(27, 26, 23, 0.06)",
     red: "#d23b22",
     cyan: "#0f8fa6",
+  },
+};
+
+// ─── Porcelain (light) ──────────────────────────────────────────────
+//
+// Cool, near-neutral paper with slate ink and one indigo accent. Where Panini
+// is warm and printed, this is screen-white and clinical — the two light
+// themes should not read as variations of each other.
+//
+// The ANSI hues were chosen first, then their lightness was SOLVED for: every
+// normal entry clears 4.5:1 against the paper and every bright one 4.0:1.
+// Picking light-theme terminal colors by eye is how you end up with a yellow
+// nobody can read.
+
+const porcelainTheme: MadeTheme = {
+  id: "porcelain",
+  name: "Porcelain",
+  terminal: {
+    background: "#fbfbfd",
+    foreground: "#1c2024",
+    cursor: "#4a5bd0",
+    cursorAccent: "#fbfbfd",
+    selectionBackground: "#d7dcf5",
+    selectionForeground: "#1c2024",
+    selectionInactiveBackground: "#d7dcf588",
+    black: "#1c2024",
+    red: "#cf4146",
+    green: "#27844f",
+    yellow: "#916f21",
+    blue: "#4a5bd0",
+    magenta: "#9e54c2",
+    cyan: "#0b808e",
+    white: "#6b7280",
+    brightBlack: "#8b919c",
+    brightRed: "#dd454a",
+    brightGreen: "#2a8d55",
+    brightYellow: "#9b7724",
+    brightBlue: "#5a6ae0",
+    brightMagenta: "#a457c9",
+    brightCyan: "#0c8998",
+    brightWhite: "#2b3138",
+  },
+  surface: {
+    bg: "#fbfbfd",
+    surface: "#ffffff",
+    surfaceRaised: "#f2f3f7",
+    border: "#dcdfe6",
+    borderSubtle: "#ebedf2",
+    borderLight: "#bcc1cc",
+    text: "#1c2024",
+    textSecondary: "#454b54",
+    textMuted: "#6b7280",
+    accent: "#4a5bd0",
+    accentHover: "#3b49ae",
+    accentDim: "#2f3a8c",
+    accentGlow: "rgba(28, 32, 36, 0.06)",
+    red: "#c9372c",
+    cyan: "#0e7490",
+  },
+};
+
+// ─── Solarized Light ────────────────────────────────────────────────
+//
+// Ethan Schoonover's palette, the counterpart to the Solarized Dark already in
+// this list — base3 paper, base02 ink, and the canonical accent hues. Those
+// accents are deliberately equiluminant, which is Solarized's whole idea and
+// also why several of them sit near 3:1 on base3; each is darkened the minimum
+// needed to clear 4.5:1 (bright: 4.0:1) so 13px terminal text stays readable.
+// The hues themselves are untouched.
+
+const solarizedLightTheme: MadeTheme = {
+  id: "solarized-light",
+  name: "Solarized Light",
+  terminal: {
+    background: "#fdf6e3",
+    foreground: "#4f6169",
+    cursor: "#cb4b16",
+    cursorAccent: "#fdf6e3",
+    selectionBackground: "#eee8d5",
+    selectionForeground: "#073642",
+    selectionInactiveBackground: "#eee8d588",
+    black: "#073642",
+    red: "#d5302d",
+    green: "#687800",
+    yellow: "#8f6c00",
+    blue: "#2076b3",
+    magenta: "#ca347c",
+    cyan: "#217e77",
+    white: "#5f747c",
+    brightBlack: "#7d9199",
+    brightRed: "#dc322f",
+    brightGreen: "#708100",
+    brightYellow: "#997400",
+    brightBlue: "#237ebf",
+    brightMagenta: "#d33682",
+    brightCyan: "#238780",
+    brightWhite: "#002b36",
+  },
+  surface: {
+    bg: "#fdf6e3",
+    surface: "#fffdf5",
+    surfaceRaised: "#eee8d5",
+    border: "#ddd6c1",
+    borderSubtle: "#eee8d5",
+    borderLight: "#b9b19c",
+    text: "#073642",
+    textSecondary: "#4f6169",
+    textMuted: "#5f747c",
+    accent: "#2076b3",
+    accentHover: "#1a5f91",
+    accentDim: "#14496f",
+    accentGlow: "rgba(7, 54, 66, 0.06)",
+    red: "#d5302d",
+    cyan: "#217e77",
   },
 };
 
@@ -829,6 +943,164 @@ function buildVibrantExtendedAnsi(): string[] {
 // Pre-compute once — avoids recalculating on every toggle
 const VIBRANT_EXTENDED_ANSI = buildVibrantExtendedAnsi();
 
+// ─── Light-background adaptation ────────────────────────────────────
+//
+// MADE themes the 16 ANSI colors, but CLIs lean on the 256-color cube, and
+// every one of those 240 entries is a fixed value chosen on the assumption of
+// a dark canvas. Measured against Panini's paper, 9 of the 10 colors Claude
+// Code actually emits fell below 3:1 — the statusline, paths, branch and
+// context meter were effectively invisible. Theming the 16 could never have
+// fixed it.
+//
+// The transform is a lightness inversion in HSL: hue and saturation are kept
+// exactly, only L flips. That is the right operation for a palette used for
+// BOTH text and fills — a light foreground becomes a dark one, and a dark
+// "subtle" fill becomes a light one, so each entry keeps its relationship to
+// the background instead of just being clamped to a contrast floor.
+
+function relLuminance(hex: string): number {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return 0;
+  const [r, g, b] = [1, 2, 3].map((i) => {
+    const c = parseInt(m[i], 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** A terminal canvas this bright wants the light-adapted palette. */
+export function isLightBackground(hex: string | undefined): boolean {
+  return relLuminance(hex ?? "#000000") > 0.4;
+}
+
+/** Flip a color's HSL lightness, preserving hue and saturation. */
+function invertLightness(hex: string): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return hex;
+  const r = parseInt(m[1], 16) / 255;
+  const g = parseInt(m[2], 16) / 255;
+  const b = parseInt(m[3], 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) {
+    const v = Math.round((1 - l) * 255); // pure grey — ramp inverts cleanly
+    return toHex(v, v, v);
+  }
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h: number;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+
+  const nl = 1 - l;
+  const q = nl < 0.5 ? nl * (1 + s) : nl + s - nl * s;
+  const p = 2 * nl - q;
+  const chan = (t: number) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return toHex(
+    Math.round(chan(h + 1 / 3) * 255),
+    Math.round(chan(h) * 255),
+    Math.round(chan(h - 1 / 3) * 255),
+  );
+}
+
+/** The xterm defaults for indices 16-255, which is what a pane gets when no
+ *  `extendedAnsi` is supplied — rebuilt here so it can be adapted. */
+function buildStandardExtendedAnsi(): string[] {
+  const colors: string[] = [];
+  for (let ri = 0; ri < 6; ri++) {
+    for (let gi = 0; gi < 6; gi++) {
+      for (let bi = 0; bi < 6; bi++) {
+        colors.push(toHex(STD_LEVELS[ri], STD_LEVELS[gi], STD_LEVELS[bi]));
+      }
+    }
+  }
+  for (let i = 0; i < 24; i++) {
+    const gray = 8 + i * 10;
+    colors.push(toHex(gray, gray, gray));
+  }
+  return colors;
+}
+
+const STANDARD_EXTENDED_ANSI = buildStandardExtendedAnsi();
+
+function contrast(a: string, b: string): number {
+  const [x, y] = [relLuminance(a), relLuminance(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+}
+
+/** HSL lightness of #rrggbb, 0..1. */
+function lightnessOf(hex: string): number {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return 0;
+  const c = [1, 2, 3].map((i) => parseInt(m[i], 16) / 255);
+  return (Math.max(...c) + Math.min(...c)) / 2;
+}
+
+/** Scale toward black until `hex` clears `target` against `bg`, keeping hue. */
+function ensureContrast(hex: string, bg: string, target: number): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return hex;
+  const c = [1, 2, 3].map((i) => parseInt(m[i], 16));
+  for (let k = 1; k >= 0; k -= 0.02) {
+    const cand = toHex(...(c.map((v) => Math.round(v * k)) as [number, number, number]));
+    if (contrast(cand, bg) >= target) return cand;
+  }
+  return "#000000";
+}
+
+/**
+ * Adapt one palette entry to a light canvas.
+ *
+ * Inversion alone is not enough: a fully saturated hue like #ffd700 sits at
+ * HSL L=0.5, so flipping L returns it unchanged — it stayed at 1.19:1 on paper,
+ * still invisible. Hence the contrast floor.
+ *
+ * The floor is applied only to entries that were LIGHT to begin with. Those are
+ * the ones a CLI uses as foreground against a dark canvas. Entries that were
+ * already dark (#5f0000, the diff-removed fill) become light after inversion
+ * and must stay that way — they are backgrounds, and forcing them to 4:1
+ * against the paper would turn a soft highlight into a solid block.
+ */
+function adaptForLight(hex: string, bg: string): string {
+  const inverted = invertLightness(hex);
+  return lightnessOf(hex) < 0.5 ? inverted : ensureContrast(inverted, bg, 4.0);
+}
+
+// Keyed by canvas + palette so each light theme gets a set tuned to its own
+// paper, built once.
+const lightPaletteCache = new Map<string, string[]>();
+function lightExtendedAnsi(bg: string, vibrant: boolean): string[] {
+  const key = `${bg}|${vibrant}`;
+  let out = lightPaletteCache.get(key);
+  if (!out) {
+    const source = vibrant ? VIBRANT_EXTENDED_ANSI : STANDARD_EXTENDED_ANSI;
+    out = source.map((c) => adaptForLight(c, bg));
+    lightPaletteCache.set(key, out);
+  }
+  return out;
+}
+
+const lightVibrant16Cache = new Map<string, Partial<ITheme>>();
+function lightVibrantAnsi16(bg: string): Partial<ITheme> {
+  let out = lightVibrant16Cache.get(bg);
+  if (!out) {
+    out = Object.fromEntries(
+      Object.entries(VIBRANT_ANSI_16).map(([k, v]) => [k, adaptForLight(v as string, bg)]),
+    );
+    lightVibrant16Cache.set(bg, out);
+  }
+  return out;
+}
+
 /** Subtle brightness lift applied to the active CLI pane (both container + xterm canvas). */
 export const ACTIVE_PANE_LIFT = 0.05;
 
@@ -843,9 +1115,29 @@ function lightenHex(hex: string, amount: number): string {
   return toHex(lift(r), lift(g), lift(b));
 }
 
-/** Container bg color for an active CLI pane in the given theme (lifted from `surface.bg`). */
+/** Darken each channel of #rrggbb toward 0 by `amount` (0..1). */
+function darkenHex(hex: string, amount: number): string {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return hex;
+  const drop = (c: number) => Math.round(c * (1 - amount));
+  return toHex(
+    drop(parseInt(m[1], 16)),
+    drop(parseInt(m[2], 16)),
+    drop(parseInt(m[3], 16)),
+  );
+}
+
+/** The active pane reads as "lifted" — which on paper means a shade DARKER,
+ *  not lighter. Lightening a light theme's canvas just bleaches it. */
+function activeShade(hex: string): string {
+  return isLightBackground(hex)
+    ? darkenHex(hex, ACTIVE_PANE_LIFT)
+    : lightenHex(hex, ACTIVE_PANE_LIFT);
+}
+
+/** Container bg color for an active CLI pane in the given theme (shaded from `surface.bg`). */
 export function getActivePaneBg(themeId: string): string {
-  return lightenHex(getTheme(themeId).surface.bg, ACTIVE_PANE_LIFT);
+  return activeShade(getTheme(themeId).surface.bg);
 }
 
 /** Returns the effective terminal theme, optionally with vibrant colors overlaid and an active-pane lift. */
@@ -855,14 +1147,26 @@ export function getEffectiveTerminalTheme(
   isActive: boolean = false,
 ): ITheme {
   const base = getTheme(themeId).terminal;
+  const light = isLightBackground(base.background);
+  // On a light canvas the 256-color cube has to be inverted or CLI output is
+  // unreadable — see the light-background adaptation block above. The theme's
+  // own 16 are already authored for the polarity, so only the vibrant overlay
+  // needs flipping.
+  const canvas = base.background ?? "#000000";
   const withVibrant = vibrant
-    ? { ...base, ...VIBRANT_ANSI_16, extendedAnsi: VIBRANT_EXTENDED_ANSI }
-    : base;
+    ? {
+        ...base,
+        ...(light ? lightVibrantAnsi16(canvas) : VIBRANT_ANSI_16),
+        extendedAnsi: light ? lightExtendedAnsi(canvas, true) : VIBRANT_EXTENDED_ANSI,
+      }
+    : light
+      ? { ...base, extendedAnsi: lightExtendedAnsi(canvas, false) }
+      : base;
   if (!isActive) return withVibrant;
   return {
     ...withVibrant,
-    background: lightenHex(withVibrant.background ?? "#000000", ACTIVE_PANE_LIFT),
-    cursorAccent: lightenHex(withVibrant.cursorAccent ?? withVibrant.background ?? "#000000", ACTIVE_PANE_LIFT),
+    background: activeShade(withVibrant.background ?? "#000000"),
+    cursorAccent: activeShade(withVibrant.cursorAccent ?? withVibrant.background ?? "#000000"),
   };
 }
 
@@ -883,6 +1187,8 @@ export const THEMES: MadeTheme[] = [
   graphiteTheme,
   goldphiteTheme,
   paniniTheme,
+  porcelainTheme,
+  solarizedLightTheme,
 ];
 
 export const THEMES_MAP: Record<string, MadeTheme> = Object.fromEntries(

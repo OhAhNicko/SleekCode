@@ -4,14 +4,13 @@ import { useAppStore } from "../store";
 import { spawnDevServer } from "../lib/spawn-dev-server";
 import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes, hasGamePane } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
-import { PROJECT_COLOR_PRESETS, getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
+import { getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { isWindows, detectBackendForPath } from "../lib/platform";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
-import { useOverlayViewportPopup } from "../lib/useOverlayToast";
 import type { RemoteServer, TerminalType } from "../types";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import CreateProjectModal from "./CreateProjectModal";
@@ -25,6 +24,7 @@ import { FaXmark, FaPlus, FaGear, FaServer } from "react-icons/fa6";
 import { PiKanbanDuotone, PiGameControllerDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
 import { BiSidebar } from "react-icons/bi";
+import { createJiraProject } from "../lib/jira-project";
 
 function truncateTabPath(path: string, maxSegments = 3): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -79,43 +79,7 @@ export default function TabBar() {
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const [colorPickerTab, setColorPickerTab] = useState<{ tabId: string; x: number; y: number } | null>(null);
   // Tab color picker — overlay-rendered (kind "swatch-menu", backdrop).
-  const colorPickerDir = (() => {
-    if (!colorPickerTab) return null;
-    const t = tabs.find((tb) => tb.id === colorPickerTab.tabId);
-    return t ? t.workingDir.replace(/\\/g, "/") : null;
-  })();
-  useOverlayViewportPopup({
-    id: "tabbar-color-picker",
-    kind: "swatch-menu",
-    open: !!colorPickerTab && colorPickerDir != null,
-    payload:
-      colorPickerTab && colorPickerDir != null
-        ? {
-            x: colorPickerTab.x,
-            y: colorPickerTab.y,
-            title: "TAB COLOR",
-            selected: projectColors[colorPickerDir] ?? null,
-            swatches: PROJECT_COLOR_PRESETS.map((p) => ({
-              id: p.id,
-              label: p.label,
-              color: p.color,
-            })),
-          }
-        : null,
-    onAction: (action) => {
-      if (action === "__dismiss__") {
-        setColorPickerTab(null);
-        return;
-      }
-      if (colorPickerDir == null) return;
-      if (action === "color:none") setProjectColor(colorPickerDir, null);
-      else if (action.startsWith("color:"))
-        setProjectColor(colorPickerDir, action.slice(6) as ProjectColorId);
-      setColorPickerTab(null);
-    },
-  });
   const quitConfirmRef = useRef<HTMLDivElement>(null);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
 
@@ -223,7 +187,6 @@ export default function TabBar() {
   const closeAllMenus = useCallback(() => {
     setShowNewTabMenu(false);
     setShowRecentMenu(false);
-    setColorPickerTab(null);
   }, []);
 
   const getInsertBeforeId = useCallback((clientX: number, excludeId: string): string | null => {
@@ -436,6 +399,10 @@ export default function TabBar() {
           setShowRecentMenu(false);
           handleNewLocalTab();
           break;
+        case "jira":
+          setShowRecentMenu(false);
+          void createJiraProject();
+          break;
         case "server": {
           const server = servers.find((sv) => sv.id === arg);
           if (server) {
@@ -635,7 +602,7 @@ export default function TabBar() {
 
         {/* Settings toggle */}
         <div
-          data-tooltip="Settings"
+         
           style={{
             display: "flex",
             alignItems: "center",
@@ -654,7 +621,7 @@ export default function TabBar() {
         </div>
 
         {/* Tabs */}
-        <div ref={tabsContainerRef} style={{ display: "flex", alignItems: "stretch", minWidth: 0, overflow: "hidden" }}>
+        <div ref={tabsContainerRef} data-ctx-surface="tabstrip" style={{ display: "flex", alignItems: "stretch", minWidth: 0, overflow: "hidden" }}>
           {(() => {
             // Build a local color map so tabs assigned in the same render pass see each other
             const localColors = { ...projectColors };
@@ -744,11 +711,6 @@ export default function TabBar() {
                       tabTop: rect.top,
                     };
                     didDragRef.current = false;
-                  }}
-                  onContextMenu={(e) => {
-                    if (isSystemTab) return;
-                    e.preventDefault();
-                    setColorPickerTab({ tabId: tab.id, x: e.clientX, y: e.clientY });
                   }}
                   className="group"
                   style={{
@@ -1408,7 +1370,6 @@ export default function TabBar() {
       )}
 
       {/* Tab color picker (right-click menu) */}
-      {/* Color picker — overlay-rendered (useOverlayViewportPopup above). */}
 
       {/* Quit confirmation dialog */}
       {showQuitConfirm && (

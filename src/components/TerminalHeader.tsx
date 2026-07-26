@@ -723,10 +723,13 @@ export default function TerminalHeader({
             borderRadius: 3,
             padding: "1px 4px",
           }}
-          data-tooltip={
+          data-tooltip={workingDir}
+          // Instruction goes on its own row, never reflowed into the middle of
+          // a wrapped path.
+          data-tooltip-hint={
             serverId
-              ? `${workingDir} (on the remote host)`
-              : `${workingDir} — double-click to open in file manager`
+              ? "On the remote host"
+              : "Double-click to open in file manager"
           }
           onDoubleClick={() => {
             // Remote panes: workingDir is a path on the SSH host, so opening it
@@ -879,7 +882,8 @@ export default function TerminalHeader({
                   }}
                   onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
                   onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                  data-tooltip={sessionDisplayName ? `${sessionDisplayName} — click to switch sessions, double-click to rename` : "Click to switch sessions"}
+                  data-tooltip={sessionDisplayName || "Session"}
+                  data-tooltip-hint={sessionDisplayName ? "Click to switch sessions · double-click to rename" : "Click to switch sessions"}
                 >
                   <span
                     style={{
@@ -1031,7 +1035,8 @@ export default function TerminalHeader({
           {/* Context bar + percentage — click to manually refresh */}
           {sl("contextBar") && <div
             className="flex items-center gap-2"
-            data-tooltip={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%${onRefreshContext ? " — click to refresh" : ""}`}
+            data-tooltip={`${contextInfo.remaining.toLocaleString()} / ${contextInfo.window.toLocaleString()} = ${contextPercent.toFixed(2)}%`}
+            data-tooltip-hint={onRefreshContext ? "Click to refresh" : undefined}
             onClick={onRefreshContext ? handleContextRefreshClick : undefined}
             style={{
               flexShrink: 0,

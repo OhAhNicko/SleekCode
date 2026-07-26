@@ -10,6 +10,8 @@ import ConnectToGitHubModal from "./ConnectToGitHubModal";
 import ReleaseModal from "./ReleaseModal";
 import CreatePullRequestModal from "./CreatePullRequestModal";
 import PaneSearchBar from "./PaneSearchBar";
+import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
+import { confirmAction } from "../lib/prompt-modal";
 import { useDomTextSearch } from "../hooks/usePaneSearch";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import type {
@@ -190,6 +192,18 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
     [workingDir, fetchData]
   );
 
+  // Expose review-row handlers to the context menu. Discard destroys
+  // uncommitted work with no undo and sits one row from "Open in editor", so
+  // the menu path always confirms first.
+  const reviewActionsRef = useRef<{ open?: (p: string) => void; discard?: (p: string) => void }>({});
+  useEffect(() => {
+    registerSurfaceActions("review-file", {
+      open: (p) => reviewActionsRef.current.open?.(p),
+      discard: (p) => reviewActionsRef.current.discard?.(p),
+    });
+    return () => unregisterSurfaceActions("review-file");
+  }, []);
+
   const handleDiscardFile = useCallback(
     async (filePath: string, isUntracked: boolean) => {
       try {
@@ -214,6 +228,19 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
       new CustomEvent("made:open-file", { detail: { filePath: fullPath } })
     );
   }, [workingDir]);
+
+  reviewActionsRef.current.open = handleOpenInEditor;
+  reviewActionsRef.current.discard = (filePath: string) => {
+    const f = gitFiles.find((x) => x.path === filePath);
+    void confirmAction({
+      title: "Discard changes?",
+      detail: `${filePath}\n\nThis permanently discards uncommitted changes. It cannot be undone.`,
+      confirmLabel: "Discard",
+      danger: true,
+    }).then((ok) => {
+      if (ok) handleDiscardFile(filePath, f?.status === "??" || f?.status === "?");
+    });
+  };
 
   const handleSetMode = useCallback((mode: ComparisonMode, branch?: string) => {
     setComparisonMode(mode);

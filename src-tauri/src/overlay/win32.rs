@@ -190,6 +190,30 @@ const FOCUS_RETRY_INTERVAL_MS: u32 = 60;
 #[cfg(target_os = "windows")]
 const FOCUS_RETRY_TICKS: i32 = 5; // ~300ms settle window
 
+/// DEFERRED RELEASE (2026-07-26). `set_focusable(false)` used to hand the
+/// foreground back to main immediately. That made every popup re-mount cost a
+/// full foreground round-trip: React StrictMode (dev) double-invokes effects
+/// as mount -> cleanup -> mount, so opening the git dropdown ran
+/// true -> false -> true within ~32ms — three OS foreground flips before
+/// Chromium's click tail even arrived, then a steal and a re-assert on top.
+/// Each flip is a blur+focus on the popup's <input>, i.e. one flash of its
+/// accent ring: the "Search branches field jitters, like it's fighting for
+/// focus" report (hardware-traced via focus.handoff/focus.retry probes).
+///
+/// So a release is now SCHEDULED, not immediate, and a `true` arriving inside
+/// the window CANCELS it — a re-mount then finds the overlay still focusable
+/// and still foreground, and does nothing at all. A genuine close still
+/// releases one tick later, which no user can perceive.
+#[cfg(target_os = "windows")]
+const FOCUS_RELEASE_TIMER: usize = 0x4F44; // "OD" — Overlay focus-release Deferred
+#[cfg(target_os = "windows")]
+const FOCUS_RELEASE_DELAY_MS: u32 = 60;
+/// Main's HWND, stashed so the deferred release can hand the foreground back
+/// without the caller being on the stack.
+#[cfg(target_os = "windows")]
+static RELEASE_MAIN_HWND: std::sync::atomic::AtomicIsize =
+    std::sync::atomic::AtomicIsize::new(0);
+
 /// STRUCTURAL non-client kill for the overlay, same philosophy as the main
 /// window's accent-border subclass: styles are a losing battle (tao rewrites
 /// GWL_STYLE from its cached WindowFlags on show()/focus/etc., which is why the
@@ -293,6 +317,27 @@ pub fn install_nc_guard(hwnd: isize) {
             // took the foreground, steal it back if OUR OWN process's main
             // window re-grabbed it (Chromium's async click-focus tail). See
             // FOCUS_RETRIES docs above.
+            // Deferred focus release (see FOCUS_RELEASE_TIMER): the popup is
+            // really gone — restore WS_EX_NOACTIVATE and hand the foreground
+            // back. Only if WE still hold it: if the user alt-tabbed away
+            // while the popup was open, yanking focus out of their current app
+            // would be hostile focus theft.
+            WM_TIMER if wparam == FOCUS_RELEASE_TIMER => {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetForegroundWindow, GetWindowLongPtrW, SetForegroundWindow,
+                    SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+                };
+                KillTimer(hwnd, FOCUS_RELEASE_TIMER);
+                let overlay = HWND(hwnd as *mut _);
+                let ex = GetWindowLongPtrW(overlay, GWL_EXSTYLE);
+                SetWindowLongPtrW(overlay, GWL_EXSTYLE, ex | (WS_EX_NOACTIVATE.0 as isize));
+                let main_hwnd = RELEASE_MAIN_HWND.load(std::sync::atomic::Ordering::SeqCst);
+                if main_hwnd != 0 && GetForegroundWindow() == overlay {
+                    let _ = SetForegroundWindow(HWND(main_hwnd as *mut _));
+                }
+                0
+            }
             WM_TIMER if wparam == FOCUS_RETRY_TIMER => {
                 use std::sync::atomic::Ordering;
                 use windows::Win32::Foundation::HWND;
@@ -359,7 +404,19 @@ pub fn set_focusable(overlay_hwnd: isize, main_hwnd: isize, focusable: bool) {
     unsafe {
         let overlay = HWND(overlay_hwnd as *mut _);
         let ex = GetWindowLongPtrW(overlay, GWL_EXSTYLE);
+        RELEASE_MAIN_HWND.store(main_hwnd, Ordering::SeqCst);
         if focusable {
+            // Cancel any release still pending from a just-unmounted popup: a
+            // re-mount inside the deferral window must NOT cost a foreground
+            // round-trip (see FOCUS_RELEASE_TIMER).
+            let _ = KillTimer(overlay, FOCUS_RELEASE_TIMER);
+            // Idempotent acquire: already activatable AND already foreground
+            // means the previous handoff is intact — re-asserting would blur
+            // and re-focus the popup's input for nothing.
+            if ex & (WS_EX_NOACTIVATE.0 as isize) == 0 && GetForegroundWindow() == overlay {
+                set_shown(overlay_hwnd, true);
+                return;
+            }
             SetWindowLongPtrW(overlay, GWL_EXSTYLE, ex & !(WS_EX_NOACTIVATE.0 as isize));
             // The overlay is hidden while no popup is open (see set_shown);
             // SetForegroundWindow needs a visible window. The popup's region
@@ -374,15 +431,12 @@ pub fn set_focusable(overlay_hwnd: isize, main_hwnd: isize, focusable: bool) {
             FOCUS_RETRIES.store(FOCUS_RETRY_TICKS, Ordering::SeqCst);
             let _ = SetTimer(overlay, FOCUS_RETRY_TIMER, FOCUS_RETRY_INTERVAL_MS, None);
         } else {
+            // Stop fighting immediately (the popup is going away), but DEFER
+            // the actual release: a StrictMode re-mount / rapid reopen lands
+            // within a tick and cancels it above, costing zero flips.
             FOCUS_RETRIES.store(0, Ordering::SeqCst);
             let _ = KillTimer(overlay, FOCUS_RETRY_TIMER);
-            SetWindowLongPtrW(overlay, GWL_EXSTYLE, ex | (WS_EX_NOACTIVATE.0 as isize));
-            // Only hand the foreground to main if WE still hold it — if the
-            // user alt-tabbed away while the popup was open, yanking focus
-            // from their current app would be hostile focus theft.
-            if GetForegroundWindow() == overlay {
-                let _ = SetForegroundWindow(HWND(main_hwnd as *mut _));
-            }
+            let _ = SetTimer(overlay, FOCUS_RELEASE_TIMER, FOCUS_RELEASE_DELAY_MS, None);
         }
     }
 }
@@ -396,7 +450,13 @@ pub fn set_focusable(_overlay_hwnd: isize, _main_hwnd: isize, _focusable: bool) 
 /// what a backdrop popup wants (it must catch the outside click that
 /// dismisses it). Transparency + real drop shadows render on this path.
 /// MUST only be called while the overlay is HIDDEN — see `set_shown`.
+/// UNUSED since backdrop mode was removed (2026-07-26) — kept because it is the
+/// only way back to a regionless window, and the docs above explain when that
+/// was needed. The overlay is now always regioned (popup rects, or zero-area
+/// when parked); going regionless again would re-introduce the whole-window
+/// region flip that flashed the whole app.
 #[cfg(target_os = "windows")]
+#[allow(dead_code)]
 pub fn clear_region(hwnd: isize) -> Result<(), String> {
     use windows::Win32::Foundation::{BOOL, HWND};
     use windows::Win32::Graphics::Gdi::{SetWindowRgn, HRGN};

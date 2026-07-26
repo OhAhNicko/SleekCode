@@ -41,6 +41,14 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
     return (
       <div key={entry.path}>
         <div
+          // Declares this row as a context-menu surface. Without it a
+          // right-click here fell through to the app-wide menu and offered
+          // "Toggle Sidebar / Settings / Open DevTools" on a source file.
+          data-ctx-surface="file"
+          data-ctx-path={entry.path}
+          data-ctx-name={entry.name}
+          data-ctx-dir={entry.is_directory ? "1" : ""}
+          data-ctx-root={rootDir}
           style={{
             display: "flex",
             alignItems: "center",
@@ -122,6 +130,22 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
       loadDir(rootDir);
     }
   }, [rootDir]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-read the tree after a context-menu mutation (rename / delete / create).
+  // `loadDir` early-returns on a cached path, so dropping the cache is what
+  // actually forces the re-read.
+  useEffect(() => {
+    const handler = () => {
+      setCache({});
+      if (rootDir) {
+        invoke<FileEntry[]>("list_dir", { path: rootDir })
+          .then((entries) => setCache({ [rootDir]: entries }))
+          .catch(() => {});
+      }
+    };
+    window.addEventListener("made:file-tree-refresh", handler);
+    return () => window.removeEventListener("made:file-tree-refresh", handler);
+  }, [rootDir]);
 
   return (
     <div style={{ overflowY: "auto", height: "100%" }}>

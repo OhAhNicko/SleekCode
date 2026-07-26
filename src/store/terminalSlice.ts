@@ -42,16 +42,128 @@ export function getTerminalFocus(terminalId: string): (() => void) | undefined {
 // Used by DevServerTerminalHost for port detection.
 const terminalDataListeners: Record<string, (data: Uint8Array) => void> = {};
 
+/* ---- Retained backlog (fixes the port-detection startup race) -------------
+ *
+ * A pane forwards PTY output with `getTerminalDataListener(id)?.(data)`, so any
+ * output produced BEFORE a consumer attached was dropped on the floor. Dev-server
+ * port detection scrapes exactly one line ("Local: http://localhost:3000"), which
+ * a fast server prints during the window between the PTY spawning and
+ * DevServerTerminalHost's effect registering — hence the intermittent
+ * "detecting..." forever on startup.
+ *
+ * Output is therefore RETAINED for terminals that are known to be expecting a
+ * consumer, and replayed the moment one registers. Retention is armed by
+ * `addDevServer`, which necessarily runs before the dev server's terminal exists,
+ * so there is no window left to lose.
+ *
+ * Only armed terminals retain anything: the AI/shell panes stream far more data
+ * and have no consumer, so buffering them would be pure waste. The backlog is
+ * byte-capped as well, because a server that never prints a port must not grow a
+ * buffer forever. */
+const RETAIN_MAX_BYTES = 64 * 1024;
+
+interface Backlog {
+  chunks: Uint8Array[];
+  bytes: number;
+}
+const retained = new Map<string, Backlog>();
+
+/** Start retaining PTY output for a terminal that will get a consumer shortly. */
+export function armTerminalDataRetention(terminalId: string): void {
+  if (!retained.has(terminalId)) {
+    retained.set(terminalId, { chunks: [], bytes: 0 });
+  }
+}
+
+/** Stop retaining and discard any backlog (dev server removed). */
+export function disarmTerminalDataRetention(terminalId: string): void {
+  retained.delete(terminalId);
+}
+
+function retain(terminalId: string, data: Uint8Array): void {
+  const backlog = retained.get(terminalId);
+  // Not armed = not a terminal anyone is waiting on. Drop, as before.
+  if (!backlog) return;
+  backlog.chunks.push(data);
+  backlog.bytes += data.byteLength;
+  // Trim oldest first; the port line appears early, but a lock error or a
+  // late-bound port can appear after a lot of noise, so keep the cap generous.
+  while (backlog.bytes > RETAIN_MAX_BYTES && backlog.chunks.length > 1) {
+    const dropped = backlog.chunks.shift();
+    if (dropped) backlog.bytes -= dropped.byteLength;
+  }
+}
+
 export function registerTerminalDataListener(terminalId: string, cb: (data: Uint8Array) => void): void {
   terminalDataListeners[terminalId] = cb;
+  // Replay whatever arrived before this consumer existed. The backlog is cleared
+  // but retention stays ARMED: the dev-server host unregisters after detection
+  // and re-registers a stopped-detection listener, and that second gap needs the
+  // same protection.
+  const backlog = retained.get(terminalId);
+  if (backlog && backlog.chunks.length > 0) {
+    const chunks = backlog.chunks;
+    backlog.chunks = [];
+    backlog.bytes = 0;
+    for (const chunk of chunks) {
+      // One bad consumer must not swallow the rest of the replay.
+      try {
+        cb(chunk);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
 
 export function unregisterTerminalDataListener(terminalId: string): void {
   delete terminalDataListeners[terminalId];
 }
 
+/** Returns a sink for a terminal's PTY output.
+ *
+ *  Never undefined: with no consumer attached this is a retaining sink for armed
+ *  terminals and a no-op for everything else, so callers keep using
+ *  `getTerminalDataListener(id)?.(data)` unchanged. */
 export function getTerminalDataListener(terminalId: string): ((data: Uint8Array) => void) | undefined {
-  return terminalDataListeners[terminalId];
+  const cb = terminalDataListeners[terminalId];
+  if (cb) return cb;
+  if (retained.has(terminalId)) {
+    return (data: Uint8Array) => retain(terminalId, data);
+  }
+  return undefined;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Pending first prompts (Jira tickets)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A prompt to hand the CLI as its positional argument the next time a specific
+ * terminal spawns. Set just before the pane is created, consumed once by the
+ * spawn.
+ *
+ * A module registry rather than store state, matching the listener registries
+ * above: nothing renders from it, and — the point — it can never be persisted.
+ * A prompt that survived into a restored layout would re-run the investigation
+ * every time MADE restarts.
+ */
+const pendingPrompts = new Map<string, string>();
+
+export function setPendingPrompt(terminalId: string, prompt: string): void {
+  pendingPrompts.set(terminalId, prompt);
+}
+
+/** Read-and-delete: a prompt fires on the first spawn and never on a restart. */
+export function takePendingPrompt(terminalId: string): string | undefined {
+  const prompt = pendingPrompts.get(terminalId);
+  if (prompt !== undefined) pendingPrompts.delete(terminalId);
+  return prompt;
+}
+
+/** Drop a prompt whose pane never spawned (creation aborted mid-flight). */
+export function clearPendingPrompt(terminalId: string): void {
+  pendingPrompts.delete(terminalId);
 }
 
 export interface TerminalSlice {
@@ -83,7 +195,7 @@ export const createTerminalSlice: StateCreator<
   [],
   [],
   TerminalSlice
-> = (set) => ({
+> = (set, get) => ({
   terminals: {},
   devServers: [],
   expandedDevServerId: null,
@@ -152,12 +264,18 @@ export const createTerminalSlice: StateCreator<
   },
 
   addDevServer: (server) => {
+    // Arm retention BEFORE the terminal can produce a byte. This runs when the
+    // dev-server row is created, which always precedes its terminal existing, so
+    // the port line cannot be missed however fast the server starts.
+    armTerminalDataRetention(server.terminalId);
     set((state) => ({
       devServers: [...state.devServers, server],
     }));
   },
 
   removeDevServer: (serverId) => {
+    const gone = get().devServers.find((ds: DevServer) => ds.id === serverId);
+    if (gone) disarmTerminalDataRetention(gone.terminalId);
     set((state) => ({
       devServers: state.devServers.filter((ds) => ds.id !== serverId),
     }));

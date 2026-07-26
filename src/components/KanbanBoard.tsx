@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import { useAppStore } from "../store";
 import type { TaskCard as TaskCardType } from "../types";
 import TaskCard from "./TaskCard";
+import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import PaneSearchBar from "./PaneSearchBar";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import PaneExpandButton from "./PaneExpandButton";
@@ -147,12 +148,22 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
     setShowForm(false);
   }, [newTitle, newDesc, addTask]);
 
+  const handleRunTaskRef = useRef<((id: string) => void) | null>(null);
+
+  // Expose the run handler to the context menu (kanban cards live in this
+  // component's closure, so a provider can't reach them otherwise).
+  useEffect(() => {
+    registerSurfaceActions("kanban-card", { run: (id) => handleRunTaskRef.current?.(id) });
+    return () => unregisterSurfaceActions("kanban-card");
+  }, []);
+
   const handleRunTask = useCallback(
     (taskId: string) => {
       moveTask(taskId, "in_progress");
     },
     [moveTask]
   );
+  handleRunTaskRef.current = handleRunTask;
 
   const handleDragStart = useCallback((e: React.DragEvent, taskId: string) => {
     dragItemId.current = taskId;
@@ -327,7 +338,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
           {onClose && (
             <button
               onClick={onClose}
-              data-tooltip="Close" aria-label="Close"
+              aria-label="Close"
               className="group"
               style={{
                 display: "flex",
@@ -469,6 +480,9 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
           return (
             <div
               key={col.key}
+              data-ctx-surface="kanban-col"
+              data-ctx-id={col.key}
+              data-ctx-label={col.label}
               className={vertical ? "flex flex-col flex-1 min-h-0" : "flex flex-col flex-1 min-w-0"}
               style={{
                 backgroundColor: "var(--ezy-surface)",

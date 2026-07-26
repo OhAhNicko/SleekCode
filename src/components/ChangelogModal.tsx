@@ -95,7 +95,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
           <div
             role="button"
             tabIndex={0}
-            data-tooltip="Close"
+           
             onClick={handleClose}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") handleClose();

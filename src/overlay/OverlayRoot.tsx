@@ -18,9 +18,7 @@ import {
 } from "../lib/overlay-bridge";
 import {
   CTX_ICONS,
-  CTX_MENU_WIDTH,
-  type CtxMenuSection,
-} from "../lib/context-menu-model";
+} from "../lib/menu-icons";
 import type { OverlayToastPayload } from "../lib/useOverlayToast";
 import type { OverlayMenuPayload } from "../lib/overlay-menu-model";
 import { validateBranchName } from "../lib/git-branch-validate";
@@ -40,14 +38,36 @@ type PopupRect = {
  * popups CAN carry a real drop shadow. Everything else is an ambient popup
  * (tight 1-bit clip → flat, crisp corners, no soft shadow).
  */
-const BACKDROP_KINDS = new Set([
-  "context-menu",
+/**
+ * Identity of a popup's CONTENT (anchor + model), used to tell a stale re-send
+ * of the popup we just closed from a genuine re-open. Deliberately excludes
+ * `id`: the id is shared across every right-click of the global context menu.
+ */
+function popupSignature(msg: OverlayPopupMsg): string {
+  return JSON.stringify([msg.rect ?? null, msg.payload ?? null]);
+}
+
+/**
+ * Menu-class popups: they carry a real CSS drop shadow, so their clip region is
+ * inflated by MENU_SHADOW_PAD to give it room (a tight clip would slice the
+ * shadow off at the panel edge). Ambient popups (toasts, tooltips, jump button)
+ * are deliberately NOT padded — a region under the pointer steals the mouse
+ * from the pane beneath and re-triggers hover-close oscillation.
+ *
+ * These used to be BACKDROP_KINDS, meaning "make the whole overlay window
+ * hit-testable so an outside click lands on the backdrop div". That mode is
+ * gone (see the region effect and lib/overlay-dismiss.ts).
+ */
+const SHADOW_PAD_KINDS = new Set([
   "anchored-menu",
   "swatch-menu",
   "recent-menu",
   "git-branch-menu",
   "session-picker",
 ]);
+
+/** Room for the menu drop shadow inside the clip region (CSS px). */
+const MENU_SHADOW_PAD = 36;
 
 /**
  * The overlay webview's popup host.
@@ -70,13 +90,62 @@ export function OverlayRoot() {
   );
   const els = useRef<Map<string, HTMLElement>>(new Map());
 
+  // Mirror of `popups` for callbacks that must not re-subscribe on every
+  // change (closeLocal needs the message it is closing, to signature it).
+  const popupsRef = useRef(popups);
+  popupsRef.current = popups;
+
   // Stamp of the last message per popup id — feeds the ghost sweep below.
   const lastSeen = useRef<Map<string, number>>(new Map());
+
+  // RESURRECT GUARD: id -> when this overlay closed it locally.
+  //
+  // `closeLocal` drops a popup the instant the user dismisses or picks — but
+  // MAIN doesn't know yet. Its rAF rect stream (and the ~750ms keepalive) keep
+  // emitting `open:true` for the whole overlay->main->overlay round-trip, and
+  // every one of those stale messages re-added the popup here: the dropdown
+  // blinked 3-4 times before it finally closed. Dismissing INTO a native pane
+  // made it worse — the pane's focus/mouse events re-render the owner, which
+  // changes the payload and forces an immediate re-emit. (Escape never blinked:
+  // main flips its own state with no round-trip.)
+  //
+  // So a locally-closed popup ignores re-sends of ITS OWN CONTENT until main's
+  // `open:false` echo confirms it caught up. Keyed by content, not by id — see
+  // the listener below for why the id alone is not identity here.
+  const closedLocally = useRef<Map<string, { sig: string }>>(new Map());
+
+  /** Rect count of the last push — tells a growing region from a shrinking one. */
+  const lastRectCount = useRef(0);
+  /** Serialized rects of the last push — skips no-op re-pushes. */
+  const lastRegionSig = useRef("");
 
   useEffect(() => {
     let un: UnlistenFn | undefined;
     let disposed = false;
     listenOverlayPopup((msg) => {
+      const closed = closedLocally.current.get(msg.id);
+      if (msg.open && msg.rect) {
+        if (closed !== undefined) {
+          // Drop ONLY the popup we just closed coming back UNCHANGED. Identity
+          // is the content (anchor + model), never the id — the global context
+          // menu reuses one id ("made:menu") for every right-click, and an
+          // id-only guard blocked genuine re-opens outright.
+          //
+          // No time bound on identical content: while main still believes the
+          // popup is open it re-emits the SAME message every ~750ms
+          // (GlobalContextMenu's keepalive), and any of those landing after a
+          // short window would re-add the menu at its old anchor — a real,
+          // DOM-backed ghost lasting until the next close. Identical content
+          // can only be a stale re-send, so suppress it until main's own
+          // `open:false` echo says it caught up. A re-open the user actually
+          // asked for differs in rect or payload and passes untouched.
+          if (closed.sig === popupSignature(msg)) return;
+          closedLocally.current.delete(msg.id);
+        }
+      } else if (closed !== undefined) {
+        // Main caught up — a later `open:true` is a genuine re-open.
+        closedLocally.current.delete(msg.id);
+      }
       if (msg.open && msg.rect) lastSeen.current.set(msg.id, Date.now());
       else lastSeen.current.delete(msg.id);
       setPopups((prev) => {
@@ -92,6 +161,15 @@ export function OverlayRoot() {
           next.delete(msg.id);
           return next;
         }
+        // Unchanged re-send => keep the SAME state object, so React does not
+        // re-render at all. Anchored popups re-emit continuously — the TUI
+        // scrollbar streams its rect ~16x/s while an alt-screen pane is live,
+        // and every popup keepalives at ~750ms — and each of those used to
+        // allocate a new Map and re-render the whole overlay tree. That is
+        // work competing with the popup you are trying to open, which is why
+        // menus felt slower over a busy TUI pane (user-reported 2026-07-26).
+        const cur = prev.get(msg.id);
+        if (cur && popupSignature(cur) === popupSignature(msg)) return prev;
         const next = new Map(prev);
         next.set(msg.id, msg);
         return next;
@@ -155,34 +233,90 @@ export function OverlayRoot() {
     };
   }, []);
 
-  // Re-clip whenever the open popups (or their anchor rects → new msgs) change.
+  // REGION DRIVER — a continuous rAF re-read of the popups' RENDERED geometry
+  // with a no-change guard. Mirrors the pane geometry driver in
+  // TerminalPaneNative.
+  //
+  // Why a loop and not a `popups` effect: a popup's FINAL geometry comes from
+  // its own measurement pass (menus render once hidden to measure themselves,
+  // then re-render flipped/clamped), which changes no message. An effect keyed
+  // on messages therefore clipped to the pre-measurement rect and never
+  // corrected — the menu came up clipped to whatever region was installed
+  // before, e.g. a 16px TUI scrollbar strip (user-reported 2026-07-26, with a
+  // screenshot). It only appeared to work while anchored popups happened to
+  // re-emit ~16x/s and re-ran the effect for us; deduping those re-sends
+  // removed the accident that was hiding this.
+  //
+  // NO BACKDROP MODE (2026-07-26). The region is ALWAYS the union of the open
+  // popups' own rects — the window is never regionless and never hidden. Both
+  // of those states are what produced the ghost bugs: a hidden window keeps its
+  // last COMPOSITED frame, and a region only CLIPS stale pixels rather than
+  // repainting them, so the next show / clear_region re-displayed a menu at its
+  // previous position. Outside clicks are now reported by the main webview
+  // (src/lib/overlay-dismiss.ts) instead of by covering the screen.
   useLayoutEffect(() => {
-    const needsBackdrop = Array.from(popups.values()).some((m) =>
-      BACKDROP_KINDS.has(m.kind),
-    );
-    // Backdrop mode passes NO region at all (SetWindowRgn NULL): the window
-    // stays DWM-composed (a region forces the classic-NC fallback renderer —
-    // the "Tauri App" caption bug) and every pixel is hit-testable, which a
-    // dismiss-on-outside-click popup needs anyway.
-    const rects: PopupRect[] = [];
-    if (!needsBackdrop) {
-      for (const el of els.current.values()) {
+    let raf = 0;
+    // A growth is applied one frame LATE on purpose: revealing surface the
+    // popup has not painted into yet shows an empty rectangle. Since this loop
+    // re-reads every frame, "next tick" IS that one-frame wait, and by then the
+    // paint has landed. Shrinks apply immediately so click-through comes back
+    // in the same frame the popup goes away.
+    let pending: PopupRect[] | null = null;
+
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+
+      if (pending) {
+        const rectsToPush = pending;
+        pending = null;
+        push(rectsToPush);
+        return;
+      }
+
+      const rects: PopupRect[] = [];
+      for (const [id, el] of els.current) {
         const r = el.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) continue;
-        const radius = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
+        const cs = getComputedStyle(el);
+        // Skip surfaces that are laid out but NOT yet shown: a menu's first
+        // pass is `visibility: hidden` purely so it can measure itself before
+        // deciding whether to flip above/left of the cursor. Clipping to that
+        // pre-measurement rect made the menu appear to "render 50% and then
+        // the rest".
+        if (cs.visibility === "hidden") continue;
+        const radius = parseFloat(cs.borderTopLeftRadius) || 0;
+        // Menu-class popups keep their real drop shadow: a tight clip would cut
+        // it off at the panel edge, so their rect is inflated to give it room
+        // INSIDE the region. That margin is not dead space — the menu's own
+        // full-screen backdrop div covers it and dismisses on pointerdown.
+        const kind = popupsRef.current.get(id)?.kind;
+        const pad = kind && SHADOW_PAD_KINDS.has(kind) ? MENU_SHADOW_PAD : 0;
         rects.push({
-          x: r.left,
-          y: r.top,
-          width: r.width,
-          height: r.height,
+          x: r.left - pad,
+          y: r.top - pad,
+          width: r.width + pad * 2,
+          height: r.height + pad * 2,
           radius,
         });
       }
-    }
-    invoke("overlay_set_region", { rects, backdrop: needsBackdrop }).catch((e) =>
-      console.error("[overlay] overlay_set_region failed", e),
-    );
-  }, [popups]);
+
+      const sig = JSON.stringify(rects);
+      if (sig === lastRegionSig.current) return;
+      const grewArea = rects.length > lastRectCount.current;
+      lastRegionSig.current = sig;
+      lastRectCount.current = rects.length;
+      if (grewArea) pending = rects;
+      else push(rects);
+    };
+
+    const push = (rects: PopupRect[]) =>
+      invoke("overlay_set_region", { rects, backdrop: false }).catch((e) =>
+        console.error("[overlay] overlay_set_region failed", e),
+      );
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const registerEl = useCallback((id: string, el: HTMLElement | null) => {
     if (el) els.current.set(id, el);
@@ -196,6 +330,15 @@ export function OverlayRoot() {
   // "dragging the topbar needs 2-3 clicks" bug). Main is still notified via
   // overlay:action; its open:false echo is a no-op by the time it arrives.
   const closeLocal = useCallback((id: string) => {
+    // Tombstone FIRST: main's in-flight `open:true` messages must not be able
+    // to resurrect this popup between here and its `open:false` echo (see
+    // closedLocally). Applies to every popup that closes locally — context
+    // menus, anchored dropdowns, git branch, session picker, swatches.
+    const open = popupsRef.current.get(id);
+    closedLocally.current.set(id, {
+      sig: open ? popupSignature(open) : "",
+    });
+    lastSeen.current.delete(id);
     setPopups((prev) => {
       if (!prev.has(id)) return prev;
       const next = new Map(prev);
@@ -230,10 +373,6 @@ function OverlayPopup({
   switch (msg.kind) {
     case "exit-banner":
       return <ExitBanner msg={msg} registerEl={registerEl} />;
-    case "context-menu":
-      return (
-        <ContextMenu msg={msg} registerEl={registerEl} closeLocal={closeLocal} />
-      );
     case "toast":
       return <Toast msg={msg} registerEl={registerEl} />;
     case "file-link-tooltip":
@@ -320,151 +459,6 @@ function ExitBanner({
   return (
     <div ref={ref} style={style}>
       [Process exited]
-    </div>
-  );
-}
-
-/**
- * Global right-click context menu. Backdrop popup → full-overlay region while
- * open (an outside click dismisses it), so transparency is intact and it gets a
- * real drop shadow. Item click / dismiss round-trips to the main webview via
- * `overlay:action`; the main webview owns the action closures.
- */
-function ContextMenu({
-  msg,
-  registerEl,
-  closeLocal,
-}: {
-  msg: OverlayPopupMsg;
-  registerEl: (id: string, el: HTMLElement | null) => void;
-  closeLocal: (id: string) => void;
-}) {
-  const sections =
-    (msg.payload as { sections?: CtxMenuSection[] } | undefined)?.sections ?? [];
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menuH, setMenuH] = useState(0);
-
-  useLayoutEffect(() => {
-    if (menuRef.current) setMenuH(menuRef.current.offsetHeight);
-  }, [msg]);
-
-  const setRef = useCallback(
-    (el: HTMLDivElement | null) => {
-      menuRef.current = el;
-      registerEl(msg.id, el);
-    },
-    [registerEl, msg.id],
-  );
-
-  // Close locally first (region restored this frame), then tell main.
-  const dismiss = () => {
-    closeLocal(msg.id);
-    emitOverlayAction({ id: msg.id, action: "__dismiss__" });
-  };
-  const runItem = (actionId: string) => {
-    closeLocal(msg.id);
-    emitOverlayAction({ id: msg.id, action: actionId });
-  };
-
-  const ax = msg.rect?.x ?? 0;
-  const ay = msg.rect?.y ?? 0;
-  const clampedX = Math.min(ax, window.innerWidth - CTX_MENU_WIDTH - 8);
-  let clampedY = ay;
-  if (menuH > 0 && ay + menuH > window.innerHeight - 8) {
-    clampedY = Math.max(8, ay - menuH);
-  }
-  clampedY = Math.max(8, clampedY);
-
-  return (
-    <div
-      style={{ position: "fixed", inset: 0, pointerEvents: "auto" }}
-      // Dismiss on pointer-DOWN (native menu semantics): a press-and-drag on
-      // the topbar closes the menu on the press instead of dangling until the
-      // release, and the synchronous local close means the NEXT press already
-      // reaches the app. A right-click press falls through here too, so the
-      // follow-up contextmenu (fired on release, now over the app) reopens
-      // the menu at the new spot — reposition works in one gesture.
-      onPointerDown={dismiss}
-      onContextMenu={(e) => {
-        e.preventDefault();
-      }}
-    >
-      <div
-        ref={setRef}
-        style={{
-          position: "absolute",
-          top: clampedY,
-          left: clampedX,
-          minWidth: CTX_MENU_WIDTH,
-          padding: "4px 0",
-          borderRadius: 8,
-          background: "var(--ezy-surface-raised, #1c2128)",
-          border: "1px solid var(--ezy-border, rgba(255,255,255,0.08))",
-          boxShadow: "0 10px 30px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.35)",
-          color: "var(--ezy-text, #e6edf3)",
-          fontFamily: "Inter, system-ui, sans-serif",
-        }}
-        // Keep presses inside the menu from reaching the backdrop's
-        // pointer-down dismiss — items activate on click (release).
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {sections.map((section, si) => (
-          <div key={si}>
-            {si > 0 && (
-              <div
-                style={{
-                  height: 1,
-                  background: "var(--ezy-border-subtle, rgba(255,255,255,0.06))",
-                  margin: "4px 0",
-                }}
-              />
-            )}
-            {section.items.map((item) => (
-              <div
-                key={item.actionId}
-                onClick={() => runItem(item.actionId)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "6px 12px",
-                  fontSize: 12,
-                  cursor: "pointer",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background =
-                    "var(--ezy-surface, rgba(255,255,255,0.06))";
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = "transparent";
-                }}
-              >
-                <span
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
-                    flexShrink: 0,
-                  }}
-                >
-                  {CTX_ICONS[item.iconId]}
-                </span>
-                <span style={{ flex: 1 }}>{item.label}</span>
-                <span
-                  style={{
-                    color: "var(--ezy-text-muted, rgba(230,237,243,0.45))",
-                    fontSize: 11,
-                    flexShrink: 0,
-                  }}
-                >
-                  {item.shortcut}
-                </span>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -1225,6 +1219,10 @@ function AnchoredMenu({
   const p = (msg.payload ?? {}) as Partial<OverlayMenuPayload>;
   const sections = p.sections ?? [];
   const menuRef = useRef<HTMLDivElement | null>(null);
+  // Menu items render their own tooltips — the overlay cannot publish a popup
+  // to itself, so `title=` here would be the OS tooltip the rest of the app no
+  // longer uses (this is why "Split Down" still looked like Windows chrome).
+  const tip = useOverlayTip();
   const [menuSize, setMenuSize] = useState<{ w: number; h: number }>({
     w: 0,
     h: 0,
@@ -1273,25 +1271,42 @@ function AnchoredMenu({
   };
 
   const anchor = msg.rect!;
-  const gap = p.gap ?? 4;
   const placement = p.placement ?? "below-start";
+  // Cursor placement touches the pointer; every other placement keeps its gap.
+  const gap = placement === "cursor" ? 0 : (p.gap ?? 4);
   let top: number;
-  if (placement.startsWith("below")) {
-    top = anchor.y + anchor.height + gap;
+  let left: number;
+
+  if (placement === "cursor") {
+    // Native right-click convention: top-left corner at the point, and FLIP to
+    // the other side of the cursor when it would overflow. Clamping instead
+    // would slide the menu under the pointer, so the button-up that opened it
+    // could land on a row.
+    top = anchor.y;
     if (menuSize.h > 0 && top + menuSize.h > window.innerHeight - 8) {
-      top = Math.max(8, anchor.y - gap - menuSize.h);
+      top = Math.max(8, anchor.y - menuSize.h);
+    }
+    left = anchor.x;
+    if (menuSize.w > 0 && left + menuSize.w > window.innerWidth - 8) {
+      left = Math.max(8, anchor.x - menuSize.w);
     }
   } else {
-    top = anchor.y - gap - menuSize.h;
-    if (top < 8) top = Math.min(anchor.y + anchor.height + gap, window.innerHeight - 8 - menuSize.h);
+    if (placement.startsWith("below")) {
+      top = anchor.y + anchor.height + gap;
+      if (menuSize.h > 0 && top + menuSize.h > window.innerHeight - 8) {
+        top = Math.max(8, anchor.y - gap - menuSize.h);
+      }
+    } else {
+      top = anchor.y - gap - menuSize.h;
+      if (top < 8) top = Math.min(anchor.y + anchor.height + gap, window.innerHeight - 8 - menuSize.h);
+    }
+    if (placement.endsWith("start")) {
+      left = anchor.x;
+    } else {
+      left = anchor.x + anchor.width - menuSize.w;
+    }
+    left = Math.max(8, Math.min(left, window.innerWidth - menuSize.w - 8));
   }
-  let left: number;
-  if (placement.endsWith("start")) {
-    left = anchor.x;
-  } else {
-    left = anchor.x + anchor.width - menuSize.w;
-  }
-  left = Math.max(8, Math.min(left, window.innerWidth - menuSize.w - 8));
   top = Math.max(8, top);
 
   return (
@@ -1369,9 +1384,14 @@ function AnchoredMenu({
                   alignItems: "center",
                   gap: 8,
                   padding: "6px 12px",
+                  paddingLeft: 12 + (item.indent ?? 0) * 14,
                   fontSize: 12,
                   cursor: item.disabled ? "default" : "pointer",
-                  opacity: item.disabled ? 0.4 : 1,
+                  // Disabled rows stay legible rather than ghosting out: the
+                  // point of showing them is to say "this belongs here, just
+                  // not right now", and the reason tooltip has to be readable
+                  // enough that people hover it.
+                  opacity: item.disabled ? 0.45 : 1,
                   color: item.danger
                     ? "var(--ezy-red, #f85149)"
                     : "var(--ezy-text, #e6edf3)",
@@ -1380,9 +1400,14 @@ function AnchoredMenu({
                   if (!item.disabled)
                     e.currentTarget.style.background =
                       "var(--ezy-surface, rgba(255,255,255,0.06))";
+                  // Disabled rows still receive mouse events, which is what
+                  // makes the explanation reachable at all.
+                  if (item.disabledReason)
+                    tip.showAfterDelay(e.currentTarget, item.disabledReason);
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.background = "transparent";
+                  if (item.disabledReason) tip.hide();
                 }}
               >
                 {item.swatch && (
@@ -1478,7 +1503,6 @@ function AnchoredMenu({
                 )}
                 {item.trailing && (
                   <span
-                    title={item.trailing.title}
                     onClick={(e) => {
                       e.stopPropagation();
                       runItem(item.trailing!.actionId, e);
@@ -1497,9 +1521,12 @@ function AnchoredMenu({
                     onMouseEnter={(e) => {
                       e.currentTarget.style.background =
                         "var(--ezy-surface-raised, rgba(255,255,255,0.1))";
+                      if (item.trailing?.title)
+                        tip.showAfterDelay(e.currentTarget, item.trailing.title);
                     }}
                     onMouseLeave={(e) => {
                       e.currentTarget.style.background = "transparent";
+                      tip.hide();
                     }}
                   >
                     {CTX_ICONS[item.trailing.iconId]}
@@ -1507,9 +1534,55 @@ function AnchoredMenu({
                 )}
               </div>
             ))}
+            {section.swatches && section.swatches.length > 0 && (
+              // Swatch grid, ported from the standalone SwatchMenu renderer so
+              // a colour picker can be a SECTION of a menu rather than a second
+              // popup. Same 20px tiles, same selected ring — this must not
+              // become a parallel design.
+              <div
+                style={{
+                  display: "flex",
+                  gap: 4,
+                  flexWrap: "wrap",
+                  padding: "4px 12px 6px",
+                  maxWidth: 176,
+                }}
+              >
+                {section.swatches.map((sw) => (
+                  <div
+                    key={sw.actionId}
+                    onClick={(e) => runItem(sw.actionId, e)}
+                    onMouseEnter={(e) => tip.showAfterDelay(e.currentTarget, sw.label)}
+                    onMouseLeave={() => tip.hide()}
+                    style={{
+                      width: 20,
+                      height: 20,
+                      borderRadius: 4,
+                      background: sw.color ?? "var(--ezy-surface, #161b22)",
+                      border: sw.selected
+                        ? sw.color
+                          ? "2px solid #fff"
+                          : "2px solid var(--ezy-text, #e6edf3)"
+                        : sw.color
+                          ? "1px solid transparent"
+                          : "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 10,
+                      color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                    }}
+                  >
+                    {sw.color ? "" : "×"}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>
+      {tip.node}
     </div>
   );
 }
@@ -1707,67 +1780,90 @@ function VoiceHudCard({
 }
 
 /**
- * The app's hover tooltip (kind "tooltip"). Every `data-tooltip` element in the
- * main webview routes here through TooltipHost — this is the ONLY tooltip
- * surface, so restyle here and the whole app follows.
+ * The tooltip chip itself — the ONE tooltip visual in the app.
  *
- * Payload: { anchor: {left,top,right,bottom}, text, shortcut? }. The legacy
- * { x, y, text } point form is still accepted (treated as a zero-size anchor).
+ * Used by two callers: `Tooltip` (every `data-tooltip` element in the main
+ * webview, routed here by TooltipHost) and the overlay's own menus, which
+ * cannot publish a popup to themselves and so render this directly.
  *
- * Inverted on purpose: a light chip on a dark workspace reads as system UI
- * floating above the panes, and it needs no shadow to separate — the value
- * contrast does that. Both colors come from existing tokens, swapped
- * (surface = --ezy-text, ink = --ezy-bg), so a theme change carries through
- * instead of stranding a hardcoded white.
+ * Every colour comes from the active theme — the app ships 14, from Black Steel
+ * (#09090b) to the LIGHT Panini (#f3ecd8), so nothing here may be hardcoded.
+ * Fill is --ezy-surface-raised, ink is --ezy-text.
+ *
+ * The outline and the hard offset are both --ezy-border-light, which is the one
+ * token guaranteed to contrast against the background in every theme (mid-tones
+ * on the dark ones, #bfb492 on the light one). A literal black shadow was not an
+ * option: it disappears on the near-black themes and is wrong on the light one.
+ * Using a single colour for outline + offset also matches the sticker-style
+ * reference this was designed from.
  *
  * Geometry is set imperatively in a layout effect, NOT via state: OverlayRoot's
  * region effect reads these rects in the same commit (child layout effects run
  * before the parent's), so a state round-trip would clip the window region to
- * the pre-positioned rect for a frame. The arrow lives INSIDE the registered
- * wrapper for the same reason — anything outside that rect is outside the
- * window region and simply is not drawn.
+ * the pre-positioned rect for a frame. The arrow lives INSIDE the wrapper for
+ * the same reason — anything outside that rect is outside the window region
+ * and simply is not drawn.
  */
-function Tooltip({
-  msg,
-  registerEl,
+export interface TipAnchor {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/** Hard-offset shadow distance, px. Drives BOTH the drop-shadow filter and the
+ *  wrapper padding that keeps the offset inside the registered rect — keep it
+ *  one constant so those two can never drift apart. */
+const TIP_SHADOW = 2;
+
+/** Hover dwell for the overlay's own tooltips. Must match TooltipHost's
+ *  SHOW_DELAY_MS — a menu tooltip that appears on a different beat than the
+ *  rest of the app reads as a different feature. */
+const TIP_DELAY_MS = 600;
+
+function TipChip({
+  anchor,
+  text,
+  shortcut,
+  hint,
+  register,
 }: {
-  msg: OverlayPopupMsg;
-  registerEl: (id: string, el: HTMLElement | null) => void;
+  anchor: TipAnchor;
+  text: string;
+  shortcut?: string;
+  /** Secondary line, always on its own row under the main text. For the
+   *  "what you can do with this" half of a label — an instruction like
+   *  "Double-click to open in file manager" must not reflow into the middle of
+   *  a wrapped file path. */
+  hint?: string;
+  /** Registers the wrapper for the window region. Omit inside backdrop popups,
+   *  which set no region at all and can paint anywhere. */
+  register?: (el: HTMLDivElement | null) => void;
 }) {
-  const p = (msg.payload ?? {}) as {
-    x?: number;
-    y?: number;
-    text?: string;
-    shortcut?: string;
-    anchor?: { left: number; top: number; right: number; bottom: number };
-  };
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const chipRef = useRef<HTMLDivElement | null>(null);
-  const arrowRef = useRef<HTMLDivElement | null>(null);
+  const outerRef = useRef<HTMLDivElement | null>(null);
+  const innerRef = useRef<HTMLDivElement | null>(null);
   const ref = useCallback(
     (el: HTMLDivElement | null) => {
       wrapRef.current = el;
-      registerEl(msg.id, el);
+      register?.(el);
     },
-    [registerEl, msg.id],
+    [register],
   );
-
-  const anchor = p.anchor ?? {
-    left: p.x ?? 0,
-    right: p.x ?? 0,
-    top: p.y ?? 0,
-    bottom: p.y ?? 0,
-  };
 
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
     const chip = chipRef.current;
-    const arrow = arrowRef.current;
-    if (!wrap || !chip || !arrow) return;
+    const outer = outerRef.current;
+    const inner = innerRef.current;
+    if (!wrap || !chip || !outer || !inner) return;
 
     const GAP = 6; // clear space between the chip edge and the anchor
     const EDGE = 6; // minimum distance from the window edge
-    const ARROW = 6; // triangle half-width / height
+    const IN = 6; // inner (fill) triangle half-width / height
+    const OUT = 7; // outer (outline) triangle — 1px larger, so the outline shows
+    const SHADOW = TIP_SHADOW; // hard offset; also padded for, below
 
     const cw = chip.offsetWidth;
     const ch = chip.offsetHeight;
@@ -1778,39 +1874,62 @@ function Tooltip({
     // its pixels belong to the overlay window, so hovering it would steal the
     // pointer from the pane below and oscillate open/closed. Anchoring to the
     // element rect (never the cursor) plus GAP guarantees clearance.
-    const totalH = ch + ARROW;
+    const totalH = ch + OUT;
     const below = anchor.top - GAP < totalH + EDGE;
     const top = below ? anchor.bottom + GAP : anchor.top - GAP - totalH;
 
     const centerX = (anchor.left + anchor.right) / 2;
-    const left = Math.max(EDGE, Math.min(centerX - cw / 2, vw - cw - EDGE));
+    // Clamp against the chip plus its shadow, so the offset never falls off
+    // the right edge of the window.
+    const left = Math.max(
+      EDGE,
+      Math.min(centerX - cw / 2, vw - cw - SHADOW - EDGE),
+    );
 
-    // The arrow sits in wrapper padding, so the whole shape stays inside the
-    // registered rect (the window region is built from it — anything outside
-    // is clipped away and never painted).
-    wrap.style.paddingTop = below ? `${ARROW}px` : "0px";
-    wrap.style.paddingBottom = below ? "0px" : `${ARROW}px`;
+    // The arrow sits in wrapper padding and the shadow gets its own padding on
+    // the right/bottom, so the entire silhouette stays inside the wrapper's
+    // rect — the window region is built from that rect, and anything outside
+    // it is clipped away and never painted.
+    wrap.style.paddingTop = below ? `${OUT}px` : "0px";
+    wrap.style.paddingBottom = below ? `${SHADOW}px` : `${OUT + SHADOW}px`;
+    wrap.style.paddingRight = `${SHADOW}px`;
     wrap.style.left = `${Math.round(left)}px`;
-    wrap.style.top = `${Math.round(Math.max(EDGE, Math.min(top, vh - totalH - EDGE)))}px`;
+    wrap.style.top = `${Math.round(Math.max(EDGE, Math.min(top, vh - totalH - SHADOW - EDGE)))}px`;
     wrap.style.visibility = "visible";
 
     // Arrow tracks the anchor's centre even after the chip is clamped to the
     // window edge, so it keeps pointing at the thing it describes.
-    const arrowX = Math.max(ARROW + 2, Math.min(centerX - left, cw - ARROW - 2));
-    arrow.style.left = `${Math.round(arrowX - ARROW)}px`;
+    const arrowX = Math.max(OUT + 2, Math.min(centerX - left, cw - OUT - 2));
+
+    // Two stacked triangles: the outer one is the outline colour, the inner
+    // one is the fill, pulled 1px back over the chip's own border so the
+    // outline runs continuously around the point instead of being cut off by
+    // the chip edge.
     if (below) {
       // Points UP at the anchor above it.
-      arrow.style.top = "0px";
-      arrow.style.borderTopWidth = "0px";
-      arrow.style.borderBottomWidth = `${ARROW}px`;
-      arrow.style.borderBottomColor = "var(--ezy-text, #e6edf3)";
+      outer.style.top = "0px";
+      outer.style.borderTopWidth = "0px";
+      outer.style.borderBottomWidth = `${OUT}px`;
+      outer.style.borderBottomColor = "var(--ezy-border-light, #484f58)";
+      // Base lands at OUT+1 (just past the chip's 1px top border) so the
+      // border does not draw a line across the arrow's mouth.
+      inner.style.top = `${OUT - IN + 1}px`;
+      inner.style.borderTopWidth = "0px";
+      inner.style.borderBottomWidth = `${IN}px`;
+      inner.style.borderBottomColor = "var(--ezy-surface-raised, #1c2128)";
     } else {
       // Points DOWN at the anchor below it.
-      arrow.style.top = `${ch}px`;
-      arrow.style.borderBottomWidth = "0px";
-      arrow.style.borderTopWidth = `${ARROW}px`;
-      arrow.style.borderTopColor = "var(--ezy-text, #e6edf3)";
+      outer.style.top = `${ch}px`;
+      outer.style.borderBottomWidth = "0px";
+      outer.style.borderTopWidth = `${OUT}px`;
+      outer.style.borderTopColor = "var(--ezy-border-light, #484f58)";
+      inner.style.top = `${ch - 1}px`;
+      inner.style.borderBottomWidth = "0px";
+      inner.style.borderTopWidth = `${IN}px`;
+      inner.style.borderTopColor = "var(--ezy-surface-raised, #1c2128)";
     }
+    outer.style.left = `${Math.round(arrowX - OUT)}px`;
+    inner.style.left = `${Math.round(arrowX - IN)}px`;
   });
 
   return (
@@ -1825,6 +1944,11 @@ function Tooltip({
         width: "max-content",
         visibility: "hidden",
         pointerEvents: "none",
+        zIndex: 100,
+        // drop-shadow (not box-shadow) so the hard offset follows the composite
+        // silhouette — chip AND arrow — as one shape. A box-shadow would draw a
+        // rectangle behind the chip and ignore the point.
+        filter: `drop-shadow(${TIP_SHADOW}px ${TIP_SHADOW}px 0 var(--ezy-border-light, #484f58))`,
         // Placed in the layout effect above.
       }}
     >
@@ -1832,9 +1956,11 @@ function Tooltip({
         ref={chipRef}
         style={{
           position: "relative",
-          background: "var(--ezy-text, #e6edf3)",
-          color: "var(--ezy-bg, #0d1117)",
-          borderRadius: 8,
+          background: "var(--ezy-surface-raised, #1c2128)",
+          color: "var(--ezy-text, #e6edf3)",
+          border: "1px solid var(--ezy-border-light, #484f58)",
+          // Rectangular by design; 2px only takes the bite off the corners.
+          borderRadius: 2,
           padding: "5px 9px",
           fontSize: 11.5,
           fontWeight: 500,
@@ -1846,31 +1972,65 @@ function Tooltip({
           overflowWrap: "anywhere",
           fontFamily: "Inter, system-ui, sans-serif",
           display: "flex",
-          alignItems: "center",
-          gap: 8,
+          flexDirection: "column",
+          alignItems: "stretch",
+          gap: 4,
           animation: "ezy-tip-in 90ms ease-out",
         }}
       >
-        <span>{p.text ?? ""}</span>
-        {p.shortcut && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span>{text}</span>
+        {shortcut && (
           <span
             style={{
               flexShrink: 0,
-              background: "var(--ezy-text-secondary, #c9d1d9)",
-              color: "var(--ezy-bg, #0d1117)",
-              borderRadius: 4,
-              padding: "1px 5px",
+              background: "var(--ezy-surface, #161b22)",
+              color: "var(--ezy-text-secondary, #c9d1d9)",
+              border: "1px solid var(--ezy-border-light, #484f58)",
+              borderRadius: 2,
+              padding: "0 4px",
               fontSize: 10.5,
               fontWeight: 600,
               fontVariantNumeric: "tabular-nums",
             }}
           >
-            {p.shortcut}
+            {shortcut}
           </span>
+        )}
+        </div>
+        {hint && (
+          <div
+            style={{
+              borderTop: "1px solid var(--ezy-border, #30363d)",
+              paddingTop: 4,
+              fontSize: 10.5,
+              fontWeight: 500,
+              color: "var(--ezy-text-muted, #8b949e)",
+            }}
+          >
+            {hint}
+          </div>
         )}
       </div>
       <div
-        ref={arrowRef}
+        ref={outerRef}
+        style={{
+          position: "absolute",
+          width: 0,
+          height: 0,
+          borderLeftWidth: 7,
+          borderRightWidth: 7,
+          borderStyle: "solid",
+          borderLeftColor: "transparent",
+          borderRightColor: "transparent",
+          borderTopColor: "transparent",
+          borderBottomColor: "transparent",
+          borderTopWidth: 0,
+          borderBottomWidth: 0,
+        }}
+      />
+      <div
+        ref={innerRef}
         style={{
           position: "absolute",
           width: 0,
@@ -1887,6 +2047,95 @@ function Tooltip({
         }}
       />
     </div>
+  );
+}
+
+/**
+ * Hover tooltip for the overlay's OWN elements (menu rows, trailing buttons).
+ *
+ * The main webview drives its tooltips through TooltipHost -> kind "tooltip".
+ * The overlay cannot do that: it would be publishing a popup to itself. So
+ * anything inside a menu tracks its own hover here and renders TipChip
+ * directly — same chip, same 400ms dwell, so the two are indistinguishable.
+ *
+ * Safe to paint anywhere because every menu kind is in SHADOW_PAD_KINDS, and
+ * backdrop mode sets NO window region (see the region effect above). Do not
+ * reuse this from a non-backdrop popup without registering the element.
+ */
+function useOverlayTip() {
+  const [tip, setTip] = useState<{ anchor: TipAnchor; text: string } | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const hide = useCallback(() => {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    setTip(null);
+  }, []);
+
+  const showAfterDelay = useCallback(
+    (el: HTMLElement, text: string) => {
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => {
+        timer.current = null;
+        if (!el.isConnected) return;
+        const r = el.getBoundingClientRect();
+        setTip({
+          anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
+          text,
+        });
+      }, TIP_DELAY_MS);
+    },
+    [],
+  );
+
+  useEffect(() => () => {
+    if (timer.current) clearTimeout(timer.current);
+  }, []);
+
+  const node = tip ? <TipChip anchor={tip.anchor} text={tip.text} /> : null;
+  return { showAfterDelay, hide, node };
+}
+
+/**
+ * Generic display-only tooltip (kind "tooltip") — the main webview's tooltips,
+ * published by TooltipHost. Payload: { anchor, text, shortcut? }; the legacy
+ * { x, y, text } point form is still accepted as a zero-size anchor.
+ */
+function Tooltip({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as {
+    x?: number;
+    y?: number;
+    text?: string;
+    shortcut?: string;
+    hint?: string;
+    anchor?: TipAnchor;
+  };
+  const register = useCallback(
+    (el: HTMLDivElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const anchor = p.anchor ?? {
+    left: p.x ?? 0,
+    right: p.x ?? 0,
+    top: p.y ?? 0,
+    bottom: p.y ?? 0,
+  };
+  return (
+    <TipChip
+      anchor={anchor}
+      text={p.text ?? ""}
+      shortcut={p.shortcut}
+      hint={p.hint}
+      register={register}
+    />
   );
 }
 
@@ -2353,6 +2602,41 @@ function RecentMenu({
             <path d="M256 80c0-17.7-14.3-32-32-32s-32 14.3-32 32V224H48c-17.7 0-32 14.3-32 32s14.3 32 32 32H192V432c0 17.7 14.3 32 32 32s32-14.3 32-32V288H400c17.7 0 32-14.3 32-32s-14.3-32-32-32H256V80z" />
           </svg>
           Browse for Folder...
+        </div>
+        <div
+          onClick={() => act("jira", true)}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background =
+              "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 12px",
+            cursor: "pointer",
+            fontSize: 13,
+            color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+          }}
+          title="Work Jira tickets against a source folder, one pane per ticket"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <rect x="2.5" y="2.5" width="11" height="11" rx="2" />
+            <path d="M5.5 6h5M5.5 9h3" />
+          </svg>
+          New Jira Project...
         </div>
         {(p.servers ?? []).length > 0 && (
           <>

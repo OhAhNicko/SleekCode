@@ -222,6 +222,91 @@ Expected last line:
 - **Tab switch must scroll to top**: Every `setView`/`setActiveTab` handler must include `window.scrollTo(0, 0)`.
 - **Pagination must scroll to top**: Every page-change handler in pagination controls must include `window.scrollTo(0, 0)`.
 
+## Context menus — EVERY new surface gets one
+
+**Any feature that adds a new right-clickable surface MUST ship a menu provider
+for it.** A surface with no provider falls through to the generic app menu and
+offers "New tab / Command palette / Settings / DevTools" on top of whatever the
+user actually clicked. That is the exact defect the 2026-07-26 audit existed to
+remove; do not reintroduce it one feature at a time.
+
+Engine lives in `src/lib/menu/` — full design in `docs/architecture.md`
+("Context menus"). Do NOT hand-roll a menu, a portal, or a second overlay kind.
+
+### Adding a surface (4 steps)
+
+1. **Declare it in the DOM** — `data-ctx-surface="<kind>"` plus any cheap
+   scalars the menu needs (`data-ctx-id`, `data-ctx-label`, `data-ctx-path`, …).
+   Rich surfaces that already carry `data-terminal-id` / `data-tab-id` /
+   `data-pane-id` are resolved from those instead.
+2. **Write the provider** — `src/lib/menu/providers/<name>.ts`, or a new `role`
+   case in `providers/rows.ts` for a plain list row (that path needs no new
+   context type).
+3. **Register it** — one `import` line in `GlobalContextMenu.tsx`.
+4. **Expose component-local handlers** via `registerSurfaceActions(role, {...})`
+   (`lib/surface-actions.ts`). Store actions can be called directly.
+
+### Rules (all non-negotiable)
+
+- **HIDE what can never apply; DISABLE + `reason` what is merely unavailable
+  right now.** `unavailable: { reason }` requires the reason by type — an
+  unexplained greyed row must not compile.
+- **NEVER wire an item to a `made:*` event without confirming a listener
+  exists.** `made:paste-text` had two dispatchers and zero listeners, so Paste
+  did nothing for months. Prefer a registry (`terminal-actions.ts`,
+  `surface-actions.ts`); a missing registration disables the row instead of
+  faking success.
+- **Accelerators come from `lib/keybindings.ts` via `command:`** — never a
+  hardcoded string. A menu printing a chord that does something else is worse
+  than printing none.
+- **The menu must never change size after it opens.** Everything shown is
+  decided at build time. Never fill a `sublabel` from an async call — a sublabel
+  is a second line, so it grows the row under the user's pointer. Prewarm into a
+  cache instead (see `lib/git-branch-cache.ts`).
+- **No text inputs in a menu.** The overlay webview is `WS_EX_NOACTIVATE` and
+  can never take keystrokes. Rename/New/etc. open `PromptModal` in the main
+  webview (`lib/prompt-modal.ts`).
+- **Destructive actions confirm**, and deletes go to the Recycle Bin
+  (`fs_delete_to_trash`), never `remove_dir_all`. If a bulk action is
+  undoable-in-theory, verify the undo store actually holds all of it.
+- **Actions target what was RIGHT-CLICKED**, not what is focused. Pass the id
+  explicitly (`detail.terminalId`, `targetTerminalId`).
+
+### Native child windows — extra step, and it differs by TYPE
+
+A native surface is an OS window: it swallows the right-click and the DOM never
+sees a `contextmenu` event. Wiring DOM attributes alone does nothing. HOW you
+recover the click depends on who owns input inside that window.
+
+**Custom-drawn windows we render ourselves** (`native_term`) — intercept in the
+`wnd_proc`:
+- handle `WM_RBUTTONDOWN`/`WM_RBUTTONUP`, never calling `DefWindowProc` for them
+  (that would synthesize an OS `WM_CONTEXTMENU`);
+- **emit on button-UP, not DOWN** — Chromium fires `contextmenu` on release, so
+  emitting on press lets the overlay's dismiss backdrop close the menu instantly;
+- forward pane-local coords to JS (`emit_r_button` → `subscribeRButton`).
+
+**Embedded WebView2** (`browser_view`) — a `wnd_proc` will NOT work: WebView2
+owns input inside the page and the click never reaches our HWND. Report it from
+the page instead:
+- add a `contextmenu` listener to `HOST_INIT_SCRIPT` that `preventDefault()`s
+  and posts coords + what is under the cursor over the existing IPC envelope;
+- add the new kind to `ALLOWED_KINDS` in `policy.rs` — the envelope is a closed
+  set on purpose;
+- keep the listener PASSIVE (no native replaced) — replacing `fetch`/`console`
+  is a bot-detection fingerprint, which is why DevTools instrumentation is
+  on-demand only;
+- **treat every field as forged.** Page-supplied URLs reach the clipboard and
+  the user's real browser, so scheme-check them (`safeExternalUrl`: http/https
+  only) before offering to open or copy.
+
+Either way: MADE's menu on plain right-click, **Shift+right-click** passes the
+raw click through to the embedded content.
+
+In both cases JS synthesizes a `contextmenu` MouseEvent on the surface anchor at
+the matching viewport point, and any page-side detail is parked in a registry
+for the provider to read (`browser-view/page-context.ts`).
+
 ## CSS/React gotchas
 - **`background-clip: text` breaks on React re-render in Chromium** — when a component using gradient text receives new props, the clip mask doesn't re-paint. Fix: add `key={uniqueId}` to force remount.
 - **`<button>` elements inflate compact headers** — buttons inherit `line-height: 1.5`, making a `w-4 h-4` SVG button 24px instead of 16px. Use bare `<svg onClick>` in compact headers to avoid invisible height inflation.

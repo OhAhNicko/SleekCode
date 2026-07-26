@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, ComposerExpansion, PaneLayout, Tab } from "../types";
 import { getDefaultBackend, detectBackendForPath } from "../lib/platform";
+import { DEFAULT_JIRA_PROMPT } from "../lib/jira";
 
 export interface RecentProjectTemplate {
   templateId: string;
@@ -63,6 +64,22 @@ export const PROJECT_COLOR_PRESETS = [
 
 export type ProjectColorId = (typeof PROJECT_COLOR_PRESETS)[number]["id"] | null;
 
+/**
+ * Ink presets for screenshot markup — the project palette plus yellow.
+ *
+ * Yellow is here because a see-through yellow highlighter is the whole point of
+ * the marker tool and `PROJECT_COLOR_PRESETS` has no yellow; it leads the list
+ * for the same reason. These are literal hexes for USER CONTENT, which is why
+ * they sidestep the `--ezy-*` rule and the amber/yellow/blue ban (that governs
+ * Tailwind classes on app chrome — this array already ships `sky: #38bdf8`).
+ */
+export const MARKUP_INK_PRESETS = [
+  { id: "yellow", label: "Yellow", color: "#fbbf24" },
+  ...PROJECT_COLOR_PRESETS,
+] as const;
+
+export type MarkupInkId = (typeof MARKUP_INK_PRESETS)[number]["id"];
+
 /** Get the hex color for a project color ID */
 export function getProjectColor(id: ProjectColorId): string | null {
   if (!id) return null;
@@ -115,6 +132,16 @@ export interface RecentProjectsSlice {
   promptComposerAlwaysVisible: boolean;
   composerExpansion: ComposerExpansion;
   maskImagePathsInTerminal: boolean;
+  /** Revamped screenshots viewer (filmstrip + zoomable preview) instead of the legacy gallery/expand pair. */
+  screenshotsRevampEnabled: boolean;
+  /** Watch the OS Screenshots folder so snips that never hit the clipboard still show up. */
+  watchScreenshotsFolder: boolean;
+  /** Optional override for the Screenshots folder. Empty = use the OS-detected one. */
+  screenshotsFolderOverride: string;
+  /** Keep the screenshot viewer's size and position between openings. */
+  rememberScreenshotWindow: boolean;
+  /** Last viewer geometry, in CSS px. Only restored when the flag above is on. */
+  screenshotWindowRect: { x: number; y: number; w: number; h: number } | null;
   panePromptHistory: Record<string, string[]>;
   globalPromptHistory: string[];
   autoStartServerCommand: boolean;
@@ -124,6 +151,13 @@ export interface RecentProjectsSlice {
   browserSpawnLeft: boolean;
   copyOnSelect: boolean;
   confirmQuit: boolean;
+  /** Ask before the Settings sidebar's Reload button reloads every pane.
+   *  The modal's "Remember" checkbox clears this; the Behavior toggle restores it. */
+  confirmReloadPanes: boolean;
+  /** Last notification channel MADE wrote into Claude's own settings.json.
+   *  A local mirror purely so the Settings dropdown can show what is set —
+   *  there is no read-back command, only setters. "" = never applied. */
+  claudeNotifChannel: string;
   slashCommandGhostText: boolean;
   codeReviewCollapseAll: boolean;
   /**
@@ -164,6 +198,17 @@ export interface RecentProjectsSlice {
   settingsPanelOpen: boolean;
   toggleSettingsPanel: () => void;
   setSettingsPanelOpen: (value: boolean) => void;
+  /** Jira site origin, e.g. `https://acme.atlassian.net`. "" until set by hand
+   *  or learned from the browser pane's first navigation to a Jira page. */
+  jiraBaseUrl: string;
+  setJiraBaseUrl: (value: string) => void;
+  /** Investigation prompt sent when a ticket pane opens. `{ticket}` is the
+   *  placeholder. Editable so the wording can be tuned without a release. */
+  jiraPromptTemplate: string;
+  setJiraPromptTemplate: (value: string) => void;
+  /** Remembered state of the ticket dialog's Swedish checkbox. */
+  jiraReplyInSwedish: boolean;
+  setJiraReplyInSwedish: (value: boolean) => void;
   projectsDir: string;
   defaultClaudeMdPath: string;
   defaultAgentsMdPath: string;
@@ -197,6 +242,13 @@ export interface RecentProjectsSlice {
   setPromptComposerAlwaysVisible: (value: boolean) => void;
   setComposerExpansion: (value: ComposerExpansion) => void;
   setMaskImagePathsInTerminal: (value: boolean) => void;
+  setScreenshotsRevampEnabled: (value: boolean) => void;
+  setWatchScreenshotsFolder: (value: boolean) => void;
+  setScreenshotsFolderOverride: (value: string) => void;
+  setRememberScreenshotWindow: (value: boolean) => void;
+  setScreenshotWindowRect: (
+    value: { x: number; y: number; w: number; h: number } | null,
+  ) => void;
   addPromptHistory: (terminalId: string, text: string) => void;
   setAutoStartServerCommand: (value: boolean) => void;
   setPreviewInProjectTab: (value: boolean) => void;
@@ -207,6 +259,8 @@ export interface RecentProjectsSlice {
   setBrowserSpawnLeft: (value: boolean) => void;
   setCopyOnSelect: (value: boolean) => void;
   setConfirmQuit: (value: boolean) => void;
+  setConfirmReloadPanes: (value: boolean) => void;
+  setClaudeNotifChannelPref: (value: string) => void;
   setSlashCommandGhostText: (value: boolean) => void;
   setCodeReviewCollapseAll: (value: boolean) => void;
   setOpenPanesInBackground: (value: boolean) => void;
@@ -245,6 +299,11 @@ export const createRecentProjectsSlice: StateCreator<
   promptComposerAlwaysVisible: false,
   composerExpansion: "up" as ComposerExpansion,
   maskImagePathsInTerminal: false,
+  screenshotsRevampEnabled: false,
+  watchScreenshotsFolder: false,
+  screenshotsFolderOverride: "",
+  rememberScreenshotWindow: false,
+  screenshotWindowRect: null,
   panePromptHistory: {},
   globalPromptHistory: [],
   autoStartServerCommand: true,
@@ -254,6 +313,8 @@ export const createRecentProjectsSlice: StateCreator<
   browserSpawnLeft: false,
   copyOnSelect: false,
   confirmQuit: true,
+  confirmReloadPanes: true,
+  claudeNotifChannel: "",
   slashCommandGhostText: false,
   codeReviewCollapseAll: false,
   perProjectEditor: false,
@@ -282,6 +343,12 @@ export const createRecentProjectsSlice: StateCreator<
   settingsPanelOpen: false,
   toggleSettingsPanel: () => set((s) => ({ settingsPanelOpen: !s.settingsPanelOpen })),
   setSettingsPanelOpen: (value) => set({ settingsPanelOpen: value }),
+  jiraBaseUrl: "",
+  setJiraBaseUrl: (value) => set({ jiraBaseUrl: value }),
+  jiraPromptTemplate: DEFAULT_JIRA_PROMPT,
+  setJiraPromptTemplate: (value) => set({ jiraPromptTemplate: value }),
+  jiraReplyInSwedish: false,
+  setJiraReplyInSwedish: (value) => set({ jiraReplyInSwedish: value }),
   projectsDir: "",
   defaultClaudeMdPath: "",
   defaultAgentsMdPath: "",
@@ -432,6 +499,26 @@ export const createRecentProjectsSlice: StateCreator<
     set({ maskImagePathsInTerminal: value });
   },
 
+  setScreenshotsRevampEnabled: (value) => {
+    set({ screenshotsRevampEnabled: value });
+  },
+
+  setWatchScreenshotsFolder: (value) => {
+    set({ watchScreenshotsFolder: value });
+  },
+
+  setScreenshotsFolderOverride: (value) => {
+    set({ screenshotsFolderOverride: value });
+  },
+
+  setRememberScreenshotWindow: (value) => {
+    set({ rememberScreenshotWindow: value });
+  },
+
+  setScreenshotWindowRect: (value) => {
+    set({ screenshotWindowRect: value });
+  },
+
   addPromptHistory: (terminalId, text) => {
     set((state) => {
       const paneHist = state.panePromptHistory[terminalId] ?? [];
@@ -479,6 +566,14 @@ export const createRecentProjectsSlice: StateCreator<
 
   setConfirmQuit: (value) => {
     set({ confirmQuit: value });
+  },
+
+  setConfirmReloadPanes: (value) => {
+    set({ confirmReloadPanes: value });
+  },
+
+  setClaudeNotifChannelPref: (value) => {
+    set({ claudeNotifChannel: value });
   },
 
   setSlashCommandGhostText: (value) => {

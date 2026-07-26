@@ -145,7 +145,13 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
       {/* Content */}
       <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
         {sidebarTab === "files" && !isRemote && (
-          <FileExplorer rootDir={rootDir} onOpenFile={(path) => onOpenFile(path)} />
+          <div
+            data-ctx-surface="sidebar"
+            data-ctx-root={rootDir}
+            style={{ height: "100%" }}
+          >
+            <FileExplorer rootDir={rootDir} onOpenFile={(path) => onOpenFile(path)} />
+          </div>
         )}
         {sidebarTab === "remote-files" && activeServer && (
           <RemoteFileExplorer

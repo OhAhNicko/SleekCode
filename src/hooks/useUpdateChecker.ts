@@ -1,7 +1,6 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useAppStore } from "../store";
 
 export type UpdateStatus =
   | "idle"
@@ -105,14 +104,11 @@ export function useUpdateChecker() {
             break;
         }
       });
-      // Stash the release notes so the next launch (post-install) can surface
-      // them in the ChangelogModal. Only cache when there's real content.
-      if (update.body && update.body.trim().length > 0) {
-        useAppStore.getState().setPendingChangelog({
-          version: update.version,
-          notes: update.body,
-        });
-      }
+      // No release notes are stashed here on purpose. A store write followed by
+      // relaunch() never survives — WebView2 commits localStorage on a delay
+      // and the process dies first — and `update.body` is only latest.json's
+      // CI placeholder anyway. App.tsx fetches the real GitHub release body on
+      // the next launch instead.
       await relaunch();
     } catch (err) {
       setState((s) => ({

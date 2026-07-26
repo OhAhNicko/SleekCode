@@ -1,91 +1,17 @@
 import { useEffect, useRef } from "react";
 import { useModal } from "../store/modalCoordinationSlice";
+import { shortcutSections } from "../lib/keybindings";
 
 interface KeyboardShortcutsModalProps {
   onClose: () => void;
 }
 
-interface ShortcutSection {
-  title: string;
-  items: { keys: string[]; label: string }[];
-}
+// Derived from src/lib/keybindings.ts — the one table that context menus and
+// this modal both read. It used to be a hand-maintained array here, which had
+// already drifted from the executable switch in App.tsx (Ctrl+Shift+1/2/3 were
+// labelled "horizontal" while they split downwards).
+const sections = shortcutSections();
 
-const sections: ShortcutSection[] = [
-  {
-    title: "General",
-    items: [
-      { keys: ["Ctrl", "1"], label: "New Claude pane" },
-      { keys: ["Ctrl", "2"], label: "New Codex pane" },
-      { keys: ["Ctrl", "3"], label: "New Gemini pane" },
-      { keys: ["Ctrl", "Shift", "1"], label: "New Claude pane (horizontal)" },
-      { keys: ["Ctrl", "Shift", "2"], label: "New Codex pane (horizontal)" },
-      { keys: ["Ctrl", "Shift", "3"], label: "New Gemini pane (horizontal)" },
-      { keys: ["Ctrl", "D"], label: "Split pane (right)" },
-      { keys: ["Ctrl", "Shift", "D"], label: "Split pane (below)" },
-      { keys: ["Ctrl", "W"], label: "Close pane" },
-      { keys: ["Ctrl", "Shift", "]"], label: "Focus next pane" },
-      { keys: ["Ctrl", "Shift", "["], label: "Focus previous pane" },
-      { keys: ["Ctrl", "B"], label: "Toggle sidebar" },
-      { keys: ["Ctrl", "Shift", "E"], label: "Toggle file explorer" },
-      { keys: ["Ctrl", "K"], label: "Command palette" },
-      { keys: ["Ctrl", "Shift", "P"], label: "Command palette" },
-      { keys: ["Ctrl", ","], label: "Settings" },
-      { keys: ["Ctrl", "Tab"], label: "Next tab" },
-      { keys: ["Ctrl", "Shift", "Tab"], label: "Previous tab" },
-      { keys: ["Alt", "1-9"], label: "Switch to tab by number" },
-      { keys: ["Ctrl", "Shift", "T"], label: "New tab" },
-      { keys: ["Ctrl", "Shift", "N"], label: "New project / tab" },
-      { keys: ["Ctrl", "Shift", "W"], label: "Close tab" },
-      { keys: ["Ctrl", "Shift", "F"], label: "Code review" },
-      { keys: ["Ctrl", "Enter"], label: "Confirm commit" },
-      { keys: ["Ctrl", "Z"], label: "Undo close tab" },
-      { keys: ["Ctrl", "R"], label: "Search prompt history" },
-      { keys: ["Ctrl", "F"], label: "Search in active pane (terminal, editor, file viewer, code review, kanban)" },
-      { keys: ["Ctrl", "/"], label: "Keyboard shortcuts" },
-    ],
-  },
-  {
-    title: "Terminal",
-    items: [
-      { keys: ["Ctrl", "F"], label: "Search terminal buffer" },
-      { keys: ["Ctrl", "I"], label: "Open prompt composer" },
-      { keys: ["Ctrl", "L"], label: "Clear terminal" },
-      { keys: ["Ctrl", "+"], label: "Zoom in (font size)" },
-      { keys: ["Ctrl", "-"], label: "Zoom out (font size)" },
-      { keys: ["Ctrl", "Shift", "C"], label: "Copy" },
-      { keys: ["Ctrl", "Shift", "V"], label: "Paste" },
-      { keys: ["Ctrl", "Home"], label: "Scroll to top" },
-      { keys: ["End"], label: "Scroll to bottom" },
-      { keys: ["Ctrl", "Shift", "↑"], label: "Scroll up one line" },
-      { keys: ["Ctrl", "Shift", "↓"], label: "Scroll down one line" },
-      { keys: ["PgUp"], label: "Jump to previous prompt" },
-      { keys: ["PgDn"], label: "Jump to next prompt" },
-      { keys: ["↑", "↑"], label: "Jump to previous prompt" },
-      { keys: ["Ctrl", "Backspace"], label: "Delete word (backward)" },
-      { keys: ["Ctrl", "Delete"], label: "Delete word (forward)" },
-      { keys: ["Ctrl", "V"], label: "Paste (or attach image)" },
-      { keys: ["Middle-click"], label: "Paste (or attach image)" },
-    ],
-  },
-  {
-    title: "Prompt Composer",
-    items: [
-      { keys: ["Enter"], label: "Send message" },
-      { keys: ["Shift", "Enter"], label: "New line" },
-      { keys: ["Escape"], label: "Send Escape to terminal" },
-      { keys: ["↑"], label: "Previous prompt (history)" },
-      { keys: ["↓"], label: "Next prompt (history)" },
-      { keys: ["Tab"], label: "Accept ghost / cycle image" },
-      { keys: ["Shift", "Tab"], label: "Forward to terminal" },
-      { keys: ["PgUp"], label: "Jump to previous prompt" },
-      { keys: ["PgDn"], label: "Jump to next prompt" },
-      { keys: ["Ctrl", "Backspace"], label: "Delete word (backward)" },
-      { keys: ["Ctrl", "Delete"], label: "Delete word (forward)" },
-      { keys: ["Ctrl", "←"], label: "Jump word left" },
-      { keys: ["Ctrl", "→"], label: "Jump word right" },
-    ],
-  },
-];
 
 export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);

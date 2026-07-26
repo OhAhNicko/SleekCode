@@ -291,7 +291,7 @@ export default function FloatingPaneWindow({
           e.stopPropagation();
           callbacks.onClose(paneId);
         }}
-        data-tooltip="Close pane" aria-label="Close pane"
+        aria-label="Close pane"
         className="p-1 rounded transition-colors hover:bg-[var(--ezy-border)]"
       >
         <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" className="hover:!stroke-[var(--ezy-red)]">
@@ -317,7 +317,7 @@ export default function FloatingPaneWindow({
   ) : null;
 
   return (
-    <div ref={wrapperRef} style={wrapperStyle} data-floating-pane-id={paneId} data-floating-zindex={zIndex} onMouseDown={onWrapperClick}>
+    <div ref={wrapperRef} style={wrapperStyle} data-floating-pane-id={paneId} data-floating-zindex={zIndex} data-floating-mode={mode} onMouseDown={onWrapperClick}>
       <div
         onPointerDown={handleHeaderPointerDown}
         onDoubleClick={(e) => {

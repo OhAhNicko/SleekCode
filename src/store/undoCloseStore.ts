@@ -5,6 +5,10 @@ import { cancelDeferredServerKill } from "./tabSlice";
 
 type ClosedItem =
   | { type: "tab"; tab: Tab; index: number }
+  // Bulk close ("Close other tabs" / "Close tabs to the right"). Without this
+  // variant a bulk close snapshotted only the LAST tab removed, so closing 8
+  // tabs left 7 unrecoverable while the undo toast implied otherwise.
+  | { type: "tabs"; tabs: { tab: Tab; index: number }[] }
   | { type: "pane"; tabId: string; layoutBefore: PaneLayout };
 
 interface UndoCloseStore {
@@ -28,6 +32,24 @@ export function snapshotTab(tabId: string): void {
   useUndoCloseStore.getState().setLastClosed({ type: "tab", tab, index });
 }
 
+/**
+ * Snapshot several tabs before a bulk close.
+ *
+ * Call ONCE with every tab that is about to go — calling `snapshotTab` in a
+ * loop overwrites itself and only the last one survives.
+ */
+export function snapshotTabs(tabIds: string[]): void {
+  const { tabs } = useAppStore.getState();
+  const snapshot = tabIds
+    .map((id) => {
+      const index = tabs.findIndex((t) => t.id === id);
+      return index === -1 ? null : { tab: tabs[index], index };
+    })
+    .filter((x): x is { tab: Tab; index: number } => x !== null);
+  if (snapshot.length === 0) return;
+  useUndoCloseStore.getState().setLastClosed({ type: "tabs", tabs: snapshot });
+}
+
 /** Snapshot a pane layout before removing a pane (call from Workspace/PaneGrid). */
 export function snapshotPane(tabId: string, layoutBefore: PaneLayout): void {
   useUndoCloseStore.getState().setLastClosed({ type: "pane", tabId, layoutBefore });
@@ -48,6 +70,15 @@ export function undoClose(): void {
     const insertAt = Math.min(index, tabs.length);
     tabs.splice(insertAt, 0, tab);
     useAppStore.setState({ tabs, activeTabId: tab.id });
+  } else if (lastClosed.type === "tabs") {
+    const tabs = [...store.tabs];
+    // Ascending index order so each splice lands where it was: restoring
+    // high-to-low would shift every later insertion point.
+    for (const { tab, index } of [...lastClosed.tabs].sort((a, b) => a.index - b.index)) {
+      cancelDeferredServerKill(tab.id);
+      tabs.splice(Math.min(index, tabs.length), 0, tab);
+    }
+    useAppStore.setState({ tabs });
   } else {
     // Restore pane layout
     const { tabId, layoutBefore } = lastClosed;
