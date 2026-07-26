@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand, FaServer } from "react-icons/fa";
 import { FaXmark, FaPlus, FaPencil } from "react-icons/fa6";
@@ -215,6 +216,16 @@ function DevServerRow({ server }: { server: DevServer }) {
   // Drop the popover if the URL list changes out from under it
   useEffect(() => { if (networkUrls.length === 0) setPopoverRect(null); }, [networkUrls.length]);
 
+  const restartRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    // Each DevServerTab renders ONE server, so the registry entry is replaced
+    // by whichever row mounted last; the handler is re-pointed per id below.
+    registerSurfaceActions("devserver", {
+      restart: (id) => { if (id === server.id) restartRef.current?.(); },
+    });
+    return () => unregisterSurfaceActions("devserver");
+  }, [server.id]);
+
   const handleRestart = useCallback(() => {
     const write = getPtyWrite(server.terminalId);
     if (write) {
@@ -228,6 +239,7 @@ function DevServerRow({ server }: { server: DevServer }) {
     updateDevServerPort(server.id, 0);
     updateDevServerError(server.id, undefined);
   }, [server, updateDevServerStatus, updateDevServerPort, updateDevServerError]);
+  restartRef.current = handleRestart;
 
   const handleStop = useCallback(() => {
     const write = getPtyWrite(server.terminalId);
@@ -316,6 +328,10 @@ function DevServerRow({ server }: { server: DevServer }) {
 
   return (
     <div
+      data-ctx-surface="devserver"
+      data-ctx-id={server.id}
+      data-ctx-label={server.projectName}
+      data-ctx-url={serverUrl ?? ""}
       style={{
         borderBottom: "1px solid var(--ezy-border-subtle)",
       }}

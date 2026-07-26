@@ -284,8 +284,18 @@ export default function DevServerTerminalHost() {
         // Only scan last 4KB to avoid memory buildup
         if (buffer.length > 4096) buffer = buffer.slice(-4096);
 
-        // Strip ANSI escape codes for cleaner matching
-        const cleanBuffer = buffer.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+        // Strip ANSI escape codes for cleaner matching.
+        //
+        // The OSC strip must accept BOTH terminators. It previously required a
+        // BEL (\x07), but modern dev servers emit OSC 8 hyperlinks terminated by
+        // ST (\x1b\\) — and because the payload class was greedy over everything
+        // except BEL, one ST-terminated hyperlink followed later by any
+        // BEL-terminated sequence made this delete the entire span between them,
+        // URL and port included. Excluding ESC from the payload keeps each
+        // sequence self-contained.
+        const cleanBuffer = buffer
+          .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+          .replace(/\x1b\][^\x1b\x07]*(?:\x07|\x1b\\)/g, "");
 
         // ALWAYS check for lock errors first — even after port detection
         for (const pattern of LOCK_ERROR_PATTERNS) {
@@ -374,21 +384,33 @@ export default function DevServerTerminalHost() {
               portFound = true;
               portDetectedRef.current.add(ds.id);
               lockRetryRef.current.delete(ds.id);
-              updateDevServerStatus(ds.id, "running");
               updateDevServerError(ds.id, undefined);
 
               // For remote dev servers, start an SSH tunnel and surface the
               // *local* port to the UI so opening the browser just works.
+              // Status goes green HERE and nowhere else, so "running" always
+              // implies a reachable port.
+              //
+              // It used to be set the moment the port was SCRAPED, before the
+              // port was published — and for SSH that is an async tunnel-bind
+              // later, while `setPort` also returns silently when the entry is
+              // missing from the store. Either way the UI ended up green while
+              // still showing "detecting...", and BrowserPreview (which requires
+              // `status === "running" && port > 0`) sat on its waiting overlay
+              // forever. A green dot next to "detecting..." is a contradiction
+              // the user has to debug for us; make it unrepresentable instead.
               const setPort = (p: number) => {
                 const store = useAppStore.getState();
                 const current = store.devServers.find((s) => s.id === ds.id);
-                if (current && current.port !== p) {
+                if (!current) return;
+                if (current.port !== p) {
                   useAppStore.setState({
                     devServers: store.devServers.map((srv) =>
                       srv.id === ds.id ? { ...srv, port: p } : srv
                     ),
                   });
                 }
+                updateDevServerStatus(ds.id, "running");
               };
 
               // Harvest LAN / Tailscale / 0.0.0.0 addresses printed alongside the localhost line
@@ -577,6 +599,7 @@ export default function DevServerTerminalHost() {
 
       {/* Panel container — always sized, off-screen when collapsed */}
       <div
+        data-native-occluder={isOpen ? "expanded" : undefined}
         style={{
           position: "fixed",
           top: isOpen ? 38 : 0,
@@ -692,7 +715,7 @@ export default function DevServerTerminalHost() {
               )}
               {/* Restart */}
               <div
-                data-tooltip="Restart"
+               
                 style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
                 onClick={() => {
                   restartServer(expandedServer.id, expandedServer.terminalId, expandedServer.command);
@@ -709,7 +732,7 @@ export default function DevServerTerminalHost() {
               {/* Stop / Play */}
               {expandedServer.status === "running" || expandedServer.status === "starting" ? (
                 <div
-                  data-tooltip="Stop"
+                 
                   style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
                   onClick={() => {
                     const write = getPtyWrite(expandedServer.terminalId);
@@ -730,7 +753,7 @@ export default function DevServerTerminalHost() {
                 </div>
               ) : (
                 <div
-                  data-tooltip="Start"
+                 
                   style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
                   onClick={() => {
                     // Clear resolved state BEFORE triggering re-render so main effect re-registers listener
@@ -752,6 +775,51 @@ export default function DevServerTerminalHost() {
                 </div>
               )}
 
+              {/* Close — the panel only. The server keeps running, which is why
+                  this sits apart from Stop and borrows the neutral hover rather
+                  than Stop's red. Escape already closes, and so does a click on
+                  the backdrop, but neither is discoverable. */}
+              <button
+                type="button"
+                aria-label="Close"
+                data-tooltip="Close. The dev server keeps running."
+                onClick={() => setExpandedDevServerId(null)}
+                style={{
+                  width: 28,
+                  height: 28,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  transition: "background-color 120ms ease",
+                  // Zeroed so the button matches the sibling icon divs exactly:
+                  // a button's inherited line-height would otherwise inflate
+                  // this compact header (see CLAUDE.md's CSS gotchas).
+                  padding: 0,
+                  margin: 0,
+                  border: "none",
+                  background: "transparent",
+                  lineHeight: 0,
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+              >
+                {/* Half-integer coords: a 1.3px stroke on whole-pixel endpoints
+                    straddles two device rows and renders muddy. */}
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="var(--ezy-text-muted)"
+                  strokeWidth="1.3"
+                  strokeLinecap="round"
+                >
+                  <path d="M3.5 3.5l5 5" />
+                  <path d="M8.5 3.5l-5 5" />
+                </svg>
+              </button>
             </div>
           </div>
         )}

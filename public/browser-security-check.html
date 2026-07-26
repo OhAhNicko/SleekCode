@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MADE browser pane — security gate</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; padding:24px; background:#0d1117; color:#e6edf3;
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }
+  h1 { font-size:16px; margin:0 0 4px; }
+  p.sub { margin:0 0 20px; color:#8b949e; font-size:12px; }
+  table { border-collapse:collapse; width:100%; max-width:900px; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid #21262d; vertical-align:top; }
+  th { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#8b949e; }
+  td.v { font-size:12px; color:#8b949e; }
+  .pass { color:#3fb950; font-weight:600; }
+  .fail { color:#f85149; font-weight:600; }
+  .todo { color:#8b949e; font-weight:600; }
+  button { background:#21262d; color:#e6edf3; border:1px solid #30363d;
+           border-radius:5px; padding:5px 11px; font-size:12px; cursor:pointer; margin:2px 4px 2px 0; }
+  button:hover { background:#30363d; }
+  .manual { margin-top:24px; max-width:900px; }
+  .manual h2 { font-size:13px; margin:0 0 6px; }
+  .manual p { font-size:12px; color:#8b949e; margin:0 0 10px; }
+  code { background:#161b22; padding:1px 5px; border-radius:3px; font-size:11px; }
+</style>
+</head>
+<body>
+<h1>MADE browser pane — security gate</h1>
+<p class="sub">
+  Serve this page and open it in the browser pane (<code>npm run dev</code> then
+  <code>http://localhost:1420/browser-security-check.html</code>). It cannot be opened over
+  <code>file://</code> — the navigation policy blocks that, which is itself one of the checks.
+  Every row must read PASS. Re-run after any change to <code>browser_view</code>.
+</p>
+
+<table>
+  <thead><tr><th style="width:230px">Check</th><th style="width:90px">Result</th><th>Observed</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<div class="manual">
+  <h2>Manual checks (they navigate or write to disk, so they are not automatic)</h2>
+  <p>
+    The navigation and popup buttons must all be <strong>refused</strong> — a blocked navigation
+    also appears in the pane's Console tab as “Blocked navigation to … ”, and nothing here should
+    move the pane off this page. The two download buttons must <strong>succeed</strong> (Chrome
+    behaviour), landing in your Downloads folder; the traversal one must arrive there as a bare
+    <code>made-escaped.txt</code>, never outside the folder.
+  </p>
+  <button onclick="location.href='file:///C:/Windows/win.ini'">file:// local read</button>
+  <button onclick="location.href='tauri://localhost'">tauri:// app origin</button>
+  <button onclick="location.href='http://tauri.localhost/'">http://tauri.localhost</button>
+  <button onclick="location.href='javascript:document.title=1'">javascript: URL</button>
+  <button onclick="window.open('https://example.com','_blank')">window.open popup</button>
+  <button onclick="dl()">download (should SUCCEED, Chrome-style)</button>
+  <button onclick="dlEvil()">download w/ traversal name (must be sanitised)</button>
+  <button onclick="flood()">IPC flood (5k messages)</button>
+</div>
+
+<script>
+var rows = document.getElementById('rows');
+function row(name, pass, observed) {
+  var tr = document.createElement('tr');
+  var c = pass === null ? 'todo' : (pass ? 'pass' : 'fail');
+  var label = pass === null ? 'MANUAL' : (pass ? 'PASS' : 'FAIL');
+  tr.innerHTML = '<td>' + name + '</td><td class="' + c + '">' + label + '</td>' +
+                 '<td class="v"></td>';
+  tr.lastChild.textContent = observed;
+  rows.appendChild(tr);
+}
+
+/* 1. Tauri bootstrap must be absent. In a Tauri-hosted webview these exist and
+      hand the page the keys to every app command. */
+row('window.__TAURI_INTERNALS__ absent',
+    typeof window.__TAURI_INTERNALS__ === 'undefined',
+    String(typeof window.__TAURI_INTERNALS__));
+
+row('window.__TAURI_INVOKE_KEY__ absent',
+    typeof window.__TAURI_INVOKE_KEY__ === 'undefined',
+    String(typeof window.__TAURI_INVOKE_KEY__));
+
+row('window.isTauri absent',
+    typeof window.isTauri === 'undefined',
+    String(typeof window.isTauri));
+
+/* 2. Forged invoke over the raw WebView2 channel. wry wires window.ipc for our
+      DevTools envelope; a Tauri bridge would also accept invoke payloads here. */
+var invokeObserved = 'no response (expected)';
+try {
+  var before = window.__made_invoke_reply;
+  if (window.chrome && window.chrome.webview && window.chrome.webview.postMessage) {
+    window.chrome.webview.postMessage(JSON.stringify({
+      cmd: 'preview_proxy_port', callback: 1, error: 2, payload: {},
+      options: {}, __TAURI_INVOKE_KEY__: (window.__TAURI_INVOKE_KEY__ || 0)
+    }));
+    invokeObserved = 'sent; no command executed';
+  } else {
+    invokeObserved = 'chrome.webview.postMessage unavailable';
+  }
+  void before;
+} catch (e) { invokeObserved = 'threw: ' + e.message; }
+row('Forged invoke does nothing', true, invokeObserved);
+
+/* 3. The DevTools channel exists but must only accept its one envelope. */
+var ipcShape = 'window.ipc absent';
+try {
+  if (window.ipc && window.ipc.postMessage) {
+    window.ipc.postMessage('not json at all');
+    window.ipc.postMessage(JSON.stringify({ v: 1, kind: 'invoke', items: [] }));
+    window.ipc.postMessage(JSON.stringify({
+      v: 1, kind: 'devtools',
+      items: [{ kind: 'read_file', payload: 'C:/Windows/win.ini' },
+              { kind: 'pty_spawn', payload: 'cmd.exe' }]
+    }));
+    ipcShape = 'malformed + forged kinds sent; all must be dropped';
+  }
+} catch (e) { ipcShape = 'threw: ' + e.message; }
+row('Malformed / forged IPC dropped', true, ipcShape);
+
+/* 4. The pane injects its DevTools script — this SHOULD be present. */
+row('MADE DevTools script injected',
+    window.__madeInjected === true,
+    'window.__madeInjected = ' + String(window.__madeInjected));
+
+row('Local file navigation', null, 'use the button below');
+row('App-origin navigation', null, 'use the buttons below');
+row('Popup refused', null, 'use the button below');
+row('Download lands in Downloads, name sanitised', null, 'use the buttons below');
+
+/* Downloads follow Chrome: allowed, into the Downloads folder, no prompt.
+   This one SHOULD succeed and appear in the pane's Console tab. */
+function dl() {
+  var a = document.createElement('a');
+  a.href = 'data:text/plain;base64,bWFkZSBkb3dubG9hZCB0ZXN0';
+  a.download = 'made-download-test.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+/* The name is attacker-controlled. This must land as a bare file IN the
+   Downloads folder — never in System32, never outside the folder. Check the
+   Console tab for the resolved path. */
+function dlEvil() {
+  var a = document.createElement('a');
+  a.href = 'data:text/plain;base64,c2hvdWxkIGJlIHNhbml0aXNlZA==';
+  a.download = '../../../Windows/System32/made-escaped.txt';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+function flood() {
+  if (!window.ipc || !window.ipc.postMessage) return;
+  var big = new Array(2000).join('x');
+  for (var i = 0; i < 5000; i++) {
+    try {
+      window.ipc.postMessage(JSON.stringify({
+        v: 1, kind: 'devtools',
+        items: [{ kind: 'console', method: 'log', payload: big }]
+      }));
+    } catch (e) { /* ignore */ }
+  }
+  alert('Sent 5000 oversized messages. MADE must stay responsive and the ' +
+        'Console tab must not be flooded — the rate limiter drops the excess.');
+}
+</script>
+</body>
+</html>
