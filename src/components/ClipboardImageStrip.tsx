@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { BiScreenshot } from "react-icons/bi";
@@ -8,7 +8,19 @@ import { insertImagePath, resolveImagePath } from "../lib/clipboard-insert";
 import { useAppStore } from "../store";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
 import { useModalWhen } from "../store/modalCoordinationSlice";
+import { deleteScreenshot, materializeMarkup } from "../lib/screenshots";
 import ImagePreviewModal from "./ImagePreviewModal";
+import ScreenshotsOverlay from "./ScreenshotsOverlay";
+
+/**
+ * How long a single click waits before it commits to opening the viewer.
+ *
+ * A double-click always fires a single click first, so the two gestures can
+ * only be told apart by waiting. 200ms is under the OS double-click threshold
+ * and short enough that the open still feels immediate; Ctrl+Click skips the
+ * wait entirely for anyone who wants to attach without one.
+ */
+const CLICK_RESOLVE_MS = 200;
 
 interface ClipboardImageStripProps {
   orientation?: "horizontal" | "vertical";
@@ -32,6 +44,20 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
   const [showGallery, setShowGallery] = useState(false);
   const [galleryCtxMenu, setGalleryCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
   const [previewFromGallery, setPreviewFromGallery] = useState(false);
+
+  // Revamped viewer — the legacy gallery/preview pair below is untouched so
+  // both can be exercised in the same build.
+  const revamped = useAppStore((s) => s.screenshotsRevampEnabled);
+  const [viewer, setViewer] = useState<{ imageId: string | null } | null>(null);
+  const clickTimerRef = useRef<number | null>(null);
+
+  const cancelPendingClick = () => {
+    if (clickTimerRef.current !== null) {
+      window.clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+    }
+  };
+  useEffect(() => cancelPendingClick, []);
 
   // Strip context menus are overlay-rendered (kind "anchored-menu") — the
   // hooks live below, after the handlers they need. The gallery's own
@@ -57,11 +83,16 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
   const attachToPrompt = (imgId: string) => {
     const img = images.find((i) => i.id === imgId);
     if (!img) return;
-    if (composerEnabled && activeComposerId) {
-      setPendingComposerImage({ image: img, terminalId: activeComposerId });
-    } else {
-      insertImagePath(img.winPath);
-    }
+    // Bake in any markup first. Editing a screenshot in the viewer, closing it
+    // and then double-clicking its thumbnail must not hand over the original —
+    // that is the whole point of the edit tools, and the failure is silent.
+    void materializeMarkup(img).then((target) => {
+      if (composerEnabled && activeComposerId) {
+        setPendingComposerImage({ image: target, terminalId: activeComposerId });
+      } else {
+        void insertImagePath(target.winPath);
+      }
+    });
   };
 
   // Thumbnail right-click menu — overlay-rendered at the cursor.
@@ -76,7 +107,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
           sections: [
             {
               items: [
-                { actionId: "expand", label: "Expand" },
+                { actionId: "expand", label: revamped ? "Open in viewer" : "Expand" },
                 { actionId: "copy", label: "Copy" },
                 { actionId: "copy-path", label: "Copy filepath" },
                 { actionId: "open-path", label: "Open screenshot filepath" },
@@ -92,7 +123,8 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
       if (!img) return;
       switch (actionId) {
         case "expand":
-          setPreviewImage({ dataUri: img.dataUri, winPath: img.winPath });
+          if (revamped) setViewer({ imageId: img.id });
+          else setPreviewImage({ dataUri: img.dataUri, winPath: img.winPath });
           break;
         case "copy":
           void invoke("copy_image_to_clipboard", { path: img.winPath }).catch(
@@ -113,7 +145,9 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
           attachToPrompt(img.id);
           break;
         case "delete":
-          removeImage(img.id);
+          // Revamp deletes the files; legacy only drops the list entry.
+          if (revamped) void deleteScreenshot(img);
+          else removeImage(img.id);
           break;
       }
     },
@@ -143,7 +177,9 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
         }
       : null,
     onAction: (actionId) => {
-      if (actionId === "open-gallery") setShowGallery(true);
+      if (actionId !== "open-gallery") return;
+      if (revamped) setViewer({ imageId: null });
+      else setShowGallery(true);
     },
     onClose: () => setSnipCtxMenu(null),
   });
@@ -209,8 +245,37 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
               transformOrigin: "center",
               transition: "transform 140ms ease, box-shadow 140ms ease",
             }}
-            data-tooltip={composerEnabled ? "Click to attach to prompt" : "Click to insert path into active terminal"}
-            onClick={() => attachToPrompt(img.id)}
+            data-tooltip={
+              revamped
+                ? composerEnabled
+                  ? "Click to view · Double-click or Ctrl+Click to attach"
+                  : "Click to view · Double-click or Ctrl+Click to insert path"
+                : composerEnabled
+                  ? "Click to attach to prompt"
+                  : "Click to insert path into active terminal"
+            }
+            onClick={(e) => {
+              if (!revamped) {
+                attachToPrompt(img.id);
+                return;
+              }
+              // Ctrl+Click is unambiguous, so it never pays the wait.
+              if (e.ctrlKey || e.metaKey) {
+                cancelPendingClick();
+                attachToPrompt(img.id);
+                return;
+              }
+              cancelPendingClick();
+              clickTimerRef.current = window.setTimeout(() => {
+                clickTimerRef.current = null;
+                setViewer({ imageId: img.id });
+              }, CLICK_RESOLVE_MS);
+            }}
+            onDoubleClick={() => {
+              if (!revamped) return;
+              cancelPendingClick();
+              attachToPrompt(img.id);
+            }}
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
@@ -258,41 +323,60 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
             >
               {i + 1}
             </div>
-            {/* View button overlay (top-right corner) */}
-            <div
-              onClick={(e) => {
-                e.stopPropagation();
-                setPreviewImage({
-                  dataUri: img.dataUri,
-                  winPath: img.winPath,
-                });
-              }}
-              style={{
-                position: "absolute",
-                top: 0,
-                right: 0,
-                width: 11,
-                height: 11,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: "rgba(0,0,0,0.6)",
-                borderBottomLeftRadius: 3,
-                opacity: 0,
-                transition: "opacity 120ms ease",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.opacity = "1";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.opacity = "0";
-              }}
-            >
-              <FaExpand size={6} color="white" />
-            </div>
+            {/*
+              View button overlay (top-right corner). Legacy only — in the
+              revamp a plain click opens the viewer, so this 11×11 hidden
+              target has nothing left to do.
+            */}
+            {!revamped && (
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPreviewImage({
+                    dataUri: img.dataUri,
+                    winPath: img.winPath,
+                  });
+                }}
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  right: 0,
+                  width: 11,
+                  height: 11,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "rgba(0,0,0,0.6)",
+                  borderBottomLeftRadius: 3,
+                  opacity: 0,
+                  transition: "opacity 120ms ease",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.opacity = "1";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.opacity = "0";
+                }}
+              >
+                <FaExpand size={6} color="white" />
+              </div>
+            )}
           </div>
         ))}
       </div>
+
+      {/*
+        Revamped viewer. The modal key is orientation-scoped because this
+        component mounts in both TabBar and VerticalTabBar — a shared key lets
+        one instance's unregister un-hide the native panes over the other's
+        open overlay.
+      */}
+      <ScreenshotsOverlay
+        open={!!viewer}
+        initialImageId={viewer?.imageId ?? null}
+        overlayKey={`screenshots-overlay-${orientation}`}
+        onClose={() => setViewer(null)}
+      />
 
       {previewImage && (
         <ImagePreviewModal

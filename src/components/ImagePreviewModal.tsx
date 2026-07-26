@@ -99,7 +99,7 @@ export default function ImagePreviewModal({
             )}
             <button
               onClick={() => { void invoke("copy_image_to_clipboard", { path: winPath }).catch(() => {}); }}
-              data-tooltip="Copy image to clipboard"
+             
               aria-label="Copy image"
               style={{
                 width: 26,
@@ -123,7 +123,7 @@ export default function ImagePreviewModal({
             {onDelete && (
               <button
                 onClick={() => { onDelete(); onClose(); }}
-                data-tooltip="Delete screenshot"
+               
                 aria-label="Delete screenshot"
                 style={{
                   width: 26,

@@ -85,6 +85,21 @@ export async function resolveImagePath(
 }
 
 /**
+ * Quote a path for a shell prompt, but only when it needs it.
+ *
+ * Windows paths are backslash-separated, so POSIX backslash escaping is not an
+ * option — single quotes are the only safe wrapper on bash, and double quotes
+ * on cmd/PowerShell. Paths without whitespace are left bare so the common case
+ * (`clipboard-1729.png`) looks exactly as it always has.
+ */
+function quoteForShell(path: string): string {
+  if (!/\s/.test(path)) return path;
+  const backend = useAppStore.getState().terminalBackend ?? "wsl";
+  if (backend === "windows") return `"${path}"`;
+  return `'${path.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Insert a clipboard image file path into the active terminal.
  * Records the insertion for undo support.
  * Returns the inserted text, or null if no active terminal or upload failed.
@@ -115,7 +130,10 @@ export async function insertImagePath(winPath: string): Promise<string | null> {
     activeTerminal.type === "claude" ||
     activeTerminal.type === "codex" ||
     activeTerminal.type === "gemini";
-  const insertion = isCli ? filePath : filePath + " ";
+  // A plain shell splits on whitespace, and OS screenshot names are full of it
+  // ("Screenshot 2026-07-26 141530.png"). CLIs take the path as one paste atom
+  // and would show the quotes, so only the shell branch gets them.
+  const insertion = isCli ? filePath : quoteForShell(filePath) + " ";
   if (isCli) {
     writeFn("\x1b[200~" + filePath + "\x1b[201~");
   } else {
