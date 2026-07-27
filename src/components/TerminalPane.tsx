@@ -24,6 +24,17 @@ interface TerminalPaneProps {
   terminalType: TerminalType;
   workingDir: string;
   isActive: boolean;
+  /**
+   * Is this pane's TAB the one on screen?
+   *
+   * `isActive` is per-Workspace state, and App.tsx mounts a Workspace for EVERY
+   * open project tab (inactive ones are `display:none`, not unmounted). So with
+   * N tabs open, N panes have `isActive === true` simultaneously — fine for
+   * tab-local things like the active-pane highlight, catastrophic for anything
+   * that claims a PROCESS-GLOBAL resource. See the Win32 keyboard-focus guard in
+   * TerminalPaneNative.
+   */
+  isTabActive: boolean;
   paneCount?: number;
   onClose: () => void;
   onChangeType: (type: TerminalType) => void;
@@ -42,13 +53,20 @@ interface TerminalPaneProps {
   renderer?: TerminalRenderer;
 }
 
-export default function TerminalPane({ renderer, ...props }: TerminalPaneProps) {
+export default function TerminalPane({
+  renderer,
+  isTabActive,
+  ...props
+}: TerminalPaneProps) {
   const useNative = useAppStore((s) => s.useNativeTerminalRenderer);
   const override = useAppStore((s) => s.paneRendererOverride[props.terminalId]);
   const resolved = override ?? renderer ?? (useNative ? "native" : "xterm");
   // `renderer` is deliberately NOT forwarded — neither implementation declares it.
+  // `isTabActive` goes only to the native pane: it gates a Win32 keyboard-focus
+  // claim, which the xterm pane has no equivalent of (its `.focus()` is DOM
+  // focus, which cannot be contended across hidden tabs the same way).
   return resolved === "native" ? (
-    <TerminalPaneNative {...props} />
+    <TerminalPaneNative {...props} isTabActive={isTabActive} />
   ) : (
     <TerminalPaneXterm {...props} />
   );

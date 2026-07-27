@@ -872,6 +872,15 @@ export default function DevServerTerminalHost() {
                   serverId={ds.serverId}
                   backend={ds.backend}
                   isActive={ds.id === expandedDevServerId}
+                  // Same expression, and deliberately so. `isTabActive` means
+                  // "is this pane's surface actually on screen" — for dev-server
+                  // panes that is exactly `expanded`, since this host is global
+                  // rather than per-tab and parks every non-expanded pane behind
+                  // `visibility: hidden`. Unlike the Workspace case there is only
+                  // ever ONE expanded dev server, so `isActive` is already
+                  // globally unique here; passing it twice keeps the keyboard
+                  // -focus guard honest instead of relying on that coincidence.
+                  isTabActive={ds.id === expandedDevServerId}
                   paneCount={99}
                   hideChrome
                   onClose={() => {}}

@@ -229,6 +229,9 @@ interface TerminalPaneNativeProps {
   terminalType: TerminalType;
   workingDir: string;
   isActive: boolean;
+  /** Is this pane's tab the one on screen? See the keyboard-focus effect —
+   *  `isActive` is true in one pane PER TAB, and every tab stays mounted. */
+  isTabActive: boolean;
   paneCount?: number;
   onClose: () => void;
   onChangeType: (type: TerminalType) => void;
@@ -250,6 +253,7 @@ export default function TerminalPaneNative({
   terminalType,
   workingDir,
   isActive,
+  isTabActive,
   onClose,
   onChangeType,
   onFocus,
@@ -1145,8 +1149,25 @@ export default function TerminalPaneNative({
   //     focus, this effect must not steal it. Only when webview focus is
   //     parked on <body> (nothing interactive focused) may the HWND claim
   //     keyboard focus.
+  //   - isTabActive: NON-NEGOTIABLE, and the reason is not obvious from
+  //     `isActive` alone. `isActive` is per-Workspace state and App.tsx mounts a
+  //     Workspace for EVERY open project tab (inactive ones are `display:none`,
+  //     not unmounted), so with N tabs open N panes have `isActive === true` at
+  //     once. Win32 keyboard focus is ONE process-global slot. Without this
+  //     guard every one of those panes raced to claim it, and each steal fired
+  //     focus_lost on the loser + focus_gained on the winner → two store writes
+  //     → `appWindowFocused` recomputes → this effect's dep array changes → all
+  //     of them claim again. Self-sustaining.
+  //
+  //     Measured on the user's 9-tab / 22-pane session (2026-07-27, probe log):
+  //     idle was 0 store writes/sec; the moment the loop started it ran at ~64
+  //     writes/sec of which 99.7% were focus-flag transitions (1991 of 1997),
+  //     rAF fell 240 → 9 fps, the oldest outstanding IPC reached 45s, and the JS
+  //     heap climbed 17 MB → 276 MB until the webview died with out-of-memory.
+  //     The caret visibly flip-flopping between focused and unfocused was this
+  //     loop, seen directly.
   useEffect(() => {
-    if (termId == null || !isActive || !appWindowFocused) return;
+    if (termId == null || !isActive || !isTabActive || !appWindowFocused) return;
     if (document.activeElement !== document.body) return;
     // Focus-handoff popups (overlay pane search): while the OVERLAY webview
     // legitimately holds OS focus, appWindowFocused stays true via
@@ -1157,7 +1178,7 @@ export default function TerminalPaneNative({
     // pane the instant the search bar opened.
     if (useAppStore.getState().overlayFocused) return;
     void nativeTermFocusKeyboard(termId).catch(() => {});
-  }, [termId, isActive, appWindowFocused]);
+  }, [termId, isActive, isTabActive, appWindowFocused]);
 
   // ── PTY hookup ────────────────────────────────────────────────────────
   // Native mode: bytes route to Rust via R's pty_route::sender_for(id)

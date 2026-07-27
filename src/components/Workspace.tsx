@@ -51,6 +51,12 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const [activeTerminalId, setLocalActiveTerminal] = useState<string | null>(
     null
   );
+  // SUBSCRIBED, not read imperatively like the activeTabId checks in the event
+  // handlers below: panes must re-render when the active tab changes, because
+  // `isTabActive` gates the native pane's Win32 keyboard-focus claim. The other
+  // reads are inside event handlers, where a live getState() is correct.
+  const activeTabId = useAppStore((s) => s.activeTabId);
+  const isTabActive = tab.id === activeTabId;
   const [showToolSelector, setShowToolSelector] = useState(false);
 
   // Track which element last had DOM focus inside a terminal pane.
@@ -877,6 +883,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
             terminalType={terminal.type}
             workingDir={tab.workingDir}
             isActive={activeTerminalId === termId}
+            isTabActive={isTabActive}
             paneCount={allTerminalIds.length}
             onClose={() => handleTerminalClose(termId)}
             onChangeType={(type) => {

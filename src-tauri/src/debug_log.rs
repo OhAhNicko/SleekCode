@@ -27,6 +27,19 @@ const MAX_BYTES: u64 = 2 * 1024 * 1024;
 /// baked into the filename so the two builds can never be confused again.
 const PROFILE: &str = if cfg!(debug_assertions) { "debug" } else { "release" };
 
+/// `release v0.2.1` — build identity for callers that stamp it INSIDE their own
+/// line rather than relying on the per-run banner.
+///
+/// The banner names the build once per run, which is enough when you read a log
+/// top to bottom. It is not enough for lines that get grepped out and pasted
+/// somewhere on their own — the frontend leak probe is exactly that, and the
+/// whole point of the 2026-07-27 filename/banner work was that a diagnostic line
+/// which cannot identify its own source is not diagnostic. Sourced from the same
+/// compile-time constants as the banner so the two can never disagree.
+pub fn build_tag() -> String {
+    format!("{PROFILE} v{}", env!("CARGO_PKG_VERSION"))
+}
+
 /// `2026-07-27T10:31:36.189Z` from epoch millis.
 ///
 /// Self-contained on purpose: this module is a leaf that native_term depends on,
