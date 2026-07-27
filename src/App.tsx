@@ -528,14 +528,24 @@ export default function App() {
 
     log(`done — spawned ${spawned} of ${projectTabs.length} project tabs`);
 
-    // Single toast with the full restore summary.
+    // Restore summary toast.
+    //
+    // FAILURES always surface: a dev server that did not start is something the
+    // user has to know about, and they may not have DevTools open.
+    //
+    // The success and nothing-to-spawn variants are DIAGNOSTIC — they were added
+    // to make the restore path visible while it was being debugged, and firing
+    // them on every launch means a normal, entirely successful startup greets the
+    // user with a popup listing what worked. Dev builds only.
     if (failures.length > 0) {
       toast("error", `Dev-server restore failed (${failures.length} error${failures.length > 1 ? "s" : ""})`, failures.join("\n"));
-    } else if (spawned > 0) {
-      const skipNote = skipReasons.length > 0 ? `\nSkipped: ${skipReasons.length}` : "";
-      toast("ok", `Dev-server restore: ${spawned} spawned`, `${spawnDetails.join("\n")}${skipNote}`);
-    } else if (skipReasons.length > 0) {
-      toast("skipped", `Dev-server restore: nothing to spawn`, skipReasons.join("\n"));
+    } else if (import.meta.env.DEV) {
+      if (spawned > 0) {
+        const skipNote = skipReasons.length > 0 ? `\nSkipped: ${skipReasons.length}` : "";
+        toast("ok", `Dev-server restore: ${spawned} spawned`, `${spawnDetails.join("\n")}${skipNote}`);
+      } else if (skipReasons.length > 0) {
+        toast("skipped", `Dev-server restore: nothing to spawn`, skipReasons.join("\n"));
+      }
     }
   }, []);
 

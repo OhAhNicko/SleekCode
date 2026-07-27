@@ -190,6 +190,25 @@ export interface TerminalSlice {
   setExpandedDevServerId: (id: string | null) => void;
 }
 
+/** A dev server is "running" ONLY once its port is known.
+ *
+ *  Enforced HERE, not at the call sites, because trusting call sites is exactly
+ *  what failed: the status setter was fixed to only go green alongside the port,
+ *  but `spawn-dev-server.ts` built the object with `status: "running"` and
+ *  `port: 0` directly, so the auto-start path still painted a green dot next to
+ *  "detecting..." — a state the UI cannot explain and the browser pane treats as
+ *  not-ready (`status === "running" && port > 0`).
+ *
+ *  Coercing here makes that combination unrepresentable no matter who writes it.
+ *  A server whose port is never scraped now stays "starting", which is the honest
+ *  reading: the process may well be up, but MADE does not know where it is. */
+function withPortConsistentStatus(
+  status: DevServer["status"],
+  port: number
+): DevServer["status"] {
+  return status === "running" && !(port > 0) ? "starting" : status;
+}
+
 export const createTerminalSlice: StateCreator<
   TerminalSlice,
   [],
@@ -268,8 +287,12 @@ export const createTerminalSlice: StateCreator<
     // dev-server row is created, which always precedes its terminal existing, so
     // the port line cannot be missed however fast the server starts.
     armTerminalDataRetention(server.terminalId);
+    const normalized: DevServer = {
+      ...server,
+      status: withPortConsistentStatus(server.status, server.port),
+    };
     set((state) => ({
-      devServers: [...state.devServers, server],
+      devServers: [...state.devServers, normalized],
     }));
   },
 
@@ -284,7 +307,9 @@ export const createTerminalSlice: StateCreator<
   updateDevServerStatus: (serverId, status) => {
     set((state) => ({
       devServers: state.devServers.map((ds) =>
-        ds.id === serverId ? { ...ds, status } : ds
+        ds.id === serverId
+          ? { ...ds, status: withPortConsistentStatus(status, ds.port) }
+          : ds
       ),
     }));
   },

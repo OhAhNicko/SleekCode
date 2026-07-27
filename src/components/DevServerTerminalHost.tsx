@@ -169,6 +169,17 @@ export default function DevServerTerminalHost() {
   // Active SSH port-forward tunnels keyed by dev-server id
   const tunnelHandlesRef = useRef<Map<string, number>>(new Map());
 
+  /** Accumulated PTY text per dev server, for the port/error scan.
+   *
+   *  MUST live outside the detection effect. The effect depends on `devServers`
+   *  and there are ~35 places that mutate it, so it re-runs constantly — and it
+   *  used to declare `let buffer = ""` inside, meaning every re-run threw away
+   *  everything scanned so far and re-registered a fresh listener. A port line
+   *  split across two PTY chunks with any store update in between was lost for
+   *  good: the intermittent "detecting..." forever. Keyed by dev-server id so a
+   *  re-registration picks up exactly where the previous one left off. */
+  const scanBuffersRef = useRef<Map<string, string>>(new Map());
+
   const handlePtyReady = useCallback(
     (serverId: string, terminalId: string, command: string) => {
       if (commandSentRef.current.has(serverId)) return;
@@ -219,6 +230,9 @@ export default function DevServerTerminalHost() {
       resolvedRef.current.delete(serverId);
       portDetectedRef.current.delete(serverId);
       stoppedMonitorRef.current.delete(serverId);
+      // Stale output must not be re-scanned: it still holds the previous run's
+      // port line, which would be "detected" before the new server even starts.
+      scanBuffersRef.current.delete(serverId);
       // Tear down any active SSH tunnel; a fresh one will spawn on next port detect
       const tunnel = tunnelHandlesRef.current.get(serverId);
       if (tunnel !== undefined) {
@@ -237,6 +251,7 @@ export default function DevServerTerminalHost() {
   // Timers for grace-period unregistration after port detection
   const graceTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
+
   /**
    * Switch a (local) dev server between the WSL bash and Windows PowerShell
    * shells. Persists the choice as a per-project override, clears all detection
@@ -254,6 +269,7 @@ export default function DevServerTerminalHost() {
       portDetectedRef.current.delete(ds.id);
       stoppedMonitorRef.current.delete(ds.id);
       lockRetryRef.current.delete(ds.id);
+      scanBuffersRef.current.delete(ds.id);
       const graceTimer = graceTimersRef.current.get(ds.id);
       if (graceTimer) {
         clearTimeout(graceTimer);
@@ -275,14 +291,13 @@ export default function DevServerTerminalHost() {
       if (resolvedRef.current.has(ds.id)) continue;
 
       const textDecoder = new TextDecoder();
-      let buffer = "";
-      let portFound = false;
 
       registerTerminalDataListener(ds.terminalId, (data) => {
         const chunk = textDecoder.decode(data, { stream: true });
-        buffer += chunk;
+        let buffer = (scanBuffersRef.current.get(ds.id) ?? "") + chunk;
         // Only scan last 4KB to avoid memory buildup
         if (buffer.length > 4096) buffer = buffer.slice(-4096);
+        scanBuffersRef.current.set(ds.id, buffer);
 
         // Strip ANSI escape codes for cleaner matching.
         //
@@ -306,8 +321,12 @@ export default function DevServerTerminalHost() {
               clearTimeout(graceTimer);
               graceTimersRef.current.delete(ds.id);
             }
-            portFound = false;
             portDetectedRef.current.delete(ds.id);
+            portDetectedRef.current.delete(ds.id);
+            // Clear the scan text. It now survives re-registration (that is the
+            // whole point), so leaving the lock-error line in it would match
+            // again on the very next chunk and retry in a loop.
+            scanBuffersRef.current.delete(ds.id);
 
             const attempts = lockRetryRef.current.get(ds.id) ?? 0;
             if (attempts < 2) {
@@ -376,12 +395,11 @@ export default function DevServerTerminalHost() {
         }
 
         // Check for port
-        if (!portFound) {
+        if (!portDetectedRef.current.has(ds.id)) {
           const match = cleanBuffer.match(PORT_REGEX);
           if (match) {
             const port = parseInt(match[1], 10);
             if (port > 0 && port <= 65535) {
-              portFound = true;
               portDetectedRef.current.add(ds.id);
               lockRetryRef.current.delete(ds.id);
               updateDevServerError(ds.id, undefined);
@@ -478,7 +496,7 @@ export default function DevServerTerminalHost() {
         }
 
         // Check for other error patterns (only if port not yet found)
-        if (!portFound) {
+        if (!portDetectedRef.current.has(ds.id)) {
           for (const pattern of ERROR_PATTERNS) {
             const errMatch = cleanBuffer.match(pattern);
             if (errMatch) {
@@ -512,6 +530,9 @@ export default function DevServerTerminalHost() {
     }
     for (const id of portDetectedRef.current) {
       if (!currentIds.has(id)) portDetectedRef.current.delete(id);
+    }
+    for (const id of scanBuffersRef.current.keys()) {
+      if (!currentIds.has(id)) scanBuffersRef.current.delete(id);
     }
     for (const id of resolvedRef.current) {
       if (!currentIds.has(id)) resolvedRef.current.delete(id);

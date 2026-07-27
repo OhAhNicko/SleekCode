@@ -68,7 +68,15 @@ export function spawnDevServer(
     command,
     workingDir,
     port: 0,
-    status: "running",
+    // "starting", NOT "running". A dev server is created with port 0 and the
+    // port is only known once its output is scraped, so being born "running"
+    // painted the sidebar dot green immediately and left it green next to
+    // "detecting..." — the contradiction reported on 2026-07-27, with all four
+    // auto-started servers green and none of them reachable. The sibling
+    // creation site (DevServerTab.tsx) already used "starting"; this one is why
+    // the STARTUP path in particular looked wrong, since auto-start comes
+    // through here. Green now means the port was actually found.
+    status: "starting",
     serverId,
     // backend left undefined → DevServerTerminalHost waits to resolve it before
     // mounting the pane, so we never spawn a throwaway WSL shell first.
