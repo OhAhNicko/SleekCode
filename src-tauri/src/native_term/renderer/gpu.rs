@@ -24,6 +24,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
+
 /// The shared `Instance`. `Arc` because wgpu 22's `Instance` is not clonable.
 static INSTANCE: Mutex<Option<Arc<wgpu::Instance>>> = Mutex::new(None);
 /// The shared `Adapter`, created WITH a real surface — see `shared_adapter_for`.
@@ -200,6 +202,21 @@ pub fn shared_device(adapter: &wgpu::Adapter) -> Result<Arc<SharedDevice>, Strin
     // rebuilds rather than inheriting a poisoned device.
     device.on_uncaptured_error(Box::new(|e| {
         eprintln!("[native_term] gpu: uncaptured wgpu error on shared device: {e}");
+        crate::debug_log::dlog(&format!(
+            "[native_term] gpu: uncaptured wgpu error on shared device: {e}"
+        ));
+        // The comment above promised this and the code did not do it: without
+        // dropping the shared context, EVERY later pane kept inheriting the
+        // poisoned device, so one GPU error degraded the whole session rather
+        // than a single pane. `invalidate_device` already existed for exactly
+        // this and was only wired to the pipeline's surface-loss path.
+        //
+        // try_lock, NOT lock: this callback is driven by wgpu from inside device
+        // work, which can be reached while another thread is building the shared
+        // device and holding DEVICE. Blocking there would deadlock the render
+        // path, and a deadlock inside a wnd_proc is far worse than a stale
+        // handle. If the lock is busy, whoever holds it is already rebuilding.
+        invalidate_device_if_free();
     }));
 
     let line = format!(
@@ -227,4 +244,102 @@ pub fn invalidate_device() {
             eprintln!("[native_term] gpu: shared device dropped — next pane builds a fresh one");
         }
     }
+}
+
+/// Non-blocking `invalidate_device`, for callers that must never wait on the
+/// lock — specifically the uncaptured-error callback, which wgpu can invoke
+/// from inside device work while another thread holds DEVICE.
+fn invalidate_device_if_free() {
+    match DEVICE.try_lock() {
+        Ok(mut guard) => {
+            if guard.take().is_some() {
+                eprintln!(
+                    "[native_term] gpu: shared device dropped after an uncaptured error — next pane builds a fresh one"
+                );
+            }
+        }
+        Err(_) => {
+            eprintln!(
+                "[native_term] gpu: shared device busy while handling an uncaptured error; leaving it to the holder"
+            );
+        }
+    }
+}
+
+
+// ── Which GPU are we actually on? ──────────────────────────────────────────
+//
+// Recorded from the adapter a pane REALLY renders with, not from the throwaway
+// one `prewarm` uses to load the driver — those can differ, and reporting a
+// backend we are not using would be worse than reporting nothing. Surfaced in
+// Settings and in the log, because when a pane goes black or a drag stutters,
+// the first useful question is which backend and which GPU.
+
+/// Adapter identity for the Settings readout.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuInfo {
+    /// "DirectX 12" / "Vulkan" / "Metal" / "OpenGL".
+    pub backend: String,
+    /// Adapter name, e.g. "NVIDIA GeForce RTX 4090".
+    pub name: String,
+    pub driver: String,
+    /// False when this pane fell back to its own adapter because the shared one
+    /// could not drive its surface — worth seeing, since it means the fast path
+    /// is not in use.
+    pub shared: bool,
+}
+
+static ADAPTER_INFO: Mutex<Option<GpuInfo>> = Mutex::new(None);
+
+fn backend_label(b: wgpu::Backend) -> &'static str {
+    match b {
+        wgpu::Backend::Dx12 => "DirectX 12",
+        wgpu::Backend::Vulkan => "Vulkan",
+        wgpu::Backend::Metal => "Metal",
+        wgpu::Backend::Gl => "OpenGL",
+        wgpu::Backend::BrowserWebGpu => "WebGPU",
+        wgpu::Backend::Empty => "none",
+    }
+}
+
+/// Record the adapter a pane actually built on. Called from `Renderer::new`
+/// once the adapter/device pair is settled.
+pub fn record_adapter_info(adapter: &wgpu::Adapter, shared: bool) {
+    let info = adapter.get_info();
+    let dto = GpuInfo {
+        backend: backend_label(info.backend).to_string(),
+        name: info.name.clone(),
+        driver: if info.driver_info.is_empty() {
+            info.driver.clone()
+        } else {
+            format!("{} {}", info.driver, info.driver_info)
+        },
+        shared,
+    };
+    let mut guard = match ADAPTER_INFO.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    // Log only on a CHANGE — this runs per pane, and one line per pane would
+    // drown the timing lines it sits next to.
+    let changed = guard.as_ref().map(|p| p.backend != dto.backend || p.name != dto.name || p.shared != dto.shared).unwrap_or(true);
+    if changed {
+        let line = format!(
+            "[native_term] gpu: {} on {} ({}), adapter {}",
+            dto.backend,
+            dto.name,
+            dto.driver,
+            if shared { "shared" } else { "per-pane" }
+        );
+        eprintln!("{line}");
+        crate::debug_log::dlog(&line);
+    }
+    *guard = Some(dto);
+}
+
+/// The adapter a pane is actually rendering on, or None before the first native
+/// pane exists (the real adapter is only created once a surface does).
+pub fn adapter_info() -> Option<GpuInfo> {
+    ADAPTER_INFO.lock().ok().and_then(|g| g.clone())
 }

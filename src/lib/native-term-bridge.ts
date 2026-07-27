@@ -409,6 +409,7 @@ export type NativeTermCmd =
   | "native_term_create"
   | "native_term_destroy"
   | "native_term_reap_all"
+  | "native_term_gpu_info"
   | "native_term_show"
   | "native_term_hide"
   | "native_term_resize"
@@ -494,6 +495,21 @@ export function ensureFreshSession(): Promise<void> {
 export async function nativeTermCreate(opts: CreateOpts): Promise<NativeTermId> {
   await ensureFreshSession();
   return invoke<NativeTermId>("native_term_create", { opts });
+}
+
+/** Which GPU backend + adapter the native panes actually run on. `null` until
+ *  the first native pane exists — the real adapter is only created once there
+ *  is a surface to validate it against. */
+export interface GpuInfo {
+  backend: string;
+  name: string;
+  driver: string;
+  /** False when a pane had to fall back to its own adapter. */
+  shared: boolean;
+}
+
+export function nativeTermGpuInfo(): Promise<GpuInfo | null> {
+  return invoke<GpuInfo | null>("native_term_gpu_info");
 }
 
 export function nativeTermDestroy(id: NativeTermId): Promise<void> {

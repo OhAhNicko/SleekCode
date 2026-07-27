@@ -8,7 +8,12 @@ use super::{NativeTermWindow, Rect, TerminalTheme};
 pub struct PlatformWindow;
 
 impl PlatformWindow {
-    pub fn new(_parent_hwnd: isize, _rect: Rect, _dpr: f32) -> Result<Self, String> {
+    pub fn new(
+        _parent_hwnd: isize,
+        _rect: Rect,
+        _dpr: f32,
+        _shared_gpu: bool,
+    ) -> Result<Self, String> {
         Err("native_term: macOS support not implemented (Phase 4)".to_string())
     }
 

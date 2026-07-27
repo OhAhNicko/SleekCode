@@ -134,6 +134,14 @@ pub fn native_term_reap_all() -> Result<usize, String> {
     Ok(n)
 }
 
+/// Which GPU backend and adapter the native panes are actually using.
+/// `None` until the first native pane exists — the real adapter is only created
+/// once there is a surface to validate it against.
+#[tauri::command]
+pub fn native_term_gpu_info() -> Option<renderer::gpu::GpuInfo> {
+    renderer::gpu::adapter_info()
+}
+
 #[tauri::command]
 pub fn native_term_show(id: u32) -> Result<(), String> {
     registry::with_window(id, |w| w.show())

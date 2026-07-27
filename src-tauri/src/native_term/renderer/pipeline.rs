@@ -325,6 +325,7 @@ impl Renderer {
                 (std::sync::Arc::new(a), None)
             }
         };
+        gpu::record_adapter_info(&adapter, shared.is_some());
         let t_adapter = t_start.elapsed();
 
         let (device, queue) = if let Some(s) = shared.as_ref() {
