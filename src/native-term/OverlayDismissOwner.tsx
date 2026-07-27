@@ -33,10 +33,48 @@ export function OverlayDismissOwner(): null {
     // drag handles) cannot swallow the dismissal — the same trap that made
     // Settings dropdowns unscrollable when a bubble-phase listener was used.
     const onPointerDown = (e: PointerEvent) => fireOverlayDismiss(e.target);
-    const onBlur = () => fireOverlayDismiss(null);
+
+    // A DOM `blur` on the main webview does NOT mean MADE lost focus.
+    //
+    // On Windows, WebView2 fires LostFocus whenever a SIBLING HWND takes Win32
+    // focus — a native terminal pane, the embedded browser view, or the overlay
+    // window itself. All three are still MADE. This handler used to dismiss on
+    // that raw event, which is why clicking a dropdown trigger closed the menu
+    // it had just opened, roughly two times in five (2026-07-27 report).
+    //
+    // It was a pure race, and the trace showed both sides of it: every trigger
+    // click produced a blur ~20ms later. When the blur landed BEFORE the menu
+    // opened (~100ms after the click) it dismissed nothing and the menu worked;
+    // when it landed after, the menu died with no item ever clicked. Same code
+    // path, opposite outcome, decided only by scheduling — hence "sometimes".
+    //
+    // The store already derives the honest signal for exactly this reason:
+    // `appWindowFocused = webviewFocused || nativePaneFocused || overlayFocused
+    // || browserViewFocused` (see nativeRendererSlice, and the same Windows
+    // quirk documented on the caret in TerminalPaneNative). Dismissal just never
+    // used it.
+    //
+    // The deferral is not a debounce-until-it-works: during an intra-app handoff
+    // `appWindowFocused` legitimately DIPS to false for a moment, because the
+    // webview's blur arrives over the DOM before the new owner's focus_gained
+    // arrives over the event bus. The codebase already names this "the
+    // appWindowFocused dip-and-recover". Sampling once on the trailing edge is
+    // what distinguishes a real alt-tab (still false) from a handoff (recovered).
+    const BLUR_DISMISS_GRACE_MS = 150;
+    let blurTimer: ReturnType<typeof setTimeout> | undefined;
+    const onBlur = () => {
+      clearTimeout(blurTimer);
+      blurTimer = setTimeout(() => {
+        const s = useAppStore.getState() as StoreWithNative;
+        if (s.appWindowFocused) return; // focus stayed inside MADE — not an outside click
+        fireOverlayDismiss(null);
+      }, BLUR_DISMISS_GRACE_MS);
+    };
+
     window.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("blur", onBlur);
     return () => {
+      clearTimeout(blurTimer);
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("blur", onBlur);
     };

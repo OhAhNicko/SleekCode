@@ -1311,12 +1311,42 @@ function AnchoredMenu({
 
   return (
     <div
-      style={{ position: "fixed", inset: 0, pointerEvents: "auto" }}
-      onPointerDown={dismiss}
+      // NOT a full-screen `pointerEvents: "auto"` catcher, which is what this
+      // was. The overlay window is hit-testable wherever ANY popup has a rect —
+      // the region driver unions them all, and a tooltip is a popup too. So a
+      // full-screen catcher here swallowed presses nowhere near this menu:
+      // hovering any button in the app puts a tooltip rect into the region, and
+      // a press inside that rect fell through the tooltip (which is correctly
+      // `pointerEvents: none`) straight onto this backdrop and dismissed a menu
+      // the user never touched.
+      //
+      // The catcher only ever needed to cover the shadow-pad ring around the
+      // panel — the margin the region adds so the drop shadow is not clipped
+      // (MENU_SHADOW_PAD, see the region driver). The user reads that ring as
+      // part of the menu, so a press there should dismiss. Anywhere else in the
+      // overlay is not this menu's business.
+      style={{ position: "fixed", inset: 0, pointerEvents: "none" }}
       onContextMenu={(e) => {
         e.preventDefault();
       }}
     >
+      {/* Dismiss catcher: exactly the panel plus its shadow ring. Rendered
+          BEFORE the panel so the panel stacks above it and its own handlers
+          win. Gated on a measured panel — before that the rect is meaningless
+          and the menu is still `visibility: hidden`. */}
+      {menuSize.h > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            top: top - MENU_SHADOW_PAD,
+            left: left - MENU_SHADOW_PAD,
+            width: menuSize.w + MENU_SHADOW_PAD * 2,
+            height: menuSize.h + MENU_SHADOW_PAD * 2,
+            pointerEvents: "auto",
+          }}
+          onPointerDown={dismiss}
+        />
+      )}
       <div
         ref={setRef}
         // Popup panels sit on --ezy-surface-raised, several steps lighter than
@@ -1341,6 +1371,10 @@ function AnchoredMenu({
           boxShadow: "0 10px 30px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.35)",
           color: "var(--ezy-text, #e6edf3)",
           fontFamily: "Inter, system-ui, sans-serif",
+          // REQUIRED: the wrapper is now `pointerEvents: none` (see above), and
+          // that inherits. Without this the panel — and every item in it — is
+          // click-dead, which is a far worse bug than the one being fixed.
+          pointerEvents: "auto",
         }}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
