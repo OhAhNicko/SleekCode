@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef, useContext, createContext, Fragment } from "react";
+import { nativeTermGpuInfo, type GpuInfo } from "../lib/native-term-bridge";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
@@ -9,6 +10,13 @@ import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
 import { THEMES, getTheme } from "../lib/themes";
+import { getDefaultBackend } from "../lib/platform";
+import {
+  readJiraMcpStatus,
+  installJiraMcp,
+  JIRA_MCP_AUTH_HINT,
+  type JiraMcpStatus,
+} from "../lib/jira-mcp";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { isWindows } from "../lib/platform";
 import { currentIsoWeek } from "../lib/iso-week";
@@ -937,6 +945,103 @@ function TextInput({
 
 type PingState = { status: "idle" | "checking" | "ok" | "fail"; ms?: number; error?: string };
 
+/**
+ * Atlassian MCP state for the Jira section.
+ *
+ * Three states, deliberately distinct: connected, not set up, and unknown. The
+ * last one matters — if the config could not be read we must not tell someone to
+ * install a server they already have.
+ */
+function JiraPluginRow() {
+  const terminalBackend = useAppStore((s) => s.terminalBackend);
+  const tabs = useAppStore((s) => s.tabs);
+  const activeTabId = useAppStore((s) => s.activeTabId);
+  const backend = terminalBackend ?? getDefaultBackend();
+  const projectPath = tabs.find((t) => t.id === activeTabId)?.workingDir;
+
+  const [status, setStatus] = useState<JiraMcpStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    void readJiraMcpStatus(backend, projectPath).then(setStatus);
+  }, [backend, projectPath]);
+
+  useEffect(refresh, [refresh]);
+
+  const install = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await installJiraMcp(backend);
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const connected = !!status?.configured;
+  const unknown = !!status && !status.checked;
+  const label = connected
+    ? status.scope === "user"
+      ? "Connected"
+      : `Connected (${status.scope})`
+    : unknown
+      ? "Unknown"
+      : "Not set up";
+  const dot = connected ? "#10b981" : unknown ? "var(--ezy-text-muted)" : "var(--ezy-red, #e55)";
+
+  return (
+    <SettingsRow
+      label="Jira plugin"
+      description={connected ? JIRA_MCP_AUTH_HINT : undefined}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {error && (
+          <span
+            data-tooltip={error}
+            style={{
+              fontSize: 10,
+              color: "var(--ezy-red, #e55)",
+              maxWidth: 150,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {error}
+          </span>
+        )}
+        <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--ezy-text-secondary)" }}>
+          <span style={{ width: 7, height: 7, borderRadius: "50%", backgroundColor: dot, flexShrink: 0 }} />
+          {status === null ? "Checking…" : label}
+        </span>
+        {!connected && (
+          <button
+            onClick={install}
+            disabled={busy}
+            style={{
+              padding: "4px 10px",
+              fontSize: 11,
+              fontWeight: 500,
+              color: "var(--ezy-text-secondary)",
+              backgroundColor: "var(--ezy-surface)",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: 5,
+              cursor: busy ? "default" : "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            {busy ? "Setting up…" : "Set up"}
+          </button>
+        )}
+      </div>
+    </SettingsRow>
+  );
+}
+
 function TestButton({ onClick, state }: { onClick: () => void; state: PingState }) {
   const label =
     state.status === "checking" ? "Testing…" :
@@ -1342,6 +1447,17 @@ export default function SettingsPane() {
   const setScrollThumbAcceleration = useAppStore((s) => s.setScrollThumbAcceleration);
   const setUseNativeTerminalRenderer = useAppStore((s) => s.setUseNativeTerminalRenderer);
   const nativeSharedGpu = useAppStore((s) => s.nativeSharedGpu);
+  // Which backend/adapter the panes actually run on. Null until a native pane
+  // exists — the adapter is only built once there is a surface to validate it
+  // against, so before that there is genuinely nothing true to report.
+  const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void nativeTermGpuInfo()
+      .then((i) => { if (alive) setGpuInfo(i); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
   const setNativeSharedGpu = useAppStore((s) => s.setNativeSharedGpu);
   const browserIframeForLocalhost = useAppStore((s) => s.browserIframeForLocalhost);
   const setBrowserIframeForLocalhost = useAppStore((s) => s.setBrowserIframeForLocalhost);
@@ -1734,6 +1850,20 @@ export default function SettingsPane() {
                 <ToggleSwitch checked={nativeSharedGpu} onChange={setNativeSharedGpu} />
               </SettingsRow>
               <SettingsRow
+                label="Graphics backend"
+                description={
+                  gpuInfo
+                    ? "Chosen automatically. Shown because it is the first thing worth knowing when a pane renders wrong."
+                    : "Available once a native pane is open — the adapter is picked when the first pane creates its surface."
+                }
+              >
+                <span style={{ fontSize: 12, color: "var(--ezy-text-muted)", textAlign: "right" }}>
+                  {gpuInfo
+                    ? `${gpuInfo.backend} · ${gpuInfo.name}${gpuInfo.shared ? "" : " (per-pane adapter)"}`
+                    : "—"}
+                </span>
+              </SettingsRow>
+              <SettingsRow
                 vertical
                 label="Report terminal type to AI CLIs (TERM_PROGRAM)"
                 description="Claude enables synchronized output, progress and notifications only for terminals it recognises. If a feature stays quiet, pick another. Applies to the next pane you open."
@@ -2083,6 +2213,7 @@ export default function SettingsPane() {
               </SettingsRow>
             </SettingsSection>
             <SettingsSection id="jira" title="Jira">
+              <JiraPluginRow />
               <SettingsRow label="Jira address">
                 <TextInput
                   value={jiraBaseUrl}

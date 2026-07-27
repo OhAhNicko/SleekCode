@@ -6620,6 +6620,216 @@ fn resolve_wsl_claude_settings(distro: Option<&str>) -> Option<std::path::PathBu
     found
 }
 
+/* ------------------------------------------------------------------ */
+/*  Jira (Atlassian) MCP server                                        */
+/* ------------------------------------------------------------------ */
+
+/// The Atlassian Rovo MCP endpoint, Streamable HTTP.
+///
+/// NOT the older `https://mcp.atlassian.com/v1/sse`: Atlassian stopped
+/// supporting that SSE endpoint on 30 June 2026, so anything written against it
+/// now fails to connect. Most setup guides still found online show the dead one.
+const ATLASSIAN_MCP_URL: &str = "https://mcp.atlassian.com/v1/mcp/authv2";
+const ATLASSIAN_MCP_NAME: &str = "atlassian";
+
+#[derive(Serialize)]
+pub struct JiraMcpStatus {
+    /// An Atlassian MCP server is configured somewhere Claude will read.
+    configured: bool,
+    /// Where it was found: "user", "local" (this project) or "project" (.mcp.json).
+    scope: String,
+    /// The configured server name, so the UI can say which one it found.
+    name: String,
+    /// False when we could not look at all (no reachable config file) — the UI
+    /// must not claim "not set up" on the strength of a failed lookup.
+    checked: bool,
+}
+
+/// Locate Claude Code's `~/.claude.json` for a given home directory.
+fn claude_json_at(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".claude.json")
+}
+
+/// Does this server entry point at Atlassian? Matches on the name OR the URL, so
+/// a server the user called something else is still recognised.
+fn is_atlassian_entry(name: &str, value: &serde_json::Value) -> bool {
+    if name.to_ascii_lowercase().contains("atlassian")
+        || name.to_ascii_lowercase().contains("jira")
+    {
+        return true;
+    }
+    let blob = value.to_string().to_ascii_lowercase();
+    blob.contains("atlassian.com")
+}
+
+/// Scan a parsed `~/.claude.json` for an Atlassian MCP server, checking the
+/// user scope first and then this project's local scope.
+fn find_atlassian_in_claude_json(
+    doc: &serde_json::Value,
+    project_path: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(servers) = doc.get("mcpServers").and_then(|v| v.as_object()) {
+        for (name, value) in servers {
+            if is_atlassian_entry(name, value) {
+                return Some((name.clone(), "user".to_string()));
+            }
+        }
+    }
+    let projects = doc.get("projects").and_then(|v| v.as_object())?;
+    // Claude keys projects by absolute path; compare loosely so a Windows path
+    // and its WSL twin, or a trailing slash, still match.
+    let wanted = project_path?.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase();
+    for (key, entry) in projects {
+        let k = key.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase();
+        if k != wanted {
+            continue;
+        }
+        if let Some(servers) = entry.get("mcpServers").and_then(|v| v.as_object()) {
+            for (name, value) in servers {
+                if is_atlassian_entry(name, value) {
+                    return Some((name.clone(), "local".to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `.mcp.json` committed in the project itself (scope "project").
+fn find_atlassian_in_project_file(project_path: Option<&str>) -> Option<String> {
+    let dir = project_path?;
+    let raw = std::fs::read_to_string(std::path::Path::new(dir).join(".mcp.json")).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let servers = doc.get("mcpServers").and_then(|v| v.as_object())?;
+    servers
+        .iter()
+        .find(|(name, value)| is_atlassian_entry(name, value))
+        .map(|(name, _)| name.clone())
+}
+
+fn jira_mcp_status_for_home(
+    home: Option<std::path::PathBuf>,
+    project_path: Option<String>,
+) -> JiraMcpStatus {
+    let not_checked = JiraMcpStatus {
+        configured: false,
+        scope: String::new(),
+        name: String::new(),
+        checked: false,
+    };
+
+    // A `.mcp.json` in the project counts regardless of where home is.
+    if let Some(name) = find_atlassian_in_project_file(project_path.as_deref()) {
+        return JiraMcpStatus { configured: true, scope: "project".into(), name, checked: true };
+    }
+
+    let Some(home) = home else { return not_checked };
+    let path = claude_json_at(&home);
+    let Ok(raw) = std::fs::read_to_string(&path) else { return not_checked };
+    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else { return not_checked };
+
+    match find_atlassian_in_claude_json(&doc, project_path.as_deref()) {
+        Some((name, scope)) => JiraMcpStatus { configured: true, scope, name, checked: true },
+        None => JiraMcpStatus {
+            configured: false,
+            scope: String::new(),
+            name: String::new(),
+            checked: true,
+        },
+    }
+}
+
+/// WSL home directory (the one Claude actually runs in on this backend).
+fn resolve_wsl_home(distro: Option<&str>) -> Option<std::path::PathBuf> {
+    resolve_wsl_claude_settings(distro).and_then(|settings| {
+        // .../home/<user>/.claude/settings.json -> .../home/<user>
+        settings.parent()?.parent().map(|p| p.to_path_buf())
+    })
+}
+
+/// Is the Atlassian MCP server configured? — WSL.
+#[tauri::command]
+async fn jira_mcp_status(project_path: Option<String>, distro: Option<String>) -> Result<JiraMcpStatus, String> {
+    Ok(jira_mcp_status_for_home(resolve_wsl_home(distro.as_deref()), project_path))
+}
+
+/// Is the Atlassian MCP server configured? — Windows native.
+#[tauri::command]
+async fn jira_mcp_status_windows(project_path: Option<String>) -> Result<JiraMcpStatus, String> {
+    let home = std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from);
+    Ok(jira_mcp_status_for_home(home, project_path))
+}
+
+/// Is the Atlassian MCP server configured? — macOS/Linux native.
+#[tauri::command]
+async fn jira_mcp_status_native(project_path: Option<String>) -> Result<JiraMcpStatus, String> {
+    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+    Ok(jira_mcp_status_for_home(home, project_path))
+}
+
+/// Register the Atlassian MCP server with Claude Code — WSL.
+///
+/// Runs the CLI rather than editing `~/.claude.json` directly: the config shape
+/// is Claude's to own, and `claude mcp add` is the documented, version-correct
+/// way to write it. Scope is `user` so every project gets the server — a support
+/// ticket can concern any repo.
+///
+/// This does NOT authenticate. The OAuth handoff is interactive (it opens a
+/// browser), so it stays where the user can see it: `/mcp` in a Claude pane.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn jira_mcp_install(distro: Option<String>) -> Result<String, String> {
+    let script = format!(
+        "claude mcp add --transport http {} {} --scope user 2>&1",
+        ATLASSIAN_MCP_NAME, ATLASSIAN_MCP_URL
+    );
+    let mut cmd = wsl_command();
+    if let Some(d) = distro.as_deref().filter(|d| !d.trim().is_empty()) {
+        cmd.arg("-d").arg(d);
+    }
+    let out = cmd
+        .arg("--")
+        .arg("bash")
+        .arg("-lic")
+        .arg(&script)
+        .output()
+        .map_err(|e| format!("could not run wsl.exe: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if out.status.success() {
+        Ok(text)
+    } else {
+        Err(if text.is_empty() { "claude mcp add failed".to_string() } else { text })
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+async fn jira_mcp_install(_distro: Option<String>) -> Result<String, String> {
+    Err("WSL is only available on Windows".to_string())
+}
+
+/// Register the Atlassian MCP server — Windows native / macOS / Linux, where
+/// the `claude` binary runs directly rather than through WSL.
+#[tauri::command]
+async fn jira_mcp_install_direct(cli_path: Option<String>) -> Result<String, String> {
+    let program = cli_path.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "claude".to_string());
+    let out = Command::new(&program)
+        .args([
+            "mcp", "add", "--transport", "http",
+            ATLASSIAN_MCP_NAME, ATLASSIAN_MCP_URL,
+            "--scope", "user",
+        ])
+        .output()
+        .map_err(|e| format!("could not run {program}: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if out.status.success() {
+        Ok(if text.is_empty() { err } else { text })
+    } else {
+        Err(if err.is_empty() { "claude mcp add failed".to_string() } else { err })
+    }
+}
+
 /// Set Claude's notification channel (`notifChannel`) — WSL.
 /// Values: auto | iterm2 | bell | kitty | ghostty | iterm2+bell | none.
 #[tauri::command]
@@ -7373,7 +7583,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir])
         .setup(|app| {
             // A3: build the shared wgpu Instance+Adapter on a background thread
             // NOW, so the one-time driver/DXGI enumeration (~534ms measured on
