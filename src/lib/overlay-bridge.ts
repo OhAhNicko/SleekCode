@@ -49,10 +49,36 @@ export function emitOverlayPopup(msg: OverlayPopupMsg): void {
   void emit(OVERLAY_POPUP_EVENT, msg);
 }
 
+/**
+ * Handlers for `overlay:action`, plus the single real Tauri listener feeding
+ * them. Kept module-level so registration is SYNCHRONOUS.
+ *
+ * Tauri's `listen()` is async, and most callers subscribe inside an
+ * `if (!open) return` effect — so the window between a popup appearing and its
+ * listener going live was one where the user's click bounced back to nobody.
+ * A one-item menu opening under the cursor is clickable inside that window,
+ * which is why the snip menu's "View all screenshots" did nothing perhaps one
+ * press in three while the always-mounted `GlobalContextMenu` never missed one.
+ *
+ * Adding to the set is immediate; only the underlying bridge is async, and it
+ * is installed once for the life of the page.
+ */
+const actionHandlers = new Set<(msg: OverlayActionMsg) => void>();
+let actionBridge: Promise<UnlistenFn> | null = null;
+
 export function listenOverlayAction(
   cb: (msg: OverlayActionMsg) => void,
 ): Promise<UnlistenFn> {
-  return listen<OverlayActionMsg>(OVERLAY_ACTION_EVENT, (e) => cb(e.payload));
+  actionHandlers.add(cb);
+  actionBridge ??= listen<OverlayActionMsg>(OVERLAY_ACTION_EVENT, (e) => {
+    // Copy first: a handler may unsubscribe itself while dispatching.
+    for (const h of [...actionHandlers]) h(e.payload);
+  });
+  // Resolved immediately so callers that `await` before storing the unlisten
+  // still cannot open a gap — the handler is already registered above.
+  return Promise.resolve(() => {
+    actionHandlers.delete(cb);
+  });
 }
 
 export function emitOverlayTheme(vars: OverlayThemeMsg): void {
