@@ -67,6 +67,17 @@ export const JUMP_MAX_STEPS = 60;
 /** Let the TUI repaint between steps before re-reading the row. */
 export const JUMP_SETTLE_MS = 24;
 
+/**
+ * Jump-to-bottom button, both renderers. The button rides 6px BELOW the thumb
+ * (ported from the normal-buffer xterm button, TerminalPaneXterm updateJumpBtn)
+ * and is clamped so it never leaves the pane. It hides while the position is
+ * moving and reappears once the bar has been still for the idle delay — a
+ * button chasing a moving thumb is unclickable noise.
+ */
+export const JUMP_BTN_GAP_PX = 6;
+export const JUMP_BTN_BOTTOM_CLAMP_PX = 28;
+export const JUMP_BTN_IDLE_MS = 250;
+
 /** Span the thumb maps across: the proven total when known, else extrapolated. */
 export function computeSpan(pos: number, knownSpan: number | null): number {
   return knownSpan !== null

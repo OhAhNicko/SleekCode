@@ -29,6 +29,9 @@ import {
   ANCHOR_SETTLE_MS,
   AT_BOTTOM_MARKER,
   CTRL_END,
+  JUMP_BTN_BOTTOM_CLAMP_PX,
+  JUMP_BTN_GAP_PX,
+  JUMP_BTN_IDLE_MS,
   computeSpan,
   encodeSgrWheel,
   matchPromptIndex,
@@ -203,6 +206,30 @@ export default function XtermTuiScrollbar({
     [],
   );
 
+  // ── The user's OWN wheel ─────────────────────────────────────────────────
+  // In mouse-tracking mode xterm.js converts a wheel event into SGR wheel
+  // reports and writes them through `onData` — the exact bytes Claude scrolls
+  // by. Counting those keeps the thumb in the same unit as everything else
+  // (one report = one notch), which is how the native pane's bar follows the
+  // wheel via Rust's `tui_scroll` echo. Drags don't double-count: `scrollBy`
+  // writes to the PTY directly, bypassing onData.
+  useEffect(() => {
+    if (!terminal || !active) return;
+    const d = terminal.onData((data) => {
+      if (!data.includes("\x1b[<6")) return;
+      let n = 0;
+      for (const m of data.matchAll(/\x1b\[<6([45]);\d+;\d+M/g)) {
+        n += m[1] === "4" ? 1 : -1; // 64 = wheel up = older = positive
+      }
+      if (n === 0) return;
+      setPosition(posRef.current + n);
+      scheduleSample(n);
+    });
+    return () => d.dispose();
+    // scheduleSample is stable (ref indirection).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminal, active, setPosition]);
+
   // ── Drag (relative, with acceleration) ───────────────────────────────────
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -247,6 +274,16 @@ export default function XtermTuiScrollbar({
     accumRef.current -= whole;
     scrollBy(whole);
   };
+
+  // Jump-to-bottom only exists while the bar is STILL — any position change
+  // hides it and restarts the idle timer (same rule as the overlay bar), so it
+  // never chases a moving thumb.
+  const [still, setStill] = useState(false);
+  useEffect(() => {
+    setStill(false);
+    const t = window.setTimeout(() => setStill(true), JUMP_BTN_IDLE_MS);
+    return () => clearTimeout(t);
+  }, [pos]);
 
   if (!active) return null;
 
@@ -300,8 +337,10 @@ export default function XtermTuiScrollbar({
       </div>
 
       {/* Jump to bottom — Claude's own Ctrl+End, so it is absolute and cannot
-          drift like undoing our own notch count would. */}
-      {!atBottom && (
+          drift like undoing our own notch count would. Rides just below the
+          thumb (thumb bottom + gap, clamped inside the pane), matching the
+          normal-buffer button, and only while the bar is still. */}
+      {!atBottom && still && !dragging && (
         <div
           onClick={() => {
             writeRef.current(CTRL_END);
@@ -312,7 +351,9 @@ export default function XtermTuiScrollbar({
           style={{
             position: "absolute",
             right: 12,
-            bottom: 12,
+            top: `min(calc((100% - ${PAD_Y * 2 + THUMB_H}px) * ${1 - frac} + ${
+              PAD_Y + THUMB_H + JUMP_BTN_GAP_PX
+            }px), calc(100% - ${JUMP_BTN_BOTTOM_CLAMP_PX}px))`,
             width: 22,
             height: 22,
             borderRadius: 4,

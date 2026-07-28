@@ -3,6 +3,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { emitOverlayPopup, listenOverlayAction } from "../lib/overlay-bridge";
 import { useAnyModalOpen } from "../store/modalCoordinationSlice";
 import { useDismissOnOutsidePointer } from "../lib/overlay-dismiss";
+import { anyFloatingWindow, isOccluded, OCCLUDER_SELECTOR } from "./occlusion";
 
 /**
  * Emit a pane/element-anchored popup's live state to the overlay webview while
@@ -108,6 +109,8 @@ export function useOverlayPopupAnchor(opts: {
     let raf = 0;
     let lastJson = "";
     let frame = 0;
+    /** Emitted open:false because the anchor's pane is occluded. */
+    let occludedHidden = false;
     const tick = () => {
       raf = requestAnimationFrame(tick);
       // Keepalive: the event bus is fire-and-forget — a missed message must
@@ -118,6 +121,41 @@ export function useOverlayPopupAnchor(opts: {
       if (!el) return;
       const b = el.getBoundingClientRect();
       if (b.width <= 0 || b.height <= 0) return;
+
+      // OCCLUSION, not just modals (2026-07-27). The doc block above covers
+      // fullscreen modals, but an expanded/floating window hides panes through
+      // a DIFFERENT owner — occlusion.ts, keyed on `data-native-occluder` /
+      // `data-floating-pane-id` — and `useAnyModalOpen()` is false for those.
+      // So a pane could be hidden while its overlay chrome kept drawing: the
+      // TUI scrollbars of background panes floated on top of the expanded
+      // dev-server panel (user screenshot, 2026-07-27).
+      //
+      // Mirrors the pane's own geometry driver exactly, including reading BOTH
+      // host attributes, so a popup anchored inside the occluding window (its
+      // own content) is never hidden by it.
+      if (anyFloatingWindow()) {
+        const host = el.closest<HTMLElement>(OCCLUDER_SELECTOR);
+        const hostMode =
+          host?.dataset.floatingMode ?? host?.dataset.nativeOccluder ?? null;
+        if (
+          isOccluded(
+            { x: b.left, y: b.top, width: b.width, height: b.height },
+            hostMode,
+          )
+        ) {
+          if (!occludedHidden) {
+            occludedHidden = true;
+            emitOverlayPopup({ id, kind, open: false, rect: null });
+          }
+          return;
+        }
+      }
+      if (occludedHidden) {
+        // Un-occluded: clear the dedup guard so the next emit actually goes
+        // out rather than being swallowed as "same rect as last time".
+        occludedHidden = false;
+        lastJson = "";
+      }
       const rect = { x: b.left, y: b.top, width: b.width, height: b.height };
       const json = JSON.stringify(rect);
       if (json === lastJson) return;
