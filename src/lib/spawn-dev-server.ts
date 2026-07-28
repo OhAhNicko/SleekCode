@@ -92,9 +92,16 @@ export function spawnDevServer(
 
   // Resolve the spawn backend (project override → Tauri auto-detect → global),
   // then publish it so the pane mounts in the correct shell.
-  resolveDevServerBackend(workingDir, serverId).then((backend) => {
-    useAppStore.getState().setDevServerBackend(devServerId, backend);
-  });
+  resolveDevServerBackend(workingDir, serverId)
+    .then((backend) => {
+      useAppStore.getState().setDevServerBackend(devServerId, backend);
+    })
+    .catch(() => {
+      // backend === undefined keeps the pane unmounted forever (no PTY, no
+      // command, "detecting..." with an empty terminal) — never leave it there.
+      const fallback = useAppStore.getState().terminalBackend ?? getDefaultBackend();
+      useAppStore.getState().setDevServerBackend(devServerId, fallback);
+    });
 
   return terminalId;
 }

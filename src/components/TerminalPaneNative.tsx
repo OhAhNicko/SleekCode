@@ -300,7 +300,13 @@ export default function TerminalPaneNative({
       cancelled = true;
     };
   }, [termId]);
-  const [ptyReady, setPtyReady] = useState(false);
+  // "PTY ready" for the parent means the PTY PROCESS exists — fired from
+  // usePtyNative's onSpawned below. It used to be a local state flag set when
+  // the native surface finished creating, which is BEFORE the spawn effect
+  // even starts (setTermId is what triggers it) — so dev-server auto-start
+  // wrote its command into a not-yet-spawned PTY and it was silently dropped.
+  const onPtyReadyRef = useRef(onPtyReady);
+  onPtyReadyRef.current = onPtyReady;
   // Bumped to force usePtyNative to kill + respawn the PTY (session switch).
   // Same mechanism as TerminalPaneXterm's restartKey — the spawn effect is
   // keyed on it, so a bump detaches the native term, kills the old PTY and
@@ -705,7 +711,6 @@ export default function TerminalPaneNative({
           setCols(dims.cols);
           setRows(dims.rows);
           setTermId(id);
-          setPtyReady(true);
           const tDone = performance.now();
           // console.log, NOT console.debug: DevTools files `debug` under the
           // Verbose level, which is hidden unless you go turn it on.
@@ -1042,11 +1047,6 @@ export default function TerminalPaneNative({
   useEffect(() => {
     return () => clearPaneState(terminalId);
   }, [terminalId]);
-
-  // ── Notify parent of PTY readiness once create + spawn both resolved ──
-  useEffect(() => {
-    if (ptyReady && termId != null) onPtyReady?.();
-  }, [ptyReady, termId, onPtyReady]);
 
   // ── Theme hot-swap ────────────────────────────────────────────────────
   // Re-push the palette to the native renderer whenever the user switches
@@ -1423,6 +1423,7 @@ export default function TerminalPaneNative({
     serverId,
     sessionResumeId,
     onSessionIdAssigned: handleSessionIdAssigned,
+    onSpawned: () => onPtyReadyRef.current?.(),
     ready: termId != null,
     restartKey,
     forceYolo: launchedWithYolo,

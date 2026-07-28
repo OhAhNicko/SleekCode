@@ -3,6 +3,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import type { TerminalType, TerminalBackend } from "../types";
 import { sessionStillExists } from "../lib/session-exists";
 import { claudeSessionIdArgs, getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
+import { shellPsModeFor } from "../lib/shell-mode";
 import { wslReady } from "../lib/wsl-cache";
 import { windowsReady } from "../lib/windows-cli-cache";
 import { nativeReady } from "../lib/macos-cli-cache";
@@ -34,6 +35,11 @@ interface UsePtyNativeOptions {
    * session (via `--session-id`). Lets the pane claim it directly instead of
    * guessing it back from the newest .jsonl mtime. */
   onSessionIdAssigned?: (id: string) => void;
+  /** Fired once the PTY process actually exists — the first moment `write()`
+   *  can deliver instead of silently dropping (it no-ops while ptyIdRef is
+   *  null). Initial-command senders (dev-server auto-start) must key on this,
+   *  not on mount or surface creation. */
+  onSpawned?: () => void;
   injectShellIntegration?: boolean;
   ready?: boolean;
   restartKey?: number;
@@ -56,6 +62,7 @@ export function usePtyNative({
   serverId,
   sessionResumeId,
   onSessionIdAssigned,
+  onSpawned,
   injectShellIntegration = false,
   ready = true,
   restartKey = 0,
@@ -70,6 +77,8 @@ export function usePtyNative({
   const onSessionIdAssignedRef = useRef(onSessionIdAssigned);
   onSessionIdAssignedRef.current = onSessionIdAssigned;
   sessionResumeIdRef.current = sessionResumeId;
+  const onSpawnedRef = useRef(onSpawned);
+  onSpawnedRef.current = onSpawned;
 
   const termIdRef = useRef(termId);
   termIdRef.current = termId;
@@ -222,7 +231,10 @@ export function usePtyNative({
           const cwdForConfig = terminalType === "shell" || terminalType === "devserver"
             ? (currentWorkingDir || undefined)
             : undefined;
-          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, "windows", termProgram, termProgramVersion);
+          const psMode = terminalType === "shell"
+            ? shellPsModeFor(currentWorkingDir, currentServerId, backend)
+            : undefined;
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, "windows", termProgram, termProgramVersion, psMode);
           command = config.command;
           args = [...config.args];
           if (terminalType === "devserver") {
@@ -238,7 +250,12 @@ export function usePtyNative({
           const cwdForConfig = terminalType === "shell"
             ? (currentWorkingDir || undefined)
             : (resumeId ? wslCwd : undefined);
-          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, undefined, termProgram, termProgramVersion);
+          // Shell panes: per-project WSL/WIN badge override, else the pane's
+          // backend — wsl-backed projects preload WSL bash inside PowerShell.
+          const psMode = terminalType === "shell"
+            ? shellPsModeFor(currentWorkingDir, currentServerId, backend)
+            : undefined;
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, undefined, termProgram, termProgramVersion, psMode);
           command = config.command;
           args = [...config.args];
           if (isWslTerminal(terminalType, backend) && wslCwd && !resumeId) {
@@ -320,6 +337,8 @@ export function usePtyNative({
           pendingResizeRef.current = null;
           invoke("pty_resize", { ptyId: id, cols: pc, rows: pr });
         }
+
+        onSpawnedRef.current?.();
 
         if (currentInjectShellIntegration) {
           setTimeout(() => {

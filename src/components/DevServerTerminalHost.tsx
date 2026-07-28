@@ -184,14 +184,30 @@ export default function DevServerTerminalHost() {
     (serverId: string, terminalId: string, command: string) => {
       if (commandSentRef.current.has(serverId)) return;
       commandSentRef.current.add(serverId);
-      setTimeout(() => {
+      // onPtyReady fires from usePty's onSpawned — the PTY process exists, so
+      // write() delivers. (It used to fire at React MOUNT, seconds before the
+      // spawn resolved on cold boot; write() drops data until then, so every
+      // auto-started server got a bare shell and "detecting..." forever.)
+      // The 300ms gives the shell a beat to start reading stdin. The retry
+      // loop is a backstop for the write registry only: if the write fn never
+      // materialises, say so in the sidebar instead of staying "detecting...".
+      const attempt = (triesLeft: number) => {
         const write = getPtyWrite(terminalId);
         if (write) {
           write(command + "\r");
+          return;
         }
-      }, 300);
+        if (triesLeft > 0) {
+          setTimeout(() => attempt(triesLeft - 1), 500);
+          return;
+        }
+        // Allow a manual restart / backend switch to try again.
+        commandSentRef.current.delete(serverId);
+        updateDevServerError(serverId, "Auto-start failed — terminal never became ready");
+      };
+      setTimeout(() => attempt(10), 300);
     },
-    []
+    [updateDevServerError]
   );
 
   // Handle PTY exit — set status to error if no port was detected

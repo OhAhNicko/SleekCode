@@ -561,6 +561,9 @@ export default function TerminalPane({
   const onPtyExitRef = useRef(onPtyExit);
   onPtyExitRef.current = onPtyExit;
 
+  const onPtyReadyRef = useRef(onPtyReady);
+  onPtyReadyRef.current = onPtyReady;
+
   const handlePtyExit = useCallback((exitCode: number) => {
     setExited(true);
     setPaneExited(terminalId, true);
@@ -605,6 +608,12 @@ export default function TerminalPane({
     serverId,
     sessionResumeId,
     onSessionIdAssigned: handleSessionIdAssigned,
+    // "PTY ready" must mean the process EXISTS. This used to fire from the
+    // registerPtyWrite effect at React mount — but on cold boot the spawn
+    // awaits WSL/CLI caches for seconds, and write() drops data until the
+    // spawn resolves, so the dev-server auto-start command written 300ms
+    // after mount vanished into a not-yet-spawned PTY every startup.
+    onSpawned: () => onPtyReadyRef.current?.(),
     injectShellIntegration: useShellIntegration,
     ready: termReady,
     restartKey,
@@ -1576,12 +1585,13 @@ export default function TerminalPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terminalId]);
 
-  // Register PTY write callback for external access (AI explain, snippets)
+  // Register PTY write callback for external access (AI explain, snippets).
+  // onPtyReady is NOT fired here — registration happens at mount, long before
+  // the PTY exists; it fires from usePty's onSpawned instead (see above).
   useEffect(() => {
     registerPtyWrite(terminalId, write);
-    onPtyReady?.();
     return () => unregisterPtyWrite(terminalId);
-  }, [terminalId, write]); // onPtyReady intentionally omitted — fire once on PTY init
+  }, [terminalId, write]);
 
   // Register xterm focus callback so external actions (e.g. clipboard paste path
   // from ImagePreviewModal) can return focus to this pane.
