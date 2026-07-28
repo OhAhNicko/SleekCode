@@ -1429,6 +1429,10 @@ export default function SettingsPane() {
   const setTheme = useAppStore((s) => s.setTheme);
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const setVibrantColors = useAppStore((s) => s.setVibrantColors);
+  const projectPaneTint = useAppStore((s) => s.projectPaneTint);
+  const setProjectPaneTint = useAppStore((s) => s.setProjectPaneTint);
+  const hoverTooltips = useAppStore((s) => s.hoverTooltips);
+  const setHoverTooltips = useAppStore((s) => s.setHoverTooltips);
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
   const setNativeCursorStyle = useAppStore((s) => s.setNativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
@@ -1526,6 +1530,9 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Copy on select">
                 <ToggleSwitch checked={copyOnSelect} onChange={setCopyOnSelect} />
+              </SettingsRow>
+              <SettingsRow label="Hover tooltips" description="Off hides every hover tooltip. File links keep working.">
+                <ToggleSwitch checked={hoverTooltips} onChange={setHoverTooltips} />
               </SettingsRow>
               <SettingsRow label="Show path in tabs" description="Double-click the name to rename it.">
                 <ToggleSwitch checked={showTabPath} onChange={setShowTabPath} />
@@ -1652,6 +1659,9 @@ export default function SettingsPane() {
               </div>
               <SettingsRow label="Vibrant colors">
                 <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
+              </SettingsRow>
+              <SettingsRow label="Project color pane tint" description="Washes each pane toward its project's tab color.">
+                <ToggleSwitch checked={projectPaneTint} onChange={setProjectPaneTint} />
               </SettingsRow>
             </SettingsSection>
             <SettingsSection id="cursor" title="Cursor" description="Applies to the native terminal renderer.">

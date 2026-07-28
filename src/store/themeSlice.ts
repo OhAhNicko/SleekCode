@@ -8,6 +8,8 @@ export interface ThemeSlice {
   setTheme: (id: string) => void;
   vibrantColors: boolean;
   setVibrantColors: (v: boolean) => void;
+  projectPaneTint: boolean;
+  setProjectPaneTint: (v: boolean) => void;
   nativeCursorStyle: NativeCursorStyle;
   setNativeCursorStyle: (style: NativeCursorStyle) => void;
   nativeCursorBlink: boolean;
@@ -21,6 +23,8 @@ export const createThemeSlice: StateCreator<ThemeSlice, [], [], ThemeSlice> = (
   setTheme: (id) => set({ themeId: id }),
   vibrantColors: false,
   setVibrantColors: (v) => set({ vibrantColors: v }),
+  projectPaneTint: true,
+  setProjectPaneTint: (v) => set({ projectPaneTint: v }),
   nativeCursorStyle: "bar",
   setNativeCursorStyle: (style) => set({ nativeCursorStyle: style }),
   nativeCursorBlink: true,
