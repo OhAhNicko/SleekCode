@@ -136,6 +136,16 @@ export default function ScreenshotsOverlay({
   const [stripEdges, setStripEdges] = useState({ left: false, right: false });
   /** Fills the window. Zoom, pan and every control behave identically. */
   const [expanded, setExpanded] = useState(false);
+  /**
+   * Chrome-free lightbox: the image alone at 100% native pixels over the whole
+   * app viewport. Distinct from `expanded`, which grows the window but keeps
+   * every control. Exited via the hover circle-X or Escape.
+   */
+  const [maximized, setMaximized] = useState(false);
+  /** Viewport position of the lightbox close button; null while hidden. */
+  const [maxCloseBtn, setMaxCloseBtn] = useState<{ x: number; y: number } | null>(null);
+  const maxImgRef = useRef<HTMLImageElement | null>(null);
+  const maxScrollRef = useRef<HTMLDivElement | null>(null);
 
   // ── window geometry ──────────────────────────────────────────────────────
   const rememberWindow = useAppStore((s) => s.rememberScreenshotWindow ?? false);
@@ -309,6 +319,8 @@ export default function ScreenshotsOverlay({
     setArmDelete(false);
     setArmClear(false);
     setExpanded(false);
+    setMaximized(false);
+    setMaxCloseBtn(null);
     setToolbarOpen(true);
     setTool("select");
     setSelectedShapeId(null);
@@ -587,6 +599,25 @@ export default function ScreenshotsOverlay({
         target?.isContentEditable;
       if (typing) return;
 
+      // Lightbox mode: only Escape (exit) and the arrows (navigate) apply —
+      // every other shortcut drives chrome that is not on screen.
+      if (maximized) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setMaximized(false);
+          setMaxCloseBtn(null);
+        } else if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          if (activeIndex > 0) setActiveId(images[activeIndex - 1].id);
+        } else if (e.key === "ArrowRight") {
+          e.preventDefault();
+          if (activeIndex >= 0 && activeIndex < images.length - 1) {
+            setActiveId(images[activeIndex + 1].id);
+          }
+        }
+        return;
+      }
+
       // Markup history, before the plain-key switch so Ctrl+Z is never
       // swallowed by a tool shortcut.
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && active) {
@@ -731,7 +762,74 @@ export default function ScreenshotsOverlay({
     commitShapes,
     undoMarkup,
     redoMarkup,
+    maximized,
   ]);
+
+  // ── lightbox (maximized) ─────────────────────────────────────────────────
+
+  /**
+   * The circle-X exists only while the cursor is near the top of the image:
+   * inside the image's top 25% (with a little grace around the edges). Its
+   * anchor is the top-center of the VISIBLE part of the image, so it stays
+   * reachable however far a large image is scrolled.
+   */
+  const handleMaxPointerMove = useCallback((e: React.PointerEvent) => {
+    const img = maxImgRef.current;
+    if (!img) return;
+    const r = img.getBoundingClientRect();
+    const pad = 40;
+    const inZone =
+      e.clientX >= r.left - pad &&
+      e.clientX <= r.right + pad &&
+      e.clientY >= r.top - pad &&
+      e.clientY <= r.top + r.height * 0.25;
+    if (!inZone) {
+      setMaxCloseBtn((prev) => (prev ? null : prev));
+      return;
+    }
+    const x = Math.round((Math.max(r.left, 0) + Math.min(r.right, window.innerWidth)) / 2);
+    const y = Math.round(Math.max(r.top, 0) + 14);
+    setMaxCloseBtn((prev) => (prev && prev.x === x && prev.y === y ? prev : { x, y }));
+  }, []);
+
+  /** Drag pans an overflowing image by driving the container's scroll. */
+  const startMaxPan = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button")) return;
+    const sc = maxScrollRef.current;
+    if (!sc) return;
+    if (sc.scrollWidth <= sc.clientWidth && sc.scrollHeight <= sc.clientHeight) return;
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement;
+    try {
+      el.setPointerCapture(e.pointerId);
+    } catch {
+      /* pointer can vanish between down and capture */
+    }
+    const start = { x: e.clientX, y: e.clientY, l: sc.scrollLeft, t: sc.scrollTop };
+    let disposed = false;
+    const onMove = (ev: PointerEvent) => {
+      sc.scrollLeft = start.l - (ev.clientX - start.x);
+      sc.scrollTop = start.t - (ev.clientY - start.y);
+    };
+    const finish = () => {
+      if (disposed) return;
+      disposed = true;
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", finish);
+      el.removeEventListener("pointercancel", finish);
+      el.removeEventListener("lostpointercapture", finish);
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        /* already released */
+      }
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", finish);
+    el.addEventListener("pointercancel", finish);
+    el.addEventListener("lostpointercapture", finish);
+  }, []);
 
   // React registers `wheel` as a PASSIVE listener on its root container, so a
   // preventDefault inside an onWheel prop silently does nothing and logs a
@@ -1038,6 +1136,26 @@ export default function ScreenshotsOverlay({
               ) : (
                 <GhostButton onClick={() => setArmClear(true)}>Clear all</GhostButton>
               ))}
+
+            {active && (
+              <GhostButton
+                onClick={() => setMaximized(true)}
+                square
+                tooltip="Maximize image to full size"
+                aria-label="Maximize image"
+              >
+                <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                  <path
+                    d="M7 1.5 H10.5 V5 M10.5 1.5 L7 5 M5 10.5 H1.5 V7 M1.5 10.5 L5 7"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </GhostButton>
+            )}
 
             <GhostButton
               onClick={() => setExpanded((v) => !v)}
@@ -1627,6 +1745,95 @@ export default function ScreenshotsOverlay({
           </>
         )}
       </div>
+
+      {/* ── Maximized lightbox ─────────────────────────────────────────────
+          The image alone at 100% native pixels (1 image px : 1 device px),
+          fully covering the viewer. Overflow pans by drag or scrolls by
+          wheel; smaller images sit centered. Exit: hover circle-X near the
+          top of the image, or Escape. */}
+      {maximized && active && (
+        <div
+          ref={maxScrollRef}
+          onClick={(e) => e.stopPropagation()}
+          onPointerMove={handleMaxPointerMove}
+          onPointerLeave={() => setMaxCloseBtn(null)}
+          onPointerDown={startMaxPan}
+          style={{
+            position: "fixed",
+            inset: 0,
+            overflow: "auto",
+            backgroundColor: "#0a0a0a",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              minWidth: "100%",
+              minHeight: "100%",
+              width: "max-content",
+              height: "max-content",
+            }}
+          >
+            <img
+              ref={maxImgRef}
+              src={active.dataUri}
+              alt={fileNameOf(active.winPath)}
+              draggable={false}
+              onLoad={(e) => {
+                const el = e.currentTarget;
+                if (!natural) setNatural({ w: el.naturalWidth, h: el.naturalHeight });
+              }}
+              style={{
+                // margin:auto centres in both axes AND keeps every edge
+                // reachable when the image overflows (flex centring clips the
+                // top-left corner off a scroll container).
+                margin: "auto",
+                width: natural ? natural.w / dpr : undefined,
+                height: natural ? natural.h / dpr : undefined,
+                maxWidth: "none",
+                flexShrink: 0,
+                display: "block",
+              }}
+            />
+          </div>
+          {maxCloseBtn && (
+            <button
+              onClick={() => {
+                setMaximized(false);
+                setMaxCloseBtn(null);
+              }}
+              aria-label="Close maximized image (Esc)"
+              data-tooltip="Close (Esc)"
+              style={{
+                position: "fixed",
+                left: maxCloseBtn.x,
+                top: maxCloseBtn.y,
+                transform: "translateX(-50%)",
+                width: 32,
+                height: 32,
+                borderRadius: "50%",
+                border: "1px solid rgba(255,255,255,0.22)",
+                backgroundColor: "#262626",
+                color: "#fff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "pointer",
+                padding: 0,
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                <path
+                  d="M3 3 L9 9 M9 3 L3 9"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+          )}
+        </div>
+      )}
     </div>,
     document.body,
   );
