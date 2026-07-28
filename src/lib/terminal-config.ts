@@ -125,26 +125,33 @@ const TERMINAL_CONFIGS_NATIVE: Record<TerminalType, TerminalConfig> = {
 
 /**
  * Build PowerShell launch args that drop the user into the project's
- * working directory. Decision is purely **path-shape based** — independent
- * of tab.backend / global terminalBackend, since powershell.exe is always
- * the same executable regardless of where the project lives. PS panes
- * therefore have their OWN routing, decoupled from CLI-pane routing.
+ * working directory, in the requested `mode`:
  *
- *  - Windows filesystem (`C:\…`, `\\server\share\…`, `/mnt/<drive>/…`):
- *    → `-NoExit -Command "Set-Location -LiteralPath '<winpath>'"`
- *    `/mnt/<drive>/foo` translates to `<drive>:\foo` first, since `/mnt/c`
+ *  - `"wsl"` → `-NoExit -Command "wsl -d <distro> --cd <path>"` — PS opens
+ *    and immediately drops into bash inside WSL at the project. wsl.exe's
+ *    `--cd` accepts Linux paths (`/mnt/c/foo`, `/home/foo`) and Windows paths
+ *    (`C:\foo`, auto-translated) alike, so `cwd` is passed as-is.
+ *  - `"windows"` → `-NoExit -Command "Set-Location -LiteralPath '<winpath>'"`
+ *    with `/mnt/<drive>/foo` translated to `<drive>:\foo` first, since `/mnt/c`
  *    is just the WSL view of a real Windows disk.
- *  - WSL filesystem (`/home/…`, `/root/…`, `\\wsl.localhost\…`, `\\wsl$\…`):
- *    → `-NoExit -Command "wsl -d <distro> --cd <path>"` — PS opens and
- *    immediately drops into bash inside WSL. Navigating PS to a
- *    \\wsl.localhost\ UNC breaks PSReadLine and many tools, so we don't.
+ *  - WSL-filesystem paths (`/home/…`, `/root/…`, `\\wsl.localhost\…`,
+ *    `\\wsl$\…`) are ALWAYS routed via `wsl --cd`, whatever the mode:
+ *    navigating PS to a \\wsl.localhost\ UNC breaks PSReadLine and many tools.
  *  - Empty cwd: returns `[]` — PS spawns at parent process's cwd.
+ *
+ * The mode is caller-supplied (per-project WSL/WIN badge override, else the
+ * pane's backend — see `shellPsModeFor`). It was path-shape-only from v0.1.40
+ * to v0.2.4, which silently dropped the WSL preload for every `/mnt/<drive>/`
+ * project: the tab resolved to the wsl backend but the shell opened plain PS.
  *
  * The command runs via `-NoExit -Command` so it executes BEFORE PSReadLine
  * takes over the input line — avoiding the char-by-char redraw chaos that
  * would happen if the same command were piped through stdin after launch.
  */
-export function buildPowerShellLaunchArgsForCwd(cwd: string | undefined): string[] {
+export function buildPowerShellLaunchArgsForCwd(
+  cwd: string | undefined,
+  mode: "wsl" | "windows",
+): string[] {
   if (!cwd) return [];
 
   const norm = cwd.replace(/\\/g, "/").toLowerCase();
@@ -154,8 +161,8 @@ export function buildPowerShellLaunchArgsForCwd(cwd: string | undefined): string
     norm.startsWith("//wsl.localhost/") ||
     norm.startsWith("//wsl$/");
 
-  if (isWslFs) {
-    // WSL filesystem — drop into bash inside the distro at the project path.
+  if (isWslFs || mode === "wsl") {
+    // Drop into bash inside the distro at the project path.
     const distro = getCachedDistro();
     const distroFlag = distro ? `-d ${distro} ` : "";
     return ["-NoExit", "-Command", `wsl ${distroFlag}--cd ${cwd}`];
@@ -284,7 +291,7 @@ export function claudeSessionIdArgs(
   return { args: ["--session-id", sessionId], sessionId };
 }
 
-export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string, backend?: TerminalBackend, termProgram = "", termProgramVersion = ""): TerminalConfig {
+export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string, backend?: TerminalBackend, termProgram = "", termProgramVersion = "", psMode?: "wsl" | "windows"): TerminalConfig {
   // Advertised terminal identity (see termProgramEnvPairs). Only the AI CLIs
   // consult it; shell/devserver panes are left exactly as they were.
   const idEnv = type === "shell" || type === "devserver" ? [] : termProgramEnvPairs(termProgram, termProgramVersion);
@@ -311,7 +318,9 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
   if (backend === "windows") {
     const winBase = TERMINAL_CONFIGS_WINDOWS[type];
     if (type === "shell" || type === "devserver") {
-      const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd);
+      // psMode is only supplied for shell panes (WSL/WIN badge); dev servers
+      // routed to the Windows backend always want plain PS at the project.
+      const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd, psMode ?? "windows");
       return cwdArgs.length ? { ...winBase, args: cwdArgs } : winBase;
     }
 
@@ -345,7 +354,10 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
   // cwd-injection so PS drops the user straight into WSL bash at the project.
   const base = TERMINAL_CONFIGS_BASE[type];
   if (type === "shell" || type === "devserver") {
-    const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd);
+    // Default "wsl": on the wsl backend the shell preloads WSL unless the
+    // per-project badge override says otherwise. (Devserver never passes a
+    // cwd on this branch — it spawns wsl.exe directly, not PowerShell.)
+    const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd, psMode ?? "wsl");
     return cwdArgs.length ? { ...base, args: cwdArgs } : base;
   }
 

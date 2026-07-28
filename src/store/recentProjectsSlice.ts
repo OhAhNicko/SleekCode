@@ -33,6 +33,15 @@ export interface RecentProject {
    * `resolveDevServerBackend`.
    */
   serverInWindows?: boolean;
+  /**
+   * Per-project override for the SHELL pane's PowerShell launch mode,
+   * toggled by the WSL/WIN badge in the pane header.
+   * `true`  → plain PowerShell (Set-Location to the project),
+   * `false` → PS immediately drops into WSL bash (`wsl --cd`),
+   * `undefined` → follow the project's backend (wsl-backed → WSL preload).
+   * See `shellPsModeFor`. Independent of `serverInWindows` (dev servers).
+   */
+  shellInWindows?: boolean;
 }
 
 export function isRemoteProject(p: RecentProject): boolean {
@@ -273,6 +282,8 @@ export interface RecentProjectsSlice {
   setProjectBackend: (path: string, serverId: string | undefined, backend: TerminalBackend) => void;
   /** Set the per-project dev-server shell override. `undefined` clears it (back to auto-detect). */
   setProjectServerInWindows: (path: string, serverId: string | undefined, value: boolean | undefined) => void;
+  /** Set the per-project SHELL-pane PowerShell mode override (WSL/WIN badge). `undefined` clears it. */
+  setProjectShellInWindows: (path: string, serverId: string | undefined, value: boolean | undefined) => void;
   setCommitMsgMode: (value: CommitMsgMode) => void;
   setShadowAiCli: (value: ShadowAiCli) => void;
   updateProjectTemplate: (path: string, template: RecentProjectTemplate, serverId?: string) => void;
@@ -624,6 +635,16 @@ export const createRecentProjectsSlice: StateCreator<
       recentProjects: state.recentProjects.map((p) =>
         normalizePath(p.path) === normalized && p.serverId === serverId
           ? { ...p, serverInWindows: value }
+          : p
+      ),
+    }));
+  },
+  setProjectShellInWindows: (path, serverId, value) => {
+    const normalized = normalizePath(path);
+    set((state) => ({
+      recentProjects: state.recentProjects.map((p) =>
+        normalizePath(p.path) === normalized && p.serverId === serverId
+          ? { ...p, shellInWindows: value }
           : p
       ),
     }));

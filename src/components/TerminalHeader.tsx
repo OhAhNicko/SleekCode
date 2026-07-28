@@ -5,6 +5,7 @@ import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import type { TerminalType, TerminalBackend, ProjectSession, SessionIndexEntry } from "../types";
 import type { ContextInfo } from "../lib/context-parser";
 import { TERMINAL_CONFIGS, toWslPath } from "../lib/terminal-config";
+import { getPlatform } from "../lib/platform";
 import { supportsSessionResume } from "../lib/session-resume";
 import { readSessionsIndex, resolveSessionName, readSessionFirstPrompt, slugify } from "../lib/sessions-index";
 import { useAppStore } from "../store";
@@ -435,6 +436,30 @@ export default function TerminalHeader({
   const slToggles = useAppStore((s) => s.statuslineToggles[terminalType]);
   /** Check if a statusline feature is shown (falls back to the per-key default). */
   const sl = (key: string) => slToggles?.[key] ?? getStatuslineDefault(key);
+
+  // WSL/WIN badge — shell panes on a Windows host only (SSH shells run remote
+  // bash, macOS/Linux run zsh; neither has a PowerShell mode to toggle).
+  // The selector mirrors shellPsModeFor (per-project override, else the
+  // pane's backend) and returns a primitive, so the .find is re-render-safe.
+  const showShellModeBadge =
+    terminalType === "shell" && !serverId && !!workingDir && getPlatform() === "windows";
+  const shellPsMode = useAppStore((s): "wsl" | "windows" | undefined => {
+    if (!showShellModeBadge) return undefined;
+    const norm = workingDir!.replace(/\\/g, "/");
+    const override = s.recentProjects.find(
+      (p) => p.path.replace(/\\/g, "/") === norm && p.serverId === serverId,
+    )?.shellInWindows;
+    if (override !== undefined) return override ? "windows" : "wsl";
+    return (backend ?? s.terminalBackend ?? "wsl") === "windows" ? "windows" : "wsl";
+  });
+  const setProjectShellInWindows = useAppStore((s) => s.setProjectShellInWindows);
+  const toggleShellPsMode = useCallback(() => {
+    if (!workingDir || !shellPsMode) return;
+    // Persist FIRST, then respawn — the fresh PTY reads the override at spawn
+    // time (shellPsModeFor), so order matters.
+    setProjectShellInWindows(workingDir, serverId, shellPsMode === "wsl");
+    onRestart?.();
+  }, [workingDir, serverId, shellPsMode, setProjectShellInWindows, onRestart]);
   const [showTypePicker, setShowTypePicker] = useState(false);
   const typePickerAnchorRef = useRef<HTMLDivElement>(null);
   // CLI type picker — overlay-rendered (kind "anchored-menu").
@@ -706,6 +731,42 @@ export default function TerminalHeader({
         </div>
         {/* Type picker — overlay-rendered (useOverlayMenu above). */}
       </div>
+
+      {/* WSL/WIN mode badge — shell panes only. Shows where the shell lands
+          (accent = WSL bash preload, neutral = plain PowerShell); click
+          persists the per-project override and relaunches the shell in the
+          other mode. Sibling of the type picker, not inside it, so a click
+          can't also open the CLI picker. */}
+      {showShellModeBadge && shellPsMode && (
+        <span
+          role="button"
+          data-tooltip={
+            shellPsMode === "wsl"
+              ? "Shell drops into WSL bash at the project. Click to relaunch in plain Windows PowerShell."
+              : "Plain Windows PowerShell at the project. Click to relaunch into WSL bash."
+          }
+          onClick={toggleShellPsMode}
+          style={{
+            fontSize: 9,
+            fontWeight: 700,
+            letterSpacing: "0.06em",
+            lineHeight: 1.2,
+            padding: "1px 4px",
+            borderRadius: 3,
+            marginLeft: 6,
+            flexShrink: 0,
+            cursor: "pointer",
+            userSelect: "none",
+            backgroundColor:
+              shellPsMode === "wsl" ? "var(--ezy-accent)" : "var(--ezy-border-light, #484f58)",
+            color: shellPsMode === "wsl" ? "#fff" : "var(--ezy-text, #e6edf3)",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.filter = "brightness(1.15)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.filter = ""; }}
+        >
+          {shellPsMode === "wsl" ? "WSL" : "WIN"}
+        </span>
+      )}
 
       {/* File path — max 3 segments from end */}
       {sl("filePath") && workingDir && (
