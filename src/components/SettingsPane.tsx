@@ -1345,8 +1345,6 @@ export default function SettingsPane() {
   const setAutoInsertClipboardImage = useAppStore((s) => s.setAutoInsertClipboardImage);
   const maskImagePathsInTerminal = useAppStore((s) => s.maskImagePathsInTerminal);
   const setMaskImagePathsInTerminal = useAppStore((s) => s.setMaskImagePathsInTerminal);
-  const screenshotsRevampEnabled = useAppStore((s) => s.screenshotsRevampEnabled ?? false);
-  const setScreenshotsRevampEnabled = useAppStore((s) => s.setScreenshotsRevampEnabled);
   const watchScreenshotsFolder = useAppStore((s) => s.watchScreenshotsFolder ?? false);
   const setWatchScreenshotsFolder = useAppStore((s) => s.setWatchScreenshotsFolder);
   const screenshotsFolderOverride = useAppStore((s) => s.screenshotsFolderOverride ?? "");
@@ -1491,12 +1489,6 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Mask image paths in terminal (beta)" description="Shows [Image #N] in place of the path. The CLI still receives the real path.">
                 <ToggleSwitch checked={maskImagePathsInTerminal} onChange={setMaskImagePathsInTerminal} />
-              </SettingsRow>
-              <SettingsRow
-                label="Revamped screenshots viewer (beta)"
-                description="Double-click or Ctrl+Click a thumbnail to attach instead of open."
-              >
-                <ToggleSwitch checked={screenshotsRevampEnabled} onChange={setScreenshotsRevampEnabled} />
               </SettingsRow>
               <SettingsRow
                 label="Remember the screenshot viewer's size"

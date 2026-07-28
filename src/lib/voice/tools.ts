@@ -221,7 +221,6 @@ export const WRITABLE_SETTINGS: Record<string, "boolean" | "number" | "string"> 
   alwaysShowTemplatePicker: "boolean",
   restoreLastSession: "boolean",
   autoInsertClipboardImage: "boolean",
-  screenshotsRevampEnabled: "boolean",
   watchScreenshotsFolder: "boolean",
   rememberScreenshotWindow: "boolean",
   copyOnSelect: "boolean",

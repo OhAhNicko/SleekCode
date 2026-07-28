@@ -74,7 +74,6 @@ export const useAppStore = create<AppStore>()(
         promptComposerAlwaysVisible: state.promptComposerAlwaysVisible,
         composerExpansion: state.composerExpansion,
         maskImagePathsInTerminal: state.maskImagePathsInTerminal,
-        screenshotsRevampEnabled: state.screenshotsRevampEnabled,
         watchScreenshotsFolder: state.watchScreenshotsFolder,
         screenshotsFolderOverride: state.screenshotsFolderOverride,
         rememberScreenshotWindow: state.rememberScreenshotWindow,

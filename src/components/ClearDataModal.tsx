@@ -40,7 +40,6 @@ const CATEGORIES: Category[] = [
       "alwaysShowTemplatePicker",
       "restoreLastSession",
       "autoInsertClipboardImage",
-      "screenshotsRevampEnabled",
       "watchScreenshotsFolder",
       "screenshotsFolderOverride",
       "rememberScreenshotWindow",

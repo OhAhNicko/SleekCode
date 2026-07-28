@@ -132,8 +132,6 @@ export interface RecentProjectsSlice {
   promptComposerAlwaysVisible: boolean;
   composerExpansion: ComposerExpansion;
   maskImagePathsInTerminal: boolean;
-  /** Revamped screenshots viewer (filmstrip + zoomable preview) instead of the legacy gallery/expand pair. */
-  screenshotsRevampEnabled: boolean;
   /** Watch the OS Screenshots folder so snips that never hit the clipboard still show up. */
   watchScreenshotsFolder: boolean;
   /** Optional override for the Screenshots folder. Empty = use the OS-detected one. */
@@ -246,7 +244,6 @@ export interface RecentProjectsSlice {
   setPromptComposerAlwaysVisible: (value: boolean) => void;
   setComposerExpansion: (value: ComposerExpansion) => void;
   setMaskImagePathsInTerminal: (value: boolean) => void;
-  setScreenshotsRevampEnabled: (value: boolean) => void;
   setWatchScreenshotsFolder: (value: boolean) => void;
   setScreenshotsFolderOverride: (value: string) => void;
   setRememberScreenshotWindow: (value: boolean) => void;
@@ -303,7 +300,6 @@ export const createRecentProjectsSlice: StateCreator<
   promptComposerAlwaysVisible: false,
   composerExpansion: "up" as ComposerExpansion,
   maskImagePathsInTerminal: false,
-  screenshotsRevampEnabled: false,
   watchScreenshotsFolder: false,
   screenshotsFolderOverride: "",
   rememberScreenshotWindow: false,
@@ -502,10 +498,6 @@ export const createRecentProjectsSlice: StateCreator<
 
   setMaskImagePathsInTerminal: (value) => {
     set({ maskImagePathsInTerminal: value });
-  },
-
-  setScreenshotsRevampEnabled: (value) => {
-    set({ screenshotsRevampEnabled: value });
   },
 
   setWatchScreenshotsFolder: (value) => {
