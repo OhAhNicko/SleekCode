@@ -1137,8 +1137,9 @@ function activeShade(hex: string): string {
 
 /** How far a pane background washes toward its project color. One constant so
  *  the HWND canvas, the xterm canvas, the DOM padding strips and the pane
- *  container can never disagree by a shade. */
-export const PROJECT_TINT_AMOUNT = 0.08;
+ *  container can never disagree by a shade. 0.08 read as taking over the
+ *  canvas; 0.04 keeps it a hint you notice, not a color you sit in. */
+export const PROJECT_TINT_AMOUNT = 0.04;
 
 /** #rgb or #rrggbb → [r,g,b], null if neither. Project color presets are
  *  3-digit (#e55) while theme backgrounds are 6-digit. */
