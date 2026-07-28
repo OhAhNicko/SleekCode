@@ -1,14 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import type { TerminalType } from "../types";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
-import { undoLastInsertion, getImageLabel, resolveImagePath } from "../lib/clipboard-insert";
-
-export interface PastedImage {
-  /** Data URI for the thumbnail preview */
-  thumbnailUrl: string;
-  /** File path as inserted into the terminal */
-  filePath: string;
-}
+import { undoLastInsertion, resolveImagePath } from "../lib/clipboard-insert";
 
 interface UseClipboardImagePasteOptions {
   containerRef: React.RefObject<HTMLDivElement | null>;
@@ -29,12 +22,7 @@ export function useClipboardImagePaste({
   exited,
   onFocus,
 }: UseClipboardImagePasteOptions) {
-  const [pastedImage, setPastedImage] = useState<PastedImage | null>(null);
   const processingRef = useRef(false);
-
-  const dismissPreview = useCallback(() => {
-    setPastedImage(null);
-  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -58,7 +46,6 @@ export function useClipboardImagePaste({
         // the text-paste path so the user isn't stuck.
         const filePath = await resolveImagePath(latestImage.winPath, "clipboard");
         if (filePath) {
-          const label = getImageLabel(latestImage.winPath);
           // For CLI TUIs (Claude/Codex/Gemini) wrap in bracketed paste so the
           // TUI renders [Image #N] cleanly without trailing whitespace where
           // the path would visually sit.
@@ -71,12 +58,13 @@ export function useClipboardImagePaste({
           } else {
             write(filePath);
           }
-          setPastedImage({ thumbnailUrl: latestImage.dataUri, filePath: label });
 
           store.setLastInsertion({
             text: filePath,
             terminalId,
             timestamp: Date.now(),
+            imageId: latestImage.id,
+            thumbnailUrl: latestImage.dataUri,
           });
           return;
         }
@@ -125,7 +113,6 @@ export function useClipboardImagePaste({
           e.preventDefault();
           e.stopPropagation();
           undoLastInsertion();
-          setPastedImage(null);
           return;
         }
         // Otherwise let xterm handle normal Ctrl+Z
@@ -169,6 +156,4 @@ export function useClipboardImagePaste({
       container.removeEventListener("auxclick", handleAuxClick, true);
     };
   }, [containerRef, terminalRef, terminalType, terminalId, write, exited, onFocus]);
-
-  return { pastedImage, dismissPreview };
 }

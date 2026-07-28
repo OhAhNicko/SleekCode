@@ -5,13 +5,13 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { SearchAddon } from "@xterm/addon-search";
-import { getTheme, getEffectiveTerminalTheme, getActivePaneBg } from "../lib/themes";
+import { getTheme, getEffectiveTerminalTheme, getActivePaneBg, getInactivePaneBg } from "../lib/themes";
 import { usePty } from "../hooks/usePty";
 import { useAppStore } from "../store";
 import { registerPtyWrite, unregisterPtyWrite, registerTerminalFocus, unregisterTerminalFocus, getTerminalDataListener } from "../store/terminalSlice";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import type { TerminalType } from "../types";
-import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
+import { DEFAULT_CLI_FONT_SIZE, getProjectColor } from "../store/recentProjectsSlice";
 import { CommandBlockParser, type CommandBlock } from "../lib/command-block-parser";
 import { shouldInjectShellIntegration } from "../lib/shell-integration";
 import {
@@ -31,7 +31,6 @@ import { applyImageMask, clearImageMasks } from "../lib/image-mask";
 import XtermTuiScrollbar from "./XtermTuiScrollbar";
 import TerminalHeader from "./TerminalHeader";
 import CommandBlockOverlay from "./CommandBlockOverlay";
-import ClipboardImagePreview from "./ClipboardImagePreview";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import PromptComposer from "./PromptComposer";
 import PaneSearchBar from "./PaneSearchBar";
@@ -204,9 +203,16 @@ export default function TerminalPane({
   const themeId = useAppStore((s) => s.themeId);
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const theme = getTheme(themeId);
-  const effectiveTerminalTheme = useMemo(() => getEffectiveTerminalTheme(themeId, vibrantColors, isActive), [themeId, vibrantColors, isActive]);
-  const activePaneBg = useMemo(() => getActivePaneBg(themeId), [themeId]);
-  const containerBg = isActive ? activePaneBg : "var(--ezy-bg)";
+  // Project-color wash (Settings > Appearance > Theme > "Project color pane
+  // tint"). Key normalization mirrors TabBar's projectColors lookup.
+  const projectPaneTint = useAppStore((s) => s.projectPaneTint);
+  const projectColorId = useAppStore(
+    (s) => s.projectColors[workingDir.replace(/\\/g, "/")] ?? null,
+  );
+  const paneTint = projectPaneTint ? getProjectColor(projectColorId) : null;
+  const effectiveTerminalTheme = useMemo(() => getEffectiveTerminalTheme(themeId, vibrantColors, isActive, paneTint), [themeId, vibrantColors, isActive, paneTint]);
+  const activePaneBg = useMemo(() => getActivePaneBg(themeId, paneTint), [themeId, paneTint]);
+  const containerBg = isActive ? activePaneBg : getInactivePaneBg(themeId, paneTint);
   const cliFontSize = useAppStore((s) => s.cliFontSizes[terminalType] ?? DEFAULT_CLI_FONT_SIZE);
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
   const copyOnSelectRef = useRef(copyOnSelect);
@@ -1782,8 +1788,9 @@ export default function TerminalPane({
     blockParserRef.current?.toggleCollapse(blockId);
   }, []);
 
-  // Clipboard image paste detection
-  const { pastedImage, dismissPreview } = useClipboardImagePaste({
+  // Clipboard image paste detection — the confirmation UI is the global
+  // image-paste toast (ImageInsertUndoToast), not a per-pane card.
+  useClipboardImagePaste({
     containerRef,
     terminalRef,
     terminalType,
@@ -1792,13 +1799,6 @@ export default function TerminalPane({
     exited,
     onFocus,
   });
-
-  // Auto-dismiss image preview after 8 seconds
-  useEffect(() => {
-    if (!pastedImage) return;
-    const timer = setTimeout(dismissPreview, 8000);
-    return () => clearTimeout(timer);
-  }, [pastedImage, dismissPreview]);
 
   const handleComposerSubmit = useCallback((text: string) => {
     setXtermSubmitNonce((n) => n + 1);
@@ -2095,13 +2095,6 @@ export default function TerminalPane({
             onClose={handleSearchClose}
             isActive={isActive}
             focusBump={searchFocusBump}
-          />
-        )}
-        {pastedImage && (
-          <ClipboardImagePreview
-            thumbnailUrl={pastedImage.thumbnailUrl}
-            filePath={pastedImage.filePath}
-            onDismiss={dismissPreview}
           />
         )}
         {composerOpen && !hideChrome && (

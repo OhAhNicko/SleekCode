@@ -9,6 +9,7 @@ import { useAppStore } from "../store";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { deleteScreenshot, materializeMarkup } from "../lib/screenshots";
+import { registerScreenshotViewerOpener } from "../lib/screenshot-viewer";
 import ImagePreviewModal from "./ImagePreviewModal";
 import ScreenshotsOverlay from "./ScreenshotsOverlay";
 
@@ -58,6 +59,22 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
     }
   };
   useEffect(() => cancelPendingClick, []);
+
+  // Let outsiders (the image-paste toast) open the viewer. Mirrors the
+  // thumbnail "expand" path: revamped viewer, or the legacy preview modal.
+  // Closure reads live store state so a once-on-mount registration stays fresh;
+  // when both strip orientations mount, the last one registered wins.
+  useEffect(() => {
+    return registerScreenshotViewerOpener((imageId) => {
+      if (useAppStore.getState().screenshotsRevampEnabled) {
+        setViewer({ imageId });
+        return;
+      }
+      const imgs = useClipboardImageStore.getState().images;
+      const img = (imageId && imgs.find((i) => i.id === imageId)) || imgs[0];
+      if (img) setPreviewImage({ dataUri: img.dataUri, winPath: img.winPath });
+    });
+  }, []);
 
   // Strip context menus are overlay-rendered (kind "anchored-menu") — the
   // hooks live below, after the handlers they need. The gallery's own

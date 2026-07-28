@@ -22,6 +22,11 @@ import {
 import type { OverlayToastPayload } from "../lib/useOverlayToast";
 import type { OverlayMenuPayload } from "../lib/overlay-menu-model";
 import { validateBranchName } from "../lib/git-branch-validate";
+import {
+  JUMP_BTN_BOTTOM_CLAMP_PX,
+  JUMP_BTN_GAP_PX,
+  JUMP_BTN_IDLE_MS,
+} from "../native-term/tui-scroll-model";
 
 type PopupRect = {
   x: number;
@@ -383,8 +388,6 @@ function OverlayPopup({
       return <ImeComposition msg={msg} registerEl={registerEl} />;
     case "jump-btn":
       return <JumpButton msg={msg} registerEl={registerEl} />;
-    case "clipboard-image-preview":
-      return <ClipboardPreview msg={msg} registerEl={registerEl} />;
     case "anchored-menu":
       return (
         <AnchoredMenu msg={msg} registerEl={registerEl} closeLocal={closeLocal} />
@@ -557,38 +560,91 @@ function Toast({
     );
   }
 
+  // Thumbnail form (image-paste toast): 48px thumb + title/filename column.
+  // Plain form (undo-close/-clear, pane notifications): single title line with
+  // `detail` as its tooltip — unchanged.
+  const hasThumb = !!p.thumbnailUrl;
+
   return (
     <div
       ref={ref}
+      onClick={p.clickAction ? () => act(p.clickAction!) : undefined}
       style={{
         ...placement,
         display: "flex",
         alignItems: "center",
         gap: 10,
-        padding: "8px 12px",
+        padding: hasThumb ? "8px 10px 8px 8px" : "8px 12px",
         borderRadius: 8,
         background: "var(--ezy-surface-raised, #1c2128)",
         boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
         fontFamily: "Inter, system-ui, sans-serif",
         pointerEvents: "auto",
+        cursor: p.clickAction ? "pointer" : undefined,
       }}
     >
-      <span
-        style={{
-          fontSize: 12,
-          color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
-          maxWidth: 260,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-        title={p.detail ?? undefined}
-      >
-        {p.title}
-      </span>
+      {hasThumb && (
+        <img
+          src={p.thumbnailUrl}
+          alt=""
+          style={{
+            width: 48,
+            height: 48,
+            objectFit: "cover",
+            borderRadius: 4,
+            flexShrink: 0,
+          }}
+        />
+      )}
+      {hasThumb ? (
+        <div style={{ minWidth: 0, maxWidth: 240 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 500,
+              color: "var(--ezy-text, #e6edf3)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {p.title}
+          </div>
+          {p.detail && (
+            <div
+              title={p.detailTooltip ?? undefined}
+              style={{
+                fontSize: 11,
+                marginTop: 2,
+                color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {p.detail}
+            </div>
+          )}
+        </div>
+      ) : (
+        <span
+          style={{
+            fontSize: 12,
+            color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+            maxWidth: 260,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={p.detail ?? undefined}
+        >
+          {p.title}
+        </span>
+      )}
       {p.button && (
         <button
-          onClick={() => act(p.button!.action)}
+          onClick={(e) => {
+            e.stopPropagation();
+            act(p.button!.action);
+          }}
           style={{
             fontSize: 12,
             fontWeight: 500,
@@ -616,6 +672,32 @@ function Toast({
         >
           {p.shortcutHint}
         </span>
+      )}
+      {p.dismissable && (
+        <svg
+          onClick={(e) => {
+            e.stopPropagation();
+            act("dismiss");
+          }}
+          role="button"
+          aria-label="Dismiss"
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          style={{
+            cursor: "pointer",
+            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            flexShrink: 0,
+          }}
+        >
+          <path
+            d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          />
+        </svg>
       )}
     </div>
   );
@@ -858,6 +940,20 @@ function TuiScrollbar({
   const frac = Math.min(1, shownPos / Math.max(span, shownPos || 1));
   const thumbY = Math.max(0, (1 - frac) * (trackH - THUMB_H));
 
+  // Jump-to-bottom rides just below the thumb (ported from the normal-buffer
+  // xterm button) and only exists while the bar is STILL: any position change
+  // hides it and restarts the idle timer, so it never chases a moving thumb.
+  const [still, setStill] = useState(false);
+  useEffect(() => {
+    setStill(false);
+    const t = window.setTimeout(() => setStill(true), JUMP_BTN_IDLE_MS);
+    return () => clearTimeout(t);
+  }, [shownPos]);
+  const btnTop = Math.min(
+    PAD_Y + thumbY + THUMB_H + JUMP_BTN_GAP_PX,
+    rect.height - JUMP_BTN_BOTTOM_CLAMP_PX,
+  );
+
   return (
     <div
       ref={(el) => {
@@ -928,15 +1024,16 @@ function TuiScrollbar({
         />
       </div>
 
-      {/* Jump-to-bottom — only while scrolled up, mirroring the xterm pane. */}
-      {!atBottom && (
+      {/* Jump-to-bottom — only while scrolled up AND the bar is still,
+          positioned below the thumb exactly like the xterm pane's button. */}
+      {!atBottom && still && dragPos === null && (
         <div
           onClick={() => emitOverlayAction({ id: msg.id, action: "toBottom" })}
           title="Jump to bottom"
           style={{
             position: "absolute",
             right: 12,
-            bottom: 12,
+            top: btnTop,
             width: 22,
             height: 22,
             borderRadius: 4,
@@ -1093,107 +1190,6 @@ function JumpButton({
       >
         <polyline points="2,3 6,7 10,3" />
         <line x1="3" y1="9.5" x2="9" y2="9.5" />
-      </svg>
-    </div>
-  );
-}
-
-/**
- * "Image pasted" preview card (native pane, bottom-right). Thumbnail is a
- * data: URI so it crosses the event bus. X bounces "dismiss" back to main.
- */
-function ClipboardPreview({
-  msg,
-  registerEl,
-}: {
-  msg: OverlayPopupMsg;
-  registerEl: (id: string, el: HTMLElement | null) => void;
-}) {
-  const p = (msg.payload ?? {}) as { thumbnailUrl?: string; filePath?: string };
-  const ref = useCallback(
-    (el: HTMLElement | null) => registerEl(msg.id, el),
-    [registerEl, msg.id],
-  );
-  const rect = msg.rect!;
-  return (
-    <div
-      ref={ref}
-      style={{
-        position: "fixed",
-        // Anchor the card's bottom-right corner 12px inside the pane's
-        // bottom-right corner (intrinsic width → translate(-100%,-100%)).
-        left: rect.x + rect.width - 12,
-        top: rect.y + rect.height - 12,
-        transform: "translate(-100%, -100%)",
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        borderRadius: 8,
-        padding: "8px 12px",
-        background: "var(--ezy-surface-raised, #1c2128)",
-        boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
-        maxWidth: 320,
-        fontFamily: "Inter, system-ui, sans-serif",
-        pointerEvents: "auto",
-      }}
-    >
-      {p.thumbnailUrl && (
-        <img
-          src={p.thumbnailUrl}
-          alt="Pasted image"
-          style={{
-            width: 48,
-            height: 48,
-            objectFit: "cover",
-            borderRadius: 4,
-            flexShrink: 0,
-          }}
-        />
-      )}
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div
-          style={{
-            fontSize: 12,
-            fontWeight: 500,
-            color: "var(--ezy-text, #e6edf3)",
-          }}
-        >
-          Image pasted
-        </div>
-        <div
-          title={p.filePath}
-          style={{
-            fontSize: 11,
-            marginTop: 2,
-            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {p.filePath ?? ""}
-        </div>
-      </div>
-      <svg
-        role="button"
-        aria-label="Dismiss"
-        onClick={() => emitOverlayAction({ id: msg.id, action: "dismiss" })}
-        width="12"
-        height="12"
-        viewBox="0 0 12 12"
-        fill="none"
-        style={{
-          cursor: "pointer",
-          color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-          flexShrink: 0,
-        }}
-      >
-        <path
-          d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-        />
       </svg>
     </div>
   );

@@ -17,12 +17,18 @@ export type OverlayToastPayload = {
   bg?: string;
   title: string;
   detail?: string;
+  /** Hover tooltip for the detail line (e.g. full path under a filename). */
+  detailTooltip?: string;
+  /** Data-URI thumbnail rendered left of the text (surface variant). */
+  thumbnailUrl?: string;
   /** Action button (e.g. Undo) — `action` is bounced back via overlay:action. */
   button?: { label: string; action: string };
   /** Small hint after the button, e.g. "Ctrl+Z". */
   shortcutHint?: string;
   /** Show an X button that bounces the "dismiss" action. */
   dismissable?: boolean;
+  /** Makes the card itself a click target bouncing this action. */
+  clickAction?: string;
 };
 
 /**

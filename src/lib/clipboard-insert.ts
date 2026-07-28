@@ -141,10 +141,13 @@ export async function insertImagePath(winPath: string): Promise<string | null> {
   }
 
   // Record for undo (includes the trailing space so undo removes both)
+  const insertedImage = idx >= 0 ? images[idx] : undefined;
   useClipboardImageStore.getState().setLastInsertion({
     text: insertion,
     terminalId: activeTerminal.id,
     timestamp: Date.now(),
+    imageId: insertedImage?.id,
+    thumbnailUrl: insertedImage?.dataUri,
   });
 
   // Return focus to the target terminal so the user can keep typing.

@@ -53,6 +53,10 @@ export interface LastInsertion {
   terminalId: string;
   /** Timestamp */
   timestamp: number;
+  /** Store id of the inserted image — lets the toast open it in the viewer. */
+  imageId?: string;
+  /** Thumbnail data URI for the toast card. */
+  thumbnailUrl?: string;
 }
 
 export interface UploadError {

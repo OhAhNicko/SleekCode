@@ -84,6 +84,7 @@ import {
   clearTerminalActivity,
 } from "../lib/terminal-activity";
 import { getTheme, getEffectiveTerminalTheme } from "../lib/themes";
+import { getProjectColor } from "../store/recentProjectsSlice";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
 import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
 import { invoke } from "@tauri-apps/api/core";
@@ -198,8 +199,9 @@ function nativeThemeFor(
   themeId: string,
   vibrant: boolean,
   isActive: boolean,
+  tint: string | null,
 ): NativeTermTheme {
-  const eff = getEffectiveTerminalTheme(themeId, vibrant, isActive);
+  const eff = getEffectiveTerminalTheme(themeId, vibrant, isActive, tint);
   return madeThemeToNative(
     eff as Record<string, string | undefined>,
     eff.extendedAnsi,
@@ -486,16 +488,30 @@ export default function TerminalPaneNative({
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const vibrantColorsRef = useRef(vibrantColors);
   useEffect(() => { vibrantColorsRef.current = vibrantColors; }, [vibrantColors]);
+  // Project-color wash (Settings > Appearance > Theme > "Project color pane
+  // tint"). Key normalization mirrors TabBar's projectColors lookup. Mirrored
+  // into a ref so the create effect reads it once — a tint change must flow
+  // through the theme hot-swap below, never tear down the HWND.
+  const projectPaneTint = useAppStore((s) => s.projectPaneTint);
+  const projectColorId = useAppStore(
+    (s) => s.projectColors[workingDir.replace(/\\/g, "/")] ?? null,
+  );
+  const paneTint = projectPaneTint ? getProjectColor(projectColorId) : null;
+  const paneTintRef = useRef(paneTint);
+  useEffect(() => { paneTintRef.current = paneTint; }, [paneTint]);
+  // Settings > General > Behavior > "Hover tooltips" — gates the file-link
+  // tooltip render below; hover STATE stays live for underline + Ctrl+click.
+  const hoverTooltips = useAppStore((s) => s.hoverTooltips);
   // Background for the pane's breathing-room strips (PANE_PAD_LEFT/BOTTOM).
   // Those strips are DOM, not native surface, so they must paint the EXACT
-  // background the HWND paints — active-pane lift and vibrant overlay
-  // included, via the same helper the theme hot-swap effect uses — or the
-  // gap reads as a seam instead of as part of the terminal.
+  // background the HWND paints — active-pane lift, vibrant overlay and
+  // project tint included, via the same helper the theme hot-swap effect
+  // uses — or the gap reads as a seam instead of as part of the terminal.
   const surfaceBg = useMemo(
     () =>
-      getEffectiveTerminalTheme(themeId, vibrantColors, isActive).background ??
+      getEffectiveTerminalTheme(themeId, vibrantColors, isActive, paneTint).background ??
       "#0d1117",
-    [themeId, vibrantColors, isActive],
+    [themeId, vibrantColors, isActive, paneTint],
   );
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
@@ -628,6 +644,7 @@ export default function TerminalPaneNative({
               themeIdRef.current,
               vibrantColorsRef.current,
               isActiveRef.current,
+              paneTintRef.current,
             ),
             font: {
               family: TERMINAL_FONT_FAMILY,
@@ -746,10 +763,17 @@ export default function TerminalPaneNative({
       // what the user sees.
       if (anyFloatingWindow()) {
         const floatHost = el.closest<HTMLElement>(OCCLUDER_SELECTOR);
-        setPaneOccluded(
-          createdId,
-          isOccluded(rect, floatHost?.dataset.floatingMode ?? null),
-        );
+        // BOTH attributes, because OCCLUDER_SELECTOR matches both and
+        // occlusion.ts reads both when deciding `anyExpanded`. Reading only
+        // `floatingMode` made a pane INSIDE a `data-native-occluder` host
+        // report hostMode = null, which fails the "a window's own content must
+        // never hide itself" test — so the expanded dev-server panel hid its
+        // own terminal and rendered as an empty black panel.
+        const hostMode =
+          floatHost?.dataset.floatingMode ??
+          floatHost?.dataset.nativeOccluder ??
+          null;
+        setPaneOccluded(createdId, isOccluded(rect, hostMode));
       } else {
         setPaneOccluded(createdId, false);
       }
@@ -1038,11 +1062,11 @@ export default function TerminalPaneNative({
     // changes exactly like the legacy renderer.
     void nativeTermSetTheme(
       termId,
-      nativeThemeFor(themeId, vibrantColors, isActive),
+      nativeThemeFor(themeId, vibrantColors, isActive, paneTint),
     ).catch(
       (e) => console.error("[TerminalPaneNative] set_theme update failed", e),
     );
-  }, [termId, themeId, vibrantColors, isActive]);
+  }, [termId, themeId, vibrantColors, isActive, paneTint]);
 
   // ── Cursor style/blink hot-swap ───────────────────────────────────────
   // Re-push the cursor settings whenever the user changes them in Settings.
@@ -1749,7 +1773,8 @@ export default function TerminalPaneNative({
   // ── Clipboard image paste ─────────────────────────────────────────────
   // Native HWND captures most paste events directly, but mount the hook so
   // any pastes that reach the React container (e.g. focus outside HWND) work.
-  const { pastedImage, dismissPreview } = useClipboardImagePaste({
+  // The confirmation UI is the global image-paste toast (ImageInsertUndoToast).
+  useClipboardImagePaste({
     containerRef: terminalDivRef,
     terminalRef: nullTerminalRef,
     terminalType,
@@ -1757,31 +1782,6 @@ export default function TerminalPaneNative({
     write: composerWrite,
     exited,
     onFocus,
-  });
-
-  // Auto-dismiss image preview after 8 seconds (matches xterm pane).
-  useEffect(() => {
-    if (!pastedImage) return;
-    const timer = setTimeout(dismissPreview, 8000);
-    return () => clearTimeout(timer);
-  }, [pastedImage, dismissPreview]);
-
-  // "Image pasted" preview card — overlay-rendered above the native pane
-  // (kind "clipboard-image-preview"; thumbnail crosses the bus as data: URI).
-  useOverlayPopupAnchor({
-    id: `clipboard-image-preview-${terminalId}`,
-    kind: "clipboard-image-preview",
-    open: !!pastedImage,
-    anchorRef: terminalDivRef,
-    payload: pastedImage
-      ? {
-          thumbnailUrl: pastedImage.thumbnailUrl,
-          filePath: pastedImage.filePath,
-        }
-      : null,
-    onAction: (action) => {
-      if (action === "dismiss") dismissPreview();
-    },
   });
 
   // ── TerminalHeader props ──────────────────────────────────────────────
@@ -2033,7 +2033,10 @@ export default function TerminalPaneNative({
         // terminalDivRef for the same grid-origin reason as the IME popup.
         <FileLinkTooltip
           termId={termId}
-          hover={fileLinkHover}
+          // hover=null is the component's normal "nothing hovered" state, so
+          // the Settings kill switch suppresses only the tooltip — underline
+          // (nativeTermSetHoverLink) and Ctrl+click stay live.
+          hover={hoverTooltips ? fileLinkHover : null}
           paneRef={terminalDivRef}
           cellW={cellMetrics?.w}
           cellH={cellMetrics?.h}
@@ -2065,7 +2068,6 @@ export default function TerminalPaneNative({
       {/* Pane search — overlay-rendered with FOCUS HANDOFF (the overlay
           becomes focusable while the bar hosts the input; see the
           "pane-search" kind hook above). The last hole-cut user is gone. */}
-      {/* ClipboardImagePreview — overlay-rendered (hook below the paste hook). */}
       {/* PromptComposer — AI CLI prompt input. Internal effects guard on
           null terminal; cursor/buffer-dependent features are inert until
           R3 surfaces a Rust-backed terminal shim. */}
