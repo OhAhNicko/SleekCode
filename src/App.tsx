@@ -748,6 +748,63 @@ export default function App() {
         return;
       }
 
+      // ── WebView2 browser accelerators ──────────────────────────────────
+      // The webview is an app shell, not a browser page: a stray reload chord
+      // (Chrome muscle memory) tears the DOM down and orphans every native
+      // pane HWND, killing in-flight work — the Settings reload button with
+      // its confirm is the ONE sanctioned path. Swallow every browser chord
+      // that would otherwise fall through to WebView2.
+      //
+      // Focused xterm panes are exempt where noted: xterm preventDefaults
+      // everything it feeds the PTY (TUI F-keys, readline chords), so those
+      // never reach WebView2 anyway, and the exemption keeps them working.
+      // Native panes never route keys through the DOM at all.
+      {
+        const t = e.target as HTMLElement | null;
+        const inXterm = !!t?.closest?.(".xterm");
+        const editable =
+          !!t &&
+          (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+        // Ctrl+Shift+R (hard refresh) — the accident this block exists for.
+        // Consumed even over a terminal: no TUI wants the chord, and losing a
+        // pane's work costs more than a swallowed keystroke ever could.
+        if (ctrlKey && shiftKey && key.toLowerCase() === "r") {
+          consume();
+          return;
+        }
+        // F5 / Ctrl+F5 / Shift+F5 — same reload, different fingers. TUIs do
+        // use F5 (xterm consumes it first when focused), hence the exemption.
+        if (key === "F5" && !inXterm) {
+          consume();
+          return;
+        }
+        if (!inXterm && !editable) {
+          // Browser chrome with no app meaning: print, save page, open file
+          // (navigates the shell away — as fatal as reload), view source,
+          // downloads, history, the Edge find bar, the caret-browsing prompt,
+          // and history navigation. Editables are exempt so CodeMirror's
+          // Ctrl+S save and Alt+arrow keymaps keep working.
+          const lower = key.toLowerCase();
+          if (
+            ctrlKey &&
+            !shiftKey &&
+            !altKey &&
+            (lower === "p" || lower === "s" || lower === "o" || lower === "u" || lower === "j" || lower === "h")
+          ) {
+            consume();
+            return;
+          }
+          if (key === "F3" || key === "F7") {
+            consume();
+            return;
+          }
+          if (altKey && !ctrlKey && !shiftKey && (key === "ArrowLeft" || key === "ArrowRight")) {
+            consume();
+            return;
+          }
+        }
+      }
+
       // Esc → minimize topmost expanded/floating pane back into the grid.
       // Skip when no expanded/floating pane exists, or when a non-textarea/input
       // dialog is open (palette, modals) — those have their own Esc handlers.
