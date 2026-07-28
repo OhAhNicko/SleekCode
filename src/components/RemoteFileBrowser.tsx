@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { useModal } from "../store/modalCoordinationSlice";
 import type { RemoteServer } from "../types";
 
 interface RemoteFileBrowserProps {
@@ -13,6 +14,12 @@ export default function RemoteFileBrowser({
   onSelect,
   onClose,
 }: RemoteFileBrowserProps) {
+  // Fullscreen modal → the native panes must hide, or its child HWNDs paint
+  // straight over this. Same gap TemplatePicker had (2026-07-27 audit).
+  // TabBar renders this only while `browsingServer` is set, so it unmounts on
+  // close and `useModal` (lifetime-scoped) is the right one.
+  useModal("remote-file-browser");
+
   const [currentPath, setCurrentPath] = useState("/");
   const [entries, setEntries] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);

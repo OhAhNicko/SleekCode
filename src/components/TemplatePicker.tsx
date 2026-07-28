@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useMemo } from "react";
 import { WORKSPACE_TEMPLATES, type WorkspaceTemplate } from "../lib/workspace-templates";
 import { useAppStore } from "../store";
+import { useModal } from "../store/modalCoordinationSlice";
 import { getServerCommandSuggestions, BUILTIN_SERVER_COMMANDS } from "../lib/server-commands";
 import { isWindows } from "../lib/platform";
 import type { TerminalType } from "../types";
@@ -189,6 +190,20 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
 
 
 export default function TemplatePicker({ onSelect, onClose, initialServerCommand, initialNoDevServer }: TemplatePickerProps) {
+  // MANDATORY for a fullscreen modal, and its absence is why "the overlay
+  // after the project-name one never opens" (user-reported 2026-07-27): it DID
+  // open, buried. Native panes are Win32 child HWNDs composited above WebView2,
+  // so no z-index can lift DOM over them — the panes have to be HIDDEN, which
+  // is what registering here does.
+  //
+  // The symptom was sequenced exactly by the flow: CreateProjectModal registers,
+  // so the panes hide and you see it; it closes, the panes come back; this
+  // mounts with nothing registered and 23 panes paint straight over it.
+  //
+  // `useModal`, not `useModalWhen`: App.tsx renders this only while `pendingDir`
+  // is set, so it unmounts on close and the registration dies with it.
+  useModal("template-picker");
+
   const cliYolo = useAppStore((s) => s.cliYolo);
   const addCustomServerCommand = useAppStore((s) => s.addCustomServerCommand);
   const removeCustomServerCommand = useAppStore((s) => s.removeCustomServerCommand);

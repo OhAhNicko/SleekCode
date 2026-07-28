@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAppStore } from "../store";
+import { useModal } from "../store/modalCoordinationSlice";
 import { interpolateVariables, type Snippet, type SnippetVariable } from "../store/snippetSlice";
 import { getPtyWrite, getAllPtyWriteTerminalIds } from "../store/terminalSlice";
 import SnippetEditor from "./SnippetEditor";
@@ -9,6 +10,12 @@ interface SnippetPanelProps {
 }
 
 export default function SnippetPanel({ onClose }: SnippetPanelProps) {
+  // Fullscreen modal → the native panes must hide, or its child HWNDs paint
+  // straight over this. Same gap TemplatePicker had (2026-07-27 audit).
+  // App.tsx renders this only while `showSnippets` is true, so it unmounts on
+  // close and `useModal` (lifetime-scoped) is the right one.
+  useModal("snippet-panel");
+
   const snippets = useAppStore((s) => s.snippets);
   const addSnippet = useAppStore((s) => s.addSnippet);
   const updateSnippet = useAppStore((s) => s.updateSnippet);
