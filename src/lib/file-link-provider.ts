@@ -1,4 +1,5 @@
 import type { Terminal, ILinkProvider, ILink, IBufferLine } from "@xterm/xterm";
+import { useAppStore } from "../store";
 
 // Known source file extensions — keeps false positives low
 const EXTENSIONS =
@@ -165,6 +166,9 @@ export function createFilePathLinkProvider(
         },
         hover(event: MouseEvent, _text: string): void {
           removeTooltip();
+          // Tooltip display only — Ctrl+Click in activate() stays live when
+          // the user has turned hover tooltips off in Settings.
+          if (!useAppStore.getState().hoverTooltips) return;
 
           const tooltip = document.createElement("div");
           tooltip.className = "xterm-hover ezy-file-link-tooltip";

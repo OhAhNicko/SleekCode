@@ -26,6 +26,7 @@
  * over exactly the surfaces that need it most.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useAppStore } from "../store";
 import { useOverlayViewportPopup } from "../lib/useOverlayToast";
 
 /**
@@ -136,8 +137,19 @@ export default function TooltipHost() {
     });
   }, []);
 
+  // Settings > General > Behavior > "Hover tooltips" — off suppresses every
+  // tooltip this host owns. A tip already on screen when the user flips the
+  // toggle must not linger.
+  const hoverTooltips = useAppStore((s) => s.hoverTooltips);
+  useEffect(() => {
+    if (!hoverTooltips) hideNow();
+  }, [hoverTooltips, hideNow]);
+
   useEffect(() => {
     const onOver = (e: PointerEvent) => {
+      // getState() rather than a dep: the handler must see the live flag
+      // without re-registering the document listeners on every toggle.
+      if (!useAppStore.getState().hoverTooltips) return;
       const target = e.target as HTMLElement | null;
       const el = target?.closest?.("[data-tooltip]") as HTMLElement | null;
 

@@ -150,6 +150,10 @@ export interface RecentProjectsSlice {
   browserFullColumn: boolean;
   browserSpawnLeft: boolean;
   copyOnSelect: boolean;
+  /** false = suppress ALL hover tooltips (chrome data-tooltip chips AND
+   *  terminal file-link tooltips). Links stay underlined and clickable. */
+  hoverTooltips: boolean;
+  setHoverTooltips: (value: boolean) => void;
   confirmQuit: boolean;
   /** Ask before the Settings sidebar's Reload button reloads every pane.
    *  The modal's "Remember" checkbox clears this; the Behavior toggle restores it. */
@@ -312,6 +316,7 @@ export const createRecentProjectsSlice: StateCreator<
   browserFullColumn: true,
   browserSpawnLeft: false,
   copyOnSelect: false,
+  hoverTooltips: true,
   confirmQuit: true,
   confirmReloadPanes: true,
   claudeNotifChannel: "",
@@ -562,6 +567,10 @@ export const createRecentProjectsSlice: StateCreator<
 
   setCopyOnSelect: (value) => {
     set({ copyOnSelect: value });
+  },
+
+  setHoverTooltips: (value) => {
+    set({ hoverTooltips: value });
   },
 
   setConfirmQuit: (value) => {
