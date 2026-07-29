@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useClipboardImageStore } from "../store/clipboardImageStore";
 import { useAppStore } from "../store";
-import { insertImagePath } from "../lib/clipboard-insert";
+import { attachImage } from "../lib/clipboard-insert";
 import { dataUriBytes, findOriginal, measureDataUri } from "../lib/screenshots";
 
 interface ClipboardPollResult {
@@ -82,22 +82,14 @@ export function useClipboardWatcher() {
             });
           }
 
-          // Auto-insert if setting is enabled
-          if (useAppStore.getState().autoInsertClipboardImage) {
-            if (useAppStore.getState().promptComposerEnabled) {
-              // Attach to active MadeComposer instead of writing to terminal
-              const cs = useClipboardImageStore.getState();
-              const newImg = cs.images[0];
-              const activeId = cs.activeComposerTerminalId;
-              if (newImg && activeId) {
-                cs.setPendingComposerImage({ image: newImg, terminalId: activeId });
-              }
-            } else {
-              // insertImagePath is async (may upload to remote SSH host); the
-              // promise resolves itself even on failure (toast is surfaced
-              // via the clipboard image store), so just kick it off.
-              void insertImagePath(result.image.path);
-            }
+          // Auto-insert if setting is enabled. attachImage resolves the caret
+          // pane (active terminal, validated against the active tab) and
+          // routes to its composer when one is mounted, its PTY otherwise.
+          // It is async (may upload to a remote SSH host); the promise
+          // resolves itself even on failure (toast is surfaced via the
+          // clipboard image store), so just kick it off.
+          if (useAppStore.getState().autoInsertClipboardImage && added) {
+            void attachImage(added);
           }
         }
       } catch {

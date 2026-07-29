@@ -80,8 +80,18 @@ interface ClipboardImageStore {
   uploadError: UploadError | null;
   /** Pending image for a specific MadeComposer to pick up (set by TabBar/auto-paste, consumed by composer) */
   pendingComposerImage: { image: ClipboardImage; terminalId: string } | null;
-  /** Terminal ID of the last focused MadeComposer (set by composer on focus) */
-  activeComposerTerminalId: string | null;
+  /**
+   * Terminal IDs that currently have a MadeComposer mounted.
+   *
+   * This is a plain presence registry, NOT a "last focused wins" slot — the
+   * previous single-id design let any background pane's composer (they mount
+   * for background tabs too, and remount whenever a busy pane's prompt line
+   * reappears) silently steal the screenshot-attach target across projects.
+   * The attach target is resolved from the caret pane at insert time; this
+   * registry only answers "does that pane have a composer to hand the image
+   * to, or should the path go to its PTY?".
+   */
+  mountedComposers: Record<string, true>;
   addImage: (image: Omit<ClipboardImage, "id" | "timestamp">, seq: number) => void;
   /**
    * Report a file the folder watcher saw. Merges into an existing entry when it
@@ -121,7 +131,8 @@ interface ClipboardImageStore {
   setLastInsertion: (insertion: LastInsertion | null) => void;
   setUploadError: (err: UploadError | null) => void;
   setPendingComposerImage: (pending: { image: ClipboardImage; terminalId: string } | null) => void;
-  setActiveComposerTerminalId: (id: string | null) => void;
+  registerComposer: (terminalId: string) => void;
+  unregisterComposer: (terminalId: string) => void;
 }
 
 const MAX_CLIPBOARD_IMAGES = 50;
@@ -134,7 +145,7 @@ export const useClipboardImageStore = create<ClipboardImageStore>((set, get) => 
   lastInsertion: null,
   uploadError: null,
   pendingComposerImage: null,
-  activeComposerTerminalId: null,
+  mountedComposers: {},
   addImage: (image, seq) =>
     set((state) => {
       const now = Date.now();
@@ -283,5 +294,14 @@ export const useClipboardImageStore = create<ClipboardImageStore>((set, get) => 
   setLastInsertion: (insertion) => set({ lastInsertion: insertion }),
   setUploadError: (err) => set({ uploadError: err }),
   setPendingComposerImage: (pending) => set({ pendingComposerImage: pending }),
-  setActiveComposerTerminalId: (id) => set({ activeComposerTerminalId: id }),
+  registerComposer: (terminalId) =>
+    set((state) => ({
+      mountedComposers: { ...state.mountedComposers, [terminalId]: true },
+    })),
+  unregisterComposer: (terminalId) =>
+    set((state) => {
+      const next = { ...state.mountedComposers };
+      delete next[terminalId];
+      return { mountedComposers: next };
+    }),
 }));

@@ -5,7 +5,7 @@ import { useClipboardImageStore, type ClipboardImage } from "../store/clipboardI
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
-import { insertImagePath, resolveImagePath } from "../lib/clipboard-insert";
+import { attachImage, resolveImagePath } from "../lib/clipboard-insert";
 import {
   deleteAllScreenshots,
   deleteScreenshot,
@@ -115,9 +115,9 @@ export default function ScreenshotsOverlay({
   onClose,
 }: ScreenshotsOverlayProps) {
   const images = useClipboardImageStore((s) => s.images);
-  const setPendingComposerImage = useClipboardImageStore((s) => s.setPendingComposerImage);
-  const activeComposerId = useClipboardImageStore((s) => s.activeComposerTerminalId);
   const updateImageMeta = useClipboardImageStore((s) => s.updateImageMeta);
+  // Only drives button labels — the actual composer-vs-PTY routing decision
+  // lives in attachImage, resolved against the caret pane at attach time.
   const composerEnabled = useAppStore((s) => s.promptComposerEnabled);
 
   // Native panes are child HWNDs — no DOM z-index can cover them. Without this
@@ -132,6 +132,21 @@ export default function ScreenshotsOverlay({
   const [stage, setStage] = useState({ w: 0, h: 0 });
   const [armDelete, setArmDelete] = useState(false);
   const [armClear, setArmClear] = useState(false);
+  /** Copy button just fired — swaps its icon for a green check, then reverts. */
+  const [copied, setCopied] = useState(false);
+  const copiedTimerRef = useRef<number | null>(null);
+
+  // The check confirms THIS image was copied — moving through the filmstrip
+  // or reopening the viewer goes back to the plain copy icon immediately.
+  useEffect(() => {
+    setCopied(false);
+  }, [activeId, open]);
+  useEffect(
+    () => () => {
+      if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+    },
+    [],
+  );
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; imgId: string } | null>(null);
   const [stripEdges, setStripEdges] = useState({ left: false, right: false });
   /** Fills the window. Zoom, pan and every control behave identically. */
@@ -519,14 +534,10 @@ export default function ScreenshotsOverlay({
       // would be the worst possible outcome, so flatten first.
       void flushMarkup(img).then((target) => {
         if (!target) return;
-        if (composerEnabled && activeComposerId) {
-          setPendingComposerImage({ image: target, terminalId: activeComposerId });
-        } else {
-          void insertImagePath(target.winPath);
-        }
+        void attachImage(target);
       });
     },
-    [composerEnabled, activeComposerId, setPendingComposerImage, flushMarkup],
+    [flushMarkup],
   );
 
   const copyImage = useCallback(
@@ -534,7 +545,16 @@ export default function ScreenshotsOverlay({
       if (!img) return;
       void flushMarkup(img).then((target) => {
         if (!target) return;
-        void invoke("copy_image_to_clipboard", { path: target.winPath }).catch(() => {});
+        void invoke("copy_image_to_clipboard", { path: target.winPath }).then(() => {
+          // Confirm only what actually happened — a failed copy keeps the
+          // plain icon rather than lying with a check mark.
+          setCopied(true);
+          if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+          copiedTimerRef.current = window.setTimeout(() => {
+            copiedTimerRef.current = null;
+            setCopied(false);
+          }, 1500);
+        }).catch(() => {});
       });
     },
     [flushMarkup],
@@ -1663,20 +1683,33 @@ export default function ScreenshotsOverlay({
                 <GhostButton
                   onClick={() => copyImage(active)}
                   square
-                  tooltip="Copy image (Ctrl+C)"
+                  tooltip={copied ? "Copied" : "Copy image (Ctrl+C)"}
                   aria-label="Copy image"
                 >
-                  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-                    <rect x="3" y="3" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none" />
-                    <path
-                      d="M4.5 3 V2 H10 V8 H8.5"
-                      stroke="currentColor"
-                      strokeWidth="1.3"
-                      fill="none"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
+                  {copied ? (
+                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                      <path
+                        d="M2.5 6.5 L5 9 L9.5 3.5"
+                        stroke="#3fb950"
+                        strokeWidth="1.6"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  ) : (
+                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                      <rect x="3" y="3" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none" />
+                      <path
+                        d="M4.5 3 V2 H10 V8 H8.5"
+                        stroke="currentColor"
+                        strokeWidth="1.3"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
                 </GhostButton>
 
                 <GhostButton

@@ -1011,12 +1011,20 @@ export default function PromptComposer({
     loadUserSkills(terminalType, workingDir).then(setUserSkills).catch(() => {});
   }, [terminalType, workingDir]);
 
-  // Auto-focus on mount + register as active composer
+  // Auto-focus on mount + register this pane's composer as mounted. The
+  // registry is presence-only: screenshot attaches resolve their TARGET from
+  // the caret pane, then ask the registry whether that pane has a composer.
+  // (The old "claim active-composer on mount" global let background panes in
+  // other tabs steal the attach target every time their composer remounted.)
   useEffect(() => {
-    useClipboardImageStore.getState().setActiveComposerTerminalId(terminalId);
-    if (suppressAutoFocus) return; // pane opened in background — don't steal focus
-    const timer = setTimeout(() => textareaRef.current?.focus(), 30);
-    return () => clearTimeout(timer);
+    useClipboardImageStore.getState().registerComposer(terminalId);
+    const timer = suppressAutoFocus
+      ? null // pane opened in background — don't steal focus
+      : setTimeout(() => textareaRef.current?.focus(), 30);
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      useClipboardImageStore.getState().unregisterComposer(terminalId);
+    };
   }, [terminalId]);
 
   // Re-focus the textarea after the user clicks the terminal area, but only when
@@ -1943,7 +1951,6 @@ export default function PromptComposer({
           }}
           onKeyDown={handleKeyDown}
           onFocus={() => {
-            useClipboardImageStore.getState().setActiveComposerTerminalId(terminalId);
             // Re-scan position on focus to correct any accumulated drift + unhide
             const result = scanPromptPosition();
             if (result) {

@@ -1,9 +1,54 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import { getPtyWrite, getTerminalFocus } from "../store/terminalSlice";
-import { useClipboardImageStore } from "../store/clipboardImageStore";
+import { useClipboardImageStore, type ClipboardImage } from "../store/clipboardImageStore";
+import { findAllTerminalIds } from "./layout-utils";
 import { toWslPath } from "./terminal-config";
 import { registerImageMask } from "./image-mask";
+
+/**
+ * The terminal the caret is in: the globally active terminal, but ONLY when
+ * it belongs to the ACTIVE tab's layout.
+ *
+ * The global `isActive` flag can go stale — background tabs' Workspaces used
+ * to claim it on mount, and tab switches don't route through a pane click —
+ * so trusting it raw once pasted a screenshot into a pane of a different
+ * project. A screenshot must never land in a pane the user cannot see:
+ * when the flag points outside the active tab, return null and let the
+ * caller do nothing.
+ */
+export function resolveCaretTerminalId(): string | null {
+  const state = useAppStore.getState();
+  const active = Object.values(state.terminals).find((t) => t.isActive);
+  if (!active) return null;
+  const tab = state.tabs.find((t) => t.id === state.activeTabId);
+  if (!tab?.layout) return null;
+  return findAllTerminalIds(tab.layout).includes(active.id) ? active.id : null;
+}
+
+/**
+ * Hand a screenshot to a terminal pane: its MadeComposer when one is mounted
+ * (and the composer feature is on), the PTY path-insert otherwise.
+ *
+ * Every attach flow (thumbnail double-click, viewer button, auto-insert,
+ * drag-drop) funnels through here so the target rules stay in one place.
+ * Without `explicitTerminalId` the target is the caret pane; with it (drag
+ * onto a specific pane) the caller's pane wins.
+ */
+export async function attachImage(
+  image: ClipboardImage,
+  explicitTerminalId?: string
+): Promise<void> {
+  const terminalId = explicitTerminalId ?? resolveCaretTerminalId();
+  if (!terminalId) return;
+  const state = useAppStore.getState();
+  const composers = useClipboardImageStore.getState().mountedComposers;
+  if (state.promptComposerEnabled && composers[terminalId]) {
+    useClipboardImageStore.getState().setPendingComposerImage({ image, terminalId });
+    return;
+  }
+  await insertImagePath(image.winPath, terminalId);
+}
 
 /**
  * Get the display label for a clipboard image (e.g. "[Img 1]").
@@ -44,17 +89,19 @@ export function buildRemotePath(localPath: string, prefix: string): string {
  */
 export async function resolveImagePath(
   winPath: string,
-  prefix: "clipboard" | "drop" = "clipboard"
+  prefix: "clipboard" | "drop" = "clipboard",
+  terminalId?: string
 ): Promise<string | null> {
   const state = useAppStore.getState();
-  const activeTerminal = Object.values(state.terminals).find((t) => t.isActive);
+  const targetId = terminalId ?? resolveCaretTerminalId();
+  const targetTerminal = targetId ? state.terminals[targetId] : undefined;
 
-  if (activeTerminal?.serverId) {
-    const server = state.servers.find((s) => s.id === activeTerminal.serverId);
+  if (targetTerminal?.serverId) {
+    const server = state.servers.find((s) => s.id === targetTerminal.serverId);
     if (!server) {
       useClipboardImageStore.getState().setUploadError({
         title: "Upload failed",
-        detail: `Remote server ${activeTerminal.serverId} not found`,
+        detail: `Remote server ${targetTerminal.serverId} not found`,
         timestamp: Date.now(),
       });
       return null;
@@ -100,19 +147,26 @@ function quoteForShell(path: string): string {
 }
 
 /**
- * Insert a clipboard image file path into the active terminal.
- * Records the insertion for undo support.
- * Returns the inserted text, or null if no active terminal or upload failed.
+ * Insert a clipboard image file path into a terminal — the caret pane by
+ * default, or an explicit target (drag-drop). Records the insertion for undo
+ * support. Returns the inserted text, or null if no valid target terminal or
+ * the upload failed. "No valid target" includes the active-terminal flag
+ * pointing outside the active tab — inserting into an invisible pane in
+ * another project is strictly worse than doing nothing.
  */
-export async function insertImagePath(winPath: string): Promise<string | null> {
-  const terminals = useAppStore.getState().terminals;
-  const activeTerminal = Object.values(terminals).find((t) => t.isActive);
+export async function insertImagePath(
+  winPath: string,
+  terminalId?: string
+): Promise<string | null> {
+  const targetId = terminalId ?? resolveCaretTerminalId();
+  if (!targetId) return null;
+  const activeTerminal = useAppStore.getState().terminals[targetId];
   if (!activeTerminal) return null;
 
   const writeFn = getPtyWrite(activeTerminal.id);
   if (!writeFn) return null;
 
-  const filePath = await resolveImagePath(winPath, "clipboard");
+  const filePath = await resolveImagePath(winPath, "clipboard", activeTerminal.id);
   if (!filePath) return null;
 
   // Register a display mask BEFORE writing so the echo (if enabled in settings)
