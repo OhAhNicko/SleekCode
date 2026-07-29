@@ -8,7 +8,7 @@ Bump the app version, trigger a CI release build, and populate the GitHub releas
 
 0. Branch & working-tree pre-flight (do this FIRST — releases must cut from `main`, and `git add -A` in step 5 sweeps EVERYTHING dirty into the release):
    - `current=$(git branch --show-current)` and `git status --short`.
-   - **Surface dirty state before touching anything.** If the working tree is dirty, list the files and CONFIRM with the user that ALL of it is meant to ship this version — step 5's `git add -A` will sweep every modified/untracked file (including other sessions' WIP) into the release commit. Never sweep silently.
+   - **Standing consent: always release everything dirty (user decision, 2026-07-30).** Do NOT ask for confirmation about the dirty tree — sweep every modified/untracked file (including other sessions' WIP) into the release so the tree ends clean. Still LIST the swept files in the final report so the user sees what shipped, and still commit distinct workstreams as their OWN `feat/fix(...)` commits (read the diff if unsure what a workstream is — don't guess) BEFORE the version bump, so the changelog gets real subjects instead of one opaque bump commit.
    - **Already on `main` and clean** → skip to step 1.
    - **On a feature branch (multi-branch flow — the branch holds the work, `main` is the release trunk):**
      a. `git fetch origin`, then confirm a clean fast-forward is possible:
