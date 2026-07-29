@@ -7,11 +7,20 @@ export interface SidebarSlice {
   devServerPanelOpen: boolean;
   expandedDirs: string[];
   expandedRemoteDirs: string[];
+  /** One-shot "show this file in the Files tree" request (see
+   *  requestRevealFile). Nonce so the same file can be revealed twice.
+   *  Deliberately NOT persisted. */
+  revealFileRequest: { path: string; nonce: number } | null;
   toggleSidebar: () => void;
   setSidebarTab: (tab: SidebarTab) => void;
   toggleDevServerPanel: () => void;
   toggleExpandDir: (path: string) => void;
   toggleExpandRemoteDir: (path: string) => void;
+  /** Open the file sidebar on the Files tab and highlight `path` in the
+   *  tree. Store-driven rather than a window event so a request fired while
+   *  the sidebar is still closed is consumed when FileExplorer mounts a
+   *  frame later. */
+  requestRevealFile: (path: string) => void;
 }
 
 export const createSidebarSlice: StateCreator<
@@ -25,6 +34,7 @@ export const createSidebarSlice: StateCreator<
   devServerPanelOpen: false,
   expandedDirs: [],
   expandedRemoteDirs: [],
+  revealFileRequest: null,
 
   toggleSidebar: () => {
     set((state) => ({
@@ -55,6 +65,18 @@ export const createSidebarSlice: StateCreator<
           : [...state.expandedDirs, path],
       };
     });
+  },
+
+  requestRevealFile: (path) => {
+    set((state) => ({
+      sidebarOpen: true,
+      // Same mutual exclusion as toggleSidebar.
+      devServerPanelOpen: false,
+      // Remote tabs keep their tab — Sidebar's own effect owns the
+      // files ↔ remote-files flip; forcing "files" here would fight it.
+      sidebarTab: state.sidebarTab === "remote-files" ? state.sidebarTab : "files",
+      revealFileRequest: { path, nonce: (state.revealFileRequest?.nonce ?? 0) + 1 },
+    }));
   },
 
   toggleExpandRemoteDir: (path) => {

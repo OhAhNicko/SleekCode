@@ -301,6 +301,13 @@ export default function PaneGrid({
       if (!detail?.filePath) return;
       const filePath: string = detail.filePath;
 
+      // Opening a file also opens the file sidebar with the file highlighted
+      // (closable as ever). Every mounted grid runs this handler — gate on
+      // the active tab so the request fires exactly once.
+      if (useAppStore.getState().activeTabId === tabId) {
+        useAppStore.getState().requestRevealFile(filePath);
+      }
+
       // Check if a fileviewer pane already exists — if so, add the file to it
       const findFileViewer = (node: PaneLayout): string | null => {
         if (node.type === "fileviewer") return node.id;

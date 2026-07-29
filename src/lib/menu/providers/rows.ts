@@ -398,6 +398,12 @@ function editorTab(ctx: RowCtx): MenuGroup[] {
           run: () => useAppStore.getState().setEditorWordWrap(!useAppStore.getState().editorWordWrap),
         },
         {
+          id: "row.editor.revealSidebar",
+          label: "Reveal in file sidebar",
+          iconId: "sidebar",
+          run: () => useAppStore.getState().requestRevealFile(path),
+        },
+        {
           id: "row.editor.reveal",
           label: "Reveal in Explorer",
           iconId: "folder-open",

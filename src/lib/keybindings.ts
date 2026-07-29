@@ -148,7 +148,7 @@ export const KEYBINDINGS: readonly KeyBinding[] = [
   { command: "pane.close", chords: [C("w", { ctrl: true })], label: "Close pane", group: "General", ownedBy: "app" },
   { command: "pane.focusNext", chords: [C("]", { ctrl: true, shift: true })], label: "Focus next pane", group: "General", ownedBy: "app" },
   { command: "pane.focusPrev", chords: [C("[", { ctrl: true, shift: true })], label: "Focus previous pane", group: "General", ownedBy: "app" },
-  { command: "app.toggleSidebar", chords: [C("b", { ctrl: true })], label: "Toggle sidebar", group: "General", ownedBy: "app" },
+  { command: "app.toggleSidebar", chords: [C("b", { ctrl: true })], label: "Toggle file sidebar", group: "General", ownedBy: "app" },
   { command: "app.fileExplorer", chords: [C("E", { ctrl: true, shift: true })], label: "Toggle file explorer", group: "General", ownedBy: "app" },
   { command: "app.palette", chords: [C("k", { ctrl: true }), C("P", { ctrl: true, shift: true })], label: "Command palette", group: "General", ownedBy: "app", extraRows: [{ keys: ["Ctrl", "Shift", "P"], label: "Command palette" }] },
   { command: "app.settings", chords: [C(",", { ctrl: true })], label: "Settings", group: "General", ownedBy: "app" },

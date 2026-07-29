@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import type { FileEntry } from "../types";
@@ -13,6 +13,12 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
   const toggleExpandDir = useAppStore((s) => s.toggleExpandDir);
   const [cache, setCache] = useState<Record<string, FileEntry[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
+  // File revealed via requestRevealFile — rendered as a selected row.
+  const [highlightedPath, setHighlightedPath] = useState<string | null>(null);
+  // Bumped when a reveal lands so the scroll effect below re-fires even for
+  // an already-highlighted file.
+  const [scrollNonce, setScrollNonce] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const loadDir = useCallback(async (path: string) => {
     if (cache[path]) return;
@@ -37,6 +43,7 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
   const renderEntry = (entry: FileEntry, depth: number) => {
     const isExpanded = expandedDirs.includes(entry.path);
     const isLoading = loading[entry.path];
+    const isHighlighted = entry.path === highlightedPath;
 
     return (
       <div key={entry.path}>
@@ -57,11 +64,14 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
             paddingLeft: 8 + depth * 16,
             cursor: "pointer",
             fontSize: 12,
-            color: "var(--ezy-text-secondary)",
+            color: isHighlighted ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
+            backgroundColor: isHighlighted ? "var(--ezy-accent-glow)" : "transparent",
             transition: "background-color 100ms ease",
           }}
           onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
+          // Leave restores the SELECTED background, not transparent — the
+          // reveal highlight must survive the pointer passing through.
+          onMouseLeave={(e) => e.currentTarget.style.backgroundColor = isHighlighted ? "var(--ezy-accent-glow)" : "transparent"}
           onClick={() => {
             if (entry.is_directory) {
               handleToggle(entry.path);
@@ -131,6 +141,61 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
     }
   }, [rootDir]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Reveal-in-sidebar requests (file opened from a pane, editor header's
+  // "Reveal in file sidebar"). Walks the tree down from the root, expanding
+  // each collapsed ancestor, then highlights the file. Fresh list_dir per
+  // level rather than the render cache: the walk is async and a few levels
+  // deep at most, and this way it also picks up files created after the
+  // cache was filled.
+  const revealRequest = useAppStore((s) => s.revealFileRequest);
+  useEffect(() => {
+    if (!revealRequest || !rootDir) return;
+    const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+    const target = norm(revealRequest.path);
+    // Outside this project's tree (or the root itself) — nothing to reveal.
+    if (!target.startsWith(norm(rootDir) + "/")) return;
+    let cancelled = false;
+    (async () => {
+      let cur = rootDir;
+      // Depth guard only — a real repo never nests 64 levels.
+      for (let depth = 0; depth < 64; depth++) {
+        let entries: FileEntry[];
+        try {
+          entries = await invoke<FileEntry[]>("list_dir", { path: cur });
+        } catch {
+          return;
+        }
+        if (cancelled) return;
+        setCache((prev) => ({ ...prev, [cur]: entries }));
+        const next = entries.find(
+          (en) => target === norm(en.path) || target.startsWith(norm(en.path) + "/"),
+        );
+        if (!next) return;
+        if (!next.is_directory) {
+          setHighlightedPath(next.path);
+          setScrollNonce((n) => n + 1);
+          return;
+        }
+        // Live store read — the closure's expandedDirs goes stale across awaits.
+        const s = useAppStore.getState();
+        if (!s.expandedDirs.includes(next.path)) s.toggleExpandDir(next.path);
+        cur = next.path;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [revealRequest, rootDir]);
+
+  // Scroll the revealed row into view. Runs as an effect so it fires AFTER
+  // the expansions above have committed and the row exists in the DOM.
+  useEffect(() => {
+    if (scrollNonce === 0 || !highlightedPath) return;
+    containerRef.current
+      ?.querySelector(`[data-ctx-path="${CSS.escape(highlightedPath)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [scrollNonce, highlightedPath]);
+
   // Re-read the tree after a context-menu mutation (rename / delete / create).
   // `loadDir` early-returns on a cached path, so dropping the cache is what
   // actually forces the re-read.
@@ -148,7 +213,7 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
   }, [rootDir]);
 
   return (
-    <div style={{ overflowY: "auto", height: "100%" }}>
+    <div ref={containerRef} style={{ overflowY: "auto", height: "100%" }}>
       {cache[rootDir] ? (
         cache[rootDir].map((entry) => renderEntry(entry, 0))
       ) : (

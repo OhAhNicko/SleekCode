@@ -38,7 +38,7 @@ const appProvider: MenuProvider<"app"> = {
           },
           {
             id: "app.toggleSidebar",
-            label: ctx.sidebarOpen ? "Hide sidebar" : "Show sidebar",
+            label: ctx.sidebarOpen ? "Hide file sidebar" : "Show file sidebar",
             iconId: "sidebar",
             command: "app.toggleSidebar",
             run: () => runCommand("app.toggleSidebar"),
