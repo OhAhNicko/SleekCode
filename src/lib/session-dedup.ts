@@ -9,6 +9,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { toWslPath } from "./terminal-config";
+import { getCachedDistro } from "./wsl-cache";
 
 // Track session IDs already claimed by panes in this app instance.
 // Prevents multiple panes from claiming the same session file during disk lookup.
@@ -102,7 +103,7 @@ export async function lookupClaudeBySpawn(
     if (projectPath) id = await invoke<string | null>("get_claude_session_id_by_spawn_windows", { projectPath, minStartedAtMs: minStartedAt, nowMs, excludeIds, debug });
   } else {
     projectPath = toWslPath(workingDir);
-    if (projectPath) id = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath, minStartedAtMs: minStartedAt, nowMs, excludeIds, debug });
+    if (projectPath) id = await invoke<string | null>("get_claude_session_id_by_spawn", { projectPath, minStartedAtMs: minStartedAt, nowMs, excludeIds, debug, distro: getCachedDistro() });
   }
   sessionDebug(`${phase} by_spawn`, { backend: backend ?? "wsl", projectPath, minStartedAt, nowMs, excludeCount: excludeIds.length, result: id });
   return id;

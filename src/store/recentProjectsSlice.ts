@@ -287,6 +287,12 @@ export interface RecentProjectsSlice {
   updateCustomScaffold: (id: string, patch: Partial<Omit<CustomScaffold, "id">>) => void;
   removeCustomScaffold: (id: string) => void;
   terminalBackend: TerminalBackend;
+  /**
+   * WSL distro override for everything MADE runs inside WSL (pane spawns,
+   * pool warm, helper commands). `null` = wsl.exe's default distro
+   * (`wsl --set-default`). Applies to NEW panes; open panes keep theirs.
+   */
+  wslDistro: string | null;
   commitMsgMode: CommitMsgMode;
   shadowAiCli: ShadowAiCli;
   projectColors: Record<string, ProjectColorId>;
@@ -331,6 +337,7 @@ export interface RecentProjectsSlice {
   setAutoMinimizeGameOnAiDone: (value: boolean) => void;
   toggleMiniGamesButton: () => void;
   setTerminalBackend: (value: TerminalBackend) => void;
+  setWslDistro: (value: string | null) => void;
   setProjectBackend: (path: string, serverId: string | undefined, backend: TerminalBackend) => void;
   /** Set the per-project dev-server shell override. `undefined` clears it (back to auto-detect). */
   setProjectServerInWindows: (path: string, serverId: string | undefined, value: boolean | undefined) => void;
@@ -459,6 +466,7 @@ export const createRecentProjectsSlice: StateCreator<
       customScaffolds: state.customScaffolds.filter((s) => s.id !== id),
     })),
   terminalBackend: getDefaultBackend(),
+  wslDistro: null,
   commitMsgMode: "simple",
   shadowAiCli: "claude",
   projectColors: {},
@@ -690,6 +698,9 @@ export const createRecentProjectsSlice: StateCreator<
 
   setTerminalBackend: (value) => {
     set({ terminalBackend: value });
+  },
+  setWslDistro: (value) => {
+    set({ wslDistro: value });
   },
   setProjectBackend: (path, serverId, backend) => {
     const normalized = normalizePath(path);

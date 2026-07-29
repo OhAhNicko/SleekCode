@@ -221,7 +221,17 @@ pub async fn pty_spawn(
 #[tauri::command]
 pub async fn pty_pool_warm(count: u32, distro: Option<String>) -> Result<u32, String> {
     // Remember distro so auto-replenishment in pty_spawn_pooled knows what to spawn.
-    *pool_distro().lock().unwrap() = distro.clone();
+    // If it CHANGED (user picked another distro in Settings), the pooled bash
+    // sessions are all inside the old distro — flush them or the next fresh AI
+    // pane silently opens in the wrong distro.
+    {
+        let mut stored = pool_distro().lock().unwrap();
+        if *stored != distro {
+            *stored = distro.clone();
+            drop(stored);
+            flush_wsl_pool();
+        }
+    }
 
     let current_size = wsl_pool().lock().unwrap().len();
     let to_spawn = (count as usize).min(WSL_POOL_MAX.saturating_sub(current_size));

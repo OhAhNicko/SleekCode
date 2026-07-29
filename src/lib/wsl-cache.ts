@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { useAppStore } from "../store";
 
 interface WslCliCache {
   path: string;
@@ -45,9 +46,20 @@ export async function resolveWslCliPaths(): Promise<void> {
   if (resolving) return;
   resolving = true;
   try {
+    // Resolve INSIDE the selected distro (Settings > Terminal > Backend) —
+    // CLI install paths differ per distro. null = wsl.exe's default distro.
+    const selectedDistro = useAppStore.getState().wslDistro;
     const result = await invoke<Record<string, string>>("wsl_resolve_cli_env", {
       cliNames: ["claude", "codex", "gemini"],
+      distro: selectedDistro,
     });
+    // Distro changed mid-flight (Settings clears the cache, then re-resolves):
+    // these paths belong to the OLD distro — saving them would poison the fast
+    // spawn path until the 24h TTL. Drop them and resolve again.
+    if (useAppStore.getState().wslDistro !== selectedDistro) {
+      resolving = false;
+      return resolveWslCliPaths();
+    }
     const path = result["PATH"] || "";
     const distro = result["DISTRO"] || "";
     const resolvedPaths: Record<string, string> = {};
@@ -84,8 +96,21 @@ export function getCachedCliPath(name: string): string | null {
 }
 
 /**
- * Get the cached WSL distro name, or null if not cached.
+ * The distro every WSL spawn should target: the user's Settings override
+ * first, else the detected default distro from the cache, else null
+ * (= let wsl.exe pick its default).
  */
 export function getCachedDistro(): string | null {
-  return loadCache()?.distro || null;
+  return useAppStore.getState().wslDistro || loadCache()?.distro || null;
+}
+
+/**
+ * Drop the resolved-paths cache. Called when the distro override changes:
+ * cached absolute CLI paths (e.g. ~/.nvm/.../claude) belong to the OLD
+ * distro, and the fast spawn path would exec a nonexistent file in the new
+ * one. Follow with resolveWslCliPaths() to re-resolve and re-warm the pool.
+ */
+export function clearWslCliCache(): void {
+  cache = null;
+  localStorage.removeItem(CACHE_KEY);
 }

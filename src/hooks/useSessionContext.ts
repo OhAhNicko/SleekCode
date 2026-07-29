@@ -24,6 +24,7 @@ import type { TerminalType, TerminalBackend } from "../types";
 import { readSessionContext, type ContextInfo } from "../lib/context-parser";
 import { supportsSessionResume } from "../lib/session-resume";
 import { toWslPath } from "../lib/terminal-config";
+import { getCachedDistro } from "../lib/wsl-cache";
 import {
   claimedSessionIds,
   claimSessionId,
@@ -157,9 +158,9 @@ export function useSessionContext({
               } else {
                 const wslCwd = toWslPath(workingDir);
                 if (wslCwd) {
-                  if (type === "claude") id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds });
-                  else if (type === "codex") id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
-                  else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+                  if (type === "claude") id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
+                  else if (type === "codex") id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
+                  else if (type === "gemini") id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
                 }
               }
             }
@@ -232,8 +233,8 @@ export function useSessionContext({
               } else {
                 const wslCwd = toWslPath(workingDir);
                 if (wslCwd) {
-                  if (type === "codex") newId = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
-                  else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+                  if (type === "codex") newId = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
+                  else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
                 }
               }
             }
