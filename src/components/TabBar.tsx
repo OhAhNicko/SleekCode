@@ -2,9 +2,10 @@ import { useCallback, useState, useRef, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { spawnDevServer } from "../lib/spawn-dev-server";
+import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes, hasGamePane } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
-import { getProjectColor, autoAssignColor, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
+import { getProjectColor, autoAssignColor, isQuickOpenEnabled, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { isWindows, detectBackendForPath } from "../lib/platform";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
@@ -58,6 +59,7 @@ export default function TabBar() {
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
   const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
   const devServers = useAppStore((s) => s.devServers);
+  const devServerButtonOnTab = useAppStore((s) => s.devServerButtonOnTab);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
   const projectColors = useAppStore((s) => s.projectColors);
@@ -302,7 +304,7 @@ export default function TabBar() {
       ? {
           projects: recentProjects.map((project) => {
             const hasSavedLayout = !!project.lastLayout || !!project.lastTemplate;
-            const canQuickOpen = hasSavedLayout && !!project.quickOpen;
+            const canQuickOpen = hasSavedLayout && isQuickOpenEnabled(project);
             const savedPaneCount = project.lastLayout
               ? countLeafPanes(project.lastLayout)
               : project.lastTemplate?.paneCount;
@@ -336,7 +338,7 @@ export default function TabBar() {
               badgeMuted: isOrphanRemote,
               showFresh: canQuickOpen,
               showQuick: hasSavedLayout,
-              quickOn: !!project.quickOpen,
+              quickOn: isQuickOpenEnabled(project),
               paneCount: String(savedPaneCount ?? "?"),
               backendLabel: backend ?? undefined,
             };
@@ -358,7 +360,7 @@ export default function TabBar() {
         case "open":
           if (!project) return;
           setShowRecentMenu(false);
-          if ((!!project.lastLayout || !!project.lastTemplate) && project.quickOpen) {
+          if ((!!project.lastLayout || !!project.lastTemplate) && isQuickOpenEnabled(project)) {
             quickOpenProject(project, false);
           } else {
             setPendingDir({
@@ -821,7 +823,28 @@ export default function TabBar() {
                               {showTabPath && tab.customName ? tab.customName : tab.name}
                             </span>
                           )}
-                          {cliCount > 1 && (
+                          {tab.isHibernated && (
+                            <span
+                              data-tooltip={`Hibernated — ${cliCount} pane${cliCount === 1 ? "" : "s"} sleeping. Click to wake (Claude sessions resume).`}
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                lineHeight: 1,
+                                padding: "1px 4px",
+                                borderRadius: 4,
+                                position: "relative" as const,
+                                top: 1,
+                                backgroundColor: "var(--ezy-surface-raised)",
+                                border: "1px solid var(--ezy-border)",
+                                color: "var(--ezy-text-muted)",
+                              }}
+                            >
+                              <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M9.598 1.591a.749.749 0 01.785-.175 7.001 7.001 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.499 5.499 0 107.678-7.678z" />
+                              </svg>
+                            </span>
+                          )}
+                          {cliCount > 1 && !tab.isHibernated && (
                             <span
                               style={{
                                 fontSize: 9,
@@ -871,6 +894,57 @@ export default function TabBar() {
                     })()}
                   </span>
                   )}
+
+                  {/* Dev-server quick-open (Settings > Preview Panes > "Dev
+                      server button on project tab"). RESERVE-SLOT: the element
+                      is rendered on EVERY project tab whose server is running
+                      so the tab's width never changes when it (de)activates —
+                      only the ACTIVE tab actually shows and handles the icon.
+                      Green = the app-wide running color (StatusDot). Plain
+                      click = external browser, Ctrl/Cmd = MADE browser pane. */}
+                  {devServerButtonOnTab && !isSystemTab && (() => {
+                    const tabNorm = tab.workingDir?.replace(/\\/g, "/");
+                    const ds = devServers.find(
+                      (srv) =>
+                        srv.status === "running" &&
+                        (srv.tabId === tab.id ||
+                          (!!tabNorm && srv.workingDir.replace(/\\/g, "/") === tabNorm)),
+                    );
+                    if (!ds) return null;
+                    return (
+                      <span
+                        role={isActive ? "button" : undefined}
+                        aria-label="Open dev server in browser"
+                        data-tooltip={isActive ? `Open localhost:${ds.port} in browser` : undefined}
+                        data-tooltip-hint={isActive ? "Ctrl+Click opens the MADE browser pane" : undefined}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openDevServerUrl(ds, { inApp: wantsInAppOpen(e) });
+                        }}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 18,
+                          height: 18,
+                          borderRadius: 3,
+                          flexShrink: 0,
+                          marginLeft: 2,
+                          cursor: "pointer",
+                          visibility: isActive ? "visible" : "hidden",
+                          pointerEvents: isActive ? "auto" : "none",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-border)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      >
+                        <svg width={12} height={12} viewBox="0 0 12 12" fill="none">
+                          <circle cx="6" cy="6" r="4.5" stroke="#4ade80" strokeWidth="1.2" />
+                          <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="#4ade80" strokeWidth="1" />
+                          <path d="M1.5 6h9" stroke="#4ade80" strokeWidth="1" />
+                        </svg>
+                      </span>
+                    );
+                  })()}
 
                   {/* Settings tab: X to close panel (hover reveal) */}
                   {tab.isSettingsTab && (

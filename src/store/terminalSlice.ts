@@ -173,6 +173,8 @@ export interface TerminalSlice {
   addTerminal: (id: string, type: TerminalType, workingDir: string, serverId?: string) => void;
   addTerminals: (batch: Array<{ id: string; type: TerminalType; workingDir: string; serverId?: string }>) => void;
   removeTerminal: (id: string) => void;
+  /** Batch removal (tab hibernation): one store update for N panes. */
+  removeTerminals: (ids: string[]) => void;
   changeTerminalType: (id: string, newType: TerminalType) => void;
   setTerminalPid: (id: string, pid: number) => void;
   setActiveTerminal: (id: string) => void;
@@ -246,6 +248,23 @@ export const createTerminalSlice: StateCreator<
       return {
         terminals: rest,
         devServers: state.devServers.filter((ds) => ds.terminalId !== id),
+      };
+    });
+  },
+
+  removeTerminals: (ids) => {
+    if (ids.length === 0) return;
+    for (const id of ids) {
+      clearTerminalActivity(id);
+      unregisterPtyWrite(id);
+    }
+    const drop = new Set(ids);
+    set((state) => {
+      const terminals = { ...state.terminals };
+      for (const id of ids) delete terminals[id];
+      return {
+        terminals,
+        devServers: state.devServers.filter((ds) => !drop.has(ds.terminalId)),
       };
     });
   },

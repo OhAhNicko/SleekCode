@@ -94,7 +94,7 @@ export function generateCommitMsg(diff: string): Promise<string> {
       settle(cleaned);
     }
 
-    const onDataChan = new Channel<number[]>();
+    const onDataChan = new Channel<ArrayBuffer>();
     onDataChan.onmessage = (data) => {
       output += new TextDecoder().decode(new Uint8Array(data));
       if (idleTimer) clearTimeout(idleTimer);

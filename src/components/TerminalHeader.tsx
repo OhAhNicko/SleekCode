@@ -8,6 +8,7 @@ import { TERMINAL_CONFIGS, toWslPath } from "../lib/terminal-config";
 import { getPlatform } from "../lib/platform";
 import { supportsSessionResume } from "../lib/session-resume";
 import { readSessionsIndex, resolveSessionName, readSessionFirstPrompt, slugify } from "../lib/sessions-index";
+import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { useAppStore } from "../store";
 import { FaChevronDown } from "react-icons/fa";
 import { FaXmark, FaGripVertical } from "react-icons/fa6";
@@ -460,6 +461,21 @@ export default function TerminalHeader({
     setProjectShellInWindows(workingDir, serverId, shellPsMode === "wsl");
     onRestart?.();
   }, [workingDir, serverId, shellPsMode, setProjectShellInWindows, onRestart]);
+  // Dev-server quick-open icon (Settings > Preview Panes). The header has no
+  // tab id, so the server is matched the same way spawnDevServer dedupes:
+  // normalized workingDir + serverId — which also catches servers added by
+  // hand in the panel (their tabId is ""). Selector returns the found object
+  // (stable identity) — same re-render-safe pattern as shellPsMode above.
+  const headerDevServer = useAppStore((s) => {
+    if (!s.devServerButtonInHeader || !workingDir) return undefined;
+    const norm = workingDir.replace(/\\/g, "/");
+    return s.devServers.find(
+      (ds) =>
+        ds.status === "running" &&
+        ds.workingDir.replace(/\\/g, "/") === norm &&
+        ds.serverId === serverId,
+    );
+  });
   const [showTypePicker, setShowTypePicker] = useState(false);
   const typePickerAnchorRef = useRef<HTMLDivElement>(null);
   // CLI type picker — overlay-rendered (kind "anchored-menu").
@@ -805,6 +821,42 @@ export default function TerminalHeader({
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
         >
           · {truncatePath(workingDir)}
+        </span>
+      )}
+
+      {/* Dev-server quick-open — shown only while this project's server is
+          running (Settings > Preview Panes > "Dev server button in pane
+          headers"). Green = the app-wide running color (StatusDot). Same
+          click contract as terminal links: plain = external browser,
+          Ctrl/Cmd = MADE browser pane. */}
+      {headerDevServer && (
+        <span
+          role="button"
+          aria-label="Open dev server in browser"
+          data-tooltip={`Open localhost:${headerDevServer.port} in browser`}
+          data-tooltip-hint="Ctrl+Click opens the MADE browser pane"
+          onClick={(e) => {
+            e.stopPropagation();
+            openDevServerUrl(headerDevServer, { inApp: wantsInAppOpen(e) });
+          }}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 3,
+            marginLeft: 2,
+            borderRadius: 3,
+            flexShrink: 0,
+            cursor: "pointer",
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-border)")}
+          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+        >
+          <svg width={12} height={12} viewBox="0 0 12 12" fill="none">
+            <circle cx="6" cy="6" r="4.5" stroke="#4ade80" strokeWidth="1.2" />
+            <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="#4ade80" strokeWidth="1" />
+            <path d="M1.5 6h9" stroke="#4ade80" strokeWidth="1" />
+          </svg>
         </span>
       )}
 

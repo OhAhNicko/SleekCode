@@ -4,6 +4,7 @@ import type { TerminalType } from "../types";
 import { sessionStillExists } from "../lib/session-exists";
 import { claudeSessionIdArgs, getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
 import { shellPsModeFor } from "../lib/shell-mode";
+import { notePtyChunk } from "../lib/pty-flood-stats";
 import { wslReady } from "../lib/wsl-cache";
 import { windowsReady } from "../lib/windows-cli-cache";
 import { nativeReady } from "../lib/macos-cli-cache";
@@ -292,7 +293,7 @@ export function usePty({
           const psMode = terminalType === "shell"
             ? shellPsModeFor(currentWorkingDir, currentServerId, backend)
             : undefined;
-          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, undefined, termProgram, termProgramVersion, psMode);
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, undefined, termProgram, termProgramVersion, psMode, termId);
           command = config.command;
 
           args = [...config.args];
@@ -304,11 +305,16 @@ export function usePty({
         }
       }
 
-      const onDataChan = new Channel<number[]>();
+      // ArrayBuffer, not number[]: Rust sends InvokeResponseBody::Raw, so the
+      // chunk arrives as raw bytes instead of a JSON number array that would
+      // need parsing on the UI thread (that parse backlog delayed overlay
+      // popups by seconds under heavy output).
+      const onDataChan = new Channel<ArrayBuffer>();
       onDataChan.onmessage = (data) => {
         // Guard: discard data from stale spawns (e.g. React StrictMode double-fire
         // where the first PTY starts before cleanup cancels it)
         if (spawnIdRef.current !== thisSpawnId) return;
+        notePtyChunk(data.byteLength);
         onDataRef.current(new Uint8Array(data));
       };
 
@@ -332,7 +338,7 @@ export function usePty({
           // `--session-id <uuid>`, which the pane has ALREADY committed to via
           // onSessionIdAssigned. Rebuilding a yolo-only list here is what made
           // MADE's stored id and Claude's real id diverge.
-          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, extraArgs, backend);
+          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, extraArgs, backend, termId);
           if (initCmd) {
             console.log(`[PTY] using pool for ${terminalType}`, extraArgs.length ? `extraArgs: ${extraArgs.join(" ")}` : "(no extra args)");
             try {

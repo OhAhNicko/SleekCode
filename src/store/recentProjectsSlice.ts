@@ -20,6 +20,13 @@ export interface RecentProject {
   lastTemplate?: RecentProjectTemplate;
   serverCommand?: string;
   noDevServer?: boolean;
+  /**
+   * "Quick open" — clicking the project in the recent menu reopens its saved
+   * layout directly instead of asking for one. ON by default:
+   * `undefined` means enabled, explicit `false` means the user disabled it.
+   * Read through `isQuickOpenEnabled`, never truthiness (`!!quickOpen` would
+   * flip the default for every project that never touched the badge).
+   */
   quickOpen?: boolean;
   lastLayout?: PaneLayout;
   /** Links to RemoteServer.id when the project lives on an SSH server. Presence means remote. */
@@ -46,6 +53,11 @@ export interface RecentProject {
 
 export function isRemoteProject(p: RecentProject): boolean {
   return !!p.serverId;
+}
+
+/** Quick open defaults to ON — see the `quickOpen` field doc. */
+export function isQuickOpenEnabled(p: Pick<RecentProject, "quickOpen">): boolean {
+  return p.quickOpen !== false;
 }
 
 const MAX_RECENT_PROJECTS = 15;
@@ -153,6 +165,12 @@ export interface RecentProjectsSlice {
   globalPromptHistory: string[];
   autoStartServerCommand: boolean;
   previewInProjectTab: boolean;
+  /** Dev-server quick-open icon in every terminal pane header (while running). */
+  devServerButtonInHeader: boolean;
+  setDevServerButtonInHeader: (value: boolean) => void;
+  /** Dev-server quick-open icon on the active project tab (while running). */
+  devServerButtonOnTab: boolean;
+  setDevServerButtonOnTab: (value: boolean) => void;
   customServerCommands: string[];
   browserFullColumn: boolean;
   browserSpawnLeft: boolean;
@@ -189,6 +207,13 @@ export interface RecentProjectsSlice {
   setEditorWordWrap: (value: boolean) => void;
   showTabPath: boolean;
   setShowTabPath: (value: boolean) => void;
+  /** Auto-hibernate idle background tabs (kill PTYs, keep layout; wake on
+   *  activation). Default OFF — the manual tab-menu action is always there. */
+  autoHibernateEnabled: boolean;
+  setAutoHibernateEnabled: (value: boolean) => void;
+  /** How long EVERY idle signal must stay quiet before a tab auto-hibernates. */
+  autoHibernateMinutes: number;
+  setAutoHibernateMinutes: (value: number) => void;
   openPanesInBackground: boolean;
   wideGridLayout: boolean;
   redistributeOnClose: boolean;
@@ -319,6 +344,8 @@ export const createRecentProjectsSlice: StateCreator<
   globalPromptHistory: [],
   autoStartServerCommand: true,
   previewInProjectTab: true,
+  devServerButtonInHeader: false,
+  devServerButtonOnTab: true,
   customServerCommands: [],
   browserFullColumn: true,
   browserSpawnLeft: false,
@@ -335,6 +362,10 @@ export const createRecentProjectsSlice: StateCreator<
   setEditorWordWrap: (value) => set({ editorWordWrap: value }),
   showTabPath: false,
   setShowTabPath: (value) => set({ showTabPath: value }),
+  autoHibernateEnabled: false,
+  setAutoHibernateEnabled: (value) => set({ autoHibernateEnabled: value }),
+  autoHibernateMinutes: 30,
+  setAutoHibernateMinutes: (value) => set({ autoHibernateMinutes: value }),
   openPanesInBackground: false,
   wideGridLayout: true,
   redistributeOnClose: true,
@@ -560,6 +591,14 @@ export const createRecentProjectsSlice: StateCreator<
     set({ previewInProjectTab: value });
   },
 
+  setDevServerButtonInHeader: (value) => {
+    set({ devServerButtonInHeader: value });
+  },
+
+  setDevServerButtonOnTab: (value) => {
+    set({ devServerButtonOnTab: value });
+  },
+
   setBrowserFullColumn: (value) => {
     set({ browserFullColumn: value });
   },
@@ -734,7 +773,7 @@ export const createRecentProjectsSlice: StateCreator<
     set((state) => ({
       recentProjects: state.recentProjects.map((p) =>
         normalizePath(p.path) === normalized && p.serverId === serverId
-          ? { ...p, quickOpen: !p.quickOpen }
+          ? { ...p, quickOpen: !isQuickOpenEnabled(p) }
           : p
       ),
     }));

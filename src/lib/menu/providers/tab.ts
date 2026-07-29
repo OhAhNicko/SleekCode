@@ -1,5 +1,7 @@
 import { useAppStore } from "../../../store";
 import { PROJECT_COLOR_PRESETS } from "../../../store/recentProjectsSlice";
+import { tabHibernateBlocker } from "../../../store/tabSlice";
+import { tabIdleVerdict } from "../../pane-idle";
 import { snapshotTabs, undoClose, useUndoCloseStore } from "../../../store/undoCloseStore";
 import { cloneLayoutWithFreshIds } from "../../layout-utils";
 import { promptForInput, confirmAction } from "../../prompt-modal";
@@ -142,6 +144,36 @@ const tabProvider: MenuProvider<"tab"> = {
                 cloneLayoutWithFreshIds(t.layout).layout,
                 t.serverId,
               );
+            },
+          },
+          {
+            id: "tab.hibernate",
+            label: ctx.isHibernated ? "Wake tab" : "Hibernate tab",
+            iconId: "moon",
+            // Verdict decided at BUILD time (menus never change after opening).
+            // For a live tab this doubles as the idle-gate shadow readout, so
+            // the auto-timer can be trusted before it is enabled.
+            sublabel: (() => {
+              const s = useAppStore.getState();
+              const t = s.tabs.find((x) => x.id === ctx.tabId);
+              if (!t) return undefined;
+              if (t.isHibernated) return "Respawns the saved panes — Claude sessions resume";
+              const v = tabIdleVerdict(t, s.terminals, Math.max(5, s.autoHibernateMinutes) * 60_000);
+              if (!v.eligible) return undefined; // blocker already shown as the disabled reason
+              return v.working ? `Active: ${v.reason}` : "Idle — would auto-hibernate";
+            })(),
+            unavailable: (() => {
+              if (ctx.isHibernated) return undefined;
+              const s = useAppStore.getState();
+              const t = s.tabs.find((x) => x.id === ctx.tabId);
+              const others = visibleTabs().filter((x) => x.id !== ctx.tabId);
+              const blocker = tabHibernateBlocker(t, s.terminals, ctx.isActive && others.length === 0);
+              return blocker ? { reason: blocker } : undefined;
+            })(),
+            run: () => {
+              const s = useAppStore.getState();
+              if (ctx.isHibernated) s.wakeTab(ctx.tabId);
+              else s.hibernateTab(ctx.tabId);
             },
           },
           {

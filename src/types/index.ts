@@ -193,6 +193,12 @@ export interface Tab {
   serverCommand?: string;
   /** Terminal backend stamped at tab creation time. Determines WSL vs Windows for all panes in this tab. */
   backend?: TerminalBackend;
+  /** Hibernated: layout (incl. sessionResumeIds) is kept but the terminals are
+   *  removed and their PTYs killed, freeing the WSL processes. Waking (tab
+   *  activation) respawns the layout — Claude panes via `--resume`. Persisted,
+   *  so a tab hibernated at quit stays asleep across app restarts. */
+  isHibernated?: boolean;
+  hibernatedAt?: number;
 }
 
 export interface TaskCard {

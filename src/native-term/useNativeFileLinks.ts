@@ -303,8 +303,14 @@ export function useNativeFileLinks({
           const h = hoverRef.current;
           if (!h) return;
           if (h.kind === "url") {
+            // Ctrl+Click is the only click Rust forwards, and the tooltip
+            // says "Open in MADE" — so inApp: the browser PANE, not the OS
+            // browser (plain click can't be intercepted here; it belongs to
+            // the terminal/TUI).
             window.dispatchEvent(
-              new CustomEvent("made:open-url", { detail: { url: h.href } }),
+              new CustomEvent("made:open-url", {
+                detail: { url: h.href, inApp: true },
+              }),
             );
           } else {
             const resolved = resolvePath(h.href, workingDirRef.current);
@@ -323,7 +329,9 @@ export function useNativeFileLinks({
             console.debug("[useNativeFileLinks] link_click http", uri);
           }
           window.dispatchEvent(
-            new CustomEvent("made:open-url", { detail: { url: uri } }),
+            new CustomEvent("made:open-url", {
+              detail: { url: uri, inApp: true },
+            }),
           );
           return;
         }

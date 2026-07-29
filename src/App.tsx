@@ -48,6 +48,8 @@ import { matchCommand, probeKeybinding, MIGRATED } from "./lib/keybindings";
 import { runCommand } from "./lib/commands";
 import PromptModal from "./components/PromptModal";
 import TooltipHost from "./components/TooltipHost";
+import WslHealthCheck from "./components/WslHealthCheck";
+import HibernationEngine from "./components/HibernationEngine";
 import UpdateBanner from "./components/UpdateBanner";
 import ChangelogModal from "./components/ChangelogModal";
 import VoiceHud from "./components/VoiceHud";
@@ -1258,6 +1260,8 @@ export default function App() {
       <GlobalContextMenu />
       <PromptModal />
       <TooltipHost />
+      <WslHealthCheck />
+      <HibernationEngine />
       <DevServerTerminalHost />
       <DevServerRestoreToast />
       {!onboardingCompleted && (

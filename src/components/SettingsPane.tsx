@@ -3,6 +3,8 @@ import { nativeTermGpuInfo, type GpuInfo } from "../lib/native-term-bridge";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke, Channel } from "@tauri-apps/api/core";
+import { RELEASES_REPO } from "../lib/release-notes";
 import { open } from "@tauri-apps/plugin-dialog";
 import { KNOWN_TERM_PROGRAMS } from "../lib/terminal-config";
 import { setClaudeNotifChannel, type ClaudeNotifChannel } from "../lib/sessions-index";
@@ -511,10 +513,83 @@ function UpdatesSection() {
   const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
   const showChangelogOnUpdate = useAppStore((s) => s.showChangelogOnUpdate);
   const setShowChangelogOnUpdate = useAppStore((s) => s.setShowChangelogOnUpdate);
+  // Downgrade path: released versions older than the running one.
+  const [prevVersions, setPrevVersions] = useState<{ version: string; date: string }[]>([]);
+  const [confirmVersion, setConfirmVersion] = useState<string | null>(null);
+  const [downgrade, setDowngrade] = useState<
+    { version: string; downloaded: number; total: number | null; installing: boolean } | null
+  >(null);
+  const [downgradeError, setDowngradeError] = useState<string | null>(null);
 
   // Fetch app version on mount
   useEffect(() => {
     getVersion().then(setAppVersion).catch(() => {});
+  }, []);
+
+  // Older releases for the downgrade list (public repo, same API the
+  // changelog popup uses). Failing silently just hides the block.
+  useEffect(() => {
+    if (!appVersion) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const resp = await fetch(
+          `https://api.github.com/repos/${RELEASES_REPO}/releases?per_page=15`,
+          { headers: { Accept: "application/vnd.github+json" } },
+        );
+        if (!resp.ok) return;
+        const data = (await resp.json()) as {
+          tag_name?: string;
+          published_at?: string;
+          draft?: boolean;
+          prerelease?: boolean;
+        }[];
+        const cur = appVersion.split(".").map(Number);
+        const older = data
+          .filter((r) => !r.draft && !r.prerelease && /^v\d+\.\d+\.\d+$/.test(r.tag_name ?? ""))
+          .map((r) => ({
+            version: (r.tag_name as string).slice(1),
+            date: r.published_at ? r.published_at.slice(0, 10) : "",
+          }))
+          .filter(({ version }) => {
+            const v = version.split(".").map(Number);
+            for (let i = 0; i < 3; i++) {
+              if (v[i] !== cur[i]) return v[i] < cur[i];
+            }
+            return false; // same version
+          })
+          .slice(0, 5);
+        if (!cancelled) setPrevVersions(older);
+      } catch {
+        // offline / rate-limited — no downgrade list this session
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [appVersion]);
+
+  const handleDowngrade = useCallback(async (version: string) => {
+    setConfirmVersion(null);
+    setDowngradeError(null);
+    setDowngrade({ version, downloaded: 0, total: null, installing: false });
+    try {
+      const onProgress = new Channel<{ downloaded: number; total: number | null }>();
+      onProgress.onmessage = (p) =>
+        setDowngrade((d) =>
+          d && d.version === version
+            ? { ...d, downloaded: p.downloaded, total: p.total ?? d.total }
+            : d,
+        );
+      await invoke("updater_install_version", { version, onProgress });
+      setDowngrade((d) => (d ? { ...d, installing: true } : d));
+      // Same rule as handleUpdate: nothing is written to the store here —
+      // a write immediately before relaunch() never reaches disk.
+      await relaunch();
+    } catch (err) {
+      setDowngrade(null);
+      setDowngradeError(err instanceof Error ? err.message : String(err));
+    }
   }, []);
 
   const handleCheck = useCallback(async () => {
@@ -702,6 +777,113 @@ function UpdatesSection() {
             <ToggleSwitch checked={showChangelogOnUpdate} onChange={setShowChangelogOnUpdate} />
           </SettingsRow>
         </div>
+        {prevVersions.length > 0 && (
+          <div style={{ borderTop: "1px solid var(--ezy-border)", paddingTop: 14, marginTop: 4 }}>
+            <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)", marginBottom: 8 }}>
+              Previous versions
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {prevVersions.map(({ version, date }) => {
+                const isThisRow = downgrade?.version === version;
+                const busy = isUpdating || downgrade !== null;
+                return (
+                  <div
+                    key={version}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      height: 30,
+                    }}
+                  >
+                    <span style={{ fontSize: 13, color: "var(--ezy-text)", fontWeight: 500, width: 64 }}>
+                      v{version}
+                    </span>
+                    <span style={{ fontSize: 12, color: "var(--ezy-text-muted)", flex: 1 }}>
+                      {date}
+                    </span>
+                    {confirmVersion === version && !busy ? (
+                      <>
+                        <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>
+                          Restarts the app
+                        </span>
+                        <button
+                          onClick={() => void handleDowngrade(version)}
+                          style={{
+                            height: 24,
+                            padding: "0 10px",
+                            borderRadius: 5,
+                            border: "none",
+                            background: "var(--ezy-accent-dim)",
+                            color: "#fff",
+                            fontSize: 12,
+                            fontWeight: 500,
+                            cursor: "pointer",
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-hover)")}
+                          onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-dim)")}
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          onClick={() => setConfirmVersion(null)}
+                          style={{
+                            height: 24,
+                            padding: "0 10px",
+                            borderRadius: 5,
+                            border: "1px solid var(--ezy-border)",
+                            background: "var(--ezy-surface-raised)",
+                            color: "var(--ezy-text)",
+                            fontSize: 12,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : isThisRow ? (
+                      <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
+                        {downgrade.installing
+                          ? "Installing, restarting..."
+                          : downgrade.total
+                            ? `Downloading ${Math.min(100, Math.round((downgrade.downloaded / downgrade.total) * 100))}%`
+                            : "Downloading..."}
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => setConfirmVersion(version)}
+                        disabled={busy}
+                        style={{
+                          height: 24,
+                          padding: "0 10px",
+                          borderRadius: 5,
+                          border: "1px solid var(--ezy-border)",
+                          background: "var(--ezy-surface-raised)",
+                          color: "var(--ezy-text)",
+                          fontSize: 12,
+                          cursor: busy ? "not-allowed" : "pointer",
+                          opacity: busy ? 0.5 : 1,
+                          transition: "border-color 120ms ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!busy) e.currentTarget.style.borderColor = "var(--ezy-accent)";
+                        }}
+                        onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--ezy-border)")}
+                      >
+                        Install
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {downgradeError && (
+              <span style={{ fontSize: 12, color: "var(--ezy-red)", display: "block", marginTop: 6 }}>
+                {downgradeError}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </SettingsSection>
   );
@@ -1361,6 +1543,10 @@ export default function SettingsPane() {
   const setEditorWordWrap = useAppStore((s) => s.setEditorWordWrap);
   const showTabPath = useAppStore((s) => s.showTabPath);
   const setShowTabPath = useAppStore((s) => s.setShowTabPath);
+  const autoHibernateEnabled = useAppStore((s) => s.autoHibernateEnabled ?? false);
+  const setAutoHibernateEnabled = useAppStore((s) => s.setAutoHibernateEnabled);
+  const autoHibernateMinutes = useAppStore((s) => s.autoHibernateMinutes ?? 30);
+  const setAutoHibernateMinutes = useAppStore((s) => s.setAutoHibernateMinutes);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
   const confirmReloadPanes = useAppStore((s) => s.confirmReloadPanes ?? true);
   const setConfirmReloadPanes = useAppStore((s) => s.setConfirmReloadPanes);
@@ -1391,6 +1577,10 @@ export default function SettingsPane() {
   const setBrowserFullColumn = useAppStore((s) => s.setBrowserFullColumn);
   const browserSpawnLeft = useAppStore((s) => s.browserSpawnLeft);
   const setBrowserSpawnLeft = useAppStore((s) => s.setBrowserSpawnLeft);
+  const devServerButtonInHeader = useAppStore((s) => s.devServerButtonInHeader);
+  const setDevServerButtonInHeader = useAppStore((s) => s.setDevServerButtonInHeader);
+  const devServerButtonOnTab = useAppStore((s) => s.devServerButtonOnTab);
+  const setDevServerButtonOnTab = useAppStore((s) => s.setDevServerButtonOnTab);
   const codeReviewCollapseAll = useAppStore((s) => s.codeReviewCollapseAll);
   const setCodeReviewCollapseAll = useAppStore((s) => s.setCodeReviewCollapseAll);
   const projectsDir = useAppStore((s) => s.projectsDir);
@@ -1484,6 +1674,27 @@ export default function SettingsPane() {
               <SettingsRow label="Restore last session">
                 <ToggleSwitch checked={restoreLastSession} onChange={setRestoreLastSession} />
               </SettingsRow>
+              <SettingsRow
+                label="Auto-hibernate idle tabs"
+                description="Background tabs whose panes are provably idle free their WSL processes; activating the tab respawns them and resumes Claude sessions."
+              >
+                <ToggleSwitch checked={autoHibernateEnabled} onChange={setAutoHibernateEnabled} />
+              </SettingsRow>
+              {autoHibernateEnabled && (
+                <SettingsRow label="Hibernate after idle for">
+                  <Dropdown<string>
+                    value={String(autoHibernateMinutes)}
+                    onChange={(v) => setAutoHibernateMinutes(Number(v) || 30)}
+                    options={[
+                      { value: "15", label: "15 minutes" },
+                      { value: "30", label: "30 minutes" },
+                      { value: "60", label: "1 hour" },
+                      { value: "120", label: "2 hours" },
+                    ]}
+                    width={140}
+                  />
+                </SettingsRow>
+              )}
               <SettingsRow label="Auto-paste screenshots">
                 <ToggleSwitch checked={autoInsertClipboardImage} onChange={setAutoInsertClipboardImage} />
               </SettingsRow>
@@ -2128,6 +2339,12 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Spawn on left">
                 <ToggleSwitch checked={browserSpawnLeft} onChange={setBrowserSpawnLeft} />
+              </SettingsRow>
+              <SettingsRow label="Dev server button on project tab">
+                <ToggleSwitch checked={devServerButtonOnTab} onChange={setDevServerButtonOnTab} />
+              </SettingsRow>
+              <SettingsRow label="Dev server button in pane headers">
+                <ToggleSwitch checked={devServerButtonInHeader} onChange={setDevServerButtonInHeader} />
               </SettingsRow>
             </SettingsSection>
             <SettingsSection id="codereview" title="Code Review">

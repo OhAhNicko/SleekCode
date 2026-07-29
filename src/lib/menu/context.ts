@@ -67,6 +67,7 @@ export type TabCtx = Base & {
   isSystemTab: boolean;
   isPinned: boolean;
   isActive: boolean;
+  isHibernated: boolean;
   hasLayout: boolean;
   /** Index among VISIBLE tabs — system tabs occupy leading store indices. */
   visibleIndex: number;
@@ -234,6 +235,7 @@ const resolveTab: Resolver = (el, point) => {
     isSystemTab,
     isPinned: !!tab.isPinned,
     isActive: s.activeTabId === tabId,
+    isHibernated: !!tab.isHibernated,
     hasLayout: !!tab.layout,
     visibleIndex: visible.findIndex((t) => t.id === tabId),
     visibleCount: visible.length,

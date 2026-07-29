@@ -4,6 +4,7 @@ import type { TerminalType, TerminalBackend } from "../types";
 import { sessionStillExists } from "../lib/session-exists";
 import { claudeSessionIdArgs, getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
 import { shellPsModeFor } from "../lib/shell-mode";
+import { notePtyChunk } from "../lib/pty-flood-stats";
 import { wslReady } from "../lib/wsl-cache";
 import { windowsReady } from "../lib/windows-cli-cache";
 import { nativeReady } from "../lib/macos-cli-cache";
@@ -255,7 +256,7 @@ export function usePtyNative({
           const psMode = terminalType === "shell"
             ? shellPsModeFor(currentWorkingDir, currentServerId, backend)
             : undefined;
-          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, undefined, termProgram, termProgramVersion, psMode);
+          const config = getTerminalConfig(terminalType, resumeId, extraArgs, cwdForConfig, undefined, termProgram, termProgramVersion, psMode, termId);
           command = config.command;
           args = [...config.args];
           if (isWslTerminal(terminalType, backend) && wslCwd && !resumeId) {
@@ -265,9 +266,12 @@ export function usePtyNative({
         }
       }
 
-      const onDataChan = new Channel<number[]>();
+      // ArrayBuffer, not number[]: Rust sends InvokeResponseBody::Raw (see
+      // usePty.ts for why — JSON number arrays backlogged the UI thread).
+      const onDataChan = new Channel<ArrayBuffer>();
       onDataChan.onmessage = (data) => {
         if (spawnIdRef.current !== thisSpawnId) return;
+        notePtyChunk(data.byteLength);
         onDataRef.current(new Uint8Array(data));
       };
 
@@ -282,7 +286,7 @@ export function usePtyNative({
 
         if (!currentServerId && backend !== "windows" && isWslTerminal(terminalType, backend) && !sessionResumeIdRef.current) {
           const wslCwd = currentWorkingDir ? toWslPath(currentWorkingDir) : undefined;
-          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, extraArgs, backend);
+          const initCmd = getPooledInitCommand(terminalType, wslCwd, sessionResumeIdRef.current, extraArgs, backend, termId);
           if (initCmd) {
             try {
               id = await invoke<number>("pty_spawn_pooled", {

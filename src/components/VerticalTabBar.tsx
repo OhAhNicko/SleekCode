@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane } from "../lib/layout-utils";
 import { getProjectColor } from "../store/recentProjectsSlice";
+import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
 import ClipboardImageStrip from "./ClipboardImageStrip";
@@ -36,6 +37,7 @@ export default function VerticalTabBar() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServers = useAppStore((s) => s.devServers);
+  const devServerButtonOnTab = useAppStore((s) => s.devServerButtonOnTab);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
   const projectColors = useAppStore((s) => s.projectColors);
@@ -518,7 +520,42 @@ export default function VerticalTabBar() {
                   </span>
                 )}
 
-                {!compact && cliCount > 1 && (
+                {!compact && tab.isHibernated && (
+                  <span
+                    data-tooltip={`Hibernated — ${cliCount} pane${cliCount === 1 ? "" : "s"} sleeping. Click to wake (Claude sessions resume).`}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      lineHeight: 1,
+                      padding: "1px 4px",
+                      borderRadius: 4,
+                      backgroundColor: "var(--ezy-surface-raised)",
+                      border: "1px solid var(--ezy-border)",
+                      color: "var(--ezy-text-muted)",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor">
+                      <path d="M9.598 1.591a.749.749 0 01.785-.175 7.001 7.001 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.499 5.499 0 107.678-7.678z" />
+                    </svg>
+                  </span>
+                )}
+                {compact && tab.isHibernated && (
+                  <span
+                    data-tooltip="Hibernated — click to wake"
+                    style={{
+                      position: "absolute",
+                      top: 4,
+                      right: 4,
+                      width: 8,
+                      height: 8,
+                      borderRadius: 4,
+                      backgroundColor: "var(--ezy-surface-raised)",
+                      border: "1px solid var(--ezy-border)",
+                    }}
+                  />
+                )}
+                {!compact && cliCount > 1 && !tab.isHibernated && (
                   <span
                     style={{
                       fontSize: 9,
@@ -560,6 +597,52 @@ export default function VerticalTabBar() {
                     )}
                   </span>
                 )}
+
+                {/* Dev-server quick-open (Settings > Preview Panes > "Dev
+                    server button on project tab"). Rows are full-width, so no
+                    reserve-slot is needed here — active tab only, skipped in
+                    compact mode. Plain click = external browser, Ctrl/Cmd =
+                    MADE browser pane. */}
+                {!compact && isActive && devServerButtonOnTab && (() => {
+                  const tabNorm = tab.workingDir?.replace(/\\/g, "/");
+                  const ds = devServers.find(
+                    (srv) =>
+                      srv.status === "running" &&
+                      (srv.tabId === tab.id ||
+                        (!!tabNorm && srv.workingDir.replace(/\\/g, "/") === tabNorm)),
+                  );
+                  if (!ds) return null;
+                  return (
+                    <span
+                      role="button"
+                      aria-label="Open dev server in browser"
+                      data-tooltip={`Open localhost:${ds.port} in browser`}
+                      data-tooltip-hint="Ctrl+Click opens the MADE browser pane"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openDevServerUrl(ds, { inApp: wantsInAppOpen(e) });
+                      }}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 18,
+                        height: 18,
+                        borderRadius: 3,
+                        flexShrink: 0,
+                        cursor: "pointer",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-border)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                    >
+                      <svg width={12} height={12} viewBox="0 0 12 12" fill="none">
+                        <circle cx="6" cy="6" r="4.5" stroke="#4ade80" strokeWidth="1.2" />
+                        <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="#4ade80" strokeWidth="1" />
+                        <path d="M1.5 6h9" stroke="#4ade80" strokeWidth="1" />
+                      </svg>
+                    </span>
+                  );
+                })()}
 
                 {/* Compact-mode WIP dot — small accent overlay on the right edge of the row */}
                 {compact && activeCount > 0 && (

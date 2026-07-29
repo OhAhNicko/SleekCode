@@ -82,8 +82,10 @@ export default function Workspace({ tab }: WorkspaceProps) {
     tab.layout?.type === "terminal" ? tab.layout.terminalId : null;
   const isRestoredLeaf =
     tab.layout?.type === "terminal" && !!tab.layout.terminalType;
+  // A hibernated tab's missing terminals are asleep, not absent — the empty-
+  // state launcher must not appear over a layout that wakeTab will refill.
   const needsInitialTerminal =
-    layoutTerminalId && !terminals[layoutTerminalId] && !isRestoredLeaf;
+    layoutTerminalId && !terminals[layoutTerminalId] && !isRestoredLeaf && !tab.isHibernated;
 
   // Collect all terminal IDs in the current layout (sorted for stable portal order)
   const allTerminalIds = useMemo(
@@ -725,6 +727,11 @@ export default function Workspace({ tab }: WorkspaceProps) {
   useEffect(() => {
     if (hasAutoSpawned.current) return;
     if (!tab.layout) return;
+    // Hibernated tabs restore ASLEEP: their terminals are deliberately missing
+    // and wakeTab (on activation) is the only thing allowed to respawn them.
+    // Without this guard every app boot silently resurrected every hibernated
+    // tab's WSL processes — the exact cost hibernation exists to avoid.
+    if (tab.isHibernated) return;
     const currentTerminals = useAppStore.getState().terminals;
     const leaves = findAllTerminalLeaves(tab.layout);
     const toSpawn = leaves.filter((leaf) => !currentTerminals[leaf.terminalId]);

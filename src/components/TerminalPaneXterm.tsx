@@ -24,7 +24,6 @@ import { createFilePathLinkProvider } from "../lib/file-link-provider";
 import { attachLinkUnderlines } from "../lib/xterm-link-underline";
 import { readSessionFirstPrompt, slugify } from "../lib/sessions-index";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { toWslPath } from "../lib/terminal-config";
 import { recordTerminalActivity, recordTerminalWrite, recordTerminalResize, clearTerminalActivity } from "../lib/terminal-activity";
 import { applyImageMask, clearImageMasks } from "../lib/image-mask";
@@ -670,14 +669,42 @@ export default function TerminalPane({
       // PowerShell shell panes spawn through ConPTY whether the backend is
       // "windows" or "wsl".
       ...(backend !== "native" ? { windowsPty: { backend: "conpty" as const } } : {}),
+      // OSC 8 hyperlinks (vite/claude emit these for their localhost URLs).
+      // Without a handler, xterm core falls back to a native confirm() —
+      // "WARNING: This link could potentially be dangerous", rendered by
+      // WebView2 as a bare OS dialog — whose OK then calls window.open(),
+      // which Tauri blocks. The link was both scary AND dead. Route like
+      // every other terminal URL instead: Ctrl/Cmd+Click → MADE's browser
+      // pane, plain click → system browser (PaneGrid owns both paths).
+      // file:// URIs open in the MADE file viewer (native-pane parity —
+      // useNativeFileLinks does the same strip). Other schemes are ignored,
+      // matching xterm's own non-http refusal.
+      linkHandler: {
+        activate: (event, uri) => {
+          if (/^https?:\/\//i.test(uri)) {
+            window.dispatchEvent(new CustomEvent("made:open-url", {
+              detail: { url: uri, inApp: event.ctrlKey || event.metaKey },
+            }));
+          } else if (uri.startsWith("file://")) {
+            window.dispatchEvent(new CustomEvent("made:open-file", {
+              detail: { filePath: uri.replace(/^file:\/\/(?:localhost)?/, "") },
+            }));
+          }
+        },
+      },
     });
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
-    term.loadAddon(new WebLinksAddon((_event, uri) => {
-      // Open URLs in the system default browser via Tauri's opener plugin.
-      // The default handler uses window.open() which is blocked in Tauri's WebView.
-      openUrl(uri).catch(() => {});
+    term.loadAddon(new WebLinksAddon((event, uri) => {
+      // Plain-text URLs. Ctrl/Cmd+Click → MADE's browser pane (what the
+      // link tooltip promises), plain click → system default browser.
+      // Both routed through made:open-url — PaneGrid opens external via
+      // Tauri's opener plugin because window.open() is blocked in the
+      // WebView, and owns the in-app browser-pane layout mutation.
+      window.dispatchEvent(new CustomEvent("made:open-url", {
+        detail: { url: uri, inApp: event.ctrlKey || event.metaKey },
+      }));
     }));
 
     const addon = new SearchAddon();

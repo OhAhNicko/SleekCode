@@ -151,6 +151,7 @@ const TERMINAL_CONFIGS_NATIVE: Record<TerminalType, TerminalConfig> = {
 export function buildPowerShellLaunchArgsForCwd(
   cwd: string | undefined,
   mode: "wsl" | "windows",
+  paneId?: string,
 ): string[] {
   if (!cwd) return [];
 
@@ -165,7 +166,15 @@ export function buildPowerShellLaunchArgsForCwd(
     // Drop into bash inside the distro at the project path.
     const distro = getCachedDistro();
     const distroFlag = distro ? `-d ${distro} ` : "";
-    return ["-NoExit", "-Command", `wsl ${distroFlag}--cd ${cwd}`];
+    // Pane tagging (hibernation idle gate): WSLENV is the only way a Windows
+    // env var crosses into the Linux environment, and appending (not
+    // overwriting) preserves whatever the user already forwards. Done via
+    // $env: so the user's default WSL shell is untouched — wrapping the
+    // command in an explicit bash would silently override zsh/fish setups.
+    const tag = paneId
+      ? `$env:MADE_PANE_ID='${safePaneId(paneId)}'; if ($env:WSLENV) { $env:WSLENV += ':MADE_PANE_ID' } else { $env:WSLENV = 'MADE_PANE_ID' }; `
+      : "";
+    return ["-NoExit", "-Command", `${tag}wsl ${distroFlag}--cd ${cwd}`];
   }
 
   // Windows filesystem (incl. /mnt/<drive>/ which is just a WSL view of a
@@ -282,6 +291,13 @@ export function termProgramEnvPairs(program: string, version?: string): string[]
   return pairs;
 }
 
+/** MADE_PANE_ID values are `term-<ms>-<n>` (generateTerminalId), but the id is
+ *  embedded in shell/PS command strings, so strip anything outside the known
+ *  alphabet defensively rather than trusting the format forever. */
+function safePaneId(id: string): string {
+  return id.replace(/[^A-Za-z0-9_-]/g, "");
+}
+
 export function claudeSessionIdArgs(
   type: TerminalType,
   resumeId?: string,
@@ -291,7 +307,7 @@ export function claudeSessionIdArgs(
   return { args: ["--session-id", sessionId], sessionId };
 }
 
-export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string, backend?: TerminalBackend, termProgram = "", termProgramVersion = "", psMode?: "wsl" | "windows"): TerminalConfig {
+export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, extraArgs?: string[], wslCwd?: string, backend?: TerminalBackend, termProgram = "", termProgramVersion = "", psMode?: "wsl" | "windows", paneId?: string): TerminalConfig {
   // Advertised terminal identity (see termProgramEnvPairs). Only the AI CLIs
   // consult it; shell/devserver panes are left exactly as they were.
   const idEnv = type === "shell" || type === "devserver" ? [] : termProgramEnvPairs(termProgram, termProgramVersion);
@@ -356,8 +372,9 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
   if (type === "shell" || type === "devserver") {
     // Default "wsl": on the wsl backend the shell preloads WSL unless the
     // per-project badge override says otherwise. (Devserver never passes a
-    // cwd on this branch — it spawns wsl.exe directly, not PowerShell.)
-    const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd, psMode ?? "wsl");
+    // cwd on this branch — it spawns wsl.exe directly, not PowerShell.
+    // Devserver panes are excluded from hibernation, so they go untagged.)
+    const cwdArgs = buildPowerShellLaunchArgsForCwd(wslCwd, psMode ?? "wsl", type === "shell" ? paneId : undefined);
     return cwdArgs.length ? { ...base, args: cwdArgs } : base;
   }
 
@@ -389,6 +406,10 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
       `PATH=${cachedPath}`,
       "TERM=xterm-256color",
       "COLORTERM=truecolor",
+      // Pane tagging (hibernation idle gate): /usr/bin/env plants it in the
+      // Linux process env, so every descendant — claude, its subagents, their
+      // tools — inherits it and the /proc sweep can attribute their CPU.
+      ...(paneId ? [`MADE_PANE_ID=${safePaneId(paneId)}`] : []),
       ...idEnv,
     ];
     return {
@@ -413,9 +434,10 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
     const fullCmd = [sh(execCmd), ...suffixParts.map(sh)].join(" ");
     const distroArgs = distro ? ["-d", distro] : [];
     const cdPart = wslCwd ? `cd ${sh(wslCwd)} && ` : "";
+    const paneExport = paneId ? ` MADE_PANE_ID=${safePaneId(paneId)}` : "";
     return {
       ...base,
-      args: [...distroArgs, "--", "bash", "-lic", `export TERM=xterm-256color COLORTERM=truecolor; ${idExport}${cdPart}exec ${fullCmd}`],
+      args: [...distroArgs, "--", "bash", "-lic", `export TERM=xterm-256color COLORTERM=truecolor${paneExport}; ${idExport}${cdPart}exec ${fullCmd}`],
     };
   }
 
@@ -458,7 +480,7 @@ export function toWslPath(winPath: string): string {
  * Returns null if we don't have the absolute CLI path cached
  * (pooled bash has --norc --noprofile, so it can't resolve CLI names).
  */
-export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessionResumeId?: string, extraArgs?: string[], backend?: TerminalBackend): string | null {
+export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessionResumeId?: string, extraArgs?: string[], backend?: TerminalBackend, paneId?: string): string | null {
   if (type === "shell") return null;
   if (backend === "windows") return null; // No WSL pool in Windows mode
   if (backend === "native") return null;  // No WSL pool on macOS/Linux
@@ -478,6 +500,11 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
   const parts: string[] = [];
   parts.push(`export PATH=${sh(cachedPath)}`);
   parts.push("export TERM=xterm-256color COLORTERM=truecolor");
+  // Pane tagging must ride the pooled path too — it is the COMMON path for
+  // fresh AI panes, and the `--session-id` regression proved that a spawn
+  // detail present only on the non-pooled path silently vanishes for most
+  // panes (usePty.ts:150-156).
+  if (paneId) parts.push(`export MADE_PANE_ID=${safePaneId(paneId)}`);
   if (wslCwd) {
     parts.push(`cd ${sh(wslCwd)}`);
   }

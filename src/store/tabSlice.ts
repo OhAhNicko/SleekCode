@@ -1,6 +1,6 @@
 import type { StateCreator } from "zustand";
-import type { Tab, PaneLayout, DevServer, TerminalBackend } from "../types";
-import { generatePaneId, generateTerminalId, setSessionResumeIdInLayout } from "../lib/layout-utils";
+import type { Tab, PaneLayout, DevServer, TerminalBackend, TerminalType } from "../types";
+import { generatePaneId, generateTerminalId, setSessionResumeIdInLayout, findAllTerminalLeaves, setTerminalTypeInLayout } from "../lib/layout-utils";
 import { snapshotTab } from "./undoCloseStore";
 import { getPtyWrite } from "./terminalSlice";
 import { detectBackendForPath } from "../lib/platform";
@@ -73,6 +73,34 @@ export interface TabSlice {
   togglePinTab: (tabId: string) => void;
   renameTab: (tabId: string, name: string) => void;
   reorderTabs: (draggedId: string, insertBeforeId: string | null) => void;
+  /** Kill the tab's PTYs but keep its layout (incl. sessionResumeIds); the WSL
+   *  processes are freed. Refuses system/remote tabs, tabs with dev-server
+   *  panes, and the last remaining tab when active. See canHibernateTab. */
+  hibernateTab: (tabId: string) => void;
+  /** Respawn a hibernated tab's layout — Claude panes resume via --resume. */
+  wakeTab: (tabId: string) => void;
+}
+
+/** Why a tab can't hibernate, or null when it can. Shared by the store action
+ *  (enforcement), the tab context menu (disabled-with-reason) and the
+ *  auto-hibernate engine (candidate filter). */
+export function tabHibernateBlocker(
+  tab: Tab | undefined,
+  terminals: Record<string, { type: string }>,
+  isOnlyTab: boolean,
+): string | null {
+  if (!tab) return "Tab not found";
+  if (tab.isHibernated) return "Already hibernated";
+  if (tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab)
+    return "System tabs can't hibernate";
+  if (tab.serverId) return "Remote tabs can't hibernate";
+  if (!tab.layout) return "Nothing to hibernate";
+  const leaves = findAllTerminalLeaves(tab.layout);
+  if (leaves.length === 0) return "No terminal panes";
+  if (leaves.some((l) => terminals[l.terminalId]?.type === "devserver"))
+    return "A dev server is running in this tab";
+  if (isOnlyTab) return "Can't hibernate the only tab";
+  return null;
 }
 
 function createDefaultLayout(_workingDir: string): {
@@ -198,6 +226,11 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
   },
 
   setActiveTab: (tabId) => {
+    // Activating a hibernated tab wakes it (respawn BEFORE the tab renders so
+    // the layout never shows the empty-state launcher).
+    if (get().tabs.find((t) => t.id === tabId)?.isHibernated) {
+      get().wakeTab(tabId);
+    }
     set((state) => {
       const tab = state.tabs.find((t) => t.id === tabId);
       const isProjectTab = !!(tab && !tab.isDevServerTab && !tab.isServersTab && !tab.isKanbanTab && !tab.isSettingsTab && tab.workingDir);
@@ -255,4 +288,74 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
       }
       return { tabs };
     }),
+
+  hibernateTab: (tabId) => {
+    const root = get() as unknown as TabSlice & {
+      terminals: Record<string, { type: TerminalType }>;
+      removeTerminals: (ids: string[]) => void;
+    };
+    const tab = root.tabs.find((t) => t.id === tabId);
+    const otherTabs = root.tabs.filter(
+      (t) => t.id !== tabId && !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab,
+    );
+    const isActive = root.activeTabId === tabId;
+    if (tabHibernateBlocker(tab, root.terminals, isActive && otherTabs.length === 0)) return;
+    const leaves = findAllTerminalLeaves(tab!.layout!);
+
+    // Stamp terminalType onto every leaf BEFORE killing: interactively-created
+    // leaves may lack it, and wake falls back to "shell" — a claude pane would
+    // come back as bash. The live terminals map is the truth right now.
+    let layout = tab!.layout!;
+    for (const leaf of leaves) {
+      const live = root.terminals[leaf.terminalId];
+      if (live && !leaf.terminalType) {
+        layout = setTerminalTypeInLayout(layout, leaf.terminalId, live.type);
+      }
+    }
+
+    // If hibernating the active tab, hand activation to the last other
+    // project tab first (same neighbor choice as removeTab).
+    const newActive = isActive ? otherTabs[otherTabs.length - 1] : undefined;
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, layout, isHibernated: true, hibernatedAt: Date.now() } : t,
+      ),
+      ...(newActive ? { activeTabId: newActive.id } : {}),
+      ...(newActive?.workingDir ? { lastActiveProjectPath: newActive.workingDir } : {}),
+    }) as Partial<TabSlice> & { lastActiveProjectPath?: string });
+    // AFTER the tab is flagged: unmounting panes is what kills the PTYs, and
+    // the flag is what stops Workspace's spawn paths from resurrecting them.
+    root.removeTerminals(leaves.map((l) => l.terminalId));
+  },
+
+  wakeTab: (tabId) => {
+    const root = get() as unknown as TabSlice & {
+      terminals: Record<string, unknown>;
+      addTerminals: (batch: Array<{ id: string; type: string; workingDir: string; serverId?: string }>) => void;
+    };
+    const tab = root.tabs.find((t) => t.id === tabId);
+    if (!tab?.isHibernated) return;
+    if (tab.layout) {
+      const missing = findAllTerminalLeaves(tab.layout).filter(
+        (l) => !root.terminals[l.terminalId],
+      );
+      if (missing.length) {
+        root.addTerminals(
+          missing.map((l) => ({
+            id: l.terminalId,
+            type: l.terminalType ?? "shell",
+            workingDir: tab.workingDir,
+            serverId: tab.serverId,
+          })),
+        );
+      }
+    }
+    // Terminals exist first, THEN the flag clears — Workspace's guards stay up
+    // until the layout has something to render.
+    set((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, isHibernated: false, hibernatedAt: undefined } : t,
+      ),
+    }));
+  },
 });

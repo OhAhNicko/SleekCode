@@ -295,7 +295,9 @@ function devServerRow(ctx: RowCtx): MenuGroup[] {
           label: "Open in browser preview",
           iconId: "external-link",
           unavailable: url ? undefined : { reason: "Server hasn't reported a URL yet" },
-          run: () => window.dispatchEvent(new CustomEvent("made:open-url", { detail: { url } })),
+          // inApp: the label says browser PREVIEW — without it this row
+          // opened the system browser (made:open-url's default path).
+          run: () => window.dispatchEvent(new CustomEvent("made:open-url", { detail: { url, inApp: true } })),
         },
         {
           id: "row.devserver.copyUrl",

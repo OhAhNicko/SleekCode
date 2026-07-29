@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openDevServerUrlIn, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand, FaServer } from "react-icons/fa";
 import { FaXmark, FaPlus, FaPencil } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
@@ -9,7 +9,7 @@ import { useAppStore } from "../store";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
 import ServersPanel from "./ServersPanel";
 import { getPtyWrite } from "../store/terminalSlice";
-import { openOrUpdateBrowserPane, generateTerminalId } from "../lib/layout-utils";
+import { generateTerminalId } from "../lib/layout-utils";
 import type { DevServer } from "../types";
 import { getServerCommandSuggestions, BUILTIN_SERVER_COMMANDS, injectPort } from "../lib/server-commands";
 
@@ -94,28 +94,6 @@ function classifyHost(url: string): string {
  * overflow:hidden, and rendered through a portal for the same reason.
  */
 
-/** Open or retarget the (single) browser preview pane in a tab. Enforces the
- *  one-pane invariant: if a pane already exists, its URL is updated in place
- *  rather than spawning a duplicate. */
-function openBrowserInTab(tabId: string, url: string) {
-  const store = useAppStore.getState();
-  const tab = store.tabs.find((t) => t.id === tabId);
-  if (!tab || !tab.layout) return;
-
-  // Link to this tab so the browser pane mirrors the live dev-server URL
-  // (and shows the "Waiting for dev server" state if we ever open it before
-  // the port is bound).
-  const { layout } = openOrUpdateBrowserPane(tab.layout, url, {
-    linkedTabId: tabId,
-    sizePercent: 35,
-    fullColumn: store.browserFullColumn,
-    spawnLeft: store.browserSpawnLeft,
-    wideGridLayout: store.wideGridLayout,
-  });
-  store.updateTabLayout(tabId, layout);
-  store.setActiveTab(tabId);
-}
-
 function DevServerRow({ server }: { server: DevServer }) {
   const removeDevServer = useAppStore((s) => s.removeDevServer);
   const updateDevServerCommand = useAppStore((s) => s.updateDevServerCommand);
@@ -124,8 +102,6 @@ function DevServerRow({ server }: { server: DevServer }) {
   const updateDevServerPort = useAppStore((s) => s.updateDevServerPort);
   const updateProjectServerCommand = useAppStore((s) => s.updateProjectServerCommand);
   const setExpandedDevServerId = useAppStore((s) => s.setExpandedDevServerId);
-  const previewInProjectTab = useAppStore((s) => s.previewInProjectTab);
-  const activeTabId = useAppStore((s) => s.activeTabId);
 
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(server.command);
@@ -303,23 +279,21 @@ function DevServerRow({ server }: { server: DevServer }) {
     setEditingPort(false);
   }, [server.command]);
 
+  // Unified click contract (2026-07-29): plain click = external browser,
+  // Ctrl/Cmd+Click = MADE browser pane — the same mapping as terminal links
+  // and the header/tab quick-open icons. (This used to be inverted here.)
   const openServerUrl = useCallback(
-    (url: string, openExternal: boolean) => {
-      if (openExternal) {
-        openUrl(url).catch(() => {});
-        return;
-      }
-      const targetTabId = previewInProjectTab && server.tabId ? server.tabId : activeTabId;
-      if (targetTabId) openBrowserInTab(targetTabId, url);
+    (url: string, inApp: boolean) => {
+      openDevServerUrlIn(server, url, { inApp });
     },
-    [previewInProjectTab, server.tabId, activeTabId]
+    [server]
   );
 
   const handleUrlClick = useCallback(
     (e: React.MouseEvent) => {
       if (!serverUrl) return;
       if (e.ctrlKey || e.metaKey) e.preventDefault();
-      openServerUrl(serverUrl, e.ctrlKey || e.metaKey);
+      openServerUrl(serverUrl, wantsInAppOpen(e));
     },
     [serverUrl, openServerUrl]
   );
@@ -482,8 +456,8 @@ function DevServerRow({ server }: { server: DevServer }) {
                 onClick={handleUrlClick}
                 data-tooltip={
                   networkUrls.length > 0
-                    ? `${serverUrl} — Click for preview / Ctrl+Click to open in browser\nHover 3s to see ${networkUrls.length} network address${networkUrls.length === 1 ? "" : "es"}`
-                    : `${serverUrl} — Click for preview / Ctrl+Click to open in browser`
+                    ? `${serverUrl} — Click to open in browser / Ctrl+Click for preview\nHover 3s to see ${networkUrls.length} network address${networkUrls.length === 1 ? "" : "es"}`
+                    : `${serverUrl} — Click to open in browser / Ctrl+Click for preview`
                 }
                 style={{
                   fontSize: 11,

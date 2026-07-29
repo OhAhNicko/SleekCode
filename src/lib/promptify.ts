@@ -91,7 +91,7 @@ export function promptify(shortPrompt: string): Promise<string> {
       settle(cleaned);
     }
 
-    const onDataChan = new Channel<number[]>();
+    const onDataChan = new Channel<ArrayBuffer>();
     onDataChan.onmessage = (data) => {
       const chunk = new TextDecoder().decode(new Uint8Array(data));
       output += chunk;

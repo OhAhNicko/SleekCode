@@ -51,6 +51,7 @@ export function attachLinkUnderlines(term: Terminal): () => void {
     }
     const fg = term.options.theme?.foreground ?? "#e6edf3";
     const buf = term.buffer.active;
+    const scratch = buf.getNullCell();
     const frag = document.createDocumentFragment();
     for (let row = 0; row < term.rows; row++) {
       const line = buf.getLine(buf.viewportY + row);
@@ -60,6 +61,22 @@ export function attachLinkUnderlines(term: Terminal): () => void {
       const text = line.translateToString(false);
       if (!text.includes("/")) continue;
       for (const [s, e] of findLinkRangesInLine(text)) {
+        // Skip ranges the program already underlined via SGR (claude's TUI
+        // styles its URLs underline+bold): xterm draws that underline at the
+        // font's underline position, so our overlay line 2px above the cell
+        // bottom showed as a SECOND line under it. The native renderer never
+        // had this problem because it ORs the link attr into the cell —
+        // idempotent when the attr is already set (grid.rs) — and this skip
+        // is the overlay equivalent of that idempotence.
+        let sgrUnderlined = true;
+        for (let x = s; x < e; x++) {
+          const c = line.getCell(x, scratch);
+          if (!c || !c.isUnderline()) {
+            sgrUnderlined = false;
+            break;
+          }
+        }
+        if (sgrUnderlined) continue;
         const u = document.createElement("div");
         u.style.cssText = `position:absolute;left:${s * cell.width}px;top:${
           (row + 1) * cell.height - 2

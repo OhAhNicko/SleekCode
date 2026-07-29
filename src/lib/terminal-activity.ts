@@ -23,6 +23,48 @@ interface ActivityState {
 
 const state = new Map<string, ActivityState>();
 
+// --- Ungated recency (hibernation idle gate) -------------------------------
+//
+// The burst heuristic above is COSMETIC (tab dots, AI-time) and unsuitable as
+// a kill-safety signal: it is AI-gated, rate-thresholded (200 B/s), and
+// `recordTerminalWrite` zeroes `lastOutput`. The hibernation gate instead
+// needs raw recency for EVERY pane type: "when did this pane last emit any
+// output at all / last receive a keystroke". Kept separate so neither system
+// can distort the other.
+const lastOutputAt = new Map<string, number>();
+const lastInputAt = new Map<string, number>();
+
+// An IDLE TUI is not output-silent: cursor blink alone trickles ~5-20 B/s
+// (the reason the burst heuristic has its 200 B/s floor). "Meaningful" output
+// is therefore windowed: ≥500 bytes inside a 10 s window (50 B/s) — far above
+// blink noise, far below anything real (a working spinner repaints whole
+// lines at ~10 Hz). A pane whose lastMeaningfulOutputAt is old is quiet even
+// if its cursor still blinks.
+const OUTPUT_WINDOW_MS = 10_000;
+const MEANINGFUL_BYTES_PER_WINDOW = 500;
+const outWin = new Map<string, { windowStart: number; bytes: number }>();
+const lastMeaningfulOutputAt = new Map<string, number>();
+
+/** Epoch ms of the pane's most recent PTY output (any type, any size). */
+export function paneLastOutputAt(terminalId: string): number | undefined {
+  return lastOutputAt.get(terminalId);
+}
+
+/** Epoch ms of the last time output exceeded the trickle threshold — the
+ *  hibernation gate's output signal (raw lastOutputAt never goes quiet for
+ *  TUIs). */
+export function paneLastMeaningfulOutputAt(terminalId: string): number | undefined {
+  return lastMeaningfulOutputAt.get(terminalId);
+}
+
+/** Epoch ms of the pane's most recent recorded user input. Native panes only
+ *  record composer writes (direct keys go to the child HWND, invisible to
+ *  JS), so treat "undefined/old" as weak evidence — the output + CPU signals
+ *  carry the gate. */
+export function paneLastInputAt(terminalId: string): number | undefined {
+  return lastInputAt.get(terminalId);
+}
+
 const SUSTAINED_MS = 1500;
 const GAP_MS = 4000;
 const RESIZE_LOCKOUT_MS = 2500;
@@ -32,6 +74,7 @@ const TYPING_LOCKOUT_MS = 2000;
 const MIN_BYTES_PER_SEC = 200;
 
 export function recordTerminalWrite(terminalId: string): void {
+  lastInputAt.set(terminalId, Date.now());
   const s = state.get(terminalId);
   if (s) {
     s.burstStart = 0;
@@ -56,6 +99,17 @@ export function recordTerminalResize(terminalId: string): void {
 }
 
 export function recordTerminalActivity(terminalId: string, terminalType: TerminalType, dataSize: number): void {
+  {
+    const now = Date.now();
+    lastOutputAt.set(terminalId, now);
+    let w = outWin.get(terminalId);
+    if (!w || now - w.windowStart > OUTPUT_WINDOW_MS) {
+      w = { windowStart: now, bytes: 0 };
+      outWin.set(terminalId, w);
+    }
+    w.bytes += dataSize;
+    if (w.bytes >= MEANINGFUL_BYTES_PER_WINDOW) lastMeaningfulOutputAt.set(terminalId, now);
+  }
   if (!AI_TYPES.has(terminalType)) return;
 
   const now = Date.now();
@@ -90,6 +144,10 @@ export function clearTerminalActivity(terminalId: string): void {
     dispatchBurstEvents(terminalId, s);
   }
   state.delete(terminalId);
+  lastOutputAt.delete(terminalId);
+  lastInputAt.delete(terminalId);
+  outWin.delete(terminalId);
+  lastMeaningfulOutputAt.delete(terminalId);
 }
 
 /** Dispatch enriched ai-done and git-refresh events with burst metadata. */

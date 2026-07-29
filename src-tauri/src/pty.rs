@@ -6,7 +6,7 @@ use std::sync::{
 };
 
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use tauri::ipc::Channel;
+use tauri::ipc::{Channel, InvokeResponseBody};
 
 // --- Active PTY sessions ---
 
@@ -26,7 +26,7 @@ fn start_reader_thread(
     id: u32,
     reader: Box<dyn IoRead + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    on_data: Channel<Vec<u8>>,
+    on_data: Channel<InvokeResponseBody>,
     on_exit: Channel<i32>,
 ) {
     std::thread::spawn(move || {
@@ -45,7 +45,16 @@ fn start_reader_thread(
                     if let Some(tx) = crate::native_term::pty_route::sender_for(id) {
                         let _ = tx.try_send(buf[..n].to_vec());
                     }
-                    if on_data.send(buf[..n].to_vec()).is_err() {
+                    // Raw body: delivered to JS as an ArrayBuffer. The default
+                    // Serialize path turned each chunk into a JSON array of
+                    // numbers (~4x the bytes) that the main webview then had to
+                    // JSON.parse on its UI thread — under heavy output that
+                    // backlog is what delayed every overlay popup (menus took
+                    // seconds to appear).
+                    if on_data
+                        .send(InvokeResponseBody::Raw(buf[..n].to_vec()))
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -155,7 +164,7 @@ pub async fn pty_spawn(
     rows: u16,
     cwd: Option<String>,
     env: HashMap<String, String>,
-    on_data: Channel<Vec<u8>>,
+    on_data: Channel<InvokeResponseBody>,
     on_exit: Channel<i32>,
 ) -> Result<u32, String> {
     let pty_system = native_pty_system();
@@ -231,7 +240,7 @@ pub async fn pty_spawn_pooled(
     init_command: String,
     cols: u16,
     rows: u16,
-    on_data: Channel<Vec<u8>>,
+    on_data: Channel<InvokeResponseBody>,
     on_exit: Channel<i32>,
 ) -> Result<u32, String> {
     let pooled = wsl_pool().lock().unwrap().pop();

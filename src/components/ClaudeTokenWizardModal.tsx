@@ -85,8 +85,9 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
       try {
         const { command, args } = getClaudeSetupTokenCommand(serverRef.current);
 
-        const onData = new Channel<number[]>();
-        onData.onmessage = (bytes) => {
+        const onData = new Channel<ArrayBuffer>();
+        onData.onmessage = (buf) => {
+          const bytes = new Uint8Array(buf);
           for (let i = 0; i < bytes.length; i++) bytesRef.current.push(bytes[i]);
           const text = cleanOutput(new TextDecoder().decode(new Uint8Array(bytesRef.current)));
           setRawOutput(text);

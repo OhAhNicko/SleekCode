@@ -25,6 +25,11 @@ export type OverlayPopupMsg = {
   rect: OverlayRect | null;
   /** Arbitrary kind-specific data the overlay renderer needs. */
   payload?: unknown;
+  /** Diagnostic: Date.now() at emit time, stamped by emitOverlayPopup on open
+   * messages. The overlay logs the transport delta when it is suspiciously
+   * large (event-bus backlog). NOT part of popupSignature — keepalive re-sends
+   * re-stamp it without counting as content changes. */
+  _ts?: number;
 };
 
 /** overlay -> main: an action dispatched by an interactive popup. */
@@ -42,11 +47,12 @@ export const OVERLAY_ACTION_EVENT = "overlay:action";
 export const OVERLAY_THEME_EVENT = "overlay:theme";
 export const OVERLAY_READY_EVENT = "overlay:ready";
 export const OVERLAY_FOCUS_EVENT = "overlay:focus";
+export const OVERLAY_INTERACTION_EVENT = "overlay:interaction";
 
 // ---- main side --------------------------------------------------------------
 
 export function emitOverlayPopup(msg: OverlayPopupMsg): void {
-  void emit(OVERLAY_POPUP_EVENT, msg);
+  void emit(OVERLAY_POPUP_EVENT, msg.open ? { ...msg, _ts: Date.now() } : msg);
 }
 
 /**
@@ -90,6 +96,17 @@ export function listenOverlayReady(cb: () => void): Promise<UnlistenFn> {
   return listen(OVERLAY_READY_EVENT, () => cb());
 }
 
+/** overlay -> main: a pointerdown landed inside an overlay popup. The overlay
+ * window's region only ever covers its own popups, so any press it receives is
+ * by definition an INSIDE-popup interaction — never an "outside click". The
+ * dismissal owner uses this to tell "the main webview blurred because the
+ * user clicked one of MADE's own popups" apart from a real focus loss
+ * (clicking the overlay makes its WebView2 child take Win32 focus, which
+ * fires main's DOM blur — see OverlayDismissOwner). */
+export function listenOverlayInteraction(cb: () => void): Promise<UnlistenFn> {
+  return listen(OVERLAY_INTERACTION_EVENT, () => cb());
+}
+
 /** overlay -> main: the overlay window gained/lost OS focus (focus-handoff
  * popups like pane search take real keyboard focus). Main folds this into
  * appWindowFocused so the app never LOOKS unfocused mid-search. */
@@ -125,4 +142,10 @@ export function emitOverlayReady(): void {
 
 export function emitOverlayFocus(focused: boolean): void {
   void emit(OVERLAY_FOCUS_EVENT, { focused });
+}
+
+/** See listenOverlayInteraction. Fired from a capture-phase pointerdown in
+ * the overlay document; carries no payload — only the timing matters. */
+export function emitOverlayInteraction(): void {
+  void emit(OVERLAY_INTERACTION_EVENT, null);
 }

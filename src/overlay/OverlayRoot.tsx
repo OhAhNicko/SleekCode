@@ -11,6 +11,7 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   emitOverlayAction,
   emitOverlayFocus,
+  emitOverlayInteraction,
   emitOverlayReady,
   listenOverlayPopup,
   listenOverlayTheme,
@@ -151,6 +152,17 @@ export function OverlayRoot() {
         // Main caught up — a later `open:true` is a genuine re-open.
         closedLocally.current.delete(msg.id);
       }
+      // Diagnostic: a fresh open arriving long after its emit means the event
+      // bus (main-thread eval queue) is backlogged — the historical cause of
+      // "menu takes seconds to appear". Silent when healthy.
+      if (msg.open && msg.rect && msg._ts && !popupsRef.current.has(msg.id)) {
+        const transportMs = Date.now() - msg._ts;
+        if (transportMs > 150) {
+          console.warn(
+            `[MenuLatency] overlay:popup '${msg.id}' (${msg.kind}) transport took ${transportMs}ms`,
+          );
+        }
+      }
       if (msg.open && msg.rect) lastSeen.current.set(msg.id, Date.now());
       else lastSeen.current.delete(msg.id);
       setPopups((prev) => {
@@ -252,6 +264,21 @@ export function OverlayRoot() {
   // re-emit ~16x/s and re-ran the effect for us; deduping those re-sends
   // removed the accident that was hiding this.
   //
+  // Report every pointerdown to main. The window region only ever covers the
+  // open popups (effect below), so a press this document receives is by
+  // definition INSIDE a popup — yet it still makes our WebView2 child take
+  // Win32 focus, which fires the main webview's DOM blur. Without this ping
+  // OverlayDismissOwner's deferred blur check reads that blur as "another app
+  // took over" and dismisses the very popup being clicked (the recent-menu
+  // quick/backend toggles died this way; same mechanism as the session-picker
+  // self-dismiss, which is why focus-handoff popups emit overlayFocused).
+  // Capture phase so a popup's own stopPropagation cannot swallow it.
+  useEffect(() => {
+    const onPointerDown = () => emitOverlayInteraction();
+    window.addEventListener("pointerdown", onPointerDown, true);
+    return () => window.removeEventListener("pointerdown", onPointerDown, true);
+  }, []);
+
   // NO BACKDROP MODE (2026-07-26). The region is ALWAYS the union of the open
   // popups' own rects — the window is never regionless and never hidden. Both
   // of those states are what produced the ghost bugs: a hidden window keeps its
@@ -314,10 +341,36 @@ export function OverlayRoot() {
       else push(rects);
     };
 
-    const push = (rects: PopupRect[]) =>
-      invoke("overlay_set_region", { rects, backdrop: false }).catch((e) =>
-        console.error("[overlay] overlay_set_region failed", e),
-      );
+    // Backpressure: at most ONE overlay_set_region invoke in flight, with
+    // latest-wins merging while the wire is busy (same reasoning as
+    // frameSync.ts). overlay_set_region is a sync command, so on Windows it
+    // runs inline on the UI thread — firing it un-awaited from a rAF loop can
+    // stack invokes behind a backlogged queue, each one a SetWindowRgn that
+    // invalidates every window beneath the overlay.
+    let inFlight = false;
+    let queued: PopupRect[] | null = null;
+    const push = (rects: PopupRect[]) => {
+      if (inFlight) {
+        queued = rects;
+        return;
+      }
+      inFlight = true;
+      const t0 = Date.now();
+      invoke("overlay_set_region", { rects, backdrop: false })
+        .catch((e) => console.error("[overlay] overlay_set_region failed", e))
+        .finally(() => {
+          inFlight = false;
+          const took = Date.now() - t0;
+          if (took > 150) {
+            console.warn(`[MenuLatency] overlay_set_region took ${took}ms`);
+          }
+          if (queued) {
+            const next = queued;
+            queued = null;
+            push(next);
+          }
+        });
+    };
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -2088,12 +2141,18 @@ function TipChip({
  * anything inside a menu tracks its own hover here and renders TipChip
  * directly — same chip, same 400ms dwell, so the two are indistinguishable.
  *
- * Safe to paint anywhere because every menu kind is in SHADOW_PAD_KINDS, and
- * backdrop mode sets NO window region (see the region effect above). Do not
- * reuse this from a non-backdrop popup without registering the element.
+ * The window region is the union of the REGISTERED popup rects (backdrop mode
+ * is gone), so a chip that can stray outside its menu's padded rect must be
+ * registered as its own region element or it gets clipped — pass `register`
+ * for that. Menus whose chips always stay inside the MENU_SHADOW_PAD slack
+ * (the compact context menus) may omit it.
  */
-function useOverlayTip() {
-  const [tip, setTip] = useState<{ anchor: TipAnchor; text: string } | null>(null);
+function useOverlayTip(register?: (el: HTMLDivElement | null) => void) {
+  const [tip, setTip] = useState<{
+    anchor: TipAnchor;
+    text: string;
+    hint?: string;
+  } | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const hide = useCallback(() => {
@@ -2105,7 +2164,7 @@ function useOverlayTip() {
   }, []);
 
   const showAfterDelay = useCallback(
-    (el: HTMLElement, text: string) => {
+    (el: HTMLElement, text: string, hint?: string) => {
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => {
         timer.current = null;
@@ -2114,6 +2173,7 @@ function useOverlayTip() {
         setTip({
           anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
           text,
+          hint,
         });
       }, TIP_DELAY_MS);
     },
@@ -2124,7 +2184,14 @@ function useOverlayTip() {
     if (timer.current) clearTimeout(timer.current);
   }, []);
 
-  const node = tip ? <TipChip anchor={tip.anchor} text={tip.text} /> : null;
+  const node = tip ? (
+    <TipChip
+      anchor={tip.anchor}
+      text={tip.text}
+      hint={tip.hint}
+      register={register}
+    />
+  ) : null;
   return { showAfterDelay, hide, node };
 }
 
@@ -2318,14 +2385,25 @@ function RecentMenu({
     (el: HTMLElement | null) => registerEl(msg.id, el),
     [registerEl, msg.id],
   );
+  // Branded hover tooltips (TipChip — same chip as the main webview's
+  // TooltipHost; never `title=`, which renders the unthemed OS tooltip).
+  // Registered as its own region element: rows anchor chips near the menu's
+  // top edge, outside the shadow-pad slack.
+  const registerTip = useCallback(
+    (el: HTMLDivElement | null) => registerEl(`${msg.id}::tip`, el),
+    [registerEl, msg.id],
+  );
+  const tip = useOverlayTip(registerTip);
   const anchor = msg.rect!;
   const dismiss = () => {
+    tip.hide();
     closeLocal(msg.id);
     emitOverlayAction({ id: msg.id, action: "__dismiss__" });
   };
   // Closing actions remove the popup locally; row-level toggles keep it open
   // (main re-emits fresh payload).
   const act = (action: string, closes: boolean) => {
+    tip.hide(); // deliberate interaction — the label has served its purpose
     if (closes) closeLocal(msg.id);
     emitOverlayAction({ id: msg.id, action });
   };
@@ -2394,7 +2472,6 @@ function RecentMenu({
         {(p.projects ?? []).map((project) => (
           <div
             key={project.key}
-            title={project.tooltip}
             onClick={() => {
               if (!project.disabled) act(`open:${project.key}`, true);
             }}
@@ -2402,9 +2479,11 @@ function RecentMenu({
               if (!project.disabled)
                 e.currentTarget.style.background =
                   "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+              tip.showAfterDelay(e.currentTarget, project.tooltip);
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = "transparent";
+              tip.hide();
             }}
             style={{
               display: "flex",
@@ -2483,12 +2562,19 @@ function RecentMenu({
             </div>
             {project.showFresh && (
               <button
-                title="Start fresh — same layout, new sessions"
                 style={rowBtn}
                 onClick={(e) => {
                   e.stopPropagation();
                   act(`fresh:${project.key}`, true);
                 }}
+                onMouseEnter={(e) =>
+                  tip.showAfterDelay(
+                    e.currentTarget,
+                    "Start fresh",
+                    "Same layout, new sessions",
+                  )
+                }
+                onMouseLeave={tip.hide}
               >
                 <svg width="9" height="9" viewBox="0 0 16 16" fill="currentColor">
                   <path d="M8 3a5 5 0 1 0 4.546 2.914.75.75 0 0 1 1.364-.626A6.5 6.5 0 1 1 8 1.5v-1a.25.25 0 0 1 .41-.192l2.36 1.966a.25.25 0 0 1 0 .384L8.41 4.624A.25.25 0 0 1 8 4.432V3Z" />
@@ -2497,11 +2583,16 @@ function RecentMenu({
             )}
             {project.showQuick && (
               <button
-                title={
-                  project.quickOn
-                    ? `Quick open ON (${project.paneCount} panes) — click to disable`
-                    : `Quick open OFF — click to enable (reuse last ${project.paneCount}-pane layout)`
+                onMouseEnter={(e) =>
+                  tip.showAfterDelay(
+                    e.currentTarget,
+                    project.quickOn
+                      ? `Quick open on — opens the saved ${project.paneCount}-pane layout`
+                      : "Quick open off — opening asks for a layout",
+                    project.quickOn ? "Click to disable" : "Click to enable",
+                  )
                 }
+                onMouseLeave={tip.hide}
                 style={{
                   ...rowBtn,
                   gap: 4,
@@ -2528,12 +2619,19 @@ function RecentMenu({
             )}
             {project.backendLabel && (
               <button
-                title={`Backend: ${project.backendLabel} — click to switch`}
                 style={{ ...rowBtn, letterSpacing: "0.04em" }}
                 onClick={(e) => {
                   e.stopPropagation();
                   act(`backend:${project.key}`, false);
                 }}
+                onMouseEnter={(e) =>
+                  tip.showAfterDelay(
+                    e.currentTarget,
+                    `Backend: ${project.backendLabel}`,
+                    "Click to switch",
+                  )
+                }
+                onMouseLeave={tip.hide}
               >
                 {project.backendLabel}
               </button>
@@ -2574,9 +2672,16 @@ function RecentMenu({
             if (p.canCreate)
               e.currentTarget.style.background =
                 "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+            tip.showAfterDelay(
+              e.currentTarget,
+              p.canCreate
+                ? "Create a new project folder"
+                : "Set a projects directory in Settings first",
+            );
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = "transparent";
+            tip.hide();
           }}
           style={{
             display: "flex",
@@ -2588,11 +2693,6 @@ function RecentMenu({
             color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
             opacity: p.canCreate ? 1 : 0.45,
           }}
-          title={
-            p.canCreate
-              ? "Create a new project folder"
-              : "Set a projects directory in Settings first"
-          }
         >
           <svg
             width="14"
@@ -2638,9 +2738,14 @@ function RecentMenu({
           onMouseEnter={(e) => {
             e.currentTarget.style.background =
               "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+            tip.showAfterDelay(
+              e.currentTarget,
+              "Work Jira tickets against a source folder, one pane per ticket",
+            );
           }}
           onMouseLeave={(e) => {
             e.currentTarget.style.background = "transparent";
+            tip.hide();
           }}
           style={{
             display: "flex",
@@ -2651,7 +2756,6 @@ function RecentMenu({
             fontSize: 13,
             color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
           }}
-          title="Work Jira tickets against a source folder, one pane per ticket"
         >
           <svg
             width="14"
@@ -2723,6 +2827,7 @@ function RecentMenu({
           </>
         )}
       </div>
+      {tip.node}
     </div>
   );
 }
@@ -3549,9 +3654,24 @@ function SessionPickerMenu({
   };
 
   // Focus handoff while mounted (the rename input needs real keystrokes).
+  // Unlike the other two focus-handoff popups, nothing is autofocused on
+  // mount (the rename input exists only after a rename click), so no input
+  // onFocus ever reports the handoff to main. But taking the foreground blurs
+  // the main webview, and OverlayDismissOwner's deferred blur check dismisses
+  // every popup unless appWindowFocused recovers — which folds in
+  // overlayFocused. Report the handoff explicitly or this popup dismisses
+  // ITSELF ~150ms after opening. The unmount cleanup below is the paired
+  // emit(false), so the flag cannot stick true (the hazard that forbids a
+  // window-level focus emitter — see PaneSearch's input comment).
   useEffect(() => {
-    invoke("overlay_set_focusable", { focusable: true }).catch(() => {});
+    let disposed = false;
+    invoke("overlay_set_focusable", { focusable: true })
+      .then(() => {
+        if (!disposed) emitOverlayFocus(true);
+      })
+      .catch(() => {});
     return () => {
+      disposed = true;
       emitOverlayFocus(false);
       invoke("overlay_set_focusable", { focusable: false }).catch(() => {});
     };
@@ -3653,11 +3773,11 @@ function SessionPickerMenu({
                     ref={inputRef}
                     value={editValue}
                     onChange={(e) => setEditValue(e.target.value)}
-                    onFocus={() => emitOverlayFocus(true)}
-                    onBlur={() => {
-                      emitOverlayFocus(false);
-                      submitRename();
-                    }}
+                    // No per-input emitOverlayFocus here: the mount effect owns
+                    // the flag for this popup's whole lifetime (the handoff
+                    // persists after the rename input blurs — the overlay stays
+                    // the foreground window until the popup closes).
+                    onBlur={submitRename}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") submitRename();
                       if (e.key === "Escape") setEditingId(null);

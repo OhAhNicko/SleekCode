@@ -1,15 +1,19 @@
 // The single owner of "an outside interaction happened, close open popups".
 //
 // See src/lib/overlay-dismiss.ts for WHY dismissal moved out of the overlay
-// window. This component installs the three sources exactly once:
+// window. This component installs the dismissal sources exactly once:
 //   1. capture-phase pointerdown on main's DOM,
 //   2. `pointer_down` from every live native pane HWND,
-//   3. window blur (alt-tab / another app takes over).
+//   3. window blur (alt-tab / another app takes over),
+//   4. (a suppressor, not a source) `overlay:interaction` pings — a press
+//      INSIDE an overlay popup blurs main exactly like source 3, and the ping
+//      is what tells the two apart.
 //
 // Mount once, near the app root. Renders nothing.
 import { useEffect, useRef } from "react";
 import { useAppStore } from "../store";
 import { fireOverlayDismiss } from "../lib/overlay-dismiss";
+import { listenOverlayInteraction } from "../lib/overlay-bridge";
 import type { NativeRendererSlice } from "../store/nativeRendererSlice";
 import {
   subscribePointerDown,
@@ -26,6 +30,18 @@ export function OverlayDismissOwner(): null {
   const liveNativeTerms = useAppStore(
     (s) => (s as StoreWithNative).liveNativeTerms,
   );
+
+  // A pointerdown INSIDE an overlay popup is not an outside interaction, but
+  // it produces the same main-webview blur as a real focus loss: the overlay's
+  // WebView2 child takes Win32 focus on the click (WS_EX_NOACTIVATE +
+  // MA_NOACTIVATE stop ACTIVATION from moving, not Chromium's SetFocus), and
+  // for a non-focus-handoff popup nothing ever sets overlayFocused — so the
+  // deferred blur check below sampled appWindowFocused === false and dismissed
+  // the very menu being clicked (recent-menu quick/backend toggles, which are
+  // documented to keep the menu open). The overlay reports its pointerdowns
+  // (see overlay-bridge listenOverlayInteraction); a blur explained by a fresh
+  // ping is an intra-app handoff, never an outside click.
+  const lastOverlayInteractionAt = useRef(0);
 
   // Main-webview pointerdown + app blur.
   useEffect(() => {
@@ -61,12 +77,24 @@ export function OverlayDismissOwner(): null {
     // appWindowFocused dip-and-recover". Sampling once on the trailing edge is
     // what distinguishes a real alt-tab (still false) from a handoff (recovered).
     const BLUR_DISMISS_GRACE_MS = 150;
+    // How fresh an overlay ping must be to explain a blur. The press lands
+    // 0–40 ms before the blur and this check runs BLUR_DISMISS_GRACE_MS after
+    // it, so a ping that caused the blur is ~150–200 ms old here; 400 ms
+    // leaves margin for event-bus latency without masking real focus losses
+    // (an actual outside click fires its own pointerdown-based dismissal
+    // regardless of this timer).
+    const OVERLAY_INTERACTION_GRACE_MS = 400;
     let blurTimer: ReturnType<typeof setTimeout> | undefined;
     const onBlur = () => {
       clearTimeout(blurTimer);
       blurTimer = setTimeout(() => {
         const s = useAppStore.getState() as StoreWithNative;
         if (s.appWindowFocused) return; // focus stayed inside MADE — not an outside click
+        if (
+          performance.now() - lastOverlayInteractionAt.current <
+          OVERLAY_INTERACTION_GRACE_MS
+        )
+          return; // blur caused by a click INSIDE an overlay popup
         fireOverlayDismiss(null);
       }, BLUR_DISMISS_GRACE_MS);
     };
@@ -77,6 +105,22 @@ export function OverlayDismissOwner(): null {
       clearTimeout(blurTimer);
       window.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("blur", onBlur);
+    };
+  }, []);
+
+  // Overlay pointerdown pings (source 4 — see lastOverlayInteractionAt).
+  useEffect(() => {
+    let un: Unlisten | undefined;
+    let disposed = false;
+    void listenOverlayInteraction(() => {
+      lastOverlayInteractionAt.current = performance.now();
+    }).then((u) => {
+      if (disposed) u();
+      else un = u;
+    });
+    return () => {
+      disposed = true;
+      un?.();
     };
   }, []);
 
