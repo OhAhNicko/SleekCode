@@ -26,6 +26,7 @@ import { attachLinkUnderlines } from "../lib/xterm-link-underline";
 import { readSessionFirstPrompt, slugify } from "../lib/sessions-index";
 import { invoke } from "@tauri-apps/api/core";
 import { toWslPath } from "../lib/terminal-config";
+import { getCachedDistro } from "../lib/wsl-cache";
 import { recordTerminalActivity, recordTerminalWrite, recordTerminalResize, clearTerminalActivity } from "../lib/terminal-activity";
 import { applyImageMask, clearImageMasks } from "../lib/image-mask";
 import XtermTuiScrollbar from "./XtermTuiScrollbar";
@@ -210,9 +211,17 @@ export default function TerminalPane({
     (s) => s.projectColors[workingDir.replace(/\\/g, "/")] ?? null,
   );
   const paneTint = projectPaneTint ? getProjectColor(projectColorId) : null;
-  const effectiveTerminalTheme = useMemo(() => getEffectiveTerminalTheme(themeId, vibrantColors, isActive, paneTint), [themeId, vibrantColors, isActive, paneTint]);
-  const activePaneBg = useMemo(() => getActivePaneBg(themeId, paneTint), [themeId, paneTint]);
-  const containerBg = isActive ? activePaneBg : getInactivePaneBg(themeId, paneTint);
+  // Whole percent in the store (Settings stepper) → 0..1 blend fraction here.
+  const paneTintAmount = useAppStore((s) => s.projectPaneTintStrength) / 100;
+  // The isActive arg of getEffectiveTerminalTheme exists solely to apply the
+  // active-pane lift, so the "Lighten active pane" toggle gates it here — off
+  // means active and inactive panes paint the identical background and the
+  // header stays the only active marker.
+  const activePaneLift = useAppStore((s) => s.activePaneLift);
+  const liftActive = isActive && activePaneLift;
+  const effectiveTerminalTheme = useMemo(() => getEffectiveTerminalTheme(themeId, vibrantColors, liftActive, paneTint, paneTintAmount), [themeId, vibrantColors, liftActive, paneTint, paneTintAmount]);
+  const activePaneBg = useMemo(() => getActivePaneBg(themeId, paneTint, paneTintAmount), [themeId, paneTint, paneTintAmount]);
+  const containerBg = liftActive ? activePaneBg : getInactivePaneBg(themeId, paneTint, paneTintAmount);
   const cliFontSize = useAppStore((s) => s.cliFontSizes[terminalType] ?? DEFAULT_CLI_FONT_SIZE);
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
   const copyOnSelectRef = useRef(copyOnSelect);
@@ -517,11 +526,11 @@ export default function TerminalPane({
             console.log(`[SessionResume] lookup for ${type}, wslCwd="${wslCwd}", workingDir="${workingDirRef.current}"`);
             if (!wslCwd) { console.log(`[SessionResume] no wslCwd, skipping`); return false; }
             if (type === "claude") {
-              id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds, maxAgeSecs: claudeMaxAge });
+              id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds, maxAgeSecs: claudeMaxAge, distro: getCachedDistro() });
             } else if (type === "codex") {
-              id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
+              id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
             } else if (type === "gemini") {
-              id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+              id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
             }
           }
 

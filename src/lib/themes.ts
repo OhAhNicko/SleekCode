@@ -1135,10 +1135,12 @@ function activeShade(hex: string): string {
     : lightenHex(hex, ACTIVE_PANE_LIFT);
 }
 
-/** How far a pane background washes toward its project color. One constant so
- *  the HWND canvas, the xterm canvas, the DOM padding strips and the pane
- *  container can never disagree by a shade. 0.08 read as taking over the
- *  canvas; 0.04 keeps it a hint you notice, not a color you sit in. */
+/** Default pane wash toward the project color, as a 0..1 blend fraction.
+ *  User-adjustable via `projectPaneTintStrength` (whole percent, Settings >
+ *  Appearance > Theme); every helper below takes the live amount with this as
+ *  fallback so all surfaces — HWND canvas, xterm canvas, DOM padding strips,
+ *  pane container — shift by the identical shade. 0.08 read as taking over
+ *  the canvas; 0.04 is a hint you notice, not a color you sit in. */
 export const PROJECT_TINT_AMOUNT = 0.04;
 
 /** #rgb or #rrggbb → [r,g,b], null if neither. Project color presets are
@@ -1167,20 +1169,32 @@ function blendHex(base: string, tint: string, amount: number): string {
 }
 
 /** Project-color wash for any surface hex; identity when tint is null. */
-export function projectTintBg(bg: string, tint: string | null | undefined): string {
-  return tint ? blendHex(bg, tint, PROJECT_TINT_AMOUNT) : bg;
+export function projectTintBg(
+  bg: string,
+  tint: string | null | undefined,
+  amount: number = PROJECT_TINT_AMOUNT,
+): string {
+  return tint ? blendHex(bg, tint, amount) : bg;
 }
 
 /** Container bg color for an active CLI pane in the given theme (shaded from `surface.bg`). */
-export function getActivePaneBg(themeId: string, tint: string | null = null): string {
-  return activeShade(projectTintBg(getTheme(themeId).surface.bg, tint));
+export function getActivePaneBg(
+  themeId: string,
+  tint: string | null = null,
+  tintAmount: number = PROJECT_TINT_AMOUNT,
+): string {
+  return activeShade(projectTintBg(getTheme(themeId).surface.bg, tint, tintAmount));
 }
 
 /** Container bg for an INACTIVE CLI pane. Without a tint this is a CSS var
  *  (identical to today's untinted container); with one it must become a
  *  concrete hex so the wash can blend into the theme surface. */
-export function getInactivePaneBg(themeId: string, tint: string | null): string {
-  return tint ? projectTintBg(getTheme(themeId).surface.bg, tint) : "var(--ezy-bg)";
+export function getInactivePaneBg(
+  themeId: string,
+  tint: string | null,
+  tintAmount: number = PROJECT_TINT_AMOUNT,
+): string {
+  return tint ? projectTintBg(getTheme(themeId).surface.bg, tint, tintAmount) : "var(--ezy-bg)";
 }
 
 /** Returns the effective terminal theme, optionally with vibrant colors overlaid and an active-pane lift. */
@@ -1189,6 +1203,7 @@ export function getEffectiveTerminalTheme(
   vibrant: boolean,
   isActive: boolean = false,
   tint: string | null = null,
+  tintAmount: number = PROJECT_TINT_AMOUNT,
 ): ITheme {
   const base = getTheme(themeId).terminal;
   const light = isLightBackground(base.background);
@@ -1209,7 +1224,7 @@ export function getEffectiveTerminalTheme(
   // Project tint blends BEFORE the active lift so both pane states share the
   // wash and the active pane keeps exactly today's lift on top of it.
   const tinted = tint
-    ? { ...withVibrant, background: projectTintBg(withVibrant.background ?? "#000000", tint) }
+    ? { ...withVibrant, background: projectTintBg(withVibrant.background ?? "#000000", tint, tintAmount) }
     : withVibrant;
   if (!isActive) return tinted;
   return {

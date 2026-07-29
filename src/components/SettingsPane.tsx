@@ -5,7 +5,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { confirmAction } from "../lib/prompt-modal";
-import { getCachedDistro } from "../lib/wsl-cache";
+import { getCachedDistro, clearWslCliCache, resolveWslCliPaths } from "../lib/wsl-cache";
 import { getTerminalActions } from "../lib/terminal-actions";
 import { findAllTerminalIds } from "../lib/layout-utils";
 import { RELEASES_REPO } from "../lib/release-notes";
@@ -85,11 +85,12 @@ function ToggleSwitch({ checked, onChange, color }: { checked: boolean; onChange
   );
 }
 
-function FontSizeStepper({ value, onChange, min = 10, max = 24 }: {
+function FontSizeStepper({ value, onChange, min = 10, max = 24, suffix = "" }: {
   value: number;
   onChange: (v: number) => void;
   min?: number;
   max?: number;
+  suffix?: string;
 }) {
   const step = (delta: number, blocked: boolean) => (
     <div
@@ -121,7 +122,7 @@ function FontSizeStepper({ value, onChange, min = 10, max = 24 }: {
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
       {step(-1, value <= min)}
       <span style={{ fontSize: 13, color: "var(--ezy-text)", minWidth: 24, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
-        {value}
+        {value}{suffix}
       </span>
       {step(1, value >= max)}
     </div>
@@ -1534,6 +1535,23 @@ export default function SettingsPane() {
       setWslShutdownBusy(false);
     }
   }, []);
+  // Installed WSL distros for the distribution picker. `wsl --list --quiet`
+  // is registry-backed (no VM boot), so enumerating on mount is cheap.
+  const [wslDistros, setWslDistros] = useState<string[]>([]);
+  useEffect(() => {
+    if (!isWindows()) return;
+    invoke<string[]>("wsl_list_distros")
+      .then(setWslDistros)
+      .catch(() => {}); // no wsl.exe / no distros — picker still offers Default
+  }, []);
+  const handleWslDistroChange = useCallback((value: string) => {
+    useAppStore.getState().setWslDistro(value || null);
+    // Cached CLI paths (claude/codex/gemini) belong to the previous distro.
+    // Re-resolve inside the new one; that also re-warms the pool, and
+    // pty_pool_warm flushes the old distro's pooled sessions on the way.
+    clearWslCliCache();
+    void resolveWslCliPaths();
+  }, []);
   const [showReloadConfirm, setShowReloadConfirm] = useState(false);
   const [reloadRemember, setReloadRemember] = useState(false);
   // Native panes are child HWNDs — OS windows layered above the whole WebView.
@@ -1569,6 +1587,7 @@ export default function SettingsPane() {
   // Store selectors
   const terminalBackend = useAppStore((s) => s.terminalBackend ?? "wsl");
   const setTerminalBackend = useAppStore((s) => s.setTerminalBackend);
+  const wslDistro = useAppStore((s) => s.wslDistro ?? null);
   const alwaysShowTemplatePicker = useAppStore((s) => s.alwaysShowTemplatePicker);
   const setAlwaysShowTemplatePicker = useAppStore((s) => s.setAlwaysShowTemplatePicker);
   const restoreLastSession = useAppStore((s) => s.restoreLastSession);
@@ -1675,6 +1694,10 @@ export default function SettingsPane() {
   const setVibrantColors = useAppStore((s) => s.setVibrantColors);
   const projectPaneTint = useAppStore((s) => s.projectPaneTint);
   const setProjectPaneTint = useAppStore((s) => s.setProjectPaneTint);
+  const projectPaneTintStrength = useAppStore((s) => s.projectPaneTintStrength);
+  const setProjectPaneTintStrength = useAppStore((s) => s.setProjectPaneTintStrength);
+  const activePaneLift = useAppStore((s) => s.activePaneLift);
+  const setActivePaneLift = useAppStore((s) => s.setActivePaneLift);
   const hoverTooltips = useAppStore((s) => s.hoverTooltips);
   const setHoverTooltips = useAppStore((s) => s.setHoverTooltips);
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
@@ -1960,6 +1983,20 @@ export default function SettingsPane() {
               <SettingsRow label="Project color pane tint" description="Washes each pane toward its project's tab color.">
                 <ToggleSwitch checked={projectPaneTint} onChange={setProjectPaneTint} />
               </SettingsRow>
+              {projectPaneTint && (
+                <SettingsRow label="Tint strength">
+                  <FontSizeStepper
+                    value={projectPaneTintStrength}
+                    onChange={setProjectPaneTintStrength}
+                    min={1}
+                    max={15}
+                    suffix="%"
+                  />
+                </SettingsRow>
+              )}
+              <SettingsRow label="Lighten active pane" description="Off: the pane header alone marks the active pane.">
+                <ToggleSwitch checked={activePaneLift} onChange={setActivePaneLift} />
+              </SettingsRow>
             </SettingsSection>
             <SettingsSection id="cursor" title="Cursor" description="Applies to the native terminal renderer.">
               <SettingsRow label="Cursor style">
@@ -2144,6 +2181,25 @@ export default function SettingsPane() {
                     onChange={(v) => setTerminalBackend(v)}
                   />
                 </SettingsRow>
+                {terminalBackend === "wsl" && (
+                  <SettingsRow label="WSL distribution" description="Applies to new terminals.">
+                    <Dropdown<string>
+                      value={wslDistro ?? ""}
+                      onChange={handleWslDistroChange}
+                      options={[
+                        { value: "", label: "Default" },
+                        // Keep a saved distro visible even if it was
+                        // uninstalled — a blank control would hide that the
+                        // override is still active.
+                        ...(wslDistro && !wslDistros.includes(wslDistro)
+                          ? [{ value: wslDistro, label: `${wslDistro} (not found)` }]
+                          : []),
+                        ...wslDistros.map((d) => ({ value: d, label: d })),
+                      ]}
+                      width={200}
+                    />
+                  </SettingsRow>
+                )}
               </SettingsSection>
             )}
             <SettingsSection id="native-renderer" title="Native renderer">
@@ -2629,6 +2685,16 @@ export default function SettingsPane() {
         [data-settings-search-active] [data-settings-section]:not(:has([data-settings-row])) {
           display: none;
         }
+        /* Search empty state. Rows unmount when they don't match, so "the
+           content area holds no [data-settings-row]" IS the no-results
+           condition — same source of truth as the section-hiding rule above,
+           nothing to keep in sync in JS. */
+        [data-settings-no-results] {
+          display: none;
+        }
+        [data-settings-search-active] [data-settings-content]:not(:has([data-settings-row])) [data-settings-no-results] {
+          display: flex;
+        }
         /* Inter-section spacing, but none trailing the last one — the scroll
            container's own padding closes out the page. !important because the
            32px lives in an inline style. */
@@ -2844,7 +2910,7 @@ export default function SettingsPane() {
       </nav>
 
       {/* Right content area — only the active section, or all sections during search */}
-      <div ref={contentScrollRef} style={{
+      <div ref={contentScrollRef} data-settings-content style={{
         flex: 1,
         overflowY: "auto",
         // Was "24px 24px 60px", which stacked on top of the last section's own
@@ -2855,9 +2921,33 @@ export default function SettingsPane() {
       }}>
         <SettingsSearchContext.Provider value={{ query: trimmedQuery }}>
           {isSearching
-            ? NAV_SECTIONS.map((s) => (
-                <Fragment key={s.id}>{renderSection(s.id)}</Fragment>
-              ))
+            ? (
+                <>
+                  {NAV_SECTIONS.map((s) => (
+                    <Fragment key={s.id}>{renderSection(s.id)}</Fragment>
+                  ))}
+                  {/* display comes from the [data-settings-no-results] CSS
+                      above: none while anything matches, flex when nothing
+                      does. Do not set display inline. */}
+                  <div
+                    data-settings-no-results
+                    style={{
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 4,
+                      paddingTop: 96,
+                      textAlign: "center",
+                    }}
+                  >
+                    <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>
+                      No matching settings
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", lineHeight: 1.4 }}>
+                      Nothing matches “{trimmedQuery}”. Esc clears the search.
+                    </div>
+                  </div>
+                </>
+              )
             : (
                 // Keyed by section so switching tabs REMOUNTS the subtree.
                 // Without it React reconciles positionally and reuses the same

@@ -90,6 +90,7 @@ import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
 import { invoke } from "@tauri-apps/api/core";
 import { supportsSessionResume } from "../lib/session-resume";
 import { toWslPath } from "../lib/terminal-config";
+import { getCachedDistro } from "../lib/wsl-cache";
 import { readSessionFirstPrompt, slugify } from "../lib/sessions-index";
 import { useSessionContext } from "../hooks/useSessionContext";
 // Session-detection state + helpers shared with the xterm pane and the
@@ -200,8 +201,9 @@ function nativeThemeFor(
   vibrant: boolean,
   isActive: boolean,
   tint: string | null,
+  tintAmount: number,
 ): NativeTermTheme {
-  const eff = getEffectiveTerminalTheme(themeId, vibrant, isActive, tint);
+  const eff = getEffectiveTerminalTheme(themeId, vibrant, isActive, tint, tintAmount);
   return madeThemeToNative(
     eff as Record<string, string | undefined>,
     eff.extendedAnsi,
@@ -505,6 +507,19 @@ export default function TerminalPaneNative({
   const paneTint = projectPaneTint ? getProjectColor(projectColorId) : null;
   const paneTintRef = useRef(paneTint);
   useEffect(() => { paneTintRef.current = paneTint; }, [paneTint]);
+  // Whole percent in the store (Settings stepper) → 0..1 blend fraction here.
+  const paneTintAmount = useAppStore((s) => s.projectPaneTintStrength) / 100;
+  const paneTintAmountRef = useRef(paneTintAmount);
+  useEffect(() => { paneTintAmountRef.current = paneTintAmount; }, [paneTintAmount]);
+  // "Lighten active pane" toggle. nativeThemeFor's isActive arg exists solely
+  // to apply the active-pane lift, so gating it here makes active and
+  // inactive canvases identical when off; TerminalHeader's active styling is
+  // independent and remains the only marker. Ref for the create flow, same
+  // pattern as the tint refs above.
+  const activePaneLift = useAppStore((s) => s.activePaneLift);
+  const liftActive = isActive && activePaneLift;
+  const liftActiveRef = useRef(liftActive);
+  useEffect(() => { liftActiveRef.current = liftActive; }, [liftActive]);
   // Settings > General > Behavior > "Hover tooltips" — gates the file-link
   // tooltip render below; hover STATE stays live for underline + Ctrl+click.
   const hoverTooltips = useAppStore((s) => s.hoverTooltips);
@@ -515,9 +530,9 @@ export default function TerminalPaneNative({
   // uses — or the gap reads as a seam instead of as part of the terminal.
   const surfaceBg = useMemo(
     () =>
-      getEffectiveTerminalTheme(themeId, vibrantColors, isActive, paneTint).background ??
+      getEffectiveTerminalTheme(themeId, vibrantColors, liftActive, paneTint, paneTintAmount).background ??
       "#0d1117",
-    [themeId, vibrantColors, isActive, paneTint],
+    [themeId, vibrantColors, liftActive, paneTint, paneTintAmount],
   );
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
@@ -649,8 +664,9 @@ export default function TerminalPaneNative({
             theme: nativeThemeFor(
               themeIdRef.current,
               vibrantColorsRef.current,
-              isActiveRef.current,
+              liftActiveRef.current,
               paneTintRef.current,
+              paneTintAmountRef.current,
             ),
             font: {
               family: TERMINAL_FONT_FAMILY,
@@ -1062,11 +1078,11 @@ export default function TerminalPaneNative({
     // changes exactly like the legacy renderer.
     void nativeTermSetTheme(
       termId,
-      nativeThemeFor(themeId, vibrantColors, isActive, paneTint),
+      nativeThemeFor(themeId, vibrantColors, liftActive, paneTint, paneTintAmount),
     ).catch(
       (e) => console.error("[TerminalPaneNative] set_theme update failed", e),
     );
-  }, [termId, themeId, vibrantColors, isActive, paneTint]);
+  }, [termId, themeId, vibrantColors, liftActive, paneTint, paneTintAmount]);
 
   // ── Cursor style/blink hot-swap ───────────────────────────────────────
   // Re-push the cursor settings whenever the user changes them in Settings.
@@ -1322,11 +1338,11 @@ export default function TerminalPaneNative({
             const wslCwd = toWslPath(workingDirRef.current);
             if (!wslCwd) return false;
             if (type === "claude") {
-              id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds, maxAgeSecs: claudeMaxAge });
+              id = await invoke<string | null>("get_claude_session_id", { projectPath: wslCwd, excludeIds, maxAgeSecs: claudeMaxAge, distro: getCachedDistro() });
             } else if (type === "codex") {
-              id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds });
+              id = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
             } else if (type === "gemini") {
-              id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds });
+              id = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
             }
           }
 
