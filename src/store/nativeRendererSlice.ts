@@ -100,6 +100,11 @@ export interface NativeRendererSlice {
    * Folded into appWindowFocused so search doesn't dim the app. */
   overlayFocused: boolean;
   appWindowFocused: boolean;
+  /** OS window is minimized (WM_SIZE/SIZE_MINIMIZED transition events from the
+   * win32_border wnd_proc — NOT webview focus, which stays foreground-agnostic).
+   * Gates pane-notification suppression and the auto-switch-while-minimized
+   * setting. NOT persisted (same rationale as the focus fields above). */
+  windowMinimized: boolean;
 
   setBrowserIframeForLocalhost: (v: boolean) => void;
   setBrowserViewFocused: (v: boolean) => void;
@@ -118,6 +123,7 @@ export interface NativeRendererSlice {
   setWebviewFocused: (focused: boolean) => void;
   setNativePaneFocused: (focused: boolean) => void;
   setOverlayFocused: (focused: boolean) => void;
+  setWindowMinimized: (minimized: boolean) => void;
 }
 
 const EMPTY_LIVE: ReadonlySet<NativeTermId> = new Set();
@@ -145,6 +151,7 @@ export const createNativeRendererSlice: StateCreator<
   nativePaneFocused: false,
   overlayFocused: false,
   appWindowFocused: true,
+  windowMinimized: false,
 
   setBrowserIframeForLocalhost: (v) => set({ browserIframeForLocalhost: v }),
 
@@ -209,6 +216,11 @@ export const createNativeRendererSlice: StateCreator<
       appWindowFocused:
         s.webviewFocused || s.nativePaneFocused || focused || s.browserViewFocused,
     });
+  },
+
+  setWindowMinimized: (minimized) => {
+    if (get().windowMinimized === minimized) return;
+    set({ windowMinimized: minimized });
   },
 
   setPaneRendererOverride: (paneId, override) => {

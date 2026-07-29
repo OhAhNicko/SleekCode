@@ -2047,14 +2047,17 @@ export default function TerminalPaneNative({
           alternate screen, where MADE's own scrollback is empty and the TUI
           owns scrolling — normal-buffer panes keep the real scrollbar. */}
       {/* Branded in-app notification when the CLI asks for attention
-          (OSC 9 / 99 / 777). Suppressed for the active pane — you can already
-          see it. */}
+          (OSC 9 / 99 / 777). Forwards into the central stack — suppression
+          (active pane of the ACTIVE tab) is computed there, from the store. */}
       <PaneNotification
         termId={termId}
+        terminalId={terminalId}
         terminalType={terminalType}
         paneLabel={contextInfo?.sessionName ?? undefined}
-        isActive={isActive}
-        onFocusPane={onFocus}
+        workingDir={workingDir}
+        backend={backend}
+        serverId={serverId}
+        sessionResumeId={sessionResumeId}
       />
       <TuiScrollbar
         termId={termId}

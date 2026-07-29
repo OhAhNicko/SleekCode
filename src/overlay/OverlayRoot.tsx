@@ -433,6 +433,8 @@ function OverlayPopup({
       return <ExitBanner msg={msg} registerEl={registerEl} />;
     case "toast":
       return <Toast msg={msg} registerEl={registerEl} />;
+    case "notif-stack":
+      return <NotifStack msg={msg} registerEl={registerEl} />;
     case "file-link-tooltip":
       return <FileLinkTip msg={msg} registerEl={registerEl} />;
     case "tui-scrollbar":
@@ -752,6 +754,182 @@ function Toast({
           />
         </svg>
       )}
+    </div>
+  );
+}
+
+/** One card in the pane-notification stack (see NotifStack below). */
+interface NotifStackCard {
+  id: string;
+  projectName: string;
+  paneLabel: string;
+  timeHHMM: string;
+  body: string;
+  kind: "permission" | "finished";
+}
+
+/**
+ * Persistent pane-notification stack, bottom-right. Ambient popup (no
+ * backdrop, no focus handoff, tight 1-bit clip) like Toast/VoiceHudCard, but
+ * ONE popup whose payload is the whole card list:
+ *
+ *  - Each CARD registers its own region rect (`${msg.id}::n-${card.id}`), so
+ *    the 8px gaps between cards stay click-through to the pane beneath, and
+ *    adding a card grows the rect COUNT — taking the region driver's
+ *    one-frame-late growth path instead of an immediate same-rect stretch.
+ *  - Newest card is FIRST in DOM = topmost. The container is bottom-anchored,
+ *    so a new card grows the column upward and existing cards never move
+ *    under the pointer.
+ *  - No entry animation: a size/position transition would churn the Win32
+ *    region every frame (SetWindowRgn on the UI thread).
+ *
+ * Card actions are string-encoded with the per-item id (`focus:<id>`,
+ * `dismiss:<id>`) because the toast transport forwards only the action string.
+ */
+function NotifStack({
+  msg,
+  registerEl,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+}) {
+  const p = (msg.payload ?? {}) as { cards?: NotifStackCard[] };
+  const cards = p.cards ?? [];
+  const act = (action: string) => emitOverlayAction({ id: msg.id, action });
+
+  return (
+    <div
+      onContextMenu={(e) => e.preventDefault()}
+      style={{
+        position: "fixed",
+        bottom: 16,
+        right: 16,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-end",
+        gap: 8,
+        // The container itself must not eat pointer events — only the cards
+        // do, so the gaps stay click-through (the region excludes them too).
+        pointerEvents: "none",
+        fontFamily: "Inter, system-ui, sans-serif",
+      }}
+    >
+      {cards.map((card) => {
+        const permission = card.kind === "permission";
+        return (
+          <div
+            key={card.id}
+            ref={(el) => registerEl(`${msg.id}::n-${card.id}`, el)}
+            onClick={() => act(`focus:${card.id}`)}
+            style={{
+              width: 320,
+              background: "var(--ezy-surface-raised, #1c2128)",
+              boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
+              borderRadius: 8,
+              padding: "9px 12px",
+              display: "flex",
+              flexDirection: "column",
+              gap: 5,
+              pointerEvents: "auto",
+              cursor: "pointer",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <span
+                style={{
+                  fontSize: 10,
+                  fontWeight: 600,
+                  lineHeight: "16px",
+                  padding: "0 6px",
+                  borderRadius: 4,
+                  background: permission
+                    ? "var(--ezy-red, #dc2626)"
+                    : "var(--ezy-accent, #10a37f)",
+                  color: "#ffffff",
+                  flexShrink: 0,
+                }}
+              >
+                {permission ? "Permission" : "Done"}
+              </span>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "var(--ezy-text, #e6edf3)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  minWidth: 0,
+                  flex: 1,
+                }}
+              >
+                {card.projectName}
+              </span>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                  fontVariantNumeric: "tabular-nums",
+                  flexShrink: 0,
+                }}
+              >
+                {card.timeHHMM}
+              </span>
+              <svg
+                onClick={(e) => {
+                  e.stopPropagation();
+                  act(`dismiss:${card.id}`);
+                }}
+                role="button"
+                aria-label="Dismiss notification"
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                style={{
+                  cursor: "pointer",
+                  color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                  flexShrink: 0,
+                }}
+              >
+                <path
+                  d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </div>
+            {card.paneLabel && (
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {card.paneLabel}
+              </div>
+            )}
+            <div
+              style={{
+                fontSize: 12,
+                lineHeight: 1.45,
+                color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+                display: "-webkit-box",
+                WebkitLineClamp: 3,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+                wordBreak: "break-word",
+              }}
+            >
+              {card.body}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

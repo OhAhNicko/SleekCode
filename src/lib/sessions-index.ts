@@ -174,6 +174,37 @@ export async function setClaudeNotifChannel(
  * SSH is intentionally unsupported — the scrollbar falls back to dead
  * reckoning there rather than paying a round-trip per sample.
  */
+/**
+ * Last assistant reply text in a session (truncated to 300 chars, read from a
+ * bounded tail window of the transcript). Powers the pane-notification body on
+ * finished turns. Empty string on any failure — the caller falls back to the
+ * OSC status text.
+ *
+ * SSH is intentionally unsupported (no remote tail-read); callers fall back.
+ * NOTE: for the `wsl` backend, `projectPath` must already be the WSL path
+ * (`toWslPath(workingDir)`) — Claude's project key is built from the Unix
+ * path, not the Windows one (same contract as sessionFileExists).
+ */
+export async function readSessionLastAssistantText(
+  projectPath: string,
+  backend: TerminalBackend,
+  sessionId: string,
+): Promise<string> {
+  try {
+    if (backend === "ssh") return "";
+    if (backend === "native") {
+      return await invoke<string>("read_session_last_assistant_text_native", { projectPath, sessionId });
+    } else if (backend === "windows") {
+      return await invoke<string>("read_session_last_assistant_text_windows", { projectPath, sessionId });
+    } else {
+      const distro = getCachedDistro();
+      return await invoke<string>("read_session_last_assistant_text", { projectPath, sessionId, distro: distro || null });
+    }
+  } catch {
+    return "";
+  }
+}
+
 export async function readSessionPrompts(
   projectPath: string,
   sessionId: string,

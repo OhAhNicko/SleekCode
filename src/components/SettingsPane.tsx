@@ -4,6 +4,10 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { confirmAction } from "../lib/prompt-modal";
+import { getCachedDistro } from "../lib/wsl-cache";
+import { getTerminalActions } from "../lib/terminal-actions";
+import { findAllTerminalIds } from "../lib/layout-utils";
 import { RELEASES_REPO } from "../lib/release-notes";
 import { open } from "@tauri-apps/plugin-dialog";
 import { KNOWN_TERM_PROGRAMS } from "../lib/terminal-config";
@@ -1484,6 +1488,52 @@ const NAV_SECTIONS = [
 export default function SettingsPane() {
   const [activeSection, setActiveSection] = useState(NAV_SECTIONS[0]?.id ?? "behavior");
   const [showClearModal, setShowClearModal] = useState(false);
+  const [wslShutdownBusy, setWslShutdownBusy] = useState(false);
+  const [wslShutdownResult, setWslShutdownResult] = useState<string | null>(null);
+  const handleWslShutdown = useCallback(async () => {
+    const ok = await confirmAction({
+      title: "Restart WSL?",
+      detail:
+        "Runs wsl --shutdown, then respawns every WSL pane automatically — Claude panes resume their sessions. Terminal scrollback is lost, and WSL dev servers must be started again from their panel.",
+      confirmLabel: "Restart WSL",
+      danger: true,
+    });
+    if (!ok) return;
+    setWslShutdownBusy(true);
+    setWslShutdownResult(null);
+    try {
+      await invoke("wsl_shutdown"); // also flushes the dead pre-warmed pool
+      // Re-warm the pool first: it boots the fresh VM (picking up .wslconfig)
+      // and makes the pane respawns below near-instant.
+      void invoke("pty_pool_warm", { count: 16, distro: getCachedDistro() || null }).catch(() => {});
+      // Respawn every WSL pane through its registered restart action — the
+      // same path as the pane-header restart button, so Claude panes keep
+      // their session id and come back with --resume. Staggered so a dozen
+      // wsl.exe launches don't storm the just-booted VM at once.
+      const s = useAppStore.getState();
+      const restarts: Array<() => void> = [];
+      for (const tab of s.tabs) {
+        if (!tab.layout || tab.serverId || tab.isHibernated) continue; // SSH untouched; sleeping tabs stay asleep
+        if (tab.backend === "windows") continue; // no WSL processes to revive
+        for (const t of findAllTerminalIds(tab.layout)) {
+          const term = s.terminals[t];
+          if (!term || term.type === "devserver") continue; // dev servers have their own lifecycle
+          const actions = getTerminalActions(t);
+          if (actions) restarts.push(() => actions.restart());
+        }
+      }
+      restarts.forEach((fn, i) => setTimeout(fn, 400 + i * 150));
+      setWslShutdownResult(
+        restarts.length > 0
+          ? `WSL restarted — respawning ${restarts.length} pane${restarts.length === 1 ? "" : "s"} (Claude sessions resume).`
+          : "WSL restarted. No WSL panes were open.",
+      );
+    } catch (e) {
+      setWslShutdownResult(`Restart failed: ${e}`);
+    } finally {
+      setWslShutdownBusy(false);
+    }
+  }, []);
   const [showReloadConfirm, setShowReloadConfirm] = useState(false);
   const [reloadRemember, setReloadRemember] = useState(false);
   // Native panes are child HWNDs — OS windows layered above the whole WebView.
@@ -1547,6 +1597,12 @@ export default function SettingsPane() {
   const setAutoHibernateEnabled = useAppStore((s) => s.setAutoHibernateEnabled);
   const autoHibernateMinutes = useAppStore((s) => s.autoHibernateMinutes ?? 30);
   const setAutoHibernateMinutes = useAppStore((s) => s.setAutoHibernateMinutes);
+  const notifAutoDismiss = useAppStore((s) => s.notifAutoDismiss ?? false);
+  const setNotifAutoDismiss = useAppStore((s) => s.setNotifAutoDismiss);
+  const notifAutoDismissSeconds = useAppStore((s) => s.notifAutoDismissSeconds ?? 30);
+  const setNotifAutoDismissSeconds = useAppStore((s) => s.setNotifAutoDismissSeconds);
+  const notifAutoSwitchMinimized = useAppStore((s) => s.notifAutoSwitchMinimized ?? false);
+  const setNotifAutoSwitchMinimized = useAppStore((s) => s.setNotifAutoSwitchMinimized);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
   const confirmReloadPanes = useAppStore((s) => s.confirmReloadPanes ?? true);
   const setConfirmReloadPanes = useAppStore((s) => s.setConfirmReloadPanes);
@@ -1774,7 +1830,7 @@ export default function SettingsPane() {
                 <ToggleSwitch checked={pullWithRebase} onChange={setPullWithRebase} />
               </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="danger-zone" title="Danger Zone" description="Clear MADE's local storage. Your files on disk are not affected.">
+            <SettingsSection id="danger-zone" title="Danger Zone">
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
                 <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
                   <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Clear local data</div>
@@ -1804,6 +1860,44 @@ export default function SettingsPane() {
                   Clear data...
                 </button>
               </div>
+              {isWindows() && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderTop: "1px solid var(--ezy-border-subtle, rgba(255,255,255,0.06))" }}>
+                  <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
+                    <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Restart WSL</div>
+                    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                      Full reset for when WSL stops responding: shuts WSL down, then respawns every WSL pane (Claude sessions resume).
+                      {wslShutdownResult && (
+                        <span style={{ display: "block", marginTop: 4, color: "var(--ezy-text-secondary)" }}>
+                          {wslShutdownResult}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleWslShutdown}
+                    disabled={wslShutdownBusy}
+                    style={{
+                      height: 30,
+                      padding: "0 14px",
+                      borderRadius: 6,
+                      border: "none",
+                      backgroundColor: "var(--ezy-red, #e55)",
+                      color: "#fff",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      fontFamily: "inherit",
+                      cursor: wslShutdownBusy ? "default" : "pointer",
+                      opacity: wslShutdownBusy ? 0.6 : 1,
+                      flexShrink: 0,
+                      transition: "opacity 120ms ease",
+                    }}
+                    onMouseEnter={(e) => { if (!wslShutdownBusy) e.currentTarget.style.opacity = "0.85"; }}
+                    onMouseLeave={(e) => { if (!wslShutdownBusy) e.currentTarget.style.opacity = "1"; }}
+                  >
+                    {wslShutdownBusy ? "Restarting..." : "Restart WSL..."}
+                  </button>
+                </div>
+              )}
             </SettingsSection>
           </>
         );
@@ -2159,6 +2253,36 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Scroll thumb acceleration" description="Off is a strict 1:1 drag, so the top of the bar is the top of the buffer.">
                 <ToggleSwitch checked={scrollThumbAcceleration} onChange={setScrollThumbAcceleration} />
+              </SettingsRow>
+            </SettingsSection>
+            <SettingsSection
+              id="notifications"
+              title="Notifications"
+              description="In-app cards when a background pane finishes a turn or needs permission."
+            >
+              <SettingsRow label="Auto-dismiss pane notifications">
+                <ToggleSwitch checked={notifAutoDismiss} onChange={setNotifAutoDismiss} />
+              </SettingsRow>
+              {notifAutoDismiss && (
+                <SettingsRow label="Dismiss after">
+                  <Dropdown<string>
+                    value={String(notifAutoDismissSeconds)}
+                    onChange={(v) => setNotifAutoDismissSeconds(Number(v) || 30)}
+                    options={[
+                      { value: "10", label: "10 seconds" },
+                      { value: "30", label: "30 seconds" },
+                      { value: "60", label: "1 minute" },
+                      { value: "300", label: "5 minutes" },
+                    ]}
+                    width={140}
+                  />
+                </SettingsRow>
+              )}
+              <SettingsRow
+                label="Switch to notifying pane while minimized"
+                description="Re-targets the tab and pane in the background — the window stays minimized."
+              >
+                <ToggleSwitch checked={notifAutoSwitchMinimized} onChange={setNotifAutoSwitchMinimized} />
               </SettingsRow>
             </SettingsSection>
           </>

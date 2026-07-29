@@ -107,6 +107,22 @@ export function getProjectColor(id: ProjectColorId): string | null {
   return PROJECT_COLOR_PRESETS.find((p) => p.id === id)?.color ?? null;
 }
 
+/** Display name for the project at `workingDir`: the recentProjects entry's
+ *  name when one matches (backslash-normalized path + serverId — the same
+ *  identity rule as tabSlice's resolveBackend), else the path basename. */
+export function projectDisplayName(
+  recentProjects: RecentProject[],
+  workingDir: string,
+  serverId?: string,
+): string {
+  const norm = workingDir.replace(/\\/g, "/");
+  const match = recentProjects.find(
+    (p) => p.path.replace(/\\/g, "/") === norm && p.serverId === serverId,
+  );
+  if (match?.name) return match.name;
+  return norm.split("/").filter(Boolean).pop() ?? workingDir;
+}
+
 /** Auto-assign: pick a color not currently used by any project. If all are taken, pick the least-used. */
 export function autoAssignColor(existing: Record<string, ProjectColorId>): ProjectColorId {
   const usedIds = Object.values(existing).filter(Boolean) as string[];
@@ -214,6 +230,17 @@ export interface RecentProjectsSlice {
   /** How long EVERY idle signal must stay quiet before a tab auto-hibernates. */
   autoHibernateMinutes: number;
   setAutoHibernateMinutes: (value: number) => void;
+  /** Auto-dismiss pane notification cards. Default OFF — a finished pane is
+   *  actionable state, so cards persist until clicked/dismissed. */
+  notifAutoDismiss: boolean;
+  setNotifAutoDismiss: (value: boolean) => void;
+  /** Seconds before a card auto-dismisses (only when notifAutoDismiss is on). */
+  notifAutoDismissSeconds: number;
+  setNotifAutoDismissSeconds: (value: number) => void;
+  /** While the window is minimized, a pane notification re-targets the active
+   *  tab/pane in the background (window is never restored). Default OFF. */
+  notifAutoSwitchMinimized: boolean;
+  setNotifAutoSwitchMinimized: (value: boolean) => void;
   openPanesInBackground: boolean;
   wideGridLayout: boolean;
   redistributeOnClose: boolean;
@@ -366,6 +393,12 @@ export const createRecentProjectsSlice: StateCreator<
   setAutoHibernateEnabled: (value) => set({ autoHibernateEnabled: value }),
   autoHibernateMinutes: 30,
   setAutoHibernateMinutes: (value) => set({ autoHibernateMinutes: value }),
+  notifAutoDismiss: false,
+  setNotifAutoDismiss: (value) => set({ notifAutoDismiss: value }),
+  notifAutoDismissSeconds: 30,
+  setNotifAutoDismissSeconds: (value) => set({ notifAutoDismissSeconds: value }),
+  notifAutoSwitchMinimized: false,
+  setNotifAutoSwitchMinimized: (value) => set({ notifAutoSwitchMinimized: value }),
   openPanesInBackground: false,
   wideGridLayout: true,
   redistributeOnClose: true,

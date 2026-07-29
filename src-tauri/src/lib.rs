@@ -145,6 +145,10 @@ mod win32_border {
 
     struct BorderSubclassState {
         controller: ICoreWebView2Controller,
+        /// For the `made:window-minimized` transition events — the wnd_proc is
+        /// the only place that reliably sees SIZE_MINIMIZED (Tauri's
+        /// onFocusChanged mirrors WEBVIEW focus, not OS window state).
+        app: tauri::AppHandle,
         sync_pending: bool,
         recomposite_pending: bool,
         was_minimized: bool,
@@ -633,8 +637,18 @@ mod win32_border {
             if !state_ptr.is_null() {
                 let state = &mut *state_ptr;
                 if wparam == SIZE_MINIMIZED {
+                    // Transition-only emit: WM_SIZE fires on every resize tick,
+                    // so an unconditional emit would flood the event bus.
+                    if !state.was_minimized {
+                        use tauri::Emitter;
+                        let _ = state.app.emit("made:window-minimized", true);
+                    }
                     state.was_minimized = true;
                 } else {
+                    if state.was_minimized {
+                        use tauri::Emitter;
+                        let _ = state.app.emit("made:window-minimized", false);
+                    }
                     state.was_minimized = false;
                     queue_webview_bounds_sync(hwnd, state);
                 }
@@ -728,7 +742,7 @@ mod win32_border {
         }
     }
 
-    pub fn remove_border(hwnd: *mut c_void, controller: ICoreWebView2Controller) {
+    pub fn remove_border(hwnd: *mut c_void, controller: ICoreWebView2Controller, app: tauri::AppHandle) {
         unsafe {
             // 1) Suppress the all-sides accent border via DWMWA_COLOR_NONE +
             //    immersive dark. The window has no native shadow (no WS_THICKFRAME,
@@ -755,6 +769,7 @@ mod win32_border {
             //    without resizing the parent window.
             let state = Box::new(BorderSubclassState {
                 controller,
+                app,
                 sync_pending: false,
                 recomposite_pending: false,
                 was_minimized: false,
@@ -6432,6 +6447,55 @@ fn read_user_prompts_from_jsonl(path: &std::path::Path) -> Vec<String> {
     out
 }
 
+/// Last assistant reply text in a session JSONL, read from a bounded tail
+/// window. Transcripts routinely hit tens of MB and this runs on every
+/// finished-turn notification, so it must not stream the whole file the way
+/// the first-prompt readers above do. 256 KB from the end covers dozens of
+/// messages; if the last text reply is older than that the pane notification
+/// falls back to the OSC status text, which is acceptable.
+fn read_last_assistant_text_from_jsonl(path: &std::path::Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL_BYTES: u64 = 262_144;
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut raw = Vec::with_capacity(TAIL_BYTES.min(len) as usize);
+    file.read_to_end(&mut raw).ok()?;
+    // Lossy: seeking to an arbitrary byte offset can land mid-UTF8; the first
+    // (partial) line is discarded below anyway, but from_utf8 would refuse the
+    // whole buffer.
+    let buf = String::from_utf8_lossy(&raw);
+    let mut lines: Vec<&str> = buf.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    for line in lines.iter().rev() {
+        if !line.contains("\"type\":\"assistant\"") { continue; }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v.get("isSidechain").and_then(|b| b.as_bool()).unwrap_or(false) { continue; }
+        if v.get("type").and_then(|t| t.as_str()) != Some("assistant") { continue; }
+        let Some(content) = v.get("message").and_then(|m| m.get("content")) else { continue };
+        let text = if let Some(s) = content.as_str() {
+            s.to_string()
+        } else if let Some(arr) = content.as_array() {
+            // Text blocks only — assistant turns also carry thinking/tool_use
+            // blocks, which must not leak into the notification.
+            arr.iter()
+                .filter(|item| item.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            continue;
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() { continue; }
+        return Some(trimmed.chars().take(300).collect());
+    }
+    None
+}
+
 /// Resolve a Claude session JSONL inside WSL via the \\wsl.localhost UNC path.
 /// Extracted so the first-prompt and all-prompts commands cannot drift apart —
 /// this is the only backend whose path resolution is non-trivial (unknown
@@ -6949,6 +7013,37 @@ async fn read_session_prompts(project_path: String, session_id: String, distro: 
     match resolve_wsl_session_jsonl(&project_path, &session_id, distro.as_deref()) {
         Some(path) => Ok(read_user_prompts_from_jsonl(&path)),
         None => Ok(Vec::new()),
+    }
+}
+
+/// Last assistant reply text for a session (Windows native). Fail-soft: empty
+/// string when the transcript is missing — the pane notification falls back to
+/// the OSC status text.
+#[tauri::command]
+async fn read_session_last_assistant_text_windows(project_path: String, session_id: String) -> Result<String, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let Some(dir) = find_claude_project_dir(&home, &project_path, '/') else {
+        return Ok(String::new());
+    };
+    Ok(read_last_assistant_text_from_jsonl(&dir.join(format!("{}.jsonl", session_id))).unwrap_or_default())
+}
+
+/// Last assistant reply text for a session (macOS/Linux native).
+#[tauri::command]
+async fn read_session_last_assistant_text_native(project_path: String, session_id: String) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let Some(dir) = find_claude_project_dir(&home, &project_path, '/') else {
+        return Ok(String::new());
+    };
+    Ok(read_last_assistant_text_from_jsonl(&dir.join(format!("{}.jsonl", session_id))).unwrap_or_default())
+}
+
+/// Last assistant reply text for a session (WSL).
+#[tauri::command]
+async fn read_session_last_assistant_text(project_path: String, session_id: String, distro: Option<String>) -> Result<String, String> {
+    match resolve_wsl_session_jsonl(&project_path, &session_id, distro.as_deref()) {
+        Some(path) => Ok(read_last_assistant_text_from_jsonl(&path).unwrap_or_default()),
+        None => Ok(String::new()),
     }
 }
 
@@ -7687,7 +7782,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
         .setup(|app| {
             // A3: build the shared wgpu Instance+Adapter on a background thread
             // NOW, so the one-time driver/DXGI enumeration (~534ms measured on
@@ -7766,9 +7861,10 @@ pub fn run() {
                 // same main window (see browser_view/host.rs).
                 browser_view::set_parent_hwnd(hwnd.0 as isize);
                 let hwnd_raw = hwnd.0 as isize;
+                let border_app_handle = app.handle().clone();
                 window
                     .with_webview(move |webview| {
-                        win32_border::remove_border(hwnd_raw as *mut _, webview.controller());
+                        win32_border::remove_border(hwnd_raw as *mut _, webview.controller(), border_app_handle);
                     })
                     .expect("failed to configure Windows frameless window");
 

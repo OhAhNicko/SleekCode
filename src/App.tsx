@@ -41,6 +41,7 @@ import KeyboardShortcutsModal from "./components/KeyboardShortcutsModal";
 import PromptHistorySearch from "./components/PromptHistorySearch";
 import DevServerTerminalHost from "./components/DevServerTerminalHost";
 import DevServerRestoreToast from "./components/DevServerRestoreToast";
+import PaneNotificationStack from "./components/PaneNotificationStack";
 import SettingsPane from "./components/SettingsPane";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
@@ -60,6 +61,7 @@ import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { getVersion } from "@tauri-apps/api/app";
 import { getActivePaneSearchOpener } from "./lib/pane-search-registry";
 import { emitOverlayTheme, listenOverlayFocus, listenOverlayReady } from "./lib/overlay-bridge";
+import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export default function App() {
@@ -582,6 +584,17 @@ export default function App() {
     let unlisten: (() => void) | null = null;
     getCurrentWindow().onFocusChanged(({ payload }) => {
       useAppStore.getState().setWebviewFocused(payload);
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
+
+  // OS-window minimized state (transition events from the win32_border
+  // wnd_proc — onFocusChanged above cannot see this, it mirrors webview
+  // focus). Feeds pane-notification suppression + auto-switch-while-minimized.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    listen<boolean>("made:window-minimized", (e) => {
+      useAppStore.getState().setWindowMinimized(e.payload);
     }).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
   }, []);
@@ -1264,6 +1277,7 @@ export default function App() {
       <HibernationEngine />
       <DevServerTerminalHost />
       <DevServerRestoreToast />
+      <PaneNotificationStack />
       {!onboardingCompleted && (
         <WelcomeModal
           onComplete={() => setOnboardingCompleted(true)}

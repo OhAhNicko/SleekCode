@@ -18,7 +18,7 @@ import {
   generateTerminalId,
   repositionKanbanPane,
 } from "../lib/layout-utils";
-import { getPtyWrite } from "../store/terminalSlice";
+import { getPtyWrite, getTerminalFocus } from "../store/terminalSlice";
 import { pasteTextToTerminal } from "../lib/terminal-paste";
 import { snapshotPane } from "../store/undoCloseStore";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
@@ -95,16 +95,31 @@ export default function Workspace({ tab }: WorkspaceProps) {
 
   // Auto-activate the first terminal on mount so at least one pane starts
   // as "active" and its MadeComposer initializes properly via Case 1.
+  // The GLOBAL claim is gated on this tab being the active one: every tab's
+  // Workspace mounts (session restore mounts them all at once), and a
+  // background tab claiming the global active terminal re-targets
+  // screenshot/paste insertion at a pane in another project.
   useEffect(() => {
     if (activeTerminalId === null && allTerminalIds.length > 0) {
       const firstId = allTerminalIds[0];
       if (terminals[firstId]) {
         setLocalActiveTerminal(firstId);
-        setActiveTerminal(firstId);
+        if (isTabActive) setActiveTerminal(firstId);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allTerminalIds]);
+
+  // Re-assert the global active terminal when this tab becomes the active
+  // one. Tab switches don't go through a pane click, so without this the
+  // global flag would keep pointing at the previous tab's pane and
+  // caret-targeted insertion (screenshots, clipboard images) would refuse to
+  // run — or worse, older code paths would write into the hidden pane.
+  useEffect(() => {
+    if (!isTabActive || activeTerminalId === null) return;
+    const t = useAppStore.getState().terminals[activeTerminalId];
+    if (t && !t.isActive) setActiveTerminal(activeTerminalId);
+  }, [isTabActive, activeTerminalId, setActiveTerminal]);
 
   // Persistent slot divs per terminal — survive layout restructures
   const slotMapRef = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -580,6 +595,29 @@ export default function Workspace({ tab }: WorkspaceProps) {
     // because any layout change refreshes the closure. Every other effect in
     // this file already lists it.
   }, [tab.id, tab.layout, tab.serverId, activeTerminalId, handleLayoutChange, handleSpawnTerminal, handleTerminalFocus, refocusPrevious]);
+
+  // Focus a specific pane from OUTSIDE the Workspace tree (notification-card
+  // click, auto-switch-while-minimized). A window event because
+  // `activeTerminalId` is Workspace-local state — a store call alone cannot
+  // move the active-pane highlight. Guarded per-instance: only the active
+  // tab's Workspace responds, so a background tab can never claim the global
+  // active terminal (the attach-target-steal class of bug). `takeFocus` is
+  // false while minimized — re-target only, no DOM/Win32 focus claim.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      if (useAppStore.getState().activeTabId !== tab.id) return;
+      const detail = (e as CustomEvent).detail as
+        | { terminalId?: string; takeFocus?: boolean }
+        | undefined;
+      const terminalId = detail?.terminalId;
+      if (!terminalId || !tab.layout) return;
+      if (!findPaneIdForTerminal(tab.layout, terminalId)) return;
+      handleTerminalFocus(terminalId);
+      if (detail?.takeFocus) getTerminalFocus(terminalId)?.();
+    };
+    window.addEventListener("made:focus-terminal", handler);
+    return () => window.removeEventListener("made:focus-terminal", handler);
+  }, [tab.id, tab.layout, handleTerminalFocus]);
 
   // Listen for close-pane events (Ctrl+W, context menu)
   useEffect(() => {

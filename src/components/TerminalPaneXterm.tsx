@@ -13,6 +13,7 @@ import { useClipboardImageStore } from "../store/clipboardImageStore";
 import type { TerminalType } from "../types";
 import { DEFAULT_CLI_FONT_SIZE, getProjectColor } from "../store/recentProjectsSlice";
 import { CommandBlockParser, type CommandBlock } from "../lib/command-block-parser";
+import { addPaneNotification, parseNotifyOsc } from "../lib/pane-notifications";
 import { shouldInjectShellIntegration } from "../lib/shell-integration";
 import {
   registerPaneStateProbe,
@@ -317,6 +318,27 @@ export default function TerminalPane({
     onSessionResumeIdRef,
     setSessionTrusted,
   });
+
+  // Context the OSC 9/99/777 notification handlers read at event time. A ref,
+  // not closure captures: the handlers are registered once in the terminal
+  // init effect, while the session name / resume id arrive later from the
+  // 5s context poll.
+  const notifCtxRef = useRef({
+    terminalType,
+    workingDir,
+    backend,
+    serverId,
+    sessionResumeId,
+    sessionName: contextInfo?.sessionName as string | undefined,
+  });
+  notifCtxRef.current = {
+    terminalType,
+    workingDir,
+    backend,
+    serverId,
+    sessionResumeId,
+    sessionName: contextInfo?.sessionName ?? undefined,
+  };
 
   // --- Write-batching: coalesce PTY data chunks and flush once per animation frame ---
   const pendingChunksRef = useRef<Uint8Array[]>([]);
@@ -900,6 +922,32 @@ export default function TerminalPane({
       parser.register();
       blockParserRef.current = parser;
     }
+
+    // Desktop-notification OSCs (9 / 99 / 777) → central pane-notification
+    // stack. Mirrors the native renderer's Rust OscNotifyScanner so both pane
+    // types announce finished turns / permission prompts. Registered for all
+    // terminal types (the Rust scanner is unconditional too); parseNotifyOsc
+    // drops ConEmu progress (OSC 9;4;…) and empty payloads.
+    const notifOscDisposables = ([9, 99, 777] as const).map((osc) =>
+      term.parser.registerOscHandler(osc, (data) => {
+        const n = parseNotifyOsc(osc, data);
+        if (n) {
+          const c = notifCtxRef.current;
+          void addPaneNotification({
+            terminalId,
+            terminalType: c.terminalType,
+            title: n.title,
+            body: n.body,
+            paneLabel: c.sessionName,
+            workingDir: c.workingDir,
+            backend: c.backend,
+            serverId: c.serverId,
+            sessionResumeId: c.sessionResumeId,
+          });
+        }
+        return true;
+      }),
+    );
 
     // Scroll-to-prompt — PgUp jumps to the last prompt.
     // Repeated presses navigate backwards through earlier prompts.
@@ -1592,6 +1640,7 @@ export default function TerminalPane({
       renderDisposable.dispose();
       blockParserRef.current?.dispose();
       blockParserRef.current = null;
+      for (const d of notifOscDisposables) d.dispose();
       searchAddonRef.current = null;
       setSearchAddon(null);
       clearTerminalActivity(terminalId);
