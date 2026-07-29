@@ -92,6 +92,17 @@ fn wsl_pool() -> &'static Mutex<Vec<PooledWsl>> {
     POOL.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Kill and drop every pre-warmed session. Must run after `wsl --shutdown`
+/// (see wsl_health::wsl_shutdown): the pooled bash processes are corpses, and
+/// `pty_spawn_pooled` handing one to the next fresh AI pane makes that pane
+/// exit the moment it opens.
+pub(crate) fn flush_wsl_pool() {
+    let mut pool = wsl_pool().lock().unwrap();
+    for mut p in pool.drain(..) {
+        let _ = p.child.kill();
+    }
+}
+
 /// Stores the distro used for pooled sessions so auto-replenishment knows what to spawn.
 fn pool_distro() -> &'static Mutex<Option<String>> {
     static DISTRO: OnceLock<Mutex<Option<String>>> = OnceLock::new();

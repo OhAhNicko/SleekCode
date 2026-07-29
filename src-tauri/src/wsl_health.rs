@@ -152,6 +152,15 @@ fn run_script_with_deadline(
             .map_err(|e| format!("stdin write failed: {e}"))?;
         // Dropped here — closes the pipe so bash sees EOF and runs the script.
     }
+    wait_with_deadline(child, deadline)
+}
+
+/// Poll `try_wait` until exit or deadline (then kill). Never blocks past the
+/// deadline — every caller here exists to deal with a possibly-wedged VM.
+fn wait_with_deadline(
+    mut child: std::process::Child,
+    deadline: Duration,
+) -> Result<std::process::Output, String> {
     let start = Instant::now();
     loop {
         match child.try_wait() {
@@ -159,13 +168,43 @@ fn run_script_with_deadline(
             Ok(None) => {
                 if start.elapsed() > deadline {
                     let _ = child.kill();
-                    return Err("wsl sweep timed out (VM unresponsive?)".into());
+                    return Err("timed out (WSL unresponsive?)".into());
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => return Err(e.to_string()),
         }
     }
+}
+
+/// User-invoked WSL reset (Settings > General > Danger Zone). `wsl --shutdown`
+/// kills every WSL process — all of MADE's WSL panes included — and stops the
+/// VM; the next wsl.exe invocation boots it fresh, picking up any .wslconfig
+/// changes. Destructive by design, so it is only ever reachable behind the
+/// frontend's explicit confirmation dialog; MADE never calls this on its own.
+#[tauri::command]
+pub async fn wsl_shutdown() -> Result<(), String> {
+    if !cfg!(windows) {
+        return Err("unsupported platform".into());
+    }
+    let mut cmd = crate::wsl_command();
+    cmd.arg("--shutdown")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let child = cmd.spawn().map_err(|e| format!("spawn failed: {e}"))?;
+    let out = wait_with_deadline(child, Duration::from_secs(30))?;
+    if !out.status.success() {
+        return Err(format!(
+            "wsl --shutdown exited with {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    // The pre-warmed pool is now a box of corpses — flush it BEFORE the
+    // frontend starts respawning panes, or pooled spawns die instantly.
+    crate::pty::flush_wsl_pool();
+    Ok(())
 }
 
 /// Sweep the WSL VM once and return per-pane CPU tick totals. The frontend
