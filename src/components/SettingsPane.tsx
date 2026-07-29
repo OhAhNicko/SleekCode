@@ -1636,6 +1636,8 @@ export default function SettingsPane() {
   const setWideGridLayout = useAppStore((s) => s.setWideGridLayout);
   const redistributeOnClose = useAppStore((s) => s.redistributeOnClose);
   const setRedistributeOnClose = useAppStore((s) => s.setRedistributeOnClose);
+  const hoverOpenAddPaneMenu = useAppStore((s) => s.hoverOpenAddPaneMenu);
+  const setHoverOpenAddPaneMenu = useAppStore((s) => s.setHoverOpenAddPaneMenu);
   const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
   const setAutoMinimizeGameOnAiDone = useAppStore((s) => s.setAutoMinimizeGameOnAiDone);
   const autoStartServerCommand = useAppStore((s) => s.autoStartServerCommand);
@@ -1836,6 +1838,9 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Open panes in background">
                 <ToggleSwitch checked={openPanesInBackground} onChange={setOpenPanesInBackground} />
+              </SettingsRow>
+              <SettingsRow label="Open add-pane menu on hover">
+                <ToggleSwitch checked={hoverOpenAddPaneMenu} onChange={setHoverOpenAddPaneMenu} />
               </SettingsRow>
               <SettingsRow label="Wide grid layout" description="First 4 panes go side-by-side before stacking.">
                 <ToggleSwitch checked={wideGridLayout} onChange={setWideGridLayout} />

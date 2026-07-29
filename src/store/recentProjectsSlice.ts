@@ -244,6 +244,8 @@ export interface RecentProjectsSlice {
   openPanesInBackground: boolean;
   wideGridLayout: boolean;
   redistributeOnClose: boolean;
+  /** Topbar add-pane chevron opens its menu on hover (click still toggles). Default OFF. */
+  hoverOpenAddPaneMenu: boolean;
   autoMinimizeGameOnAiDone: boolean;
   showMiniGamesButton: boolean;
   showKanbanButton: boolean;
@@ -334,6 +336,7 @@ export interface RecentProjectsSlice {
   setOpenPanesInBackground: (value: boolean) => void;
   setWideGridLayout: (value: boolean) => void;
   setRedistributeOnClose: (value: boolean) => void;
+  setHoverOpenAddPaneMenu: (value: boolean) => void;
   setAutoMinimizeGameOnAiDone: (value: boolean) => void;
   toggleMiniGamesButton: () => void;
   setTerminalBackend: (value: TerminalBackend) => void;
@@ -409,6 +412,7 @@ export const createRecentProjectsSlice: StateCreator<
   openPanesInBackground: false,
   wideGridLayout: true,
   redistributeOnClose: true,
+  hoverOpenAddPaneMenu: false,
   autoMinimizeGameOnAiDone: false,
   showMiniGamesButton: false,
   showKanbanButton: false,
@@ -686,6 +690,10 @@ export const createRecentProjectsSlice: StateCreator<
 
   setRedistributeOnClose: (value) => {
     set({ redistributeOnClose: value });
+  },
+
+  setHoverOpenAddPaneMenu: (value) => {
+    set({ hoverOpenAddPaneMenu: value });
   },
 
   setAutoMinimizeGameOnAiDone: (value) => {

@@ -51,6 +51,7 @@ export default function TabBar() {
   const cliYolo = useAppStore((s) => s.cliYolo);
   const newPaneNativeRenderer = useAppStore((s) => s.newPaneNativeRenderer);
   const setNewPaneNativeRenderer = useAppStore((s) => s.setNewPaneNativeRenderer);
+  const hoverOpenAddPaneMenu = useAppStore((s) => s.hoverOpenAddPaneMenu);
   const toggleProjectQuickOpen = useAppStore((s) => s.toggleProjectQuickOpen);
   const setProjectBackend = useAppStore((s) => s.setProjectBackend);
   const terminalBackend = useAppStore((s) => s.terminalBackend);
@@ -1153,6 +1154,11 @@ export default function TabBar() {
               setShowNewTabMenu((v) => !v);
             }}
             onMouseEnter={(e) => {
+              if (hoverOpenAddPaneMenu && !showNewTabMenu) {
+                setShowRecentMenu(false);
+                setShowNewTabMenu(true);
+                return;
+              }
               if (!showNewTabMenu) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
             }}
             onMouseLeave={(e) => {

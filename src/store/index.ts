@@ -108,6 +108,7 @@ export const useAppStore = create<AppStore>()(
         openPanesInBackground: state.openPanesInBackground,
         wideGridLayout: state.wideGridLayout,
         redistributeOnClose: state.redistributeOnClose,
+        hoverOpenAddPaneMenu: state.hoverOpenAddPaneMenu,
         autoMinimizeGameOnAiDone: state.autoMinimizeGameOnAiDone,
         terminalBackend: state.terminalBackend,
         wslDistro: state.wslDistro,
