@@ -75,7 +75,7 @@ export default function UpdateBanner({
             style={{
               height: 24,
               padding: "0 12px",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               border: "none",
               background: "var(--ezy-accent-dim)",
               color: "#fff",
@@ -107,7 +107,7 @@ export default function UpdateBanner({
             style={{
               flex: 1,
               height: 4,
-              borderRadius: 2,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
               backgroundColor: "var(--ezy-border)",
               overflow: "hidden",
               minWidth: 60,
@@ -118,7 +118,7 @@ export default function UpdateBanner({
                 height: "100%",
                 width: pct != null ? `${pct}%` : "30%",
                 backgroundColor: "var(--ezy-accent)",
-                borderRadius: 2,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
                 transition:
                   pct != null
                     ? "width 200ms ease"
@@ -219,7 +219,7 @@ export default function UpdateBanner({
             style={{
               height: 24,
               padding: "0 10px",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               border: "1px solid var(--ezy-border)",
               background: "transparent",
               color: "var(--ezy-text-secondary)",
@@ -277,7 +277,7 @@ function DismissButton({ onClick }: { onClick: () => void }) {
         justifyContent: "center",
         width: 22,
         height: 22,
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         cursor: "pointer",
         flexShrink: 0,
         color: "var(--ezy-text-muted)",

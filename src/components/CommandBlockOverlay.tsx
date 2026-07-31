@@ -135,7 +135,7 @@ export default function CommandBlockOverlay({
                   bottom: 0,
                   width: 2,
                   backgroundColor: gutterColor,
-                  borderRadius: 1,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 1px)",
                   opacity: 0.7,
                 }}
               />
@@ -162,7 +162,7 @@ export default function CommandBlockOverlay({
                     color: "var(--ezy-text-muted)",
                     backgroundColor: "var(--ezy-surface)",
                     padding: "1px 6px",
-                    borderRadius: 3,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                     maxWidth: 200,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -195,7 +195,7 @@ export default function CommandBlockOverlay({
                     fontSize: 9,
                     fontWeight: 600,
                     padding: "1px 5px",
-                    borderRadius: 3,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                     backgroundColor:
                       block.exitCode === 0 ? "#22c55e" : "#f87171",
                     color: "#fff",

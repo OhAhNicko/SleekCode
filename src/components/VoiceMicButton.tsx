@@ -66,7 +66,7 @@ export default function VoiceMicButton({ size = "topbar" }: { size?: "topbar" | 
         width: dim.width,
         height: dim.height,
         cursor: "pointer",
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
         transition: "background-color 120ms ease",
       }}

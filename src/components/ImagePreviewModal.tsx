@@ -46,7 +46,7 @@ export default function ImagePreviewModal({
         style={{
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 8,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           padding: 16,
           maxWidth: 448,
           width: "100%",
@@ -110,7 +110,7 @@ export default function ImagePreviewModal({
                 backgroundColor: "var(--ezy-surface)",
                 color: "var(--ezy-text)",
                 border: "1px solid var(--ezy-border)",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 cursor: "pointer",
                 padding: 0,
               }}
@@ -134,7 +134,7 @@ export default function ImagePreviewModal({
                   backgroundColor: "var(--ezy-surface)",
                   color: "#dc2626",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   cursor: "pointer",
                   padding: 0,
                 }}
@@ -167,7 +167,7 @@ export default function ImagePreviewModal({
             maxWidth: "100%",
             maxHeight: "calc(80vh - 80px)",
             objectFit: "contain",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           }}
         />
       </div>

@@ -135,7 +135,7 @@ export default function ConnectToGitHubModal({
           width: "100%",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
         }}
@@ -392,7 +392,7 @@ function VisibilityChip({
       style={{
         flex: 1,
         padding: "10px 12px",
-        borderRadius: 6,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
         border: `1px solid ${active ? "var(--ezy-accent)" : "var(--ezy-border)"}`,
         backgroundColor: active ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
         cursor: disabled ? "not-allowed" : "pointer",
@@ -418,7 +418,7 @@ function CommandRow({ command, onCopy }: { command: string; onCopy: () => void }
         gap: 8,
         padding: "8px 10px",
         border: "1px solid var(--ezy-border)",
-        borderRadius: 6,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
         backgroundColor: "var(--ezy-surface)",
       }}
     >
@@ -443,7 +443,7 @@ function CommandRow({ command, onCopy }: { command: string; onCopy: () => void }
         style={{
           fontSize: 11,
           padding: "4px 8px",
-          borderRadius: 4,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           border: "1px solid var(--ezy-border)",
           backgroundColor: "var(--ezy-surface-raised)",
           color: copied ? "var(--ezy-accent)" : "var(--ezy-text-secondary)",
@@ -462,7 +462,7 @@ const inlineCodeStyle: React.CSSProperties = {
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
   backgroundColor: "var(--ezy-surface)",
   padding: "1px 5px",
-  borderRadius: 3,
+  borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
   fontSize: "0.9em",
   color: "var(--ezy-text)",
 };
@@ -475,7 +475,7 @@ function inputStyle(invalid: boolean): React.CSSProperties {
     color: "var(--ezy-text)",
     backgroundColor: "var(--ezy-surface)",
     border: `1px solid ${invalid ? "var(--ezy-red, #e55)" : "var(--ezy-border)"}`,
-    borderRadius: 6,
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
     outline: "none",
     fontFamily: "inherit",
     boxSizing: "border-box",
@@ -494,7 +494,7 @@ function buttonStyle(primary: boolean, disabled: boolean): React.CSSProperties {
         : "var(--ezy-accent)"
       : "var(--ezy-surface-raised)",
     border: primary ? (disabled ? "1px solid var(--ezy-border)" : "none") : "1px solid var(--ezy-border)",
-    borderRadius: 6,
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
     cursor: disabled ? "not-allowed" : "pointer",
     fontFamily: "inherit",
     transition: "background-color 150ms ease",

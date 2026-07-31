@@ -74,7 +74,7 @@ export default function PromptHistorySearch({ onClose, onSelect }: PromptHistory
     return (
       <>
         {text.slice(0, idx)}
-        <span style={{ backgroundColor: "var(--ezy-accent-glow)", color: "var(--ezy-accent)", borderRadius: 2, padding: "0 1px" }}>
+        <span style={{ backgroundColor: "var(--ezy-accent-glow)", color: "var(--ezy-accent)", borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", padding: "0 1px" }}>
           {text.slice(idx, idx + searchQuery.length)}
         </span>
         {text.slice(idx + searchQuery.length)}
@@ -103,7 +103,7 @@ export default function PromptHistorySearch({ onClose, onSelect }: PromptHistory
           maxHeight: "60vh",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 12,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 12px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
           display: "flex",

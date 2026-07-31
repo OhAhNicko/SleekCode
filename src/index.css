@@ -53,6 +53,19 @@
   --ezy-accent-glow: rgba(255, 255, 255, 0.06);
   --ezy-red: #f85149;
   --ezy-cyan: #58d5c1;
+  /* Per-theme corner-radius multiplier (themes.ts `radiusScale`, injected by
+     App.tsx). Every radius in the app is authored as
+     calc(var(--ezy-radius-scale, 1) * Npx) so one theme can round the whole
+     chrome at once; 1 reproduces the standard MADE radii exactly. */
+  --ezy-radius-scale: 1;
+}
+
+/* Tailwind 4 inlines the bare `rounded` utility (border-radius: .25rem), so
+   the radius-scale var can't reach it through a token. This unlayered rule
+   outranks Tailwind's @layer utilities and keeps those corners on the same
+   scale. */
+.rounded {
+  border-radius: calc(var(--ezy-radius-scale, 1) * 0.25rem);
 }
 
 html,
@@ -87,7 +100,7 @@ body,
 }
 ::-webkit-scrollbar-thumb {
   background: var(--ezy-border);
-  border-radius: 3px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 3px);
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--ezy-border-light);
@@ -167,6 +180,28 @@ body,
   animation: fade-in 120ms ease-out;
 }
 
+/* Copy-confirmed check mark — single-fire pop-in (screenshots viewer).
+   The back-out curve overshoots past 1 and settles, so the keyframes stay a
+   plain scale-up. */
+@keyframes check-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.check-pop-in {
+  animation: check-pop-in 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .check-pop-in {
+    animation: none;
+  }
+}
+
 /* Dev server row — URL truncation at narrow widths */
 .devserver-url-port { display: none; }
 .devserver-url-full { display: inline; }
@@ -189,7 +224,7 @@ body,
   padding: 4px 10px;
   background: var(--ezy-surface-raised);
   border: 1px solid var(--ezy-border);
-  border-radius: 6px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 6px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   pointer-events: none;
   white-space: nowrap;
@@ -204,7 +239,7 @@ body,
   padding: 1px 5px;
   background: var(--ezy-surface);
   border: 1px solid var(--ezy-border);
-  border-radius: 3px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 3px);
   color: var(--ezy-text-muted);
   font-family: system-ui, -apple-system, sans-serif;
 }
@@ -270,7 +305,7 @@ body,
   top: 0.2em;
   bottom: 0.2em;
   width: 2px;
-  border-radius: 1px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 1px);
   background: var(--ezy-accent);
 }
 .ezy-md h2::before { opacity: 0.45; }
@@ -296,7 +331,7 @@ body,
 .ezy-md a:focus-visible {
   outline: 2px solid var(--ezy-accent);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 2px);
 }
 
 .ezy-md strong { color: var(--ezy-text); font-weight: 650; }
@@ -321,7 +356,7 @@ body,
   margin: 0 8px 0 0;
   vertical-align: -1px;
   border: 1px solid var(--ezy-text-muted);
-  border-radius: 3px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 3px);
   background: transparent;
   flex-shrink: 0;
 }
@@ -342,7 +377,7 @@ body,
   font-size: 12.5px;
   background: var(--ezy-surface-raised);
   border: 1px solid var(--ezy-border-subtle);
-  border-radius: 4px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 4px);
   padding: 1px 5px;
   color: var(--ezy-text);
 }
@@ -352,7 +387,7 @@ body,
   padding: 12px 14px;
   background: var(--ezy-surface);
   border: 1px solid var(--ezy-border-subtle);
-  border-radius: 6px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 6px);
   /* Code is the one place we keep lines intact and scroll instead of folding —
      wrapped code is harder to read than scrolled code. */
   overflow-x: auto;
@@ -389,7 +424,7 @@ body,
   margin: 0 0 1em;
   overflow-x: auto;
   border: 1px solid var(--ezy-border-subtle);
-  border-radius: 6px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 6px);
 }
 .ezy-md table {
   border-collapse: collapse;
@@ -417,7 +452,7 @@ body,
 .ezy-md img {
   max-width: 100%;
   height: auto;
-  border-radius: 6px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 6px);
   display: block;
   margin: 0.4em 0 1em;
 }
@@ -429,7 +464,7 @@ body,
   background: var(--ezy-surface-raised);
   border: 1px solid var(--ezy-border);
   border-bottom-width: 2px;
-  border-radius: 4px;
+  border-radius: calc(var(--ezy-radius-scale, 1) * 4px);
   color: var(--ezy-text-secondary);
 }
 
@@ -468,4 +503,15 @@ body,
     animation-duration: 0.01ms !important;
     animation-delay: 0ms !important;
   }
+}
+
+/* Jira rail: the row hamburger stays invisible until the row is hovered (or
+   focused via keyboard); the ACTIVE row pins it visible with an inline style. */
+.jira-row-menu {
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+[data-ctx-surface="jira-ticket"]:hover .jira-row-menu,
+.jira-row-menu:focus-visible {
+  opacity: 1;
 }

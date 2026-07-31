@@ -224,7 +224,7 @@ export default function FloatingPaneWindow({
     zIndex,
     backgroundColor: "var(--ezy-bg)",
     border: `1px solid var(--ezy-border)`,
-    borderRadius: 6,
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
     overflow: "hidden",
     boxShadow: isTopmost
       ? "0 12px 40px rgba(0,0,0,0.55), 0 4px 12px rgba(0,0,0,0.35)"

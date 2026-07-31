@@ -1221,7 +1221,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                 width: "100%",
                 maxWidth: 240,
                 padding: "10px 16px",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 backgroundColor: "var(--ezy-surface)",
                 border: "1px solid var(--ezy-border)",
                 cursor: "pointer",
@@ -1500,7 +1500,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                 flexDirection: "column",
                 backgroundColor: "var(--ezy-surface)",
                 border: "1px solid var(--ezy-border)",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 overflow: "hidden",
                 zIndex: 20,
                 boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
@@ -1575,7 +1575,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                     fontFamily: FONT_UI,
                     fontVariantNumeric: "tabular-nums",
                     padding: "3px 4px",
-                    borderRadius: 3,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                     backgroundColor: isLast ? "color-mix(in srgb, var(--ezy-accent) 10%, transparent)" : "transparent",
                   }}
                 >
@@ -1650,7 +1650,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                 onClick={() => startGame(difficulty!)}
                 style={{
                   padding: "8px 16px",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   border: "none",
                   backgroundColor: "var(--ezy-accent)",
                   color: "#fff",
@@ -1670,7 +1670,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                 onClick={resetToSelect}
                 style={{
                   padding: "8px 16px",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   border: "1px solid var(--ezy-border)",
                   backgroundColor: "var(--ezy-surface)",
                   color: "var(--ezy-text-secondary)",

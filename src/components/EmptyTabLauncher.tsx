@@ -76,7 +76,7 @@ export default function EmptyTabLauncher() {
                 padding: "10px 16px",
                 backgroundColor: "var(--ezy-surface)",
                 border: "1px solid var(--ezy-border)",
-                borderRadius: 8,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                 color: "var(--ezy-text)",
                 fontSize: 13,
                 fontFamily: "inherit",

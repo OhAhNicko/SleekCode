@@ -19,7 +19,7 @@ export default function TaskCard({ task, onRun, onRemove, onDragStart }: TaskCar
         padding: "8px 10px",
         backgroundColor: "var(--ezy-surface)",
         border: "1px solid var(--ezy-border)",
-        borderRadius: 6,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
         cursor: "grab",
         transition: "border-color 150ms ease",
       }}
@@ -95,7 +95,7 @@ export default function TaskCard({ task, onRun, onRemove, onDragStart }: TaskCar
             fontSize: 9,
             fontWeight: 600,
             padding: "1px 5px",
-            borderRadius: 3,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             backgroundColor: "var(--ezy-border)",
             color: "var(--ezy-text-muted)",
             textTransform: "uppercase",

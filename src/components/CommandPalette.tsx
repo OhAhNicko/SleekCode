@@ -179,7 +179,7 @@ export default function CommandPalette({
           style={{
             backgroundColor: "var(--ezy-accent-glow)",
             color: "var(--ezy-text)",
-            borderRadius: 2,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
             padding: "0 1px",
           }}
         >
@@ -212,7 +212,7 @@ export default function CommandPalette({
           maxHeight: "60vh",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 12,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 12px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
           display: "flex",
@@ -318,19 +318,19 @@ export default function CommandPalette({
           }}
         >
           <span>
-            <kbd style={{ padding: "1px 4px", borderRadius: 3, backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: 9 }}>
+            <kbd style={{ padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: 9 }}>
               ↑↓
             </kbd>{" "}
             navigate
           </span>
           <span>
-            <kbd style={{ padding: "1px 4px", borderRadius: 3, backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: 9 }}>
+            <kbd style={{ padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: 9 }}>
               ↵
             </kbd>{" "}
             select
           </span>
           <span>
-            <kbd style={{ padding: "1px 4px", borderRadius: 3, backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: 9 }}>
+            <kbd style={{ padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: 9 }}>
               esc
             </kbd>{" "}
             close

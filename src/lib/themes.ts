@@ -23,6 +23,9 @@ export interface MadeTheme {
   name: string;
   terminal: ITheme;
   surface: MadeSurface;
+  /** Multiplier applied to every corner radius via `--ezy-radius-scale`
+   *  (App.tsx theme effect). Unset = 1 = the standard MADE radii. */
+  radiusScale?: number;
 }
 
 // ─── Default (GitHub Dark) ───────────────────────────────────────────
@@ -368,14 +371,14 @@ const monokaiTheme: MadeTheme = {
   },
 };
 
-// ─── Gruvbox Dark Hard ──────────────────────────────────────────────
+// ─── Gruvbox Hard ───────────────────────────────────────────────────
 //
 // The *hard* contrast variant (#1d2021). `id` stays "gruvbox-dark" so
 // anyone who already had this selected keeps it — only the label moved.
 
 const gruvboxDarkHardTheme: MadeTheme = {
   id: "gruvbox-dark",
-  name: "Gruvbox Dark Hard",
+  name: "Gruvbox Hard",
   terminal: {
     background: "#1d2021",
     foreground: "#ebdbb2",
@@ -689,6 +692,71 @@ const goldphiteTheme: MadeTheme = {
     accentGlow: "rgba(255, 255, 255, 0.06)",
     red: "#c25b5b",
     cyan: "#c9c9c9",
+  },
+};
+
+// ─── Heads (POS pastels) ────────────────────────────────────────────
+//
+// Sampled pixel-for-pixel from a screenshot of the Heads POS app the user
+// works with (cos.png): canvas #131313, panel #1d1d1d, tile #272727, pill
+// #323232, pastel action colors green #80e2ad / periwinkle #92bcff / pink
+// #f4b4d1, coral notification dot #fd8183, ghost-logo gray #454545.
+//
+// The accent is the pastel green the app uses for its highlighted actions,
+// kept authentic per user choice even though the white ToggleSwitch thumb
+// sits at ~1.6:1 on it — the track color change still signals state. All
+// four app colors appear: green = accent, periwinkle = cyan token + ANSI
+// blue, coral = red token, pink = ANSI magenta. ANSI yellow/cyan have no
+// source in the app and are authored at the same pastel lightness.
+//
+// radiusScale doubles every corner radius (6px surfaces → 12px) to match
+// the app's pillowy tiles — the only theme that sets it.
+
+const headsTheme: MadeTheme = {
+  id: "heads",
+  name: "Heads",
+  radiusScale: 2,
+  terminal: {
+    background: "#131313",
+    foreground: "#ececec",
+    cursor: "#80e2ad",
+    cursorAccent: "#131313",
+    selectionBackground: "#323232",
+    selectionForeground: "#ffffff",
+    selectionInactiveBackground: "#32323288",
+    black: "#272727",
+    red: "#fd8183",
+    green: "#80e2ad",
+    yellow: "#f2d5a0",
+    blue: "#92bcff",
+    magenta: "#f4b4d1",
+    cyan: "#8fdfdf",
+    white: "#d9d9d9",
+    brightBlack: "#454545",
+    brightRed: "#ffa3a5",
+    brightGreen: "#a0e9c2",
+    brightYellow: "#f8e3bc",
+    brightBlue: "#b3d0ff",
+    brightMagenta: "#f9cbdf",
+    brightCyan: "#b2ebeb",
+    brightWhite: "#ffffff",
+  },
+  surface: {
+    bg: "#131313",
+    surface: "#1d1d1d",
+    surfaceRaised: "#272727",
+    border: "#323232",
+    borderSubtle: "#232323",
+    borderLight: "#454545",
+    text: "#f5f5f5",
+    textSecondary: "#c4c4c4",
+    textMuted: "#8a8a8a",
+    accent: "#80e2ad",
+    accentHover: "#a0e9c2",
+    accentDim: "#57b585",
+    accentGlow: "rgba(255, 255, 255, 0.06)",
+    red: "#fd8183",
+    cyan: "#92bcff",
   },
 };
 
@@ -1250,6 +1318,7 @@ export const THEMES: MadeTheme[] = [
   blackSteelTheme,
   graphiteTheme,
   goldphiteTheme,
+  headsTheme,
   paniniTheme,
   porcelainTheme,
   solarizedLightTheme,

@@ -488,7 +488,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
             style={{
               width: 200,
               padding: "14px 16px",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
               cursor: "pointer",
@@ -551,7 +551,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
             style={{
               width: 200,
               padding: "12px 16px",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
               cursor: "pointer",
@@ -656,7 +656,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
                   border: isCursorCell
                     ? "2px solid var(--ezy-accent)"
                     : "1px solid var(--ezy-border)",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   cursor: cell === null && currentTurn === "X" && !gameOver ? "pointer" : "default",
                   transition: "background-color 120ms ease, border-color 120ms ease",
                   fontSize: Math.max(16, cellSize * 0.45),
@@ -730,7 +730,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
               onClick={playAgain}
               style={{
                 padding: "8px 24px",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 backgroundColor: "var(--ezy-accent)",
                 color: "var(--ezy-bg)",
                 fontSize: 13,

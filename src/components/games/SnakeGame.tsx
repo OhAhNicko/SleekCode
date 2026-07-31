@@ -417,7 +417,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
                 border: "none",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 cursor: "pointer",
                 transition: "opacity 150ms ease",
               }}

@@ -509,7 +509,7 @@ export default function ScreenshotAnnotationLayer({
                 position: "absolute",
                 width: 6,
                 height: 6,
-                borderRadius: 1,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 1px)",
                 backgroundColor: "var(--ezy-accent)",
                 pointerEvents: "none",
                 top: c.startsWith("n") ? -3 : undefined,

@@ -339,7 +339,7 @@ export default function Game2048({ onAddHighscore, paused = false }: Game2048Pro
             color: "var(--ezy-text-secondary)",
             backgroundColor: "var(--ezy-surface)",
             border: "1px solid var(--ezy-border)",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             cursor: "pointer",
           }}
         >
@@ -356,7 +356,7 @@ export default function Game2048({ onAddHighscore, paused = false }: Game2048Pro
             gap,
             padding,
             backgroundColor: "var(--ezy-surface)",
-            borderRadius: 8,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
             width: gridPx,
           }}
         >
@@ -380,7 +380,7 @@ export default function Game2048({ onAddHighscore, paused = false }: Game2048Pro
                     color: style.fg,
                     fontSize: val && val >= 1024 ? tileFontSize - 2 : tileFontSize,
                     fontWeight: 700,
-                    borderRadius: 4,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                     fontVariantNumeric: "tabular-nums",
                     boxShadow: val && style.glow ? `0 0 12px ${style.glow}` : "none",
                     animation: isMerged
@@ -428,7 +428,7 @@ export default function Game2048({ onAddHighscore, paused = false }: Game2048Pro
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
                 border: "none",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 cursor: "pointer",
               }}
             >

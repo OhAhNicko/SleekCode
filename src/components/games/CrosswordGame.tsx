@@ -241,7 +241,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
             gridTemplateColumns: `repeat(${cols}, ${cellSize}px)`,
             gridTemplateRows: `repeat(${rows}, ${cellSize}px)`,
             border: "2px solid var(--ezy-text-muted)",
-            borderRadius: 3,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
           }}
         >
           {puzzle.grid.map((row, r) =>
@@ -391,7 +391,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: "pointer",
               transition: "border-color 120ms ease",
             }}
@@ -427,7 +427,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
             style={{
               padding: "20px 40px",
               backgroundColor: "var(--ezy-surface)",
-              borderRadius: 8,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
               border: "1px solid var(--ezy-accent)",
               textAlign: "center",
             }}

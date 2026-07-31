@@ -1800,7 +1800,7 @@ export default function PromptComposer({
         ...(useCard
           ? {
               border: `1px solid ${hexToRgba(terminalCursor, 0.25)}`,
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               boxShadow: `0 2px 8px rgba(0,0,0,0.35), 0 0 0 1px rgba(0,0,0,0.15)`,
             }
           : {}),
@@ -1827,7 +1827,7 @@ export default function PromptComposer({
               marginBottom: 4,
               backgroundColor: lightenHex(terminalBg, 18),
               border: `1px solid ${hexToRgba(terminalCursor, 0.2)}`,
-              borderRadius: 5,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
               boxShadow: "0 -2px 10px rgba(0,0,0,0.4)",
               zIndex: 10,
               overflow: "hidden",
@@ -2168,7 +2168,7 @@ export default function PromptComposer({
               top: useCard ? 0 : -5,
               width: 26,
               height: 26,
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               overflow: "hidden",
               cursor: "pointer",
               border: `1px solid ${terminalCursor}`,
@@ -2242,7 +2242,7 @@ export default function PromptComposer({
             alignItems: "center",
             gap: 4,
             padding: "2px 6px",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             backgroundColor: "#dc2626",
             color: "#fff",
             fontSize: 11,

@@ -275,7 +275,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
               height: 28,
               backgroundColor: "transparent",
               border: "none",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               cursor: "pointer",
             }}
             onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
@@ -309,7 +309,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
               backgroundColor: "var(--ezy-accent-dim)",
               color: "var(--ezy-text)",
               border: "none",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               fontSize: 12,
               fontWeight: 500,
               cursor: "pointer",
@@ -348,7 +348,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 height: 28,
                 backgroundColor: "transparent",
                 border: "none",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 cursor: "pointer",
                 marginLeft: 2,
               }}
@@ -399,7 +399,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 padding: "6px 8px",
                 backgroundColor: "var(--ezy-bg)",
                 border: "1px solid var(--ezy-border)",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 color: "var(--ezy-text)",
                 fontSize: 12,
                 outline: "none",
@@ -422,7 +422,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 padding: "6px 8px",
                 backgroundColor: "var(--ezy-bg)",
                 border: "1px solid var(--ezy-border)",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 color: "var(--ezy-text)",
                 fontSize: 12,
                 outline: "none",
@@ -436,7 +436,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 backgroundColor: "var(--ezy-accent)",
                 color: "#fff",
                 border: "none",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 fontSize: 12,
                 fontWeight: 500,
                 cursor: "pointer",
@@ -456,7 +456,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 backgroundColor: "transparent",
                 color: "var(--ezy-text-muted)",
                 border: "1px solid var(--ezy-border)",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 fontSize: 12,
                 cursor: "pointer",
                 fontFamily: "inherit",
@@ -486,7 +486,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
               className={vertical ? "flex flex-col flex-1 min-h-0" : "flex flex-col flex-1 min-w-0"}
               style={{
                 backgroundColor: "var(--ezy-surface)",
-                borderRadius: 8,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                 border: `1px solid ${isDragOver ? columnAccentColor(col.key) : "var(--ezy-border)"}`,
                 transition: "border-color 150ms ease",
                 overflow: "hidden",
@@ -562,7 +562,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                         pointerEvents: matches ? "auto" : "none",
                         outline: isActiveMatch ? "2px solid var(--ezy-accent)" : "none",
                         outlineOffset: isActiveMatch ? 2 : 0,
-                        borderRadius: 6,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                         transition: "opacity 120ms ease",
                       }}
                     >

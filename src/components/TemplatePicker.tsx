@@ -32,7 +32,7 @@ function GridPreview({ template }: { template: WorkspaceTemplate }) {
       {colHeights.map((rowCount, c) => (
         <div key={c} style={{ flex: 1, display: "flex", flexDirection: "column", gap: 2 }}>
           {Array.from({ length: rowCount }, (_, r) => (
-            <div key={r} style={{ flex: 1, borderRadius: 2, backgroundColor: "var(--ezy-border)" }} />
+            <div key={r} style={{ flex: 1, borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", backgroundColor: "var(--ezy-border)" }} />
           ))}
         </div>
       ))}
@@ -114,7 +114,7 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
       style={{
         backgroundColor: "var(--ezy-surface)",
         border: "1px solid var(--ezy-border)",
-        borderRadius: 8,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
         padding: "14px 16px",
         display: "flex",
         flexDirection: "column",
@@ -148,7 +148,7 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
         style={{
           height: 6,
           backgroundColor: "var(--ezy-border)",
-          borderRadius: 3,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
           overflow: "hidden",
         }}
       >
@@ -157,7 +157,7 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
             height: "100%",
             width: `${pct}%`,
             backgroundColor: isFull ? "var(--ezy-accent)" : "var(--ezy-accent-dim)",
-            borderRadius: 3,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             transition: "width 200ms ease, background-color 200ms ease",
           }}
         />
@@ -326,7 +326,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
           width: "100%",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
         }}
@@ -377,7 +377,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                 style={{
                   width: 14,
                   height: 14,
-                  borderRadius: 3,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                   border: `1.5px solid ${noDevServer ? "var(--ezy-accent)" : "var(--ezy-border-light)"}`,
                   backgroundColor: noDevServer ? "var(--ezy-accent)" : "transparent",
                   display: "flex",
@@ -414,7 +414,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                 padding: "6px 28px 6px 10px",
                 backgroundColor: "var(--ezy-bg)",
                 border: "1px solid var(--ezy-border)",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 color: "var(--ezy-text)",
                 fontSize: 12,
                 fontFamily: "inherit",
@@ -454,7 +454,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                   right: 0,
                   backgroundColor: "var(--ezy-surface-raised)",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   overflow: "hidden",
                   zIndex: 10,
                   boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
@@ -529,7 +529,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                   padding: "12px 8px",
                   backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "transparent",
                   border: `1px solid ${isSelected ? "var(--ezy-accent)" : "var(--ezy-border)"}`,
-                  borderRadius: 8,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                   cursor: isDisabledByKanban ? "not-allowed" : "pointer",
                   transition: "all 150ms ease",
                   fontFamily: "inherit",
@@ -640,7 +640,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                   display: "flex",
                   flexDirection: "column",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 8,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                   overflow: "hidden",
                 }}
               >
@@ -668,7 +668,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                         style={{
                           width: 16,
                           height: 16,
-                          borderRadius: 3,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                           border: `1.5px solid ${isActive ? "var(--ezy-accent)" : "var(--ezy-border-light)"}`,
                           backgroundColor: isActive ? "var(--ezy-accent)" : "transparent",
                           display: "flex",
@@ -698,7 +698,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                                 letterSpacing: "0.06em",
                                 lineHeight: 1,
                                 padding: "1px 4px",
-                                borderRadius: 3,
+                                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                                 backgroundColor: "var(--ezy-red, #e55)",
                                 color: "#fff",
                                 marginLeft: 6,
@@ -727,7 +727,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                             justifyContent: "center",
                             backgroundColor: count > 0 ? "var(--ezy-border)" : "transparent",
                             border: `1px solid ${count > 0 ? "var(--ezy-border-light)" : "var(--ezy-border)"}`,
-                            borderRadius: 4,
+                            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                             color: count > 0 ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                             fontSize: 14,
                             fontWeight: 600,
@@ -764,7 +764,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                             justifyContent: "center",
                             backgroundColor: canIncrement ? "var(--ezy-border)" : "transparent",
                             border: `1px solid ${canIncrement ? "var(--ezy-border-light)" : "var(--ezy-border)"}`,
-                            borderRadius: 4,
+                            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                             color: canIncrement ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                             fontSize: 14,
                             fontWeight: 600,
@@ -820,7 +820,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                         padding: "6px 6px",
                         backgroundColor: isOn ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
                         border: `1px solid ${isOn ? "var(--ezy-accent)" : "var(--ezy-border)"}`,
-                        borderRadius: 6,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                         cursor: "pointer",
                         fontFamily: "inherit",
                         transition: "all 120ms ease",
@@ -841,7 +841,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                         style={{
                           width: 14,
                           height: 14,
-                          borderRadius: 3,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                           border: `1.5px solid ${isOn ? "var(--ezy-accent)" : "var(--ezy-border-light)"}`,
                           backgroundColor: isOn ? "var(--ezy-accent)" : "transparent",
                           display: "flex",
@@ -875,7 +875,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                   padding: "8px 22px",
                   backgroundColor: canLaunch ? "var(--ezy-accent-dim)" : "var(--ezy-border)",
                   border: "none",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   color: canLaunch ? "#fff" : "var(--ezy-text-muted)",
                   fontSize: 12,
                   fontWeight: 700,

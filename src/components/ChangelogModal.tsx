@@ -60,7 +60,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
           flexDirection: "column",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
         }}
@@ -106,7 +106,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               cursor: "pointer",
               color: "var(--ezy-text-muted)",
               marginLeft: 12,
@@ -170,7 +170,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
               style={{
                 width: 16,
                 height: 16,
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 border: dontShowAgain ? "none" : "1px solid var(--ezy-border-light)",
                 backgroundColor: dontShowAgain ? "var(--ezy-accent)" : "transparent",
                 display: "flex",
@@ -206,7 +206,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
               fontSize: 12,
               fontWeight: 600,
               padding: "6px 14px",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: "pointer",
               fontFamily: "inherit",
             }}

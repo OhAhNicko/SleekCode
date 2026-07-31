@@ -196,7 +196,7 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
               padding: "6px 8px 6px 28px",
               backgroundColor: "var(--ezy-bg)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               color: "var(--ezy-text)",
               fontSize: 12,
               fontFamily: "inherit",

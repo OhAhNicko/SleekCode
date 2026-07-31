@@ -212,7 +212,7 @@ export default function ScreenshotAnnotationToolbar({
       <div
         style={{
           display: "flex",
-          borderRadius: 5,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
           overflow: "hidden",
           border: "1px solid var(--ezy-border)",
         }}
@@ -310,7 +310,7 @@ export default function ScreenshotAnnotationToolbar({
                     zIndex: 260,
                     minWidth: 190,
                     padding: "4px 0",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     backgroundColor: "var(--ezy-surface-raised)",
                     border: "1px solid var(--ezy-border)",
                     boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
@@ -402,7 +402,7 @@ export default function ScreenshotAnnotationToolbar({
               style={{
                 width: 16,
                 height: 16,
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 cursor: "pointer",
                 backgroundColor: ink.color,
                 flexShrink: 0,
@@ -468,7 +468,7 @@ export default function ScreenshotAnnotationToolbar({
       <div
         style={{
           display: "flex",
-          borderRadius: 5,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
           overflow: "hidden",
           border: "1px solid var(--ezy-border)",
         }}
@@ -568,7 +568,7 @@ export default function ScreenshotAnnotationToolbar({
                 display: "flex",
                 alignItems: "center",
                 gap: 6,
-                borderRadius: 5,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                 border: "none",
                 backgroundColor: "var(--ezy-accent)",
                 color: "#fff",
@@ -601,7 +601,7 @@ export default function ScreenshotAnnotationToolbar({
                 padding: "0 10px",
                 display: "flex",
                 alignItems: "center",
-                borderRadius: 5,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                 border: "1px solid var(--ezy-border)",
                 color: "var(--ezy-text-secondary)",
                 fontSize: 11,
@@ -642,7 +642,7 @@ export default function ScreenshotAnnotationToolbar({
           display: "flex",
           alignItems: "center",
           gap: 6,
-          borderRadius: 5,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
           border: "none",
           backgroundColor: !dirty
             ? "var(--ezy-surface)"
@@ -687,7 +687,7 @@ export default function ScreenshotAnnotationToolbar({
           padding: "0 10px",
           display: "flex",
           alignItems: "center",
-          borderRadius: 5,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
           border: "1px solid var(--ezy-border)",
           backgroundColor: "transparent",
           color: dirty ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
@@ -733,7 +733,7 @@ function CollapseChevron({ open, onClick }: { open: boolean; onClick: () => void
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         cursor: "pointer",
         color: "var(--ezy-text-muted)",
         transition: "background-color 120ms ease, color 120ms ease",
@@ -812,7 +812,7 @@ function IconAction({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 5,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
         border: "1px solid var(--ezy-border)",
         color: "var(--ezy-text-secondary)",
         opacity: disabled ? 0.35 : 1,

@@ -292,7 +292,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
             justifyContent: "center",
             width: 26,
             height: 26,
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             cursor: "pointer",
             border: "1px solid var(--ezy-border)",
             backgroundColor: "transparent",
@@ -317,7 +317,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
               position: "relative",
               width: 26,
               height: 26,
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               overflow: "hidden",
               // The captured element's cursor is what the user sees for the
               // whole drag, so the grab feedback must live here, not on body.
@@ -440,7 +440,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
                   width: drag.over.rect.width - 6,
                   height: drag.over.rect.height - 6,
                   border: "1.5px solid var(--ezy-accent)",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   pointerEvents: "none",
                   zIndex: 9998,
                 }}
@@ -459,7 +459,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
                 top: 0,
                 width: 44,
                 height: 44,
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 overflow: "hidden",
                 border: "1px solid var(--ezy-border)",
                 boxShadow: "0 6px 18px rgba(0,0,0,0.5)",

@@ -172,7 +172,7 @@ export default function ToolSelector({
         width: 260,
         backgroundColor: "var(--ezy-surface-raised)",
         border: "1px solid var(--ezy-border)",
-        borderRadius: 8,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
         overflow: "hidden",
         boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
         zIndex: 100,
@@ -260,7 +260,7 @@ export default function ToolSelector({
                 style={{
                   width: 32,
                   height: 32,
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   backgroundColor: "var(--ezy-border)",
                   display: "flex",
                   alignItems: "center",

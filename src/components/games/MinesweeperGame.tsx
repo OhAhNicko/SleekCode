@@ -381,7 +381,7 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
                 width: "100%",
                 maxWidth: 260,
                 padding: "12px 16px",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 backgroundColor: "var(--ezy-surface)",
                 border: "1px solid var(--ezy-border)",
                 cursor: "pointer",
@@ -461,7 +461,7 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
               color: "var(--ezy-text-muted)",
               cursor: "pointer",
               padding: "2px 8px",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               transition: "color 120ms ease",
             }}
             onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-text)")}
@@ -477,7 +477,7 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
               color: "var(--ezy-text-muted)",
               cursor: "pointer",
               padding: "2px 8px",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               transition: "color 120ms ease",
             }}
             onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-text)")}
@@ -626,7 +626,7 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
                 fontSize: 13,
                 fontWeight: 600,
                 padding: "8px 20px",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 backgroundColor: "var(--ezy-accent)",
                 color: "var(--ezy-bg)",
                 cursor: "pointer",

@@ -46,7 +46,7 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
         style={{
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 8,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           padding: "16px 20px 20px",
           maxWidth: 420,
           maxHeight: "70vh",
@@ -74,7 +74,7 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
             style={{
               cursor: "pointer",
               padding: 4,
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -116,7 +116,7 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
                     alignItems: "center",
                     justifyContent: "space-between",
                     padding: "5px 4px",
-                    borderRadius: 4,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   }}
                 >
                   <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
@@ -132,7 +132,7 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
                           backgroundColor: "var(--ezy-surface)",
                           color: "var(--ezy-text-muted)",
                           border: "1px solid var(--ezy-border)",
-                          borderRadius: 4,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                           padding: "1px 6px",
                           lineHeight: "18px",
                         }}

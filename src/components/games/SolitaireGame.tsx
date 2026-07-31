@@ -667,7 +667,7 @@ function KlondikeGame({
           color: undoStack.current.length > 0 ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
           backgroundColor: "var(--ezy-surface)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 4,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           cursor: undoStack.current.length > 0 ? "pointer" : "default",
           opacity: undoStack.current.length > 0 ? 1 : 0.5,
         }}
@@ -920,7 +920,7 @@ function SpiderGame({
               color: "var(--ezy-text-secondary)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               cursor: state.tableau.some((col) => col.length === 0) ? "default" : "pointer",
               opacity: state.tableau.some((col) => col.length === 0) ? 0.5 : 1,
             }}
@@ -981,7 +981,7 @@ function SpiderGame({
           color: undoStack.current.length > 0 ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
           backgroundColor: "var(--ezy-surface)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 4,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           cursor: undoStack.current.length > 0 ? "pointer" : "default",
           opacity: undoStack.current.length > 0 ? 1 : 0.5,
         }}
@@ -1401,7 +1401,7 @@ function FreeCellGame({
             color: undoStack.current.length > 0 ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
             backgroundColor: "var(--ezy-surface)",
             border: "1px solid var(--ezy-border)",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             cursor: undoStack.current.length > 0 ? "pointer" : "default",
             opacity: undoStack.current.length > 0 ? 1 : 0.5,
           }}
@@ -1727,7 +1727,7 @@ function PyramidGame({
           color: undoStack.current.length > 0 ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
           backgroundColor: "var(--ezy-surface)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 4,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           cursor: undoStack.current.length > 0 ? "pointer" : "default",
           opacity: undoStack.current.length > 0 ? 1 : 0.5,
         }}
@@ -1872,7 +1872,7 @@ export default function SolitaireGame({
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: "pointer",
               width: 220,
               textAlign: "left",
@@ -1934,7 +1934,7 @@ export default function SolitaireGame({
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: "pointer",
               width: 180,
               textAlign: "center",
@@ -2029,7 +2029,7 @@ export default function SolitaireGame({
               color: "var(--ezy-text-secondary)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               cursor: "pointer",
             }}
           >
@@ -2049,7 +2049,7 @@ export default function SolitaireGame({
               color: "var(--ezy-text-muted)",
               backgroundColor: "transparent",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               cursor: "pointer",
             }}
           >
@@ -2145,7 +2145,7 @@ export default function SolitaireGame({
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
                 border: "none",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 cursor: "pointer",
               }}
             >

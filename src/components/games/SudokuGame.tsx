@@ -266,7 +266,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: "pointer",
               textTransform: "capitalize",
               width: 160,
@@ -320,7 +320,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
             color: "var(--ezy-text-secondary)",
             backgroundColor: "var(--ezy-surface)",
             border: "1px solid var(--ezy-border)",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             cursor: "pointer",
           }}
         >
@@ -337,7 +337,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
             gridTemplateRows: `repeat(9, ${cellSize}px)`,
             width: gridPx,
             border: "2px solid var(--ezy-text-muted)",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             overflow: "hidden",
           }}
         >
@@ -407,7 +407,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
                 color: "var(--ezy-text)",
                 backgroundColor: "var(--ezy-surface)",
                 border: "1px solid var(--ezy-border)",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 cursor: "pointer",
                 transition: "border-color 120ms ease",
               }}
@@ -427,7 +427,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
               color: "#fff",
               backgroundColor: "var(--ezy-red, #dc2626)",
               border: "1px solid transparent",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               cursor: "pointer",
               opacity: 0.85,
               transition: "opacity 120ms ease",
@@ -485,7 +485,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
                 border: "none",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 cursor: "pointer",
               }}
             >

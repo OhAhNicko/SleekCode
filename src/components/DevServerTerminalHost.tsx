@@ -716,7 +716,7 @@ export default function DevServerTerminalHost() {
                     height: 24,
                     marginRight: 4,
                     border: "1px solid var(--ezy-border)",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     overflow: "hidden",
                     userSelect: "none",
                   }}
@@ -753,7 +753,7 @@ export default function DevServerTerminalHost() {
               {/* Restart */}
               <div
                
-                style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
+                style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", cursor: "pointer", transition: "background-color 120ms ease" }}
                 onClick={() => {
                   restartServer(expandedServer.id, expandedServer.terminalId, expandedServer.command);
                 }}
@@ -770,7 +770,7 @@ export default function DevServerTerminalHost() {
               {expandedServer.status === "running" || expandedServer.status === "starting" ? (
                 <div
                  
-                  style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
+                  style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", cursor: "pointer", transition: "background-color 120ms ease" }}
                   onClick={() => {
                     const write = getPtyWrite(expandedServer.terminalId);
                     if (write) write("\x03");
@@ -791,7 +791,7 @@ export default function DevServerTerminalHost() {
               ) : (
                 <div
                  
-                  style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, cursor: "pointer", transition: "background-color 120ms ease" }}
+                  style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", cursor: "pointer", transition: "background-color 120ms ease" }}
                   onClick={() => {
                     // Clear resolved state BEFORE triggering re-render so main effect re-registers listener
                     resolvedRef.current.delete(expandedServer.id);
@@ -827,7 +827,7 @@ export default function DevServerTerminalHost() {
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   cursor: "pointer",
                   transition: "background-color 120ms ease",
                   // Zeroed so the button matches the sibling icon divs exactly:

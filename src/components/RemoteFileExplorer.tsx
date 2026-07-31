@@ -171,7 +171,7 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
         <span
           style={{
             padding: "1px 6px",
-            borderRadius: 3,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             backgroundColor: "var(--ezy-neutral-700, #404040)",
             color: "#ffffff",
             fontSize: 9,

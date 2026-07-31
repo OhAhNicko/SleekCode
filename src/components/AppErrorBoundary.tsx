@@ -113,7 +113,7 @@ export default class AppErrorBoundary extends Component<Props, State> {
               color: "var(--ezy-text-secondary, #c9d1d9)",
               backgroundColor: "var(--ezy-surface, #161b22)",
               border: "1px solid var(--ezy-border, #30363d)",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               whiteSpace: "pre-wrap",
             }}
           >
@@ -131,7 +131,7 @@ export default class AppErrorBoundary extends Component<Props, State> {
               display: "inline-block",
               marginTop: 16,
               padding: "6px 14px",
-              borderRadius: 5,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
               cursor: "pointer",
               fontSize: 12,
               fontWeight: 600,

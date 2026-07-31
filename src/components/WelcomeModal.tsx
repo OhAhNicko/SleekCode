@@ -16,7 +16,7 @@ function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (v: b
       style={{
         width: 36,
         height: 20,
-        borderRadius: 10,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
         backgroundColor: bg,
         border: checked ? "none" : "1px solid var(--ezy-border-light)",
         position: "relative",
@@ -47,7 +47,7 @@ function SegmentedControl<T extends string>({ options, value, onChange }: {
   onChange: (v: T) => void;
 }) {
   return (
-    <div style={{ display: "flex", borderRadius: 6, border: "1px solid var(--ezy-border)", overflow: "hidden" }}>
+    <div style={{ display: "flex", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", border: "1px solid var(--ezy-border)", overflow: "hidden" }}>
       {options.map((opt) => {
         const isActive = value === opt.value;
         return (
@@ -147,7 +147,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
         style={{
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           padding: "28px 32px 24px",
           maxWidth: 520,
           width: "100%",
@@ -207,7 +207,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
                     alignItems: "center",
                     gap: 10,
                     padding: "8px 10px",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     border: isSelected ? `2px solid var(--ezy-accent)` : "1px solid var(--ezy-border)",
                     backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
                     cursor: "pointer",
@@ -223,9 +223,9 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
                   }}
                 >
                   <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
-                    <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.bg }} />
-                    <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.accent }} />
-                    <div style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: t.surface.cyan }} />
+                    <div style={{ width: 10, height: 10, borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", backgroundColor: t.surface.bg }} />
+                    <div style={{ width: 10, height: 10, borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", backgroundColor: t.surface.accent }} />
+                    <div style={{ width: 10, height: 10, borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", backgroundColor: t.surface.cyan }} />
                   </div>
                   <span style={{
                     fontSize: 12,
@@ -245,7 +245,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
         <div style={{
           marginBottom: 16,
           padding: "14px 16px",
-          borderRadius: 8,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           border: "1px solid var(--ezy-border)",
           backgroundColor: "var(--ezy-surface)",
         }}>
@@ -274,7 +274,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
                   fontSize: 11,
                   backgroundColor: "var(--ezy-surface-raised)",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 3,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                   padding: "1px 5px",
                   fontFamily: "monospace",
                   color: "var(--ezy-text-secondary)",
@@ -359,7 +359,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
             onClick={handleGetStarted}
             style={{
               padding: "8px 24px",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               border: "none",
               backgroundColor: "var(--ezy-accent)",
               color: "#fff",

@@ -705,7 +705,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
                   zIndex: 50,
                   backgroundColor: "var(--ezy-surface-raised)",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
                   padding: "8px 10px",
                 }}
@@ -739,7 +739,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
                   zIndex: 50,
                   backgroundColor: "var(--ezy-surface-raised)",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
                   padding: "8px 10px",
                 }}
@@ -919,7 +919,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
             padding: "8px 12px",
             backgroundColor: "var(--ezy-surface-raised)",
             border: "1px solid var(--ezy-border)",
-            borderRadius: 6,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
             maxWidth: 340,
           }}
@@ -993,7 +993,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
             padding: "8px 12px",
             backgroundColor: "var(--ezy-surface-raised)",
             border: "1px solid var(--ezy-border)",
-            borderRadius: 6,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
             maxWidth: 340,
           }}
@@ -1042,7 +1042,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
             padding: "8px 12px",
             backgroundColor: "var(--ezy-surface-raised)",
             border: "1px solid var(--ezy-border)",
-            borderRadius: 6,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
             maxWidth: 340,
           }}

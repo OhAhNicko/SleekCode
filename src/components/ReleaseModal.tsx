@@ -269,7 +269,7 @@ export default function ReleaseModal({
           maxHeight: "80vh",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
           display: "flex",
@@ -401,7 +401,7 @@ export default function ReleaseModal({
                     flexDirection: "column",
                     gap: 2,
                     border: "1px solid var(--ezy-border)",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     padding: "6px 2px",
                   }}
                 >
@@ -416,7 +416,7 @@ export default function ReleaseModal({
                           gap: 10,
                           padding: "6px 10px",
                           cursor: releasing ? "not-allowed" : "pointer",
-                          borderRadius: 4,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                           opacity: releasing ? 0.6 : 1,
                         }}
                       >
@@ -467,7 +467,7 @@ export default function ReleaseModal({
                 <div
                   style={{
                     display: "flex",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     border: "1px solid var(--ezy-border)",
                     overflow: "hidden",
                     width: "fit-content",
@@ -546,7 +546,7 @@ export default function ReleaseModal({
                   style={{
                     height: 32,
                     padding: "0 16px",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     border:
                       preflightOk && !releasing ? "none" : "1px solid var(--ezy-border)",
                     background:
@@ -573,7 +573,7 @@ export default function ReleaseModal({
                   style={{
                     height: 32,
                     padding: "0 12px",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     border: "1px solid var(--ezy-border)",
                     background: "var(--ezy-surface-raised)",
                     color: "var(--ezy-text-secondary)",
@@ -592,7 +592,7 @@ export default function ReleaseModal({
                   style={{
                     marginTop: 12,
                     border: "1px solid var(--ezy-border)",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     overflow: "hidden",
                   }}
                 >
@@ -714,7 +714,7 @@ export default function ReleaseModal({
                       backgroundColor: "var(--ezy-bg)",
                       color: "var(--ezy-text)",
                       border: "1px solid var(--ezy-border)",
-                      borderRadius: 6,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                       padding: "8px 10px",
                       fontSize: 12,
                       lineHeight: 1.5,
@@ -734,7 +734,7 @@ export default function ReleaseModal({
                         style={{
                           height: 30,
                           padding: "0 14px",
-                          borderRadius: 6,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                           border: "none",
                           background: "var(--ezy-accent)",
                           color: "#0d1117",

@@ -356,7 +356,7 @@ export default function XtermTuiScrollbar({
             }px), calc(100% - ${JUMP_BTN_BOTTOM_CLAMP_PX}px))`,
             width: 22,
             height: 22,
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             backgroundColor: "var(--ezy-surface-raised)",
             border: "1px solid var(--ezy-border)",
             display: "flex",

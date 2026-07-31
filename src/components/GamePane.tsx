@@ -639,7 +639,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
               width: 24,
               height: 24,
               cursor: "pointer",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               backgroundColor: "transparent",
               transition: "background-color 120ms ease",
             }}
@@ -673,7 +673,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
               width: 24,
               height: 24,
               cursor: "pointer",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               backgroundColor: "transparent",
               transition: "background-color 120ms ease",
             }}
@@ -694,7 +694,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
             width: 24,
             height: 24,
             cursor: "pointer",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             backgroundColor: "transparent",
             transition: "background-color 120ms ease",
           }}
@@ -720,7 +720,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
                   alignItems: "center",
                   gap: 12,
                   padding: "10px 12px",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   backgroundColor: "var(--ezy-surface)",
                   border: "1px solid var(--ezy-border)",
                   cursor: "pointer",

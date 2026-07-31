@@ -323,7 +323,7 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
               onClick={() => setMode(m)}
               style={{
                 padding: "2px 10px",
-                borderRadius: 10,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
                 fontSize: 11,
                 fontWeight: 600,
                 cursor: "pointer",
@@ -383,7 +383,7 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
                         color: colors.color,
                         fontSize: Math.floor(tileSize * 0.45),
                         fontWeight: 700,
-                        borderRadius: 4,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                         border: state === "tbd" || state === "empty" ? "1px solid var(--ezy-border)" : "none",
                         animation: isRevealing && eval_
                           ? `wordle-flip 400ms ease ${revealDelay}ms`
@@ -440,7 +440,7 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
                       color: colors.color,
                       fontSize: isWide ? 9 : 11,
                       fontWeight: 600,
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       cursor: "pointer",
                       transition: "opacity 100ms ease",
                       fontFamily: "system-ui, sans-serif",

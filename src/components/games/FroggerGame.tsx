@@ -1181,7 +1181,7 @@ export default function FroggerGame({ onAddHighscore, paused = false }: FroggerG
             <div onClick={() => handleInput("up")} style={{
               padding: "8px 24px", fontSize: 14, fontWeight: 700,
               color: "#0a0a18", backgroundColor: "#5eead4",
-              borderRadius: 2, cursor: "pointer", userSelect: "none",
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", cursor: "pointer", userSelect: "none",
               fontFamily: "monospace", textTransform: "uppercase",
               border: "2px solid #3ac0a8",
             }}>
@@ -1220,7 +1220,7 @@ export default function FroggerGame({ onAddHighscore, paused = false }: FroggerG
               <div style={{
                 backgroundColor: "rgba(10,10,24,0.85)",
                 border: "2px solid #333",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 padding: "12px 24px",
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
                 minWidth: 160,
@@ -1269,7 +1269,7 @@ export default function FroggerGame({ onAddHighscore, paused = false }: FroggerG
               <div onClick={() => handleInput("up")} style={{
                 padding: "8px 24px", fontSize: 14, fontWeight: 700,
                 color: "#0a0a18", backgroundColor: "#5eead4",
-                borderRadius: 2, cursor: "pointer", userSelect: "none",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", cursor: "pointer", userSelect: "none",
                 fontFamily: "monospace", textTransform: "uppercase",
                 border: "2px solid #3ac0a8", marginTop: 4,
               }}>

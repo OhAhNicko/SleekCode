@@ -254,7 +254,7 @@ export function useDomTextSearch(
         mark.style.backgroundColor = "#264f78";
         mark.style.color = "#fff";
         mark.style.padding = "0";
-        mark.style.borderRadius = "2px";
+        mark.style.borderRadius = "calc(var(--ezy-radius-scale, 1) * 2px)";
         frag.appendChild(mark);
         markEls.push(mark);
         cursor = r.end;
