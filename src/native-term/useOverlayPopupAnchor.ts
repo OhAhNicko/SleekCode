@@ -111,6 +111,8 @@ export function useOverlayPopupAnchor(opts: {
     let frame = 0;
     /** Emitted open:false because the anchor's pane is occluded. */
     let occludedHidden = false;
+    /** Emitted open:false because the anchor is display:none or detached. */
+    let anchorHidden = false;
     const tick = () => {
       raf = requestAnimationFrame(tick);
       // Keepalive: the event bus is fire-and-forget — a missed message must
@@ -118,9 +120,25 @@ export function useOverlayPopupAnchor(opts: {
       // ghost-sweep (OverlayRoot) can drop popups whose owner went silent.
       if (++frame % 45 === 0) lastJson = "";
       const el = anchorRef.current;
-      if (!el) return;
-      const b = el.getBoundingClientRect();
-      if (b.width <= 0 || b.height <= 0) return;
+      const b = el?.getBoundingClientRect();
+      if (!el || !b || b.width <= 0 || b.height <= 0) {
+        // Inactive tabs are display:none (App.tsx), which zeroes the anchor
+        // rect. Returning without a close here left the popup painted at its
+        // last rect until the overlay's ghost sweep collected it seconds
+        // later — the "TUI scrollbar lingers after switching tabs" bug.
+        // A hidden anchor closes its popup NOW; recovery below re-emits.
+        if (!anchorHidden) {
+          anchorHidden = true;
+          emitOverlayPopup({ id, kind, open: false, rect: null });
+        }
+        return;
+      }
+      if (anchorHidden) {
+        // Visible again (tab switched back): clear the dedup guard so the
+        // next emit actually goes out rather than matching the stale rect.
+        anchorHidden = false;
+        lastJson = "";
+      }
 
       // OCCLUSION, not just modals (2026-07-27). The doc block above covers
       // fullscreen modals, but an expanded/floating window hides panes through
