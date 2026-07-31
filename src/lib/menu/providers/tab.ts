@@ -1,5 +1,5 @@
 import { useAppStore } from "../../../store";
-import { PROJECT_COLOR_PRESETS } from "../../../store/recentProjectsSlice";
+import { PROJECT_COLOR_PRESETS, SOUND_PRESETS } from "../../../store/recentProjectsSlice";
 import { tabHibernateBlocker } from "../../../store/tabSlice";
 import { tabIdleVerdict } from "../../pane-idle";
 import { snapshotTabs, undoClose, useUndoCloseStore } from "../../../store/undoCloseStore";
@@ -266,6 +266,31 @@ const tabProvider: MenuProvider<"tab"> = {
             selected: currentColor === p.id,
             run: () => useAppStore.getState().setProjectColor(colorKey, p.id),
           })),
+        ],
+      },
+      {
+        id: "sound",
+        items: [
+          {
+            id: "tab.notificationSound",
+            label: "Notification sound…",
+            iconId: "bell",
+            // Build-time snapshot (menus never change after open). Same
+            // working-dir key as the colors above — two tabs, one project,
+            // one sound.
+            sublabel: (() => {
+              const cur = useAppStore.getState().projectSounds?.[colorKey];
+              if (cur === undefined) return "Auto";
+              if (cur === null) return "No sound";
+              return SOUND_PRESETS.find((p) => p.id === cur)?.label ?? "Auto";
+            })(),
+            run: () =>
+              window.dispatchEvent(
+                new CustomEvent("made:open-sound-picker", {
+                  detail: { workingDir: colorKey, tabId: ctx.tabId },
+                }),
+              ),
+          },
         ],
       },
     ];

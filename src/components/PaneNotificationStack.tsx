@@ -28,6 +28,7 @@ const FOCUS_RETRY_MS = 350;
 export default function PaneNotificationStack() {
   const cards = usePaneNotificationsStore((s) => s.cards);
   const dismiss = usePaneNotificationsStore((s) => s.dismiss);
+  const notifEnabled = useAppStore((s) => s.notifEnabled ?? true);
   const notifAutoDismiss = useAppStore((s) => s.notifAutoDismiss ?? false);
   const notifAutoDismissSeconds = useAppStore((s) => s.notifAutoDismissSeconds ?? 30);
   // Hook order must be stable — called unconditionally (see useOverlayPopupAnchor).
@@ -39,6 +40,12 @@ export default function PaneNotificationStack() {
   // where no main-webview z-index can cover it. Cards are kept — the stack
   // returns when the modal closes.
   const open = cards.length > 0 && !anyModalOpen;
+
+  // Master switch off → drop any visible cards too (not just future ones), so
+  // re-enabling later doesn't resurface a stale stack.
+  useEffect(() => {
+    if (!notifEnabled) usePaneNotificationsStore.getState().clear();
+  }, [notifEnabled]);
 
   useOverlayViewportPopup({
     id: "pane-notif-stack",

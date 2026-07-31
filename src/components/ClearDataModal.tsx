@@ -16,7 +16,7 @@ const CATEGORIES: Category[] = [
   {
     id: "workspace",
     label: "Workspace & projects",
-    description: "Open tabs, recent projects, session layouts, expanded folders, project colors.",
+    description: "Open tabs, recent projects, session layouts, expanded folders, project colors and sounds.",
     stateKeys: [
       "tabs",
       "activeTabId",
@@ -28,6 +28,7 @@ const CATEGORIES: Category[] = [
       "sidebarOpen",
       "sidebarTab",
       "projectColors",
+      "projectSounds",
     ],
   },
   {
@@ -234,7 +235,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
           maxHeight: "80vh",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
           display: "flex",
@@ -313,7 +314,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
               gap: 10,
               padding: "8px 10px",
               marginBottom: 8,
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               backgroundColor: allSelected ? "var(--ezy-accent-glow)" : "transparent",
               border: "1px solid var(--ezy-border-subtle)",
               cursor: "pointer",
@@ -342,7 +343,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
                     alignItems: "flex-start",
                     gap: 10,
                     padding: "10px",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     cursor: "pointer",
                     backgroundColor: isOn ? "var(--ezy-accent-glow)" : "transparent",
                     transition: "background-color 120ms ease",
@@ -384,7 +385,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
               style={{
                 height: 30,
                 padding: "0 14px",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 border: "1px solid var(--ezy-border)",
                 backgroundColor: "var(--ezy-surface-raised)",
                 color: "var(--ezy-text-secondary)",
@@ -402,7 +403,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
               style={{
                 height: 30,
                 padding: "0 14px",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 border: "none",
                 backgroundColor: nothing ? "var(--ezy-surface)" : "var(--ezy-red, #e55)",
                 color: nothing ? "var(--ezy-text-muted)" : "#fff",
@@ -429,7 +430,7 @@ function Checkbox({ checked }: { checked: boolean }) {
       style={{
         width: 16,
         height: 16,
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         border: checked ? "none" : "1px solid var(--ezy-border-light)",
         backgroundColor: checked ? "var(--ezy-red, #e55)" : "transparent",
         display: "flex",

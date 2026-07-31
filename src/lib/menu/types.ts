@@ -16,6 +16,7 @@ export const GROUP_ORDER = [
   "pane", // pane lifecycle
   "layout", // splits, float, expand
   "view", // toggles, scroll, zoom
+  "sound", // per-project notification sound
   "app", // app-wide fallbacks
 ] as const;
 

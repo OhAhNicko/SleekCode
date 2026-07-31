@@ -10,10 +10,16 @@
  * check silently swallowed background tabs' notifications.
  */
 
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 import { useAppStore } from "../store";
 import { usePaneNotificationsStore } from "../store/paneNotificationsStore";
 import { projectDisplayName } from "../store/recentProjectsSlice";
 import { findAllTerminalLeaves } from "./layout-utils";
+import { ensureProjectSound, playNotificationSound } from "./notification-sounds";
 import { toWslPath } from "./terminal-config";
 import { readSessionLastAssistantText } from "./sessions-index";
 import type { TerminalBackend, TerminalType } from "../types";
@@ -81,6 +87,28 @@ export interface PaneNotificationSource {
  * comparison (WSL↔Windows clock skew). */
 const SNIPPET_RETRY_MS = 1000;
 
+/** Cached OS-notification permission — asked at most once per session.
+ * Desktop Windows grants this without a prompt; the dance is for API parity. */
+let osNotifGranted: boolean | null = null;
+
+async function sendOsToast(title: string, body: string): Promise<void> {
+  try {
+    if (osNotifGranted === null) {
+      osNotifGranted = await isPermissionGranted();
+      if (!osNotifGranted) {
+        osNotifGranted = (await requestPermission()) === "granted";
+      }
+    }
+    if (!osNotifGranted) {
+      console.debug("[pane-notif] OS notification permission not granted");
+      return;
+    }
+    sendNotification({ title, body, silent: true });
+  } catch (e) {
+    console.debug("[pane-notif] OS toast failed", e);
+  }
+}
+
 function isSuppressed(terminalId: string, tabId: string): boolean {
   const s = useAppStore.getState();
   // The active pane of the active tab is already on screen — announcing it is
@@ -99,6 +127,9 @@ function isSuppressed(terminalId: string, tabId: string): boolean {
  * cards never change size on screen.
  */
 export async function addPaneNotification(src: PaneNotificationSource): Promise<void> {
+  // Master switch (Settings > Terminal > Notifications). `?? true` because the
+  // field is new — an older persisted store simply has no value yet.
+  if (!(useAppStore.getState().notifEnabled ?? true)) return;
   const body = src.body.trim();
   if (!body) return;
 
@@ -148,21 +179,43 @@ export async function addPaneNotification(src: PaneNotificationSource): Promise<
   if (isSuppressed(src.terminalId, tab.id)) return;
 
   const fresh = useAppStore.getState();
+  const projectName = projectDisplayName(
+    fresh.recentProjects,
+    tab.workingDir || src.workingDir,
+    tab.serverId,
+  );
   usePaneNotificationsStore.getState().add({
     id: `${src.terminalId}:${Date.now()}`,
     terminalId: src.terminalId,
     tabId: tab.id,
-    projectName: projectDisplayName(
-      fresh.recentProjects,
-      tab.workingDir || src.workingDir,
-      tab.serverId,
-    ),
+    projectName,
     paneLabel: src.paneLabel,
     body: displayBody,
     kind,
     timeHHMM,
     addedAt: Date.now(),
   });
+
+  // OS toast while minimized: the in-app card is invisible then, so the
+  // system notification is the right channel. Silent — the per-project chime
+  // below is the only audio, or Windows would ding on top of it. Informational
+  // only: desktop toast clicks don't deep-link (plugin actions are
+  // mobile-only); restoring via taskbar + auto-switch covers navigation.
+  if (fresh.windowMinimized && (fresh.notifSystemMinimized ?? true)) {
+    void sendOsToast(
+      src.paneLabel ? `${projectName} · ${src.paneLabel}` : projectName,
+      displayBody,
+    );
+  }
+
+  // Per-project sound, resolved lazily on first notification. Deliberately
+  // AFTER add() — the sound announces a card that actually exists. Minimized
+  // is NOT suppressed (isSuppressed exempts it — that's the point). Toggle
+  // off skips even the lazy assignment.
+  if (fresh.notifSoundEnabled ?? true) {
+    const soundId = ensureProjectSound(tab.workingDir || src.workingDir);
+    if (soundId) playNotificationSound(soundId);
+  }
 
   // Auto-switch while minimized (Settings > Terminal > Notifications):
   // re-target the tab/pane internally so it's front when the user restores the

@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -70,6 +71,7 @@ const SHADOW_PAD_KINDS = new Set([
   "recent-menu",
   "git-branch-menu",
   "session-picker",
+  "sound-picker",
 ]);
 
 /** Room for the menu drop shadow inside the clip region (CSS px). */
@@ -473,6 +475,10 @@ function OverlayPopup({
       return (
         <RecentMenu msg={msg} registerEl={registerEl} closeLocal={closeLocal} />
       );
+    case "sound-picker":
+      return (
+        <SoundPickerMenu msg={msg} registerEl={registerEl} closeLocal={closeLocal} />
+      );
     default:
       return null;
   }
@@ -503,7 +509,7 @@ function ExitBanner({
     transform: "translate(-50%, -100%)",
     pointerEvents: "none",
     padding: "3px 10px",
-    borderRadius: 4,
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
     background: "var(--ezy-surface-raised, #1c2128)",
     boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
     color: "var(--ezy-text-muted, rgba(230,237,243,0.65))",
@@ -563,7 +569,7 @@ function Toast({
           flexDirection: "column",
           gap: 4,
           padding: "10px 14px",
-          borderRadius: 6,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
           background: p.bg ?? "#404040",
           color: "#ffffff",
           maxWidth: 420,
@@ -630,7 +636,7 @@ function Toast({
         alignItems: "center",
         gap: 10,
         padding: hasThumb ? "8px 10px 8px 8px" : "8px 12px",
-        borderRadius: 8,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
         background: "var(--ezy-surface-raised, #1c2128)",
         boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
         fontFamily: "Inter, system-ui, sans-serif",
@@ -646,7 +652,7 @@ function Toast({
             width: 48,
             height: 48,
             objectFit: "cover",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             flexShrink: 0,
           }}
         />
@@ -704,7 +710,7 @@ function Toast({
             fontSize: 12,
             fontWeight: 500,
             padding: "4px 10px",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             background: "var(--ezy-accent, #10a37f)",
             color: "#fff",
             border: "none",
@@ -768,20 +774,34 @@ interface NotifStackCard {
   kind: "permission" | "finished";
 }
 
+/** Below the 38px tab bar plus a deliberate 12px gap. Never smaller: the
+ * window close button sits top-right INSIDE the bar, and the top card's own
+ * dismiss X lands right under it — too little clearance turns an overshoot
+ * aimed at a card into closing the whole app. Top-right (vs the old
+ * bottom-right) also keeps cards off the TUI composer. */
+const NOTIF_STACK_TOP = 50;
+/** Spawn/close animation timing. Subtle by design. */
+const NOTIF_IN_MS = 160;
+const NOTIF_OUT_MS = 140;
+
 /**
- * Persistent pane-notification stack, bottom-right. Ambient popup (no
- * backdrop, no focus handoff, tight 1-bit clip) like Toast/VoiceHudCard, but
- * ONE popup whose payload is the whole card list:
+ * Persistent pane-notification stack, top-right below the tab bar. Ambient
+ * popup (no backdrop, no focus handoff, tight 1-bit clip) like
+ * Toast/VoiceHudCard, but ONE popup whose payload is the whole card list:
  *
  *  - Each CARD registers its own region rect (`${msg.id}::n-${card.id}`), so
  *    the 8px gaps between cards stay click-through to the pane beneath, and
  *    adding a card grows the rect COUNT — taking the region driver's
  *    one-frame-late growth path instead of an immediate same-rect stretch.
- *  - Newest card is FIRST in DOM = topmost. The container is bottom-anchored,
- *    so a new card grows the column upward and existing cards never move
- *    under the pointer.
- *  - No entry animation: a size/position transition would churn the Win32
- *    region every frame (SetWindowRgn on the UI thread).
+ *  - Top-anchored column, oldest first: a NEW card appends at the BOTTOM, so
+ *    existing cards never move under the pointer. (Bottom-right was rejected —
+ *    it sat on top of the TUI composer.)
+ *  - Animations never touch measured geometry (each frame of rect change is a
+ *    SetWindowRgn on the Win32 UI thread): the REGISTERED outer div is static;
+ *    a Web-Animations fade + ≤3% inner scale runs inside it. scale stays <1 so
+ *    nothing escapes the clip. Dismissed cards linger as non-interactive
+ *    ghosts for the fade-out, holding their slot so the reflow happens after.
+ *    prefers-reduced-motion skips both.
  *
  * Card actions are string-encoded with the per-item id (`focus:<id>`,
  * `dismiss:<id>`) because the toast transport forwards only the action string.
@@ -794,15 +814,91 @@ function NotifStack({
   registerEl: (id: string, el: HTMLElement | null) => void;
 }) {
   const p = (msg.payload ?? {}) as { cards?: NotifStackCard[] };
-  const cards = p.cards ?? [];
+  // Payload arrives newest-first; render oldest-first so the stack grows
+  // downward and existing cards keep their position.
+  const cardsJson = JSON.stringify(p.cards ?? []);
+  const cards = useMemo(
+    () => [...(JSON.parse(cardsJson) as NotifStackCard[])].reverse(),
+    [cardsJson],
+  );
   const act = (action: string) => emitOverlayAction({ id: msg.id, action });
+
+  const reducedMotion = useMemo(
+    () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    [],
+  );
+  // Live cards plus fading ghosts of dismissed ones (leaving: true).
+  const [display, setDisplay] = useState<Array<NotifStackCard & { leaving?: boolean }>>([]);
+  /** Inner (animated) element per card id — exit animations need the mounted el. */
+  const innerElsRef = useRef(new Map<string, HTMLElement>());
+  /** Ids whose entry animation already ran. NEVER pruned on ref-null: inline
+   * ref callbacks re-fire on every render (old(null) + new(el)), so pruning
+   * there would replay the entry animation on each keepalive re-render. Ids
+   * are unique per card lifetime; the set stays session-bounded. */
+  const enteredRef = useRef(new Set<string>());
+  /** Ids whose exit fade already started — a later dismissal must not restart
+   * an in-flight ghost's animation from opacity 1. */
+  const exitStartedRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    setDisplay((prev) => {
+      const liveIds = new Set(cards.map((c: NotifStackCard) => c.id));
+      // Keep order: existing entries hold their slot (missing ones become
+      // ghosts), genuinely new cards append at the end (= bottom).
+      const kept = prev
+        .map((entry) => {
+          if (liveIds.has(entry.id)) {
+            return {
+              ...cards.find((c: NotifStackCard) => c.id === entry.id)!,
+              leaving: false,
+            };
+          }
+          return entry.leaving ? entry : { ...entry, leaving: true };
+        })
+        .filter((entry) => !entry.leaving || !reducedMotion);
+      const knownIds = new Set(kept.map((e) => e.id));
+      const added = cards.filter((c: NotifStackCard) => !knownIds.has(c.id));
+      return [...kept, ...added];
+    });
+  }, [cardsJson, reducedMotion]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Run exit fades + schedule ghost removal. A ghost that arrives while an
+  // earlier one is mid-fade restarts only the removal TIMER (harmless — the
+  // finished ghost holds opacity 0 via fill:forwards), never the animation.
+  useEffect(() => {
+    const leaving = display.filter((e) => e.leaving);
+    if (leaving.length === 0) return;
+    for (const entry of leaving) {
+      if (exitStartedRef.current.has(entry.id)) continue;
+      exitStartedRef.current.add(entry.id);
+      innerElsRef.current.get(entry.id)?.animate(
+        [
+          { opacity: 1, transform: "scale(1)" },
+          { opacity: 0, transform: "scale(0.97)" },
+        ],
+        { duration: NOTIF_OUT_MS, easing: "ease-in", fill: "forwards" },
+      );
+    }
+    const timer = window.setTimeout(() => {
+      setDisplay((prev) =>
+        prev.filter((e) => {
+          if (e.leaving) {
+            exitStartedRef.current.delete(e.id);
+            return false;
+          }
+          return true;
+        }),
+      );
+    }, NOTIF_OUT_MS + 20);
+    return () => clearTimeout(timer);
+  }, [display]);
 
   return (
     <div
       onContextMenu={(e) => e.preventDefault()}
       style={{
         position: "fixed",
-        bottom: 16,
+        top: NOTIF_STACK_TOP,
         right: 16,
         display: "flex",
         flexDirection: "column",
@@ -814,24 +910,55 @@ function NotifStack({
         fontFamily: "Inter, system-ui, sans-serif",
       }}
     >
-      {cards.map((card) => {
+      {display.map((card) => {
         const permission = card.kind === "permission";
         return (
+          // Outer div: REGISTERED region element — static geometry, never
+          // animated. Ghosts keep pointer events off so a fading card can't
+          // swallow a click.
           <div
             key={card.id}
             ref={(el) => registerEl(`${msg.id}::n-${card.id}`, el)}
-            onClick={() => act(`focus:${card.id}`)}
+            onClick={card.leaving ? undefined : () => act(`focus:${card.id}`)}
             style={{
               width: 320,
+              pointerEvents: card.leaving ? "none" : "auto",
+              cursor: card.leaving ? undefined : "pointer",
+            }}
+          >
+          {/* Inner div: the visible card — the only thing that animates
+              (opacity + ≤3% scale, always inside the outer rect). */}
+          <div
+            ref={(el) => {
+              if (el) {
+                innerElsRef.current.set(card.id, el);
+                if (!enteredRef.current.has(card.id)) {
+                  enteredRef.current.add(card.id);
+                  if (!reducedMotion && !card.leaving) {
+                    el.animate(
+                      [
+                        { opacity: 0, transform: "scale(0.97)" },
+                        { opacity: 1, transform: "scale(1)" },
+                      ],
+                      { duration: NOTIF_IN_MS, easing: "cubic-bezier(0.2, 0, 0, 1)" },
+                    );
+                  }
+                }
+              } else {
+                // Only the element map — see enteredRef doc for why the
+                // entered set must survive ref-null churn.
+                innerElsRef.current.delete(card.id);
+              }
+            }}
+            style={{
+              transformOrigin: "top right",
               background: "var(--ezy-surface-raised, #1c2128)",
               boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
-              borderRadius: 8,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
               padding: "9px 12px",
               display: "flex",
               flexDirection: "column",
               gap: 5,
-              pointerEvents: "auto",
-              cursor: "pointer",
             }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
@@ -841,7 +968,7 @@ function NotifStack({
                   fontWeight: 600,
                   lineHeight: "16px",
                   padding: "0 6px",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   background: permission
                     ? "var(--ezy-red, #dc2626)"
                     : "var(--ezy-accent, #10a37f)",
@@ -928,6 +1055,7 @@ function NotifStack({
               {card.body}
             </div>
           </div>
+          </div>
         );
       })}
     </div>
@@ -994,7 +1122,7 @@ function FileLinkTip({
           padding: "4px 10px",
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
-          borderRadius: 6,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
           boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)",
           whiteSpace: "nowrap",
           fontFamily: "system-ui, -apple-system, sans-serif",
@@ -1014,7 +1142,7 @@ function FileLinkTip({
             padding: "1px 5px",
             background: "var(--ezy-surface, #161b22)",
             border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
-            borderRadius: 3,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
             fontFamily: "system-ui, -apple-system, sans-serif",
           }}
@@ -1267,7 +1395,7 @@ function TuiScrollbar({
             top: btnTop,
             width: 22,
             height: 22,
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             backgroundColor: "var(--ezy-surface-raised, #1c2128)",
             border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
             display: "flex",
@@ -1338,7 +1466,7 @@ function ImeComposition({
         background: "rgb(20,20,24)",
         color: "#ffffff",
         border: "1px solid rgba(255,255,255,0.15)",
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         fontSize: 14,
         lineHeight: 1.2,
         whiteSpace: "nowrap",
@@ -1397,7 +1525,7 @@ function JumpButton({
         top: rect.y + rect.height - 12 - 22,
         width: 22,
         height: 22,
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         background: "var(--ezy-surface-raised, #1c2128)",
         boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
         display: "flex",
@@ -1592,7 +1720,7 @@ function AnchoredMenu({
           maxHeight: p.maxHeight,
           overflowY: p.maxHeight ? "auto" : undefined,
           padding: "4px 0",
-          borderRadius: 8,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.08))",
           boxShadow: "0 10px 30px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.35)",
@@ -1605,6 +1733,18 @@ function AnchoredMenu({
         }}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
+        // Hover-to-open mode: report pointer presence so the main side keeps
+        // the menu open only while the pointer is inside button or menu.
+        onMouseEnter={
+          p.hoverTracking
+            ? () => emitOverlayAction({ id: msg.id, action: "__hoverin__" })
+            : undefined
+        }
+        onMouseLeave={
+          p.hoverTracking
+            ? () => emitOverlayAction({ id: msg.id, action: "__hoverout__" })
+            : undefined
+        }
       >
         {sections.map((section, si) => (
           <div key={si}>
@@ -1676,7 +1816,7 @@ function AnchoredMenu({
                     style={{
                       width: 10,
                       height: 10,
-                      borderRadius: 3,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                       background: item.swatch,
                       flexShrink: 0,
                     }}
@@ -1755,7 +1895,7 @@ function AnchoredMenu({
                       fontWeight: 700,
                       letterSpacing: 0.4,
                       padding: "1px 5px",
-                      borderRadius: 3,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                       flexShrink: 0,
                     }}
                   >
@@ -1774,7 +1914,7 @@ function AnchoredMenu({
                       justifyContent: "center",
                       width: 24,
                       height: 24,
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
                       flexShrink: 0,
                       cursor: "pointer",
@@ -1818,7 +1958,7 @@ function AnchoredMenu({
                     style={{
                       width: 20,
                       height: 20,
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       background: sw.color ?? "var(--ezy-surface, #161b22)",
                       border: sw.selected
                         ? sw.color
@@ -1884,7 +2024,7 @@ function VoiceHudCard({
     background: "transparent",
     boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.15))",
     border: "none",
-    borderRadius: 4,
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
     padding: "4px 10px",
     cursor: "pointer",
     fontFamily: "inherit",
@@ -1907,7 +2047,7 @@ function VoiceHudCard({
             ? "var(--ezy-red, #f85149)"
             : "var(--ezy-border, rgba(255,255,255,0.12))"
         }`,
-        borderRadius: 8,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
         padding: "10px 12px",
         color: "var(--ezy-text, #e6edf3)",
         fontSize: 12,
@@ -1923,7 +2063,7 @@ function VoiceHudCard({
           style={{
             width: 8,
             height: 8,
-            borderRadius: 8,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
             background: active
               ? "var(--ezy-accent, #10a37f)"
               : "var(--ezy-text-muted, rgba(230,237,243,0.5))",
@@ -2022,7 +2162,7 @@ function VoiceHudCard({
                 color: "#fff",
                 background: "var(--ezy-red, #f85149)",
                 border: "none",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 padding: "4px 10px",
                 cursor: "pointer",
                 fontFamily: "inherit",
@@ -2221,7 +2361,7 @@ function TipChip({
           color: "var(--ezy-text, #e6edf3)",
           border: "1px solid var(--ezy-border-light, #484f58)",
           // Rectangular by design; 2px only takes the bite off the corners.
-          borderRadius: 2,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
           padding: "5px 9px",
           fontSize: 11.5,
           fontWeight: 500,
@@ -2248,7 +2388,7 @@ function TipChip({
               background: "var(--ezy-surface, #161b22)",
               color: "var(--ezy-text-secondary, #c9d1d9)",
               border: "1px solid var(--ezy-border-light, #484f58)",
-              borderRadius: 2,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
               padding: "0 4px",
               fontSize: 10.5,
               fontWeight: 600,
@@ -2460,7 +2600,7 @@ function SwatchMenu({
           top: Math.min(p.y ?? 0, window.innerHeight - 120),
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
-          borderRadius: 8,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           padding: 8,
           boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
           fontFamily: "Inter, system-ui, sans-serif",
@@ -2484,7 +2624,7 @@ function SwatchMenu({
             style={{
               width: 20,
               height: 20,
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               background: "var(--ezy-surface, #161b22)",
               border:
                 p.selected == null
@@ -2508,7 +2648,7 @@ function SwatchMenu({
               style={{
                 width: 20,
                 height: 20,
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 background: sw.color,
                 border:
                   p.selected === sw.id
@@ -2533,6 +2673,9 @@ type RecentMenuProject = {
   disabled: boolean;
   badge?: string;
   badgeMuted?: boolean;
+  /** Jira project — gets a distinct JIRA chip so it can't be mistaken for a
+   *  normal project row. */
+  jira?: boolean;
   showFresh: boolean;
   showQuick: boolean;
   quickOn: boolean;
@@ -2545,6 +2688,269 @@ type RecentMenuProject = {
  * to four per-row buttons; quick/backend/remove actions keep the menu open —
  * the main webview re-emits the payload and the rows update in place.
  */
+/**
+ * Per-project notification-sound picker (kind "sound-picker"), opened from the
+ * tab context menu's "Notification sound…" item. Same backdrop/shell contract
+ * as RecentMenu below. Rows: 10 sounds then "No sound"; each shows a reserved
+ * checkmark slot (labels stay aligned), the sound name, which projects use it
+ * (solid project-color dot + muted name, capped, "+N" overflow — so an unused
+ * sound is easy to spot), and a ▶ preview that plays WITHOUT closing (the
+ * act(action, false) stay-open contract). Payload is frozen at open by the
+ * main-side host — the menu never changes size while visible.
+ */
+function SoundPickerMenu({
+  msg,
+  registerEl,
+  closeLocal,
+}: {
+  msg: OverlayPopupMsg;
+  registerEl: (id: string, el: HTMLElement | null) => void;
+  closeLocal: (id: string) => void;
+}) {
+  const p = (msg.payload ?? {}) as {
+    current?: string | null;
+    rows?: Array<{
+      id: string;
+      label: string;
+      users: Array<{ name: string; color: string | null }>;
+      overflow: number;
+    }>;
+  };
+  const ref = useCallback(
+    (el: HTMLElement | null) => registerEl(msg.id, el),
+    [registerEl, msg.id],
+  );
+  const anchor = msg.rect!;
+  const dismiss = () => {
+    closeLocal(msg.id);
+    emitOverlayAction({ id: msg.id, action: "__dismiss__" });
+  };
+  const act = (action: string, closes: boolean) => {
+    if (closes) closeLocal(msg.id);
+    emitOverlayAction({ id: msg.id, action });
+  };
+
+  const WIDTH = 300;
+  const left = Math.max(8, Math.min(anchor.x, window.innerWidth - WIDTH - 8));
+  const top = anchor.y + anchor.height + 2;
+
+  const check = (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06l2.72 2.72 6.72-6.72a.75.75 0 011.06 0z" />
+    </svg>
+  );
+
+  const row = (opts: {
+    key: string;
+    label: string;
+    selected: boolean;
+    users?: Array<{ name: string; color: string | null }>;
+    overflow?: number;
+    previewId?: string;
+    pickAction: string;
+    muted?: boolean;
+  }) => (
+    <div
+      key={opts.key}
+      onClick={() => act(opts.pickAction, true)}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.background =
+          "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = "transparent";
+      }}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 12px",
+        cursor: "pointer",
+        fontSize: 12,
+        minWidth: 0,
+      }}
+    >
+      {/* Reserved slot: labels align whether or not a checkmark shows. */}
+      <span
+        style={{
+          width: 14,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          color: "var(--ezy-accent, #10a37f)",
+        }}
+      >
+        {opts.selected ? check : null}
+      </span>
+      <span
+        style={{
+          color: opts.muted
+            ? "var(--ezy-text-muted, rgba(230,237,243,0.5))"
+            : "var(--ezy-text, #e6edf3)",
+          flexShrink: 0,
+        }}
+      >
+        {opts.label}
+      </span>
+      <span
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          marginLeft: "auto",
+          minWidth: 0,
+          overflow: "hidden",
+        }}
+      >
+        {(opts.users ?? []).map((u, i) => (
+          <span
+            key={i}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              minWidth: 0,
+            }}
+          >
+            <span
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
+                background: u.color ?? "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                flexShrink: 0,
+              }}
+            />
+            <span
+              style={{
+                fontSize: 10.5,
+                color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                maxWidth: 72,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {u.name}
+            </span>
+          </span>
+        ))}
+        {(opts.overflow ?? 0) > 0 && (
+          <span
+            style={{
+              fontSize: 10.5,
+              color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+              flexShrink: 0,
+            }}
+          >
+            +{opts.overflow}
+          </span>
+        )}
+      </span>
+      {opts.previewId ? (
+        <svg
+          onClick={(e) => {
+            e.stopPropagation();
+            act(`preview:${opts.previewId}`, false);
+          }}
+          role="button"
+          aria-label={`Preview ${opts.label}`}
+          width="20"
+          height="20"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          style={{
+            flexShrink: 0,
+            padding: 2,
+            cursor: "pointer",
+            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "var(--ezy-text, #e6edf3)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color =
+              "var(--ezy-text-muted, rgba(230,237,243,0.5))";
+          }}
+        >
+          <path d="M4.75 2.57a.75.75 0 011.14-.64l8 5.43a.75.75 0 010 1.28l-8 5.43a.75.75 0 01-1.14-.64V2.57z" />
+        </svg>
+      ) : (
+        // Keep row height/width identical to preview rows.
+        <span style={{ width: 20, height: 20, flexShrink: 0 }} />
+      )}
+    </div>
+  );
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, pointerEvents: "auto" }}
+      onPointerDown={dismiss}
+      onContextMenu={(e) => {
+        e.preventDefault();
+      }}
+    >
+      <div
+        ref={ref}
+        onPointerDown={(e) => e.stopPropagation()}
+        style={{
+          position: "absolute",
+          top,
+          left,
+          width: WIDTH,
+          maxHeight: Math.max(120, window.innerHeight - top - 8),
+          overflowY: "auto",
+          background: "var(--ezy-surface-raised, #1c2128)",
+          border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
+          boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+          color: "var(--ezy-text, #e6edf3)",
+          fontFamily: "Inter, system-ui, sans-serif",
+        }}
+      >
+        <div
+          style={{
+            padding: "6px 12px",
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+            borderBottom: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
+          }}
+        >
+          Notification sound
+        </div>
+        {(p.rows ?? []).map((r) =>
+          row({
+            key: r.id,
+            label: r.label,
+            selected: p.current === r.id,
+            users: r.users,
+            overflow: r.overflow,
+            previewId: r.id,
+            pickAction: `pick:${r.id}`,
+          }),
+        )}
+        <div
+          style={{
+            height: 1,
+            background: "var(--ezy-border, rgba(255,255,255,0.12))",
+            margin: "4px 0",
+          }}
+        />
+        {row({
+          key: "none",
+          label: "No sound",
+          selected: p.current === null,
+          pickAction: "pick:none",
+          muted: true,
+        })}
+      </div>
+    </div>
+  );
+}
+
 function RecentMenu({
   msg,
   registerEl,
@@ -2558,6 +2964,7 @@ function RecentMenu({
     projects?: RecentMenuProject[];
     canCreate?: boolean;
     servers?: Array<{ id: string; name: string }>;
+    hoverTracking?: boolean;
   };
   const ref = useCallback(
     (el: HTMLElement | null) => registerEl(msg.id, el),
@@ -2600,7 +3007,7 @@ function RecentMenu({
     alignItems: "center",
     padding: "2px 6px",
     border: "1px solid var(--ezy-border, rgba(255,255,255,0.15))",
-    borderRadius: 4,
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
     background: "transparent",
     color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
     fontSize: 10,
@@ -2633,20 +3040,22 @@ function RecentMenu({
           overflowY: "auto",
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
-          borderRadius: 8,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
           color: "var(--ezy-text, #e6edf3)",
           fontFamily: "Inter, system-ui, sans-serif",
+          // Flex + per-child `order`: CREATE and OPEN render first, the recent
+          // list sinks below them (order 29+ on its header/rows) without
+          // relocating 200 lines of row JSX.
+          display: "flex",
+          flexDirection: "column",
         }}
+        // Hover-to-open mode: report pointer presence so the main side keeps
+        // the menu open only while the pointer is inside button or menu.
+        onMouseEnter={p.hoverTracking ? () => act("__hoverin__", false) : undefined}
+        onMouseLeave={p.hoverTracking ? () => act("__hoverout__", false) : undefined}
       >
-        <div
-          style={{
-            ...headerStyle,
-            borderBottom: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
-          }}
-        >
-          Recent Projects
-        </div>
+        <div style={{ ...headerStyle, order: 30 }}>Recent Projects</div>
         {(p.projects ?? []).map((project) => (
           <div
             key={project.key}
@@ -2671,6 +3080,7 @@ function RecentMenu({
               cursor: project.disabled ? "not-allowed" : "pointer",
               fontSize: 13,
               opacity: project.disabled ? 0.5 : 1,
+              order: 31,
             }}
           >
             <svg
@@ -2701,6 +3111,38 @@ function RecentMenu({
                 >
                   {project.name}
                 </span>
+                {project.jira && (
+                  <span
+                    style={{
+                      flexShrink: 0,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 3,
+                      fontSize: 9,
+                      fontWeight: 700,
+                      padding: "1px 6px",
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                      background: "var(--ezy-accent-dim, #0d8a6a)",
+                      color: "#ffffff",
+                      letterSpacing: "0.04em",
+                    }}
+                  >
+                    <svg
+                      width="8"
+                      height="8"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="2.5" y="2.5" width="11" height="11" rx="2" />
+                      <path d="M5.5 6h5M5.5 9h3" />
+                    </svg>
+                    JIRA
+                  </span>
+                )}
                 {project.badge && (
                   <span
                     style={{
@@ -2708,7 +3150,7 @@ function RecentMenu({
                       fontSize: 9,
                       fontWeight: 600,
                       padding: "1px 6px",
-                      borderRadius: 3,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                       background: project.badgeMuted
                         ? "var(--ezy-surface, #161b22)"
                         : "var(--ezy-neutral-700, #404040)",
@@ -2835,13 +3277,18 @@ function RecentMenu({
             </svg>
           </div>
         ))}
+        {/* Divider ABOVE the recent list (order 29 puts it just before the
+            order-30 header at the menu's bottom). */}
         <div
           style={{
             height: 1,
             background: "var(--ezy-border, rgba(255,255,255,0.12))",
             margin: "2px 0",
+            order: 29,
           }}
         />
+        {/* CREATE — new work, locally or on a server (the modals ask where). */}
+        <div style={headerStyle}>Create</div>
         <div
           onClick={() => {
             if (p.canCreate) act("create", true);
@@ -2853,8 +3300,8 @@ function RecentMenu({
             tip.showAfterDelay(
               e.currentTarget,
               p.canCreate
-                ? "Create a new project folder"
-                : "Set a projects directory in Settings first",
+                ? "Create a new project folder — locally or on a remote server"
+                : "Set a projects directory in Settings or add a remote server first",
             );
           }}
           onMouseLeave={(e) => {
@@ -2880,36 +3327,7 @@ function RecentMenu({
           >
             <path d="M1.75 1h4.19c.51 0 .99.23 1.31.62l1 1.22c.09.12.24.16.38.16h5.62c.97 0 1.75.78 1.75 1.75v8.5A1.75 1.75 0 0 1 14.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75C0 1.78.78 1 1.75 1Z" />
           </svg>
-          Create New Project
-        </div>
-        <div
-          onClick={() => act("browse", true)}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background =
-              "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "transparent";
-          }}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "8px 12px",
-            cursor: "pointer",
-            fontSize: 13,
-            color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
-          }}
-        >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 448 512"
-            fill="var(--ezy-text-muted, rgba(230,237,243,0.5))"
-          >
-            <path d="M256 80c0-17.7-14.3-32-32-32s-32 14.3-32 32V224H48c-17.7 0-32 14.3-32 32s14.3 32 32 32H192V432c0 17.7 14.3 32 32 32s32-14.3 32-32V288H400c17.7 0 32-14.3 32-32s-14.3-32-32-32H256V80z" />
-          </svg>
-          Browse for Folder...
+          New Project...
         </div>
         <div
           onClick={() => act("jira", true)}
@@ -2918,7 +3336,7 @@ function RecentMenu({
               "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
             tip.showAfterDelay(
               e.currentTarget,
-              "Work Jira tickets against a source folder, one pane per ticket",
+              "Work Jira tickets against a source folder (local or remote), one pane per ticket",
             );
           }}
           onMouseLeave={(e) => {
@@ -2950,16 +3368,47 @@ function RecentMenu({
           </svg>
           New Jira Project...
         </div>
+
+        {/* OPEN — existing folders, local or on a server. */}
+        <div
+          style={{
+            height: 1,
+            background: "var(--ezy-border, rgba(255,255,255,0.12))",
+            margin: "2px 0",
+          }}
+        />
+        <div style={headerStyle}>Open</div>
+        <div
+          onClick={() => act("browse", true)}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background =
+              "var(--ezy-accent-glow, rgba(16,185,129,0.12))";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 12px",
+            cursor: "pointer",
+            fontSize: 13,
+            color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 448 512"
+            fill="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+          >
+            <path d="M256 80c0-17.7-14.3-32-32-32s-32 14.3-32 32V224H48c-17.7 0-32 14.3-32 32s14.3 32 32 32H192V432c0 17.7 14.3 32 32 32s32-14.3 32-32V288H400c17.7 0 32-14.3 32-32s-14.3-32-32-32H256V80z" />
+          </svg>
+          Local Folder...
+        </div>
         {(p.servers ?? []).length > 0 && (
           <>
-            <div
-              style={{
-                height: 1,
-                background: "var(--ezy-border, rgba(255,255,255,0.12))",
-                margin: "2px 0",
-              }}
-            />
-            <div style={headerStyle}>Remote Servers</div>
             {(p.servers ?? []).map((server) => (
               <div
                 key={server.id}
@@ -2998,7 +3447,7 @@ function RecentMenu({
                     whiteSpace: "nowrap",
                   }}
                 >
-                  Open folder on {server.name}…
+                  Folder on {server.name}…
                 </span>
               </div>
             ))}
@@ -3118,7 +3567,7 @@ function PaneSearch({
         gap: 1,
         background: "var(--ezy-surface-raised, #1c2128)",
         boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
-        borderRadius: 6,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
         padding: "3px 4px",
         fontFamily: "system-ui, -apple-system, sans-serif",
         fontSize: 12,
@@ -3184,7 +3633,7 @@ function PaneSearch({
               ? "var(--ezy-red, #f85149)"
               : "var(--ezy-border, rgba(255,255,255,0.12))"
           }`,
-          borderRadius: 4,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           padding: "0 6px",
           color: "var(--ezy-text, #e6edf3)",
           fontSize: 12,
@@ -3275,7 +3724,7 @@ function OvNavButton({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.35 : 0.8,
         transition: "opacity 100ms ease, background-color 100ms ease",
@@ -3331,7 +3780,7 @@ function OvToggleButton({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         padding: "0 4px",
         cursor: "pointer",
         fontSize: 11,
@@ -3458,7 +3907,7 @@ function GitBranchMenu({
     boxSizing: "border-box",
     background: "var(--ezy-bg, #0d1117)",
     border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
-    borderRadius: 4,
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
     padding: "5px 8px",
     fontSize: 12,
     color: "var(--ezy-text, #e6edf3)",
@@ -3486,7 +3935,7 @@ function GitBranchMenu({
           overflowY: "auto",
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
-          borderRadius: 8,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
           fontFamily: "system-ui, -apple-system, sans-serif",
         }}
@@ -3525,7 +3974,7 @@ function GitBranchMenu({
                 alignItems: "center",
                 gap: 6,
                 padding: "5px 8px",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 cursor: "pointer",
               }}
               onMouseEnter={(e) =>
@@ -3558,7 +4007,7 @@ function GitBranchMenu({
               style={{
                 padding: "6px 8px 8px",
                 backgroundColor: "var(--ezy-surface, #161b22)",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 display: "flex",
                 flexDirection: "column",
                 gap: 6,
@@ -3605,7 +4054,7 @@ function GitBranchMenu({
                     style={{
                       width: 14,
                       height: 14,
-                      borderRadius: 3,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                       border: switchAfter
                         ? "none"
                         : "1px solid var(--ezy-border-light, rgba(255,255,255,0.25))",
@@ -3645,7 +4094,7 @@ function GitBranchMenu({
                   style={{
                     height: 24,
                     padding: "0 8px",
-                    borderRadius: 4,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                     border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
                     background: "transparent",
                     color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
@@ -3665,7 +4114,7 @@ function GitBranchMenu({
                   style={{
                     height: 24,
                     padding: "0 10px",
-                    borderRadius: 4,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                     border: "none",
                     background: "var(--ezy-accent, #10a37f)",
                     color: "#0d1117",
@@ -3721,7 +4170,7 @@ function GitBranchMenu({
                   alignItems: "center",
                   gap: 6,
                   padding: "5px 8px",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   cursor: isCurrent ? "default" : "pointer",
                   backgroundColor: isCurrent
                     ? "var(--ezy-accent, #10a37f)"
@@ -3905,7 +4354,7 @@ function SessionPickerMenu({
           width: 260,
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
-          borderRadius: 8,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           overflow: "hidden",
           boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
           maxHeight: 340,
@@ -3968,7 +4417,7 @@ function SessionPickerMenu({
                       fontFamily: "inherit",
                       backgroundColor: "var(--ezy-bg, #0d1117)",
                       border: "1px solid var(--ezy-accent, #10a37f)",
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       color: "var(--ezy-text, #e6edf3)",
                       outline: "none",
                       margin: "2px 0",
@@ -4063,7 +4512,7 @@ function SessionPickerMenu({
                         style={{
                           cursor: "pointer",
                           padding: 4,
-                          borderRadius: 4,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                           flexShrink: 0,
                           display: "flex",
                           alignItems: "center",
