@@ -21,7 +21,25 @@ export interface SessionSlice {
 
   registerProjectSession: (projectPath: string, session: ProjectSession) => void;
   renameProjectSession: (projectPath: string, sessionId: string, newName: string) => void;
+  /** Jira: adopt a CLI-side title change (sessions-index `customTitle`) into
+   *  the row name. No-op unless the CLI title differs from the last-synced
+   *  snapshot — see `ProjectSession.cliTitle`. With `snapshotOnly` the
+   *  snapshot advances but the row name is left alone — used while a ticket
+   *  has duplicates, where CLI→row adoption is off (single-pane tickets only
+   *  for now) but the snapshot must not go stale for after the collapse. */
+  adoptCliSessionTitle: (
+    projectPath: string,
+    sessionId: string,
+    cliTitle: string,
+    snapshotOnly?: boolean,
+  ) => void;
+  /** Jira: fold the lone survivor of a collapsed duplicate group back into a
+   *  regular row (drops the instance number so future duplicates restart at
+   *  #2 and the pane key returns to the base ticket). */
+  clearTicketInstance: (projectPath: string, sessionId: string) => void;
   removeProjectSession: (projectPath: string, sessionId: string) => void;
+  /** Jira: move a ticket row to/from the archived rail section. */
+  setProjectSessionArchived: (projectPath: string, sessionId: string, archived: boolean) => void;
   updateProjectSessionAutoName: (projectPath: string, sessionId: string, name: string) => void;
   pruneProjectSessions: (projectPath: string, liveIds: string[], minAgeMs: number) => void;
   getProjectSessionsByType: (projectPath: string, type: TerminalType) => ProjectSession[];
@@ -64,6 +82,60 @@ export const createSessionSlice: StateCreator<
           [key]: existing.map((s) =>
             s.id === sessionId ? { ...s, name: newName, isRenamed: true } : s
           ),
+        },
+      };
+    });
+  },
+
+  adoptCliSessionTitle: (projectPath, sessionId, cliTitle, snapshotOnly) => {
+    const key = normalizePath(projectPath);
+    set((state) => {
+      const existing = state.projectSessions[key];
+      const s = existing?.find((x) => x.id === sessionId);
+      // Adopt only a CHANGED CLI title. An unchanged one means any name
+      // difference is a MADE-side rename the CLI simply hasn't received yet
+      // (it will, via --name on the pane's next launch) — never clobber it.
+      if (!existing || !s || s.cliTitle === cliTitle) return state;
+      return {
+        projectSessions: {
+          ...state.projectSessions,
+          [key]: existing.map((x) =>
+            x.id === sessionId
+              ? snapshotOnly
+                ? { ...x, cliTitle }
+                : { ...x, cliTitle, name: cliTitle, isRenamed: true }
+              : x
+          ),
+        },
+      };
+    });
+  },
+
+  clearTicketInstance: (projectPath, sessionId) => {
+    const key = normalizePath(projectPath);
+    set((state) => {
+      const existing = state.projectSessions[key];
+      if (!existing) return state;
+      return {
+        projectSessions: {
+          ...state.projectSessions,
+          [key]: existing.map((s) =>
+            s.id === sessionId ? { ...s, ticketInstance: undefined } : s
+          ),
+        },
+      };
+    });
+  },
+
+  setProjectSessionArchived: (projectPath, sessionId, archived) => {
+    const key = normalizePath(projectPath);
+    set((state) => {
+      const existing = state.projectSessions[key];
+      if (!existing) return state;
+      return {
+        projectSessions: {
+          ...state.projectSessions,
+          [key]: existing.map((s) => (s.id === sessionId ? { ...s, archived } : s)),
         },
       };
     });

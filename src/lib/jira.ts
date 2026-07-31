@@ -91,13 +91,29 @@ export function jiraOriginFromUrl(raw: string): string | null {
   }
 }
 
+/**
+ * Accept what people actually type for "Jira address": a bare company slug
+ * ("acme"), a bare host ("acme.atlassian.net"), or a full URL. Returns a
+ * canonical https base. A slug (no dot, no scheme, no slash) becomes
+ * `https://<slug>.atlassian.net`; anything else keeps its host and just gains
+ * a scheme if missing — self-hosted Jira keeps working with full addresses.
+ */
+export function normalizeJiraBaseUrl(raw: string): string {
+  const t = raw.trim().replace(/\/+$/, "");
+  if (!t) return "";
+  if (/^https?:\/\//i.test(t)) return t;
+  if (!t.includes(".") && !t.includes("/")) return `https://${t.toLowerCase()}.atlassian.net`;
+  return `https://${t}`;
+}
+
 export const DEFAULT_JIRA_PROMPT =
   "Investigate ticket {ticket} using the Atlassian/Jira plugin and do a thorough " +
   "investigation. Only give short and concise, straight to the point info on the " +
   "issue and how to fix it.";
 
-/** Appended when the Swedish toggle is on. English is the untouched default. */
+/** Appended per reply-language toggle. No toggle = template untouched. */
 const SWEDISH_CLAUSE = "Answer in Swedish.";
+const ENGLISH_CLAUSE = "Answer in English.";
 
 /**
  * Fill the user's template. `{ticket}` is the only placeholder; a template that
@@ -107,12 +123,13 @@ const SWEDISH_CLAUSE = "Answer in Swedish.";
 export function buildJiraPrompt(
   template: string,
   ticket: string,
-  swedish: boolean,
+  language?: "sv" | "en",
 ): string {
   const base = template.trim() || DEFAULT_JIRA_PROMPT;
   let filled = base.includes("{ticket}")
     ? base.split("{ticket}").join(ticket)
     : `${base} ${ticket}`;
-  if (swedish) filled = `${filled} ${SWEDISH_CLAUSE}`;
+  if (language === "sv") filled = `${filled} ${SWEDISH_CLAUSE}`;
+  else if (language === "en") filled = `${filled} ${ENGLISH_CLAUSE}`;
   return filled.trim();
 }

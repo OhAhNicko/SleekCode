@@ -4,6 +4,7 @@ import { hasSurfaceAction, runSurfaceAction, type SurfaceRole } from "../../surf
 import { promptForInput, confirmAction } from "../../prompt-modal";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getPtyWrite } from "../../../store/terminalSlice";
+import { PROJECT_COLOR_PRESETS } from "../../../store/recentProjectsSlice";
 import {
   getBrowserPageContext,
   safeExternalUrl,
@@ -626,14 +627,23 @@ function sidebarBackground(ctx: RowCtx): MenuGroup[] {
 /**
  * A ticket row in a Jira project's rail.
  *
- * No "Rename": the row's name IS its ticket key, and letting it drift from the
- * key would break the one thing the rail is for — finding a ticket by number.
+ * Rename changes the row's DISPLAY name only — grouping, color, copy, and the
+ * browser URL stay keyed to the ticket KEY (`data-ctx-ticket`), so a renamed
+ * row is still findable by number. The name syncs both ways with the Claude
+ * session title: `--name` on the pane's next launch pushes it to the CLI, and
+ * the rail adopts CLI-side renames from the sessions index.
  */
 function jiraTicket(ctx: RowCtx): MenuGroup[] {
   const id = ctx.id;
-  const ticket = ctx.label;
+  // Display label may carry an instance suffix ("SUPPORT-1 #2"); color and
+  // copy operate on the BASE ticket the row advertises separately.
+  const ticket = (ctx.data.ctxTicket as string | undefined) ?? ctx.label;
   const isOpen = ctx.data.ctxOpen === "1";
   const gone = ctx.data.ctxGone === "1";
+  const archived = ctx.data.ctxArchived === "1";
+  const currentColor = ticket
+    ? (useAppStore.getState().jiraTicketColors?.[ticket] ?? null)
+    : null;
   return [
     {
       id: "target",
@@ -643,17 +653,71 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
           label: isOpen ? "Focus pane" : "Reopen investigation",
           unavailable: gone
             ? { reason: "This conversation's transcript is gone" }
-            : undefined,
+            : archived
+              ? { reason: "Unarchive the ticket first" }
+              : undefined,
         }),
         actionItem("jira-ticket", "openInBrowser", id, {
           id: "row.jira.browser",
           label: "Show ticket in browser",
         }),
+        // Duplicate = a second, independent Claude conversation on the same
+        // ticket ("SUPPORT-1 #2"), sharing the ticket's browser pane. Three
+        // flavors; forking needs the source transcript to still exist.
+        actionItem("jira-ticket", "duplicateFork", id, {
+          id: "row.jira.dup.fork",
+          label: "Duplicate — fork conversation",
+          iconId: "copy",
+          unavailable: gone
+            ? { reason: "This conversation's transcript is gone" }
+            : undefined,
+        }),
+        actionItem("jira-ticket", "duplicatePrompt", id, {
+          id: "row.jira.dup.prompt",
+          label: "Duplicate — fresh investigation",
+          iconId: "copy",
+        }),
+        actionItem("jira-ticket", "duplicateEmpty", id, {
+          id: "row.jira.dup.empty",
+          label: "Duplicate — empty pane",
+          iconId: "copy",
+        }),
+      ],
+    },
+    {
+      id: "view",
+      // Keyed by TICKET, so the row edge and the pane tint always agree.
+      title: "Ticket color",
+      items: [],
+      swatches: [
+        {
+          id: "row.jira.color.auto",
+          color: null,
+          label: "Auto",
+          selected: currentColor == null,
+          run: () => {
+            if (ticket) useAppStore.getState().setJiraTicketColor(ticket, null);
+          },
+        },
+        ...PROJECT_COLOR_PRESETS.map((p) => ({
+          id: `row.jira.color.${p.id}`,
+          color: p.color,
+          label: p.label,
+          selected: currentColor === p.id,
+          run: () => {
+            if (ticket) useAppStore.getState().setJiraTicketColor(ticket, p.id);
+          },
+        })),
       ],
     },
     {
       id: "edit",
       items: [
+        actionItem("jira-ticket", "rename", id, {
+          id: "row.jira.rename",
+          label: "Rename…",
+          iconId: "rename",
+        }),
         {
           id: "row.jira.copyKey",
           label: "Copy ticket number",
@@ -667,12 +731,28 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
     {
       id: "pane",
       items: [
+        actionItem("jira-ticket", "closePane", id, {
+          id: "row.jira.closePane",
+          label: "Close pane",
+          iconId: "close-pane",
+          unavailable: isOpen ? undefined : { reason: "Pane is not open" },
+        }),
+        actionItem("jira-ticket", "toggleArchive", id, {
+          id: "row.jira.archive",
+          label: archived ? "Unarchive" : "Archive ticket",
+        }),
         actionItem("jira-ticket", "forget", id, {
           id: "row.jira.forget",
           label: "Remove from list",
           iconId: "close-pane",
           danger: true,
           unavailable: isOpen ? { reason: "Close the pane first" } : undefined,
+        }),
+        actionItem("jira-ticket", "del", id, {
+          id: "row.jira.delete",
+          label: "Delete ticket…",
+          iconId: "close-pane",
+          danger: true,
         }),
       ],
     },

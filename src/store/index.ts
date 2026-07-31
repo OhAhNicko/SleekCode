@@ -84,7 +84,7 @@ export const useAppStore = create<AppStore>()(
         autoStartServerCommand: state.autoStartServerCommand,
         previewInProjectTab: state.previewInProjectTab,
         devServerButtonInHeader: state.devServerButtonInHeader,
-        devServerButtonOnTab: state.devServerButtonOnTab,
+        devServerTabIcon: state.devServerTabIcon,
         customServerCommands: state.customServerCommands,
         browserFullColumn: state.browserFullColumn,
         browserSpawnLeft: state.browserSpawnLeft,
@@ -96,15 +96,27 @@ export const useAppStore = create<AppStore>()(
         jiraBaseUrl: state.jiraBaseUrl,
         jiraPromptTemplate: state.jiraPromptTemplate,
         jiraReplyInSwedish: state.jiraReplyInSwedish,
+        jiraReplyInEnglish: state.jiraReplyInEnglish,
+        jiraClaudeSide: state.jiraClaudeSide,
+        jiraClaudeModel: state.jiraClaudeModel,
+        jiraMode: state.jiraMode,
+        jiraAcronyms: state.jiraAcronyms,
+        jiraAcronymCounts: state.jiraAcronymCounts,
+        jiraTicketColors: state.jiraTicketColors,
+        jiraRowFullColor: state.jiraRowFullColor,
         codeReviewCollapseAll: state.codeReviewCollapseAll,
         perProjectEditor: state.perProjectEditor,
         editorWordWrap: state.editorWordWrap,
         showTabPath: state.showTabPath,
         autoHibernateEnabled: state.autoHibernateEnabled,
         autoHibernateMinutes: state.autoHibernateMinutes,
+        notifEnabled: state.notifEnabled,
         notifAutoDismiss: state.notifAutoDismiss,
         notifAutoDismissSeconds: state.notifAutoDismissSeconds,
         notifAutoSwitchMinimized: state.notifAutoSwitchMinimized,
+        notifSystemMinimized: state.notifSystemMinimized,
+        notifSoundEnabled: state.notifSoundEnabled,
+        notifSoundVolume: state.notifSoundVolume,
         openPanesInBackground: state.openPanesInBackground,
         wideGridLayout: state.wideGridLayout,
         redistributeOnClose: state.redistributeOnClose,
@@ -115,6 +127,7 @@ export const useAppStore = create<AppStore>()(
         commitMsgMode: state.commitMsgMode,
         shadowAiCli: state.shadowAiCli,
         projectColors: state.projectColors,
+        projectSounds: state.projectSounds,
         statuslineToggles: state.statuslineToggles,
         vibrantColors: state.vibrantColors,
         projectPaneTint: state.projectPaneTint,
@@ -138,6 +151,7 @@ export const useAppStore = create<AppStore>()(
         defaultClaudeMdPath: state.defaultClaudeMdPath,
         defaultAgentsMdPath: state.defaultAgentsMdPath,
         defaultGeminiMdPath: state.defaultGeminiMdPath,
+        defaultJiraClaudeMdPath: state.defaultJiraClaudeMdPath,
         defaultUseSingleSourcePointers: state.defaultUseSingleSourcePointers,
         customScaffolds: state.customScaffolds,
         paneModes: state.paneModes,
@@ -256,6 +270,14 @@ export const useAppStore = create<AppStore>()(
             }
             return server as unknown as typeof state.servers extends (infer T)[] ? T : never;
           }) as typeof state.servers;
+        }
+
+        // Default Claude sign-in to the preferred Keychain mode (2026-07). Any
+        // stored OAuth token stays in place as the re-selectable fallback.
+        if (state.servers) {
+          state.servers = state.servers.map((s) =>
+            s.claudeAuth ? s : { ...s, claudeAuth: "keychain" as const },
+          );
         }
 
         // Deep-merge game-related objects so new entries (e.g. pong, blockBreaker)

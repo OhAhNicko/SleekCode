@@ -8,6 +8,11 @@ export type TerminalRenderer = "native" | "xterm";
 
 export type AuthMethod = "ssh-key" | "password";
 
+/** How Claude Code stays signed in on a remote server. "keychain" (preferred,
+ * macOS servers): unlock the login keychain in-session on every SSH login.
+ * "token": export a long-lived CLAUDE_CODE_OAUTH_TOKEN instead. */
+export type ClaudeRemoteAuth = "keychain" | "token";
+
 export interface RemoteServer {
   id: string;
   name: string;
@@ -15,10 +20,30 @@ export interface RemoteServer {
   username: string;
   authMethod: AuthMethod;
   sshKeyPath?: string;
-  // Long-lived Claude OAuth token (`claude setup-token`). When set, MADE exports it as
-  // CLAUDE_CODE_OAUTH_TOKEN into remote sessions so Claude Code stays logged in over SSH
-  // (the macOS Keychain is inaccessible to non-GUI SSH shells, otherwise re-prompts each pane).
+  // Long-lived Claude OAuth token (`claude setup-token`). Used only when
+  // claudeAuth is "token": exported as CLAUDE_CODE_OAUTH_TOKEN into remote
+  // sessions so Claude Code stays logged in over SSH without the Keychain.
   claudeOauthToken?: string;
+  // Absent = "keychain" (the store migration stamps it on load).
+  claudeAuth?: ClaudeRemoteAuth;
+  /** Absolute path on the server under which new remote projects are created
+   * (e.g. /Users/me/projects). Optional — the create modal asks when unset. */
+  projectsDir?: string;
+  /** Probed shell/CLI facts (src/lib/remote-cli-shells.ts). Panes exec CLIs
+   * through the shell that can actually resolve them; refreshed by Test
+   * Connection. Absent = never probed. */
+  detectedCliShells?: RemoteCliShells;
+}
+
+/** Which shells a remote server has and which shell resolves each AI CLI. */
+export interface RemoteCliShells {
+  /** Login shell basename, e.g. "zsh". */
+  defaultShell?: string;
+  /** Shells present on the server, probe order (zsh, bash, fish). */
+  shells: string[];
+  /** CLI → shell whose interactive-login env resolves it. */
+  cli: Partial<Record<"claude" | "codex" | "gemini", string>>;
+  detectedAt: number;
 }
 
 export interface TerminalConfig {
@@ -87,6 +112,19 @@ export interface ProjectSession {
    *  an ordinary Claude session in the same repo has none and never shows up
    *  there. `name` mirrors it, so the pane header shows the key for free. */
   ticket?: string;
+  /** Jira: which duplicate of the ticket this session is. Absent/1 = the
+   *  original; 2+ = duplicates ("SUPPORT-24920 #2"). Duplicates group under
+   *  the original in the rail and share its browser pane. */
+  ticketInstance?: number;
+  /** Jira: the CLI-side session title (sessions-index `customTitle`) as of the
+   *  last sync. Rail names adopt a CLI title only when it CHANGED since this
+   *  snapshot — so a rename made in MADE is never clobbered by the stale CLI
+   *  title it hasn't received yet (it flows to the CLI via `--name` on the
+   *  pane's next launch). */
+  cliTitle?: string;
+  /** Jira: archived tickets live grayed-out in their own rail section and
+   *  can't be opened from there until unarchived. */
+  archived?: boolean;
 }
 
 /** Entry from Claude CLI's sessions-index.json */
@@ -187,6 +225,8 @@ export interface Tab {
    *  those are fixed-id singletons without a workingDir, and are filtered out
    *  of the project render path, which is the opposite of what this needs. */
   isJiraProject?: boolean;
+  /** Jira project: which ticket's pane pair the canvas currently shows. */
+  selectedJiraTicket?: string;
   isPinned?: boolean;
   customName?: string;
   serverId?: string;

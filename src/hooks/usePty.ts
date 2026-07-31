@@ -10,10 +10,12 @@ import { windowsReady } from "../lib/windows-cli-cache";
 import { nativeReady } from "../lib/macos-cli-cache";
 import { useAppStore } from "../store";
 import { takePendingPrompt } from "../store/terminalSlice";
-import { nameTicketSession } from "../lib/jira-session";
+import { nameTicketSession, peekTicketForTerminal, parkedTicketName } from "../lib/jira-session";
 import type { TerminalBackend } from "../types";
 import { getShellIntegrationCommand } from "../lib/shell-integration";
 import { installStatuslineWrapper } from "../lib/statusline-setup";
+import { createKeychainUnlockWatcher } from "../lib/keychain";
+import { ensureRemoteCliShells, pickExecShell } from "../lib/remote-cli-shells";
 
 interface UsePtyOptions {
   terminalType: TerminalType;
@@ -151,12 +153,19 @@ export function usePty({
       let command: string;
       let args: string[];
       let cwd: string | undefined;
+      // Answers the keychain-unlock preamble's sentinels for remote panes.
+      let kcWatcher: ((chunk: Uint8Array) => void) | null = null;
       // Declared out here because the pooled spawn below needs the SAME list.
       // It used to build its own, which silently dropped `--session-id` on
       // every fresh WSL Claude pane — MADE then owned a uuid Claude had never
       // been told about, and the next launch resumed a session that had never
       // existed ("No conversation found with session ID: …").
       const extraArgs: string[] = [];
+      // Jira ticket panes: name the Claude session after the ticket right at
+      // launch (`--name`), so the resume picker and terminal title show
+      // SUPPORT-24920 instead of the investigation prompt. Peek, not take —
+      // nameTicketSession still consumes the entry at session-id mint time.
+      const parkedTicket = terminalType === "claude" ? peekTicketForTerminal(termId) : undefined;
 
       if (currentServerId) {
         const server = useAppStore.getState().servers.find((s) => s.id === currentServerId);
@@ -178,10 +187,70 @@ export function usePty({
           sessionResumeId: sessionResumeIdRef.current,
           remoteCwd,
         });
-        const ssh = getSshCommand(server, terminalType, remoteCwd, sessionResumeIdRef.current);
+        // Which shell can actually resolve this CLI on that server (probed
+        // once, persisted on the server; instant afterwards).
+        const cliInfo = await ensureRemoteCliShells(server);
+        if (isStale()) return;
+        // Jira ticket panes over SSH need the SAME handoffs the local branch
+        // does below: `--name`, a minted `--session-id` (names the rail row,
+        // lets the pane claim its session without mtime guessing), and the
+        // parked first prompt as the positional LAST argument. Without these
+        // a remote ticket pane spawned silently promptless and railless.
+        const remoteClaudeArgs: string[] = [];
+        if (parkedTicket) {
+          remoteClaudeArgs.push("--name", parkedTicketName(parkedTicket));
+          // Jira ticket panes start in auto permission mode — the whole point
+          // of a ticket pane is unattended investigation.
+          remoteClaudeArgs.push("--permission-mode", "auto");
+          if (parkedTicket.model) remoteClaudeArgs.push("--model", parkedTicket.model);
+          if (parkedTicket.fork) {
+            // Duplicate-as-fork: resume the SOURCE conversation into a NEW
+            // session id chosen by MADE, so the rail row and the pane agree
+            // on the id before the CLI even starts.
+            remoteClaudeArgs.push(
+              "--resume", parkedTicket.fork.sourceSessionId,
+              "--fork-session",
+              "--session-id", parkedTicket.fork.newSessionId,
+            );
+            onSessionIdAssignedRef.current?.(parkedTicket.fork.newSessionId);
+            nameTicketSession(termId, parkedTicket.fork.newSessionId, currentWorkingDir || "");
+          } else if (!sessionResumeIdRef.current) {
+            const assigned = claudeSessionIdArgs(terminalType, undefined);
+            if (assigned.sessionId) {
+              remoteClaudeArgs.push(...assigned.args);
+              onSessionIdAssignedRef.current?.(assigned.sessionId);
+              nameTicketSession(termId, assigned.sessionId, currentWorkingDir || "");
+            }
+          }
+        }
+        const remotePendingPrompt = takePendingPrompt(termId);
+        if (remotePendingPrompt) remoteClaudeArgs.push(remotePendingPrompt);
+        const ssh = getSshCommand(
+          server,
+          terminalType,
+          remoteCwd,
+          sessionResumeIdRef.current,
+          remoteClaudeArgs.length ? remoteClaudeArgs : undefined,
+          pickExecShell(cliInfo, terminalType),
+        );
         command = ssh.command;
         args = ssh.args;
         cwd = undefined;
+        if ((server.claudeAuth ?? "keychain") === "keychain") {
+          kcWatcher = createKeychainUnlockWatcher(server, (data) => {
+            const id = ptyIdRef.current;
+            if (id !== null) {
+              invoke("pty_write", { ptyId: id, data }).catch(() => {});
+            } else {
+              // Chunk raced the spawn invoke's resolution — deliver shortly.
+              setTimeout(() => {
+                if (spawnIdRef.current === thisSpawnId && ptyIdRef.current !== null) {
+                  invoke("pty_write", { ptyId: ptyIdRef.current, data }).catch(() => {});
+                }
+              }, 100);
+            }
+          });
+        }
       } else {
         // [DIAG-SSH-RESUME] temporary: log local spawn for SSH-tab debugging. Remove once verified.
         if (sessionResumeIdRef.current) {
@@ -194,6 +263,23 @@ export function usePty({
         const yoloFlag = getYoloFlag(terminalType);
         if (yoloFlag && (forceYoloRef.current || useAppStore.getState().cliYolo[terminalType])) {
           extraArgs.push(yoloFlag);
+        }
+        if (parkedTicket) {
+          extraArgs.push("--name", parkedTicketName(parkedTicket));
+          // Jira ticket panes start in auto permission mode — the whole point
+          // of a ticket pane is unattended investigation.
+          extraArgs.push("--permission-mode", "auto");
+          if (parkedTicket.model) extraArgs.push("--model", parkedTicket.model);
+          if (parkedTicket.fork) {
+            // Duplicate-as-fork — see the twin in the SSH branch above.
+            extraArgs.push(
+              "--resume", parkedTicket.fork.sourceSessionId,
+              "--fork-session",
+              "--session-id", parkedTicket.fork.newSessionId,
+            );
+            onSessionIdAssignedRef.current?.(parkedTicket.fork.newSessionId);
+            nameTicketSession(termId, parkedTicket.fork.newSessionId, currentWorkingDir || "");
+          }
         }
         console.log(`[PTY] spawn ${terminalType}`, extraArgs.length ? `extraArgs: ${extraArgs.join(" ")}` : "(no extra args)", `forceYolo=${forceYoloRef.current}`);
         // Terminal identity advertised to the CLI (TERM_PROGRAM). Read at
@@ -228,8 +314,12 @@ export function usePty({
         }
         // Assign the Claude session id up front rather than detecting it after
         // the fact (see claudeSessionIdArgs). No-op for every other pane type
-        // and for resumes.
-        const assigned = claudeSessionIdArgs(terminalType, resumeId);
+        // and for resumes. A fork pane already fixed its id above — passing it
+        // as the "resume" id suppresses minting a second one.
+        const assigned = claudeSessionIdArgs(
+          terminalType,
+          resumeId ?? parkedTicket?.fork?.newSessionId,
+        );
         if (assigned.sessionId) {
           extraArgs.push(...assigned.args);
           onSessionIdAssignedRef.current?.(assigned.sessionId);
@@ -315,7 +405,9 @@ export function usePty({
         // where the first PTY starts before cleanup cancels it)
         if (spawnIdRef.current !== thisSpawnId) return;
         notePtyChunk(data.byteLength);
-        onDataRef.current(new Uint8Array(data));
+        const bytes = new Uint8Array(data);
+        kcWatcher?.(bytes);
+        onDataRef.current(bytes);
       };
 
       const onExitChan = new Channel<number>();

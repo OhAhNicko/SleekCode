@@ -31,6 +31,9 @@ export interface RecentProject {
   lastLayout?: PaneLayout;
   /** Links to RemoteServer.id when the project lives on an SSH server. Presence means remote. */
   serverId?: string;
+  /** Jira project (ticket rail + per-ticket canvas). Reopens as a Jira tab and
+   *  carries a JIRA badge in the recent menu. */
+  isJira?: boolean;
   /** Sticky per-project terminal backend. Set on first add via path detection; user-overridable. */
   preferredBackend?: TerminalBackend;
   /**
@@ -67,6 +70,8 @@ function normalizePath(p: string): string {
 }
 
 export type CliFontSizes = Partial<Record<TerminalType, number>>;
+
+export type DevServerTabIconMode = "all" | "active" | "off";
 
 /** Color presets for project tab underlines */
 export const PROJECT_COLOR_PRESETS = [
@@ -143,6 +148,46 @@ export function autoAssignColor(existing: Record<string, ProjectColorId>): Proje
   return leastUsed[Math.floor(Math.random() * leastUsed.length)].id;
 }
 
+/**
+ * Notification sound presets. Metadata ONLY — the synthesis recipes live in
+ * src/lib/notification-sounds.ts keyed by these ids, so a future switch to
+ * bundled audio files (e.g. ElevenLabs-generated) replaces recipes without
+ * touching this list, the picker, or the per-project map.
+ */
+export const SOUND_PRESETS = [
+  { id: "chime", label: "Chime" },
+  { id: "bell", label: "Bell" },
+  { id: "marimba", label: "Marimba" },
+  { id: "droplet", label: "Droplet" },
+  { id: "pop", label: "Pop" },
+  { id: "glass", label: "Glass" },
+  { id: "ping", label: "Ping" },
+  { id: "bloom", label: "Bloom" },
+  { id: "knock", label: "Knock" },
+  { id: "pulse", label: "Pulse" },
+] as const;
+
+export type ProjectSoundId = (typeof SOUND_PRESETS)[number]["id"] | null;
+
+/** Auto-assign: pick a sound not currently used by any project. If all are
+ *  taken, pick the least-used. Mirrors autoAssignColor above. */
+export function autoAssignSound(existing: Record<string, ProjectSoundId>): ProjectSoundId {
+  const usedIds = Object.values(existing).filter(Boolean) as string[];
+  const usedSet = new Set(usedIds);
+
+  const unused = SOUND_PRESETS.filter((p) => !usedSet.has(p.id));
+  if (unused.length > 0) {
+    return unused[Math.floor(Math.random() * unused.length)].id;
+  }
+
+  const counts = new Map<string, number>();
+  for (const id of usedIds) counts.set(id, (counts.get(id) ?? 0) + 1);
+  let minCount = Infinity;
+  for (const c of counts.values()) if (c < minCount) minCount = c;
+  const leastUsed = SOUND_PRESETS.filter((p) => (counts.get(p.id) ?? 0) === minCount);
+  return leastUsed[Math.floor(Math.random() * leastUsed.length)].id;
+}
+
 export const DEFAULT_CLI_FONT_SIZE = 16;
 
 /** User-registered .md scaffold template (besides built-in CLAUDE/AGENTS/GEMINI). */
@@ -184,9 +229,11 @@ export interface RecentProjectsSlice {
   /** Dev-server quick-open icon in every terminal pane header (while running). */
   devServerButtonInHeader: boolean;
   setDevServerButtonInHeader: (value: boolean) => void;
-  /** Dev-server quick-open icon on the active project tab (while running). */
-  devServerButtonOnTab: boolean;
-  setDevServerButtonOnTab: (value: boolean) => void;
+  /** Dev-server quick-open icon on project tabs (while running):
+   *  "all" = every tab with a running server, "active" = active tab only,
+   *  "off" = never. Off + header toggle off = feature fully disabled. */
+  devServerTabIcon: DevServerTabIconMode;
+  setDevServerTabIcon: (value: DevServerTabIconMode) => void;
   customServerCommands: string[];
   browserFullColumn: boolean;
   browserSpawnLeft: boolean;
@@ -230,6 +277,10 @@ export interface RecentProjectsSlice {
   /** How long EVERY idle signal must stay quiet before a tab auto-hibernates. */
   autoHibernateMinutes: number;
   setAutoHibernateMinutes: (value: number) => void;
+  /** Master switch for pane notification cards. Default ON; off disables the
+   *  whole pipeline (no cards, no auto-switch) and clears any visible stack. */
+  notifEnabled: boolean;
+  setNotifEnabled: (value: boolean) => void;
   /** Auto-dismiss pane notification cards. Default OFF — a finished pane is
    *  actionable state, so cards persist until clicked/dismissed. */
   notifAutoDismiss: boolean;
@@ -241,6 +292,23 @@ export interface RecentProjectsSlice {
    *  tab/pane in the background (window is never restored). Default OFF. */
   notifAutoSwitchMinimized: boolean;
   setNotifAutoSwitchMinimized: (value: boolean) => void;
+  /** Show a Windows toast for pane notifications while the window is
+   *  minimized (in-app cards are invisible then). Default ON. */
+  notifSystemMinimized: boolean;
+  setNotifSystemMinimized: (value: boolean) => void;
+  /** Play a per-project sound when a notification card is added. Default ON. */
+  notifSoundEnabled: boolean;
+  setNotifSoundEnabled: (value: boolean) => void;
+  /** Notification sound volume, 0-100. Default 50. */
+  notifSoundVolume: number;
+  setNotifSoundVolume: (value: number) => void;
+  /** Per-project notification sound. Key = workingDir with `\`→`/` — PATH
+   *  ONLY, no serverId, the same identity rule as projectColors (two tabs on
+   *  one project share the sound; see tab.ts's colorKey comment). A key that
+   *  is absent = never assigned (auto-assign on first use); `null` = the user
+   *  explicitly chose "No sound" and it stays silent. */
+  projectSounds: Record<string, ProjectSoundId>;
+  setProjectSound: (workingDir: string, soundId: ProjectSoundId) => void;
   openPanesInBackground: boolean;
   wideGridLayout: boolean;
   redistributeOnClose: boolean;
@@ -274,14 +342,50 @@ export interface RecentProjectsSlice {
   /** Remembered state of the ticket dialog's Swedish checkbox. */
   jiraReplyInSwedish: boolean;
   setJiraReplyInSwedish: (value: boolean) => void;
+  /** Remembered state of the ticket dialog's English checkbox (mutually
+   *  exclusive with Swedish — the dialog enforces it). */
+  jiraReplyInEnglish: boolean;
+  setJiraReplyInEnglish: (value: boolean) => void;
+  /** Which side the Claude pane sits on in a Jira ticket view (browser takes
+   *  the other side). Jira projects only. */
+  jiraClaudeSide: "left" | "right";
+  setJiraClaudeSide: (value: "left" | "right") => void;
+  /** Remembered model pick of the new-ticket dialog, as a Claude Code `--model`
+   *  alias ("fable" | "opus" | "sonnet" | "haiku" — the CLI resolves aliases to
+   *  the latest release). `null` = no flag, Claude Code's own default. */
+  jiraClaudeModel: string | null;
+  setJiraClaudeModel: (value: string | null) => void;
+  /** Jira mode (on by default): declutter the tab bars while a Jira project
+   *  tab is active — the dev server and file-sidebar buttons hide there.
+   *  Ordinary project tabs are unaffected. */
+  jiraMode: boolean;
+  setJiraMode: (value: boolean) => void;
+  /** Ticket-key prefixes ("SUPPORT", "DEV", …) the user has used, most recent
+   *  first. The new-ticket dialog pre-fills [0] so usually only the number
+   *  needs typing. */
+  jiraAcronyms: string[];
+  addJiraAcronym: (acronym: string) => void;
+  /** How often each acronym was used — ranks the dialog's quick-pick tiles. */
+  jiraAcronymCounts: Record<string, number>;
+  /** Per-ticket color overrides (context menu). Absent = deterministic hash. */
+  jiraTicketColors: Record<string, ProjectColorId>;
+  setJiraTicketColor: (ticket: string, colorId: ProjectColorId) => void;
+  /** Paint the whole ticket row in its color (text adapts for contrast). */
+  jiraRowFullColor: boolean;
+  setJiraRowFullColor: (value: boolean) => void;
   projectsDir: string;
   defaultClaudeMdPath: string;
   defaultAgentsMdPath: string;
   defaultGeminiMdPath: string;
+  /** Template copied into a Jira project's source folder as CLAUDE.md (skipped
+   *  when the folder already has one). Separate from defaultClaudeMdPath —
+   *  Jira work wants different guidelines than fresh projects. */
+  defaultJiraClaudeMdPath: string;
   defaultUseSingleSourcePointers: boolean;
   customScaffolds: CustomScaffold[];
   setProjectsDir: (value: string) => void;
   setDefaultClaudeMdPath: (value: string) => void;
+  setDefaultJiraClaudeMdPath: (value: string) => void;
   setDefaultAgentsMdPath: (value: string) => void;
   setDefaultGeminiMdPath: (value: string) => void;
   setDefaultUseSingleSourcePointers: (value: boolean) => void;
@@ -301,7 +405,7 @@ export interface RecentProjectsSlice {
   statuslineToggles: Partial<Record<TerminalType, Record<string, boolean>>>;
   setStatuslineToggle: (cliType: TerminalType, key: string, value: boolean) => void;
   setProjectColor: (workingDir: string, colorId: ProjectColorId) => void;
-  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string; noDevServer?: boolean; serverId?: string }) => void;
+  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string; noDevServer?: boolean; serverId?: string; isJira?: boolean }) => void;
   removeRecentProject: (path: string, serverId?: string) => void;
   clearRecentProjects: () => void;
   setAlwaysShowTemplatePicker: (value: boolean) => void;
@@ -382,7 +486,7 @@ export const createRecentProjectsSlice: StateCreator<
   autoStartServerCommand: true,
   previewInProjectTab: true,
   devServerButtonInHeader: false,
-  devServerButtonOnTab: true,
+  devServerTabIcon: "active" as DevServerTabIconMode,
   customServerCommands: [],
   browserFullColumn: true,
   browserSpawnLeft: false,
@@ -403,12 +507,21 @@ export const createRecentProjectsSlice: StateCreator<
   setAutoHibernateEnabled: (value) => set({ autoHibernateEnabled: value }),
   autoHibernateMinutes: 30,
   setAutoHibernateMinutes: (value) => set({ autoHibernateMinutes: value }),
+  notifEnabled: true,
+  setNotifEnabled: (value) => set({ notifEnabled: value }),
   notifAutoDismiss: false,
   setNotifAutoDismiss: (value) => set({ notifAutoDismiss: value }),
   notifAutoDismissSeconds: 30,
   setNotifAutoDismissSeconds: (value) => set({ notifAutoDismissSeconds: value }),
   notifAutoSwitchMinimized: false,
   setNotifAutoSwitchMinimized: (value) => set({ notifAutoSwitchMinimized: value }),
+  notifSystemMinimized: true,
+  setNotifSystemMinimized: (value) => set({ notifSystemMinimized: value }),
+  notifSoundEnabled: true,
+  setNotifSoundEnabled: (value) => set({ notifSoundEnabled: value }),
+  notifSoundVolume: 50,
+  setNotifSoundVolume: (value) => set({ notifSoundVolume: value }),
+  projectSounds: {},
   openPanesInBackground: false,
   wideGridLayout: true,
   redistributeOnClose: true,
@@ -436,14 +549,44 @@ export const createRecentProjectsSlice: StateCreator<
   setJiraPromptTemplate: (value) => set({ jiraPromptTemplate: value }),
   jiraReplyInSwedish: false,
   setJiraReplyInSwedish: (value) => set({ jiraReplyInSwedish: value }),
+  jiraReplyInEnglish: false,
+  setJiraReplyInEnglish: (value) => set({ jiraReplyInEnglish: value }),
+  jiraClaudeSide: "left",
+  setJiraClaudeSide: (value) => set({ jiraClaudeSide: value }),
+  jiraClaudeModel: null,
+  setJiraClaudeModel: (value) => set({ jiraClaudeModel: value }),
+  jiraMode: true,
+  setJiraMode: (value) => set({ jiraMode: value }),
+  jiraTicketColors: {},
+  setJiraTicketColor: (ticket, colorId) =>
+    set((state) => {
+      const next = { ...(state.jiraTicketColors ?? {}) };
+      if (colorId === null) delete next[ticket];
+      else next[ticket] = colorId;
+      return { jiraTicketColors: next };
+    }),
+  jiraRowFullColor: false,
+  setJiraRowFullColor: (value) => set({ jiraRowFullColor: value }),
+  jiraAcronyms: [],
+  jiraAcronymCounts: {},
+  addJiraAcronym: (acronym) =>
+    set((state) => ({
+      jiraAcronyms: [acronym, ...(state.jiraAcronyms ?? []).filter((a) => a !== acronym)].slice(0, 12),
+      jiraAcronymCounts: {
+        ...(state.jiraAcronymCounts ?? {}),
+        [acronym]: ((state.jiraAcronymCounts ?? {})[acronym] ?? 0) + 1,
+      },
+    })),
   projectsDir: "",
   defaultClaudeMdPath: "",
   defaultAgentsMdPath: "",
   defaultGeminiMdPath: "",
+  defaultJiraClaudeMdPath: "",
   defaultUseSingleSourcePointers: false,
   customScaffolds: [],
   setProjectsDir: (value) => set({ projectsDir: value }),
   setDefaultClaudeMdPath: (value) => set({ defaultClaudeMdPath: value }),
+  setDefaultJiraClaudeMdPath: (value) => set({ defaultJiraClaudeMdPath: value }),
   setDefaultAgentsMdPath: (value) => set({ defaultAgentsMdPath: value }),
   setDefaultGeminiMdPath: (value) => set({ defaultGeminiMdPath: value }),
   setDefaultUseSingleSourcePointers: (value) => set({ defaultUseSingleSourcePointers: value }),
@@ -492,7 +635,14 @@ export const createRecentProjectsSlice: StateCreator<
     }));
   },
 
-  addRecentProject: ({ path, name, template, serverCommand, noDevServer, serverId }) => {
+  setProjectSound: (workingDir, soundId) => {
+    const key = normalizePath(workingDir);
+    set((state) => ({
+      projectSounds: { ...state.projectSounds, [key]: soundId },
+    }));
+  },
+
+  addRecentProject: ({ path, name, template, serverCommand, noDevServer, serverId, isJira }) => {
     const normalized = normalizePath(path);
     const matches = (p: RecentProject) =>
       normalizePath(p.path) === normalized && p.serverId === serverId;
@@ -504,7 +654,7 @@ export const createRecentProjectsSlice: StateCreator<
         // Update existing: bump timestamp, count, template, serverCommand
         updated = state.recentProjects.map((p) =>
           matches(p)
-            ? { ...p, lastOpenedAt: now, openCount: p.openCount + 1, lastTemplate: template ?? p.lastTemplate, name, serverCommand: noDevServer ? undefined : (serverCommand ?? p.serverCommand), noDevServer: noDevServer ?? p.noDevServer }
+            ? { ...p, lastOpenedAt: now, openCount: p.openCount + 1, lastTemplate: template ?? p.lastTemplate, name, serverCommand: noDevServer ? undefined : (serverCommand ?? p.serverCommand), noDevServer: noDevServer ?? p.noDevServer, isJira: isJira ?? p.isJira }
             : p
         );
       } else {
@@ -524,6 +674,7 @@ export const createRecentProjectsSlice: StateCreator<
           noDevServer,
           serverId,
           preferredBackend,
+          isJira,
         };
         updated = [newEntry, ...state.recentProjects];
       }
@@ -640,8 +791,8 @@ export const createRecentProjectsSlice: StateCreator<
     set({ devServerButtonInHeader: value });
   },
 
-  setDevServerButtonOnTab: (value) => {
-    set({ devServerButtonOnTab: value });
+  setDevServerTabIcon: (value) => {
+    set({ devServerTabIcon: value });
   },
 
   setBrowserFullColumn: (value) => {

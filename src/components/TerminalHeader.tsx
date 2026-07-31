@@ -602,8 +602,11 @@ export default function TerminalHeader({
         transition: "border-color 200ms ease, background-color 200ms ease",
       }}
     >
-      {/* Drag handle — custom pointer drag (HTML5 DnD doesn't work in Tauri WebView2) */}
-      <div
+      {/* Drag handle — custom pointer drag (HTML5 DnD doesn't work in Tauri
+          WebView2). Hidden entirely when the host disabled pane moving
+          (onSwapPane undefined — Jira tabs: one pane per ticket). */}
+      {!onSwapPane && <div style={{ width: 6, flexShrink: 0 }} />}
+      {onSwapPane && <div
         onMouseDown={(e) => {
           e.preventDefault();
           document.documentElement.classList.add("ezy-dragging-pane");
@@ -665,13 +668,13 @@ export default function TerminalHeader({
         data-tooltip="Drag to rearrange"
       >
         <FaGripVertical size={12} color="var(--ezy-text-muted)" />
-      </div>
+      </div>}
       {/* Left: type badge — clickable to switch CLI */}
       <div style={{ position: "relative", marginLeft: 3, flexShrink: 0 }}>
         <div
           ref={typePickerAnchorRef}
           className="flex items-center gap-1.5"
-          style={{ cursor: "pointer", borderRadius: 4, padding: "2px 4px", margin: "-2px -4px" }}
+          style={{ cursor: "pointer", borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)", padding: "2px 4px", margin: "-2px -4px" }}
           onClick={() => setShowTypePicker((v) => !v)}
           onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
           onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
@@ -699,7 +702,7 @@ export default function TerminalHeader({
                 letterSpacing: "0.06em",
                 lineHeight: 1.2,
                 padding: "1px 4px",
-                borderRadius: 3,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                 backgroundColor: "var(--ezy-red, #e55)",
                 color: "#fff",
               }}
@@ -715,7 +718,7 @@ export default function TerminalHeader({
                 letterSpacing: "0.06em",
                 lineHeight: 1.2,
                 padding: "1px 4px",
-                borderRadius: 3,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                 backgroundColor: "var(--ezy-cyan, #5eead4)",
                 color: "#000",
                 textTransform: "uppercase",
@@ -733,7 +736,7 @@ export default function TerminalHeader({
                 letterSpacing: "0.06em",
                 lineHeight: 1.2,
                 padding: "1px 4px",
-                borderRadius: 3,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                 // Neutral on purpose: red means YOLO and cyan means collab mode
                 // in this same chip row. The renderer is a fact, not a warning.
                 backgroundColor: "var(--ezy-border-light, #484f58)",
@@ -768,7 +771,7 @@ export default function TerminalHeader({
             letterSpacing: "0.06em",
             lineHeight: 1.2,
             padding: "1px 4px",
-            borderRadius: 3,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             marginLeft: 6,
             flexShrink: 0,
             cursor: "pointer",
@@ -797,7 +800,7 @@ export default function TerminalHeader({
             lineHeight: 1.2,
             marginLeft: 0,
             cursor: "pointer",
-            borderRadius: 3,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             padding: "1px 4px",
           }}
           data-tooltip={workingDir}
@@ -845,7 +848,7 @@ export default function TerminalHeader({
             justifyContent: "center",
             padding: 3,
             marginLeft: 2,
-            borderRadius: 3,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             flexShrink: 0,
             cursor: "pointer",
           }}
@@ -968,7 +971,7 @@ export default function TerminalHeader({
                     fontFamily: "inherit",
                     backgroundColor: "var(--ezy-bg)",
                     border: "1px solid var(--ezy-accent)",
-                    borderRadius: 3,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                     color: "var(--ezy-text)",
                     outline: "none",
                     padding: "1px 4px",
@@ -982,7 +985,7 @@ export default function TerminalHeader({
                     alignItems: "center",
                     gap: 3,
                     cursor: "pointer",
-                    borderRadius: 3,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                     padding: "1px 4px",
                     margin: "-1px -4px",
                   }}
@@ -1155,7 +1158,7 @@ export default function TerminalHeader({
               flexShrink: 0,
               cursor: onRefreshContext ? "pointer" : "default",
               padding: "2px 4px",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               opacity: refreshingContext ? 0.6 : 1,
               transition: "background-color 100ms ease, opacity 120ms ease",
             }}
@@ -1172,7 +1175,7 @@ export default function TerminalHeader({
               style={{
                 width: 44,
                 height: 4,
-                borderRadius: 2,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
                 backgroundColor: "var(--ezy-border)",
                 overflow: "hidden",
                 flexShrink: 0,
@@ -1182,7 +1185,7 @@ export default function TerminalHeader({
                 style={{
                   width: `${contextPercent}%`,
                   height: "100%",
-                  borderRadius: 2,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
                   backgroundColor:
                     contextPercent <= 15
                       ? "var(--ezy-red)"

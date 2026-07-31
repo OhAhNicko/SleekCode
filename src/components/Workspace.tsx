@@ -30,6 +30,18 @@ import ToolSelector from "./ToolSelector";
 import EmptyTabLauncher from "./EmptyTabLauncher";
 import FloatingPanesLayer from "./FloatingPanesLayer";
 import { type RenderLeafCallbacks, parkSlot } from "../lib/render-pane";
+import { maybeOfferAgentFile } from "../lib/agent-file-backfill";
+import {
+  orientJiraPair,
+  isJiraPairLayout,
+  listJiraInstanceKeys,
+  displayJiraPairFor,
+  writeBackJiraPairSizes,
+  removeJiraInstanceTerm,
+  jiraBaseTicket,
+} from "../lib/jira-layout";
+import { resolveTicketColor } from "../lib/jira-colors";
+import { clearTicketForTerminal } from "../lib/jira-session";
 
 interface WorkspaceProps {
   tab: Tab;
@@ -91,6 +103,81 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const allTerminalIds = useMemo(
     () => (tab.layout ? findAllTerminalIds(tab.layout).sort() : []),
     [tab.layout]
+  );
+
+  // ── Jira per-ticket canvas ─────────────────────────────────────────────
+  // The layout stores one Claude+browser pair per ticket; only the SELECTED
+  // pair is displayed. Portals below iterate the FULL layout, so background
+  // tickets' panes stay mounted and their sessions keep running.
+  const jiraClaudeSide = useAppStore((s) => s.jiraClaudeSide ?? "left");
+  const displayJiraPair = useMemo(() => {
+    if (!tab.isJiraProject || !tab.layout || !tab.selectedJiraTicket) return null;
+    // Selection is an INSTANCE key ("SUPPORT-1" or "SUPPORT-1#2" for a
+    // duplicate): the displayed pair is the base ticket's pair narrowed to
+    // the selected instance's terminal — its siblings stay mounted through
+    // the stored layout, and the shared browser never remounts.
+    const pair = displayJiraPairFor(tab.layout, tab.selectedJiraTicket);
+    return pair ? orientJiraPair(pair, jiraClaudeSide) : null;
+  }, [tab.isJiraProject, tab.layout, tab.selectedJiraTicket, jiraClaudeSide]);
+
+  // Migration + selection upkeep: old free-form Jira grids are rebuilt as
+  // per-ticket views (sessions resume from the rail by id); a missing/stale
+  // selection snaps to the first available pair.
+  useEffect(() => {
+    if (!tab.isJiraProject || !tab.layout) return;
+    const store = useAppStore.getState();
+    if (isJiraPairLayout(tab.layout)) {
+      const keys = listJiraInstanceKeys(tab.layout);
+      if (keys.length > 0 && (!tab.selectedJiraTicket || !keys.includes(tab.selectedJiraTicket))) {
+        store.setSelectedJiraTicket(tab.id, keys[0]);
+      }
+      return;
+    }
+    store.removeTerminals(findAllTerminalIds(tab.layout));
+    store.updateTabLayout(tab.id, null);
+    store.setSelectedJiraTicket(tab.id, undefined);
+  }, [tab.isJiraProject, tab.layout, tab.selectedJiraTicket, tab.id]);
+
+  // The selected ticket's terminal — every OTHER Jira terminal renders as if
+  // its tab were inactive. This is what actually hides a native pane's child
+  // HWND: its DOM placeholder unmounting does nothing to a native window,
+  // which otherwise keeps painting its last region over the new ticket.
+  const selectedJiraTerminalId = useMemo(() => {
+    if (!displayJiraPair) return null;
+    const [a, b] = displayJiraPair.children;
+    const t = a.type === "terminal" ? a : b.type === "terminal" ? b : null;
+    return t?.terminalId ?? null;
+  }, [displayJiraPair]);
+
+  // Each ticket's Claude pane is tinted with its ticket color — the same
+  // color the rail row's left edge shows. Null for non-Jira tabs keeps the
+  // ordinary per-project tint in charge.
+  const jiraTicketColors = useAppStore((s) => s.jiraTicketColors);
+  const jiraTintForTerm = useCallback(
+    (termId: string): string | null => {
+      if (!tab.isJiraProject || !tab.layout) return null;
+      const paneId = findPaneIdForTerminal(tab.layout, termId);
+      if (!paneId?.startsWith("pane-jira-term-")) return null;
+      // Duplicates ("SUPPORT-1#2") tint with their BASE ticket's color.
+      return resolveTicketColor(
+        jiraBaseTicket(paneId.slice("pane-jira-term-".length)),
+        jiraTicketColors,
+      );
+    },
+    [tab.isJiraProject, tab.layout, jiraTicketColors],
+  );
+
+  // Resize write-back for the displayed pair: the grid only ever sees the
+  // pair subtree, so merge its divider position into the stored full layout.
+  // Sizes ONLY — the displayed term side is just the selected instance, and
+  // adopting the displayed structure would drop the other instances' panes.
+  const handleJiraPairLayoutChange = useCallback(
+    (next: PaneLayout | null) => {
+      if (!tab.layout || !tab.selectedJiraTicket) return;
+      if (!next || next.type !== "split") return;
+      updateTabLayout(tab.id, writeBackJiraPairSizes(tab.layout, tab.selectedJiraTicket, next));
+    },
+    [tab.id, tab.layout, tab.selectedJiraTicket, updateTabLayout],
   );
 
   // Auto-activate the first terminal on mount so at least one pane starts
@@ -335,6 +422,9 @@ export default function Workspace({ tab }: WorkspaceProps) {
     (terminalId: string) => {
       setLocalActiveTerminal(terminalId);
       setActiveTerminal(terminalId);
+      // A terminal took over — solid cursor again (covers native panes too,
+      // whose clicks reach here via focus_gained instead of the DOM).
+      useAppStore.getState().setNonTerminalPaneActive(false);
     },
     [setActiveTerminal]
   );
@@ -359,6 +449,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
       // `workingDir` override: the file tree's "Open terminal here" names a
       // folder. Everything else omits it and inherits the tab's directory.
       addTerminal(terminalId, type, workingDir || tab.workingDir, serverId ?? tab.serverId);
+      maybeOfferAgentFile(type, workingDir || tab.workingDir, serverId ?? tab.serverId);
       if (tab.layout) {
         updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, terminalId, type));
       }
@@ -370,6 +461,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
     (type: TerminalType, serverId?: string) => {
       if (!layoutTerminalId || !tab.layout) return;
       addTerminal(layoutTerminalId, type, tab.workingDir, serverId ?? tab.serverId);
+      maybeOfferAgentFile(type, tab.workingDir, serverId ?? tab.serverId);
       updateTabLayout(tab.id, setTerminalTypeInLayout(tab.layout, layoutTerminalId, type));
       setLocalActiveTerminal(layoutTerminalId);
       setShowToolSelector(false);
@@ -385,6 +477,24 @@ export default function Workspace({ tab }: WorkspaceProps) {
     if (!tab.layout) return;
     const paneId = findPaneIdForTerminal(tab.layout, termId);
     if (!paneId) return;
+    // Jira: closing a ticket pane removes that INSTANCE's terminal. The
+    // ticket's browser goes with it only when it was the last instance; the
+    // canvas falls back to a sibling instance first, then any open ticket.
+    if (tab.isJiraProject && paneId.startsWith("pane-jira-term-")) {
+      const instKey = paneId.slice("pane-jira-term-".length);
+      const next = removeJiraInstanceTerm(tab.layout, instKey);
+      cleanupPaneMode(paneId);
+      // Resume spawns park a name record the mint path never consumes.
+      clearTicketForTerminal(termId);
+      if (tab.selectedJiraTicket === instKey) {
+        const remaining = listJiraInstanceKeys(next);
+        const base = jiraBaseTicket(instKey);
+        const sibling = remaining.find((k) => jiraBaseTicket(k) === base);
+        useAppStore.getState().setSelectedJiraTicket(tab.id, sibling ?? remaining[0]);
+      }
+      handleLayoutChange(next);
+      return;
+    }
     snapshotPane(tab.id, tab.layout);
     const removed = removePane(tab.layout, paneId);
     // `removed` may be null when the last pane is closed — propagate that so
@@ -539,6 +649,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
       // is null (the layout-write would no-op).
       if (!tab.layout) {
         addTerminal(newTerminalId, type, (detail?.workingDir as string | undefined) || tab.workingDir, tab.serverId);
+        maybeOfferAgentFile(type, (detail?.workingDir as string | undefined) || tab.workingDir, tab.serverId);
         handleLayoutChange(newLeaf);
         if (focusNewPane) handleTerminalFocus(newTerminalId);
         else refocusPrevious();
@@ -814,7 +925,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // A Jira project with no panes yet: the rail already offers "new ticket", so
   // the middle just says so. The generic launchers below would spawn panes that
   // aren't tickets, which would sit outside the rail's model entirely.
-  if (tab.isJiraProject && (needsInitialTerminal || !tab.layout)) {
+  if (tab.isJiraProject && !displayJiraPair) {
     return withRail(
       <div
         className="h-full w-full flex items-center justify-center"
@@ -853,7 +964,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
               padding: "12px 24px",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 8,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
               color: "var(--ezy-text)",
               fontSize: 14,
               fontFamily: "inherit",
@@ -905,13 +1016,13 @@ export default function Workspace({ tab }: WorkspaceProps) {
   return withRail(
     <div className="h-full w-full workspace-enter">
       <PaneGrid
-        layout={tab.layout}
+        layout={tab.isJiraProject ? displayJiraPair! : tab.layout}
         tabId={tab.id}
-        onLayoutChange={handleLayoutChange}
+        onLayoutChange={tab.isJiraProject ? handleJiraPairLayoutChange : handleLayoutChange}
         getTerminalSlot={getSlotEl}
       />
       <FloatingPanesLayer
-        layout={tab.layout}
+        layout={tab.isJiraProject ? displayJiraPair! : tab.layout}
         callbacks={floatingCallbacks}
         paneTitleFor={paneTitleFor}
       />
@@ -928,7 +1039,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
             terminalType={terminal.type}
             workingDir={tab.workingDir}
             isActive={activeTerminalId === termId}
-            isTabActive={isTabActive}
+            isTabActive={isTabActive && (!tab.isJiraProject || termId === selectedJiraTerminalId)}
+            paneTintOverride={jiraTintForTerm(termId)}
             paneCount={allTerminalIds.length}
             onClose={() => handleTerminalClose(termId)}
             onChangeType={(type) => {
@@ -940,7 +1052,8 @@ export default function Workspace({ tab }: WorkspaceProps) {
               updatePaneSessionResumeId(tab.id, termId, undefined);
             }}
             onFocus={() => handleTerminalFocus(termId)}
-            onSwapPane={handleSwapPane}
+            // One pane per ticket — moving a Jira Claude pane has no meaning.
+            onSwapPane={tab.isJiraProject ? undefined : handleSwapPane}
             onExplainError={(block) => handleTerminalExplainError(termId, block)}
             serverId={terminal.serverId}
             sessionResumeId={leaf?.sessionResumeId}
@@ -966,6 +1079,9 @@ export default function Workspace({ tab }: WorkspaceProps) {
             initialUrl={pane.url}
             linkedTabId={pane.linkedTabId}
             onClose={() => handlePaneClose(pane.id)}
+            paneId={pane.id}
+            // Jira ticket browsers are reading surfaces — strip dev tooling.
+            chrome={tab.isJiraProject && pane.id.startsWith("pane-jira-browser-") ? "minimal" : "full"}
           />,
           slotEl,
           pane.id

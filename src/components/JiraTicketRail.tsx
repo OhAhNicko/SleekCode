@@ -3,10 +3,36 @@ import { useAppStore } from "../store";
 import type { ProjectSession, Tab } from "../types";
 import { findAllTerminalLeaves } from "../lib/layout-utils";
 import { sessionStillExists } from "../lib/session-exists";
-import { askForTicket, openJiraTicket, navigateToTicket } from "../lib/jira-project";
+import { askForTicket, openJiraTicket, navigateToTicket, duplicateJiraTicket } from "../lib/jira-project";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
-import { confirmAction } from "../lib/prompt-modal";
-import { CLI_BRAND_COLORS } from "./TerminalHeader";
+import { confirmAction, promptForInput } from "../lib/prompt-modal";
+import { clearTicketForTerminal, parkedTicketName } from "../lib/jira-session";
+import { resolveTicketColor, contrastTextFor } from "../lib/jira-colors";
+import { readSessionsIndex } from "../lib/sessions-index";
+import {
+  findJiraTermLeaf,
+  removeJiraInstanceTerm,
+  listJiraInstanceKeys,
+  jiraBaseTicket,
+  jiraInstanceKey,
+} from "../lib/jira-layout";
+
+/** 1 for the original row, 2+ for duplicates. */
+const instanceOf = (s: ProjectSession) => s.ticketInstance ?? 1;
+/** The key the canvas selection and pane ids use for this row. */
+const instKeyOf = (s: ProjectSession) => jiraInstanceKey(s.ticket ?? "", s.ticketInstance);
+/** The name a row would have if never edited — ticket key (+ " #n"). */
+const defaultNameOf = (s: ProjectSession) =>
+  parkedTicketName({ ticket: s.ticket ?? "", instance: s.ticketInstance });
+/** The user-edited name, or null while the row carries a default one. Both
+ *  the bare key and the numbered form count as defaults — an original is
+ *  "TICKET" alone but becomes "TICKET #1" while duplicates exist. */
+const customNameOf = (s: ProjectSession) => {
+  if (!s.name || !s.ticket) return null;
+  if (s.name === s.ticket) return null;
+  if (s.name === `${s.ticket} #${s.ticketInstance ?? 1}`) return null;
+  return s.name;
+};
 
 /**
  * The ticket rail down the left of a Jira project.
@@ -39,7 +65,12 @@ interface TicketRow {
 export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailProps) {
   const [query, setQuery] = useState("");
   const [missing, setMissing] = useState<Set<string>>(new Set());
+  /** Session ids whose conversation TEXT matches the query (sessions-index
+   *  summaries + first prompts) — null while empty query / loading. */
+  const [contentMatches, setContentMatches] = useState<Set<string> | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const jiraTicketColors = useAppStore((s) => s.jiraTicketColors);
+  const fullColor = useAppStore((s) => s.jiraRowFullColor ?? false);
 
   const projectKey = tab.workingDir.replace(/\\/g, "/");
   // Select the raw slice and derive below — filtering inside the selector
@@ -55,24 +86,98 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         if (leaf.sessionResumeId) liveBySession.set(leaf.sessionResumeId, leaf.terminalId);
       }
     }
-    return tickets
-      .map((session) => ({ session, terminalId: liveBySession.get(session.id) }))
-      .sort((a, b) => {
-        // Open tickets first, then most recently started.
-        if (!!a.terminalId !== !!b.terminalId) return a.terminalId ? -1 : 1;
-        return b.session.createdAt - a.session.createdAt;
-      });
+    const mapped = tickets.map((session) => ({
+      session,
+      terminalId: liveBySession.get(session.id),
+    }));
+    // Duplicates stay ATTACHED to their original: rows group by base ticket
+    // (instances in #1..#n order), and groups sort like rows used to — any-
+    // instance-open first, then most recently started. A group with one open
+    // and one closed instance therefore sits, whole, in the open section.
+    const groups = new Map<string, TicketRow[]>();
+    for (const r of mapped) {
+      const key = r.session.ticket!;
+      const g = groups.get(key);
+      if (g) g.push(r);
+      else groups.set(key, [r]);
+    }
+    const groupList = [...groups.values()];
+    for (const g of groupList) g.sort((a, b) => instanceOf(a.session) - instanceOf(b.session));
+    groupList.sort((a, b) => {
+      const aOpen = a.some((r) => !!r.terminalId);
+      const bOpen = b.some((r) => !!r.terminalId);
+      if (aOpen !== bOpen) return aOpen ? -1 : 1;
+      const aT = Math.max(...a.map((r) => r.session.createdAt));
+      const bT = Math.max(...b.map((r) => r.session.createdAt));
+      return bT - aT;
+    });
+    return groupList.flat();
     // `activeTerminalId` (the terminals map) is a dependency because a pane
     // appearing or dying changes which rows count as open.
   }, [allSessions, tab.layout, activeTerminalId]);
 
+  // "#n" suffixes appear as soon as a ticket has more than one row anywhere
+  // (incl. archived) — a lone original stays a bare key.
+  const instanceCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of rows) {
+      const t = r.session.ticket!;
+      m.set(t, (m.get(t) ?? 0) + 1);
+    }
+    return m;
+  }, [rows]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toUpperCase();
     if (!q) return rows;
-    return rows.filter((r) => (r.session.ticket ?? "").includes(q));
-  }, [rows, query]);
+    return rows.filter(
+      (r) =>
+        (r.session.ticket ?? "").includes(q) ||
+        (customNameOf(r.session) ?? "").toUpperCase().includes(q) ||
+        (contentMatches?.has(r.session.id) ?? false),
+    );
+  }, [rows, query, contentMatches]);
 
-  const openCount = filtered.filter((r) => r.terminalId).length;
+  const activeRows = useMemo(() => filtered.filter((r) => !r.session.archived), [filtered]);
+  const archivedRows = useMemo(() => filtered.filter((r) => !!r.session.archived), [filtered]);
+  // The "Closed" heading sits before the first row of the first fully-closed
+  // GROUP — a closed duplicate attached to an open original stays above it.
+  const firstClosedIdx = useMemo(() => {
+    const openTickets = new Set(
+      activeRows.filter((r) => r.terminalId).map((r) => r.session.ticket!),
+    );
+    return activeRows.findIndex((r) => !openTickets.has(r.session.ticket!));
+  }, [activeRows]);
+
+  // Content search: match the query against each session's conversation text
+  // as Claude indexes it (summary, custom title, first prompt) — debounced,
+  // works for local and SSH projects through the same sessions-index reader.
+  useEffect(() => {
+    const q = query.trim().toLowerCase();
+    if (q.length < 2) {
+      setContentMatches(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const entries = await readSessionsIndex(tab.workingDir, tab.backend ?? "wsl", tab.serverId);
+        if (cancelled) return;
+        const hits = new Set<string>();
+        for (const e of entries) {
+          const hay = `${e.summary}\n${e.customTitle}\n${e.firstPrompt}`.toLowerCase();
+          if (hay.includes(q)) hits.add(e.sessionId);
+        }
+        setContentMatches(hits);
+      } catch {
+        if (!cancelled) setContentMatches(null);
+      }
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [query, tab.workingDir, tab.backend, tab.serverId]);
 
   // A closed session can only be reopened if its transcript still exists.
   // sessionStillExists fails open, so a row is marked unavailable only when the
@@ -103,16 +208,96 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     };
   }, [rows, tab.workingDir, tab.backend, tab.serverId]);
 
+  // Group collapse: when a duplicate group shrinks to ONE remaining row
+  // (siblings deleted/forgotten — closing a pane keeps its row), the survivor
+  // folds back into a regular ticket. Its default "TICKET #n" name reverts to
+  // the plain key (custom names are kept), reaching the Claude title via
+  // --name on the pane's next launch; the instance number is dropped once the
+  // pane is closed (never while open — the live pane's layout key carries it).
+  useEffect(() => {
+    const store = useAppStore.getState();
+    for (const r of rows) {
+      const ticket = r.session.ticket;
+      if (!ticket) continue;
+      if ((instanceCounts.get(ticket) ?? 1) > 1) continue; // still a group
+      const inst = r.session.ticketInstance ?? 1;
+      // The numbered default ("TICKET #1" on the original, "TICKET #2" on a
+      // surviving duplicate) folds back to the plain key; custom names are
+      // kept. The Claude title follows via --name at the pane's next launch.
+      if (r.session.name === `${ticket} #${inst}`) {
+        store.renameProjectSession(tab.workingDir, r.session.id, ticket);
+      }
+      if (inst > 1 && !r.terminalId) {
+        store.clearTicketInstance(tab.workingDir, r.session.id);
+      }
+    }
+  }, [rows, instanceCounts, tab.workingDir]);
+
+  // CLI → rail name sync. A rename made INSIDE Claude Code lands in the
+  // sessions-index as `customTitle`; adopt it when it changed since the last
+  // sync (adoptCliSessionTitle ignores unchanged titles, so MADE-side renames
+  // are never clobbered by the stale CLI title they haven't reached yet — the
+  // rail → CLI direction rides `--name` on the pane's next launch). Polled
+  // while this tab is active; SSH projects go through the same index reader.
+  useEffect(() => {
+    let cancelled = false;
+    const sync = async () => {
+      if (useAppStore.getState().activeTabId !== tab.id) return;
+      try {
+        const entries = await readSessionsIndex(tab.workingDir, tab.backend ?? "wsl", tab.serverId);
+        if (cancelled) return;
+        const titleById = new Map(entries.map((e) => [e.sessionId, e.customTitle]));
+        const store = useAppStore.getState();
+        const sessions = store.projectSessions[projectKey] ?? [];
+        const counts = new Map<string, number>();
+        for (const s of sessions) {
+          if (s.ticket) counts.set(s.ticket, (counts.get(s.ticket) ?? 0) + 1);
+        }
+        for (const s of sessions) {
+          if (!s.ticket) continue;
+          const title = titleById.get(s.id)?.trim();
+          if (!title) continue;
+          // CLI → row adoption is single-pane-only for now: a duplicated
+          // ticket keeps its "#n" naming whatever happens CLI-side. The
+          // snapshot still advances, so when the group later collapses the
+          // poll doesn't adopt a stale CLI title over the folded-back name.
+          store.adoptCliSessionTitle(
+            tab.workingDir,
+            s.id,
+            title,
+            (counts.get(s.ticket) ?? 1) > 1,
+          );
+        }
+      } catch {
+        // Index unreadable — leave names alone.
+      }
+    };
+    void sync();
+    const iv = setInterval(sync, 20_000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [tab.id, tab.workingDir, tab.backend, tab.serverId, projectKey]);
+
   const handleRowClick = (row: TicketRow) => {
     const ticket = row.session.ticket;
     if (!ticket) return;
+    if (row.session.archived) return; // unarchive via context menu first
     if (row.terminalId) {
+      // Open ticket: switch the canvas to this instance's pane (the ticket's
+      // shared browser is already parked on its page — no re-navigation, and
+      // switching between instances of one ticket never touches it).
+      useAppStore.getState().setSelectedJiraTicket(tab.id, instKeyOf(row.session));
       onFocusTerminal(row.terminalId);
-      navigateToTicket(tab.id, ticket);
       return;
     }
     if (missing.has(row.session.id)) return;
-    openJiraTicket(tab.id, { ticket, resumeId: row.session.id });
+    openJiraTicket(tab.id, {
+      ticket,
+      resumeId: row.session.id,
+      instance: row.session.ticketInstance,
+    });
   };
   // The surface registration below is set up once, so it reaches the current
   // click handler through a ref rather than re-registering on every render.
@@ -135,6 +320,50 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         const ticket = find(id)?.session.ticket;
         if (ticket) navigateToTicket(tab.id, ticket);
       },
+      closePane: (id) => {
+        const row = find(id);
+        if (row?.terminalId) closeTicketPair(row);
+      },
+      rename: (id) => {
+        const row = find(id);
+        if (!row?.session.ticket) return;
+        const ticket = row.session.ticket;
+        // Reset target is group-aware: while duplicates exist the default is
+        // the numbered form, so an emptied name rejoins the "#n" convention.
+        const grouped =
+          (useAppStore.getState().projectSessions[projectKey] ?? []).filter(
+            (s) => s.ticket === ticket,
+          ).length > 1;
+        const fallback = grouped
+          ? `${ticket} #${row.session.ticketInstance ?? 1}`
+          : defaultNameOf(row.session);
+        const current = row.session.name || fallback;
+        void promptForInput({
+          title: "Rename ticket",
+          label: "Name",
+          initialValue: current,
+          confirmLabel: "Rename",
+          detail:
+            "Shown in the rail, and set as the Claude session name (--name) the next time this pane launches. Leave empty to reset to the ticket key.",
+        }).then((value) => {
+          if (value === null) return; // cancelled
+          const name = value.trim() || fallback;
+          if (name === row.session.name) return;
+          useAppStore.getState().renameProjectSession(tab.workingDir, id, name);
+        });
+      },
+      duplicateFork: (id) => {
+        const row = find(id);
+        if (row) duplicateJiraTicket(tab.id, row.session, "fork");
+      },
+      duplicatePrompt: (id) => {
+        const row = find(id);
+        if (row) duplicateJiraTicket(tab.id, row.session, "prompt");
+      },
+      duplicateEmpty: (id) => {
+        const row = find(id);
+        if (row) duplicateJiraTicket(tab.id, row.session, "empty");
+      },
       forget: (id) => {
         const ticket = find(id)?.session.ticket ?? "this ticket";
         void confirmAction({
@@ -146,14 +375,67 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           if (ok) useAppStore.getState().removeProjectSession(tab.workingDir, id);
         });
       },
+      toggleArchive: (id) => {
+        const row = find(id);
+        if (!row) return;
+        if (!row.session.archived) closeTicketPair(row);
+        useAppStore
+          .getState()
+          .setProjectSessionArchived(tab.workingDir, id, !row.session.archived);
+      },
+      del: (id) => {
+        const row = find(id);
+        if (!row) return;
+        const ticket = row.session.ticket ?? "this ticket";
+        void confirmAction({
+          title: "Delete ticket",
+          detail: `${ticket}: closes its panes and removes it from MADE entirely. The conversation file on disk is kept.`,
+          confirmLabel: "Delete",
+          danger: true,
+        }).then((ok) => {
+          if (!ok) return;
+          closeTicketPair(row);
+          useAppStore.getState().removeProjectSession(tab.workingDir, id);
+        });
+      },
     });
     return () => unregisterSurfaceActions("jira-ticket");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id, tab.workingDir]);
+
+  /** Close ONE instance's pane if it is open. The ticket's shared browser
+   *  goes away only with the last instance; the canvas falls back to a
+   *  sibling instance first, then any other open ticket. */
+  function closeTicketPair(row: TicketRow): void {
+    const ticket = row.session.ticket;
+    if (!ticket) return;
+    const store = useAppStore.getState();
+    const cur = store.tabs.find((t) => t.id === tab.id);
+    if (!cur?.layout) return;
+    const instKey = instKeyOf(row.session);
+    const leaf = findJiraTermLeaf(cur.layout, instKey);
+    if (!leaf) return;
+    const next = removeJiraInstanceTerm(cur.layout, instKey);
+    store.removeTerminals([leaf.terminalId]);
+    // Resume spawns park a name record the mint path never consumes.
+    clearTicketForTerminal(leaf.terminalId);
+    store.updateTabLayout(tab.id, next);
+    if (cur.selectedJiraTicket === instKey) {
+      const remaining = listJiraInstanceKeys(next);
+      const sibling = remaining.find((k) => jiraBaseTicket(k) === ticket);
+      store.setSelectedJiraTicket(tab.id, sibling ?? remaining[0]);
+    }
+  }
 
   const handleNewTicket = async () => {
     const answer = await askForTicket();
     if (!answer) return;
-    openJiraTicket(tab.id, { ticket: answer.ticket, swedish: answer.swedish });
+    openJiraTicket(tab.id, {
+      ticket: answer.ticket,
+      swedish: answer.swedish,
+      english: answer.english,
+      model: answer.model,
+    });
   };
 
   return (
@@ -230,7 +512,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
             alignItems: "center",
             height: 22,
             padding: "0 6px",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             backgroundColor: "var(--ezy-surface)",
             gap: 6,
           }}
@@ -293,77 +575,262 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
               : "No ticket matches that search."}
           </div>
         )}
-        {filtered.map((row, i) => {
-          const isOpen = !!row.terminalId;
-          const unavailable = !isOpen && missing.has(row.session.id);
+        {activeRows.map((row, i) => {
           // Only label the groups when both exist — a single heading over a
           // uniform list is noise.
-          const showClosedHeading =
-            !isOpen && openCount > 0 && i === openCount;
+          const showClosedHeading = firstClosedIdx > 0 && i === firstClosedIdx;
+          const t = row.session.ticket!;
+          const grouped = (instanceCounts.get(t) ?? 1) > 1;
+          // A duplicated ticket renders as a titled group: a non-clickable
+          // "SUPPORT-24920" heading, then its instances at equal indentation.
+          const groupStart =
+            grouped && (i === 0 || activeRows[i - 1].session.ticket !== t);
           return (
             <div key={row.session.id}>
-              {showClosedHeading && (
-                <div
-                  style={{
-                    padding: "10px 10px 4px",
-                    fontSize: 10,
-                    letterSpacing: "0.08em",
-                    textTransform: "uppercase",
-                    color: "var(--ezy-text-muted)",
-                  }}
-                >
-                  Closed
-                </div>
-              )}
-              <div
-                data-ctx-surface="jira-ticket"
-                data-ctx-id={row.session.id}
-                data-ctx-label={row.session.ticket}
-                data-ctx-open={isOpen ? "1" : undefined}
-                data-ctx-gone={unavailable ? "1" : undefined}
-                onClick={() => handleRowClick(row)}
-                title={
-                  unavailable
-                    ? "This conversation's transcript is gone — it can't be reopened."
-                    : row.session.ticket
-                }
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  height: ROW_HEIGHT,
-                  padding: "0 10px 0 8px",
-                  cursor: unavailable ? "default" : "pointer",
-                  opacity: unavailable ? 0.4 : 1,
-                  borderLeft: `2px solid ${isOpen ? CLI_BRAND_COLORS.claude : "transparent"}`,
-                  color: isOpen ? "var(--ezy-text)" : "var(--ezy-text-muted)",
-                }}
-                onMouseEnter={(e) => {
-                  if (!unavailable) {
-                    e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = "transparent";
-                }}
-              >
-                <span
-                  style={{
-                    fontSize: 12,
-                    fontWeight: isOpen ? 600 : 400,
-                    fontVariantNumeric: "tabular-nums",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {row.session.ticket}
-                </span>
-              </div>
+              {showClosedHeading && <div style={sectionHeadingStyle}>Closed</div>}
+              {groupStart && renderGroupTitle(t)}
+              {renderRow(row)}
             </div>
           );
         })}
+        {archivedRows.length > 0 && (
+          <>
+            <div style={sectionHeadingStyle}>Archived</div>
+            {archivedRows.map((row, i) => {
+              const t = row.session.ticket!;
+              const grouped = (instanceCounts.get(t) ?? 1) > 1;
+              const groupStart =
+                grouped && (i === 0 || archivedRows[i - 1].session.ticket !== t);
+              return (
+                <div key={row.session.id}>
+                  {groupStart && renderGroupTitle(t)}
+                  {renderRow(row)}
+                </div>
+              );
+            })}
+          </>
+        )}
       </div>
     </div>
   );
+
+  /** Open the row's context menu from its hamburger: synthesize a contextmenu
+   *  event on the row element, anchored under the anchor icon. Same event path
+   *  as a real right-click, so the two menus are one and can never drift. */
+  function openRowMenu(anchor: Element): void {
+    const rowEl = anchor.closest('[data-ctx-surface="jira-ticket"]');
+    if (!rowEl) return;
+    const r = anchor.getBoundingClientRect();
+    rowEl.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: Math.round(r.left),
+        clientY: Math.round(r.bottom + 2),
+      }),
+    );
+  }
+
+  /** Non-clickable heading over a duplicated ticket's instance rows — always
+   *  the plain ticket key, whatever the instances are renamed to. */
+  function renderGroupTitle(ticket: string) {
+    const color = resolveTicketColor(ticket, jiraTicketColors);
+    const paintFull = fullColor && !!color;
+    return (
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          height: 22,
+          padding: "0 10px 0 8px",
+          cursor: "default",
+          userSelect: "none",
+          backgroundColor: paintFull ? color! : undefined,
+          borderLeft: `2px solid ${paintFull ? "transparent" : color ?? "transparent"}`,
+          color: paintFull ? contrastTextFor(color!) : "var(--ezy-text-muted)",
+        }}
+      >
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            fontVariantNumeric: "tabular-nums",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {ticket}
+        </span>
+      </div>
+    );
+  }
+
+  function renderRow(row: TicketRow) {
+    const isOpen = !!row.terminalId;
+    const archived = !!row.session.archived;
+    const unavailable = !isOpen && missing.has(row.session.id);
+    const ticket = row.session.ticket;
+    const color = ticket ? resolveTicketColor(ticket, jiraTicketColors) : null;
+    const paintFull = fullColor && !!color;
+    // Under a group title the rows simplify to "#1" / "#2" at one shared
+    // indentation — the title above carries the ticket key. A user-edited
+    // name wins outright (the span ellipses when it overruns the rail). The
+    // context menu still gets the FULL name so "#2" never appears without
+    // its ticket. Claude-side session names stay "TICKET #n" — a bare "#2"
+    // would be meaningless in the CLI's own resume picker.
+    const hasSiblings = (instanceCounts.get(ticket ?? "") ?? 1) > 1;
+    const custom = customNameOf(row.session);
+    const label = custom ?? (hasSiblings ? `#${instanceOf(row.session)}` : ticket);
+    const menuLabel = custom ?? (hasSiblings ? `${ticket} #${instanceOf(row.session)}` : ticket);
+    // The row whose pane the canvas is currently showing.
+    const isActive = isOpen && !archived && tab.selectedJiraTicket === instKeyOf(row.session);
+    const restingBg = paintFull ? color! : isActive ? "var(--ezy-surface)" : undefined;
+    const restingFilter = archived
+      ? "grayscale(0.8)"
+      : paintFull && isActive
+        ? "brightness(1.12)"
+        : undefined;
+    const textColor = paintFull
+      ? contrastTextFor(color!)
+      : isOpen
+        ? "var(--ezy-text)"
+        : "var(--ezy-text-muted)";
+    return (
+      <div
+        data-ctx-surface="jira-ticket"
+        data-ctx-id={row.session.id}
+        data-ctx-label={menuLabel}
+        data-ctx-ticket={ticket}
+        data-ctx-open={isOpen ? "1" : undefined}
+        data-ctx-gone={unavailable ? "1" : undefined}
+        data-ctx-archived={archived ? "1" : undefined}
+        onClick={() => handleRowClick(row)}
+        data-tooltip={
+          unavailable
+            ? "This conversation's transcript is gone — it can't be reopened."
+            : archived
+              ? "Archived — unarchive from the right-click menu to reopen."
+              : undefined
+        }
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          height: ROW_HEIGHT,
+          padding: `0 10px 0 ${hasSiblings ? 18 : 8}px`,
+          cursor: unavailable || archived ? "default" : "pointer",
+          opacity: unavailable ? 0.4 : archived ? 0.5 : 1,
+          filter: restingFilter,
+          // Each ticket's own color — the same one tinting its Claude pane —
+          // so the rail doubles as a legend for the canvas. In full-color mode
+          // the whole row carries it and the text flips for contrast. The
+          // ACTIVE row (the pane pair the canvas shows) keeps the hover
+          // surface permanently plus an accent edge on the canvas side.
+          backgroundColor: restingBg,
+          borderLeft: `2px solid ${paintFull ? "transparent" : color ?? "transparent"}`,
+          boxShadow: isActive ? "inset -2px 0 0 var(--ezy-accent)" : undefined,
+          color: textColor,
+        }}
+        onMouseEnter={(e) => {
+          if (!unavailable && !archived && !paintFull) {
+            e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+          }
+          if (paintFull && !archived) e.currentTarget.style.filter = "brightness(1.12)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.backgroundColor = restingBg ?? "transparent";
+          e.currentTarget.style.filter = restingFilter ?? "";
+        }}
+      >
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 12,
+            fontWeight: isOpen ? 600 : 400,
+            fontVariantNumeric: "tabular-nums",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {label}
+        </span>
+        {/* Hamburger — opens the SAME menu as right-click by synthesizing a
+            contextmenu event on the row, so the two can never drift apart.
+            Styled like the browser pane header's NavButton (rounded pill,
+            bg transparent → var(--ezy-border) on hover); a div role=button
+            has no <button> line-height inflation. Revealed on row hover via
+            .jira-row-menu, pinned visible on the active row. */}
+        <div
+          className="jira-row-menu"
+          role="button"
+          tabIndex={0}
+          aria-label="Ticket options"
+          data-tooltip="Ticket options"
+          onClick={(e) => {
+            e.stopPropagation(); // a menu click must not open/focus the row
+            openRowMenu(e.currentTarget);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              openRowMenu(e.currentTarget);
+            }
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = "var(--ezy-border)";
+            // Full-color rows keep the row's contrast color — a fixed gray
+            // could vanish against an arbitrary ticket color.
+            if (!paintFull) e.currentTarget.style.color = "var(--ezy-text)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = "transparent";
+            if (!paintFull) e.currentTarget.style.color = "var(--ezy-text-muted)";
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+            cursor: "pointer",
+            color: paintFull ? undefined : "var(--ezy-text-muted)",
+            backgroundColor: "transparent",
+            // Includes opacity — an inline transition list replaces the
+            // .jira-row-menu class's, which owns the hover fade-in.
+            transition: "background-color 0.15s, color 0.15s, opacity 100ms ease",
+            outline: "none",
+            flexShrink: 0,
+            opacity: isActive ? 1 : undefined,
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          >
+            <line x1="3" y1="4.5" x2="13" y2="4.5" />
+            <line x1="3" y1="8" x2="13" y2="8" />
+            <line x1="3" y1="11.5" x2="13" y2="11.5" />
+          </svg>
+        </div>
+      </div>
+    );
+  }
 }
+
+const sectionHeadingStyle: React.CSSProperties = {
+  padding: "10px 10px 4px",
+  fontSize: 10,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  color: "var(--ezy-text-muted)",
+};

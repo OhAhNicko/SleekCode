@@ -9,20 +9,23 @@
  * idea is that a ticket key names the session.
  */
 
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
+import type { ProjectSession } from "../types";
 import { setPendingPrompt, clearPendingPrompt } from "../store/terminalSlice";
-import { rememberTicketForTerminal, clearTicketForTerminal } from "./jira-session";
-import { generateTerminalId, openOrUpdateBrowserPane } from "./layout-utils";
-import { promptWithOptions } from "./prompt-modal";
+import { rememberTicketForTerminal, clearTicketForTerminal, parkedTicketName } from "./jira-session";
+import { generateTerminalId } from "./layout-utils";
 import {
-  buildJiraPrompt,
-  buildTicketUrl,
-  normalizeTicketKey,
-  DEFAULT_JIRA_PROMPT,
-} from "./jira";
-
-const SWEDISH_TOGGLE = "swedish";
+  addJiraTermToPair,
+  appendJiraPair,
+  buildJiraPair,
+  buildJiraTermLeaf,
+  findJiraPair,
+  findJiraTermLeaf,
+  jiraInstanceKey,
+} from "./jira-layout";
+import { requestJiraTicket } from "../components/NewJiraTicketModal";
+import { buildJiraPrompt, buildTicketUrl, DEFAULT_JIRA_PROMPT } from "./jira";
 
 /**
  * Ask for a ticket key. Also asks for the Jira base URL the first time, because
@@ -30,83 +33,115 @@ const SWEDISH_TOGGLE = "swedish";
  * does half the job is worse than one extra field once.
  */
 export async function askForTicket(): Promise<
-  { ticket: string; swedish: boolean } | null
+  { ticket: string; swedish: boolean; english: boolean; model: string | null } | null
 > {
-  const store = useAppStore.getState();
-  const needsBaseUrl = !store.jiraBaseUrl.trim();
-
-  const result = await promptWithOptions({
-    title: "New ticket",
-    label: "Ticket number",
-    confirmLabel: "Investigate",
-    initialValue: "",
-    validate: (v) =>
-      normalizeTicketKey(v) ? null : "Expected a ticket key like SUPPORT-24920.",
-    toggles: [
-      {
-        id: SWEDISH_TOGGLE,
-        label: "Reply in Swedish",
-        defaultOn: store.jiraReplyInSwedish,
-      },
-    ],
-    extraField: needsBaseUrl
-      ? {
-          id: "baseUrl",
-          label: "Jira address",
-          placeholder: "https://yourcompany.atlassian.net",
-          required: true,
-        }
-      : undefined,
-  });
-  if (!result) return null;
-
-  const ticket = normalizeTicketKey(result.value);
-  if (!ticket) return null;
-
-  const swedish = !!result.toggles[SWEDISH_TOGGLE];
-  // Remember the choice so the next ticket defaults to the same language.
-  if (swedish !== store.jiraReplyInSwedish) store.setJiraReplyInSwedish(swedish);
-  if (needsBaseUrl && result.extra) store.setJiraBaseUrl(result.extra.trim());
-
-  return { ticket, swedish };
+  // The dialog itself (NewJiraTicketModal) owns the acronym/number split,
+  // remembered acronyms, the Swedish toggle and the first-run Jira address —
+  // including persisting all of them.
+  return requestJiraTicket();
 }
 
+/** Does `filename` already exist in `dir` (case-insensitive), locally or on a
+ *  server? Best-effort: an unreadable dir reports false rather than blocking. */
+export async function jiraFileExists(
+  dir: string,
+  filename: string,
+  server?: { host: string; username: string; authMethod: string; sshKeyPath?: string } | null,
+): Promise<boolean> {
+  const lower = filename.toLowerCase();
+  try {
+    if (server) {
+      const entries = await invoke<string[]>("ssh_ls", {
+        host: server.host,
+        username: server.username,
+        path: dir,
+        identityFile: server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null,
+      });
+      return entries.some((e) => e.replace(/\/$/, "").toLowerCase() === lower);
+    }
+    const entries = await invoke<{ name: string }[]>("list_dir", { path: dir });
+    return entries.some((e) => e.name.toLowerCase() === lower);
+  } catch {
+    return false;
+  }
+}
+
+export interface CreateJiraProjectOptions {
+  /** Source folder the Jira work runs against (local path or remote absolute path). */
+  path: string;
+  /** Set when the folder lives on a remote server. */
+  serverId?: string;
+  /** Local template file copied in as CLAUDE.md. Skipped (never overwritten)
+   *  when the folder already has a CLAUDE.md — Jira projects point at existing
+   *  repos, so an existing file always wins. */
+  claudeTemplatePath?: string;
+}
+
+export type JiraTemplateOutcome = "written" | "skipped-exists" | "none";
+
 /**
- * Create a Jira project bound to a platform's source folder.
+ * Create a Jira project bound to a source folder (local or remote).
  *
  * The tab starts with a null layout — no panes at all — so the first ticket's
  * pane becomes the layout root and the browser can then be added as a proper
  * full-height right column. Seeding a browser-only layout instead would make the
  * first ticket a 50/50 grid split, which is not the arrangement we want.
  */
-export async function createJiraProject(): Promise<string | null> {
-  let selected: string | null = null;
-  try {
-    const picked = await openDialog({
-      directory: true,
-      multiple: false,
-      title: "Select the source folder for this Jira project",
-    });
-    if (typeof picked === "string") selected = picked;
-  } catch {
-    return null; // cancelled, or the dialog failed
-  }
-  if (!selected) return null;
-
-  const folder = selected.split(/[\\/]/).pop() || "Jira";
+export async function createJiraProjectAt(
+  opts: CreateJiraProjectOptions,
+): Promise<{ tabId: string; template: JiraTemplateOutcome }> {
   const store = useAppStore.getState();
-  const tabId = store.addTabWithLayout(`Jira · ${folder}`, selected, null, undefined, {
+  const server = opts.serverId ? store.servers.find((s) => s.id === opts.serverId) : null;
+
+  let template: JiraTemplateOutcome = "none";
+  if (opts.claudeTemplatePath) {
+    if (await jiraFileExists(opts.path, "CLAUDE.md", server)) {
+      template = "skipped-exists";
+    } else {
+      const content = await invoke<string>("read_file", { path: opts.claudeTemplatePath });
+      if (server) {
+        await invoke("ssh_write_file", {
+          host: server.host,
+          username: server.username,
+          path: `${opts.path.replace(/\/+$/, "")}/CLAUDE.md`,
+          content,
+          identityFile: server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null,
+        });
+      } else {
+        const sep = opts.path.includes("\\") ? "\\" : "/";
+        await invoke("write_file", { path: `${opts.path}${sep}CLAUDE.md`, content });
+      }
+      template = "written";
+    }
+  }
+
+  const folder = opts.path.split(/[\\/]/).filter(Boolean).pop() || "Jira";
+  const tabId = store.addTabWithLayout(`Jira · ${folder}`, opts.path, null, opts.serverId, {
     isJiraProject: true,
   });
 
-  store.addRecentProject({ path: selected, name: folder });
-  return tabId;
+  store.addRecentProject({ path: opts.path, name: folder, serverId: opts.serverId, isJira: true });
+  return { tabId, template };
 }
 
 interface OpenTicketOptions {
   ticket: string;
-  /** Omitted when reopening — the resumed conversation already has its prompt. */
+  /** Omitted when reopening — the resumed conversation already has its prompt.
+   *  Mutually exclusive with `english` (the dialog enforces it). */
   swedish?: boolean;
+  english?: boolean;
+  /** Claude Code `--model` alias for the fresh pane ("fable" | "opus" |
+   *  "sonnet" | "haiku"). Omitted/null = the CLI's own default. Fresh
+   *  conversations only — a resumed session keeps whatever it ran on. */
+  model?: string | null;
+  /** Duplicate number (2+): names the session "TICKET #n" and nests the pane
+   *  into the base ticket's pair, sharing its browser. Absent = the original. */
+  instance?: number;
+  /** Fresh conversation WITHOUT the investigation prompt (duplicate "empty"). */
+  noPrompt?: boolean;
+  /** Duplicate-as-fork: the fresh pane starts as an exact copy of this source
+   *  conversation (`--resume <id> --fork-session`). No prompt is sent. */
+  forkFromSessionId?: string;
   /** Resume this session instead of starting a fresh conversation. */
   resumeId?: string;
 }
@@ -120,57 +155,88 @@ export function openJiraTicket(tabId: string, opts: OpenTicketOptions): void {
   const tab = store.tabs.find((t) => t.id === tabId);
   if (!tab) return;
 
+  const instance = opts.instance && opts.instance > 1 ? opts.instance : undefined;
+  const instKey = jiraInstanceKey(opts.ticket, instance);
   const terminalId = generateTerminalId();
   const resuming = !!opts.resumeId;
+  const fork = opts.forkFromSessionId
+    ? { sourceSessionId: opts.forkFromSessionId, newSessionId: crypto.randomUUID() }
+    : undefined;
 
-  // Both of these must be parked BEFORE the pane is asked for: the spawn reads
-  // them, and it can begin as soon as the pane mounts.
+  // Everything the spawn needs must be parked BEFORE the pane is asked for:
+  // the spawn reads it, and it can begin as soon as the pane mounts.
   //
   // A resumed conversation must NOT be re-prompted — it already contains the
   // investigation, and a second copy would just make Claude start over. It also
   // needs no ticket parking, because its session id is already known here.
+  // A fork carries the source conversation, so it gets no prompt either.
   if (!resuming) {
-    setPendingPrompt(
-      terminalId,
-      buildJiraPrompt(
-        store.jiraPromptTemplate || DEFAULT_JIRA_PROMPT,
-        opts.ticket,
-        !!opts.swedish,
-      ),
-    );
-    rememberTicketForTerminal(terminalId, opts.ticket);
+    if (!opts.noPrompt && !fork) {
+      setPendingPrompt(
+        terminalId,
+        buildJiraPrompt(
+          store.jiraPromptTemplate || DEFAULT_JIRA_PROMPT,
+          opts.ticket,
+          opts.swedish ? "sv" : opts.english ? "en" : undefined,
+        ),
+      );
+    }
+    rememberTicketForTerminal(terminalId, {
+      ticket: opts.ticket,
+      instance,
+      model: opts.model ?? undefined,
+      fork,
+    });
+  } else {
+    // Resumes park too, but only the name-bearing fields: the spawn re-asserts
+    // the row's (possibly user-edited) name via `--name`, which is how a MADE-
+    // side rename reaches the CLI title. Fork/mint stay off because the pane's
+    // leaf carries the resume id.
+    const rowName = (store.projectSessions[tab.workingDir.replace(/\\/g, "/")] ?? []).find(
+      (s) => s.id === opts.resumeId,
+    )?.name;
+    rememberTicketForTerminal(terminalId, {
+      ticket: opts.ticket,
+      instance,
+      name: rowName,
+    });
   }
 
-  // Workspace owns pane creation, layout insertion and focus. Its listener only
-  // answers for the ACTIVE tab, so make sure this one is active first.
+  // Per-ticket canvas: the ticket gets its own fixed pair (Claude pane + own
+  // browser on the ticket URL) appended to the tab layout; the canvas then
+  // switches to it. No made:split-terminal round-trip — the pair is built
+  // directly, so this works even when the tab wasn't active yet.
   if (store.activeTabId !== tabId) store.setActiveTab(tabId);
-  window.dispatchEvent(
-    new CustomEvent("made:split-terminal", {
-      detail: {
-        type: "claude",
-        terminalId,
-        sessionResumeId: opts.resumeId,
-        workingDir: tab.workingDir,
-      },
-    }),
-  );
 
-  // If the listener never ran (no active Workspace for this tab), the pane does
-  // not exist and the prompt would sit in the registry waiting to ambush an
-  // unrelated pane that happens to reuse the id. Drop it.
-  const spawned = !!useAppStore.getState().terminals[terminalId];
-  if (!spawned) {
+  if (findJiraTermLeaf(tab.layout, instKey)) {
+    // This instance is already open (e.g. rail double-fire) — just switch.
     clearPendingPrompt(terminalId);
     clearTicketForTerminal(terminalId);
+    store.setSelectedJiraTicket(tabId, instKey);
     return;
   }
+
+  store.addTerminal(terminalId, "claude", tab.workingDir, tab.serverId);
+  const term = buildJiraTermLeaf(instKey, terminalId, opts.resumeId);
+  const basePair = findJiraPair(tab.layout, opts.ticket);
+  if (basePair && tab.layout) {
+    // The ticket is already on the canvas — nest this instance's pane next to
+    // its existing terminal(s). The ticket's single browser stays where it is,
+    // shared by every instance.
+    store.updateTabLayout(tabId, addJiraTermToPair(tab.layout, opts.ticket, term));
+  } else {
+    const url = buildTicketUrl(store.jiraBaseUrl, opts.ticket) ?? "about:blank";
+    const pair = buildJiraPair(opts.ticket, term, url, store.jiraClaudeSide ?? "left");
+    store.updateTabLayout(tabId, appendJiraPair(tab.layout, pair));
+  }
+  store.setSelectedJiraTicket(tabId, instKey);
 
   // A reopened ticket's session id is already known, so name it now. A fresh
   // one is named by the spawn, which mints the id (see jira-session.ts).
   if (opts.resumeId) {
     store.registerProjectSession(tab.workingDir, {
       id: opts.resumeId,
-      name: opts.ticket,
+      name: parkedTicketName({ ticket: opts.ticket, instance }),
       type: "claude",
       createdAt: Date.now(),
       // Load-bearing: the upsert in sessionSlice returns early for renamed
@@ -178,31 +244,75 @@ export function openJiraTicket(tabId: string, opts: OpenTicketOptions): void {
       // overwriting the ticket key later.
       isRenamed: true,
       ticket: opts.ticket,
+      ticketInstance: instance,
     });
   }
-
-  navigateToTicket(tabId, opts.ticket);
 }
 
-/** Point the project's browser pane at a ticket. No-op without a base URL. */
+export type JiraDuplicateMode = "fork" | "prompt" | "empty";
+
+/**
+ * Duplicate a ticket row into a new instance ("SUPPORT-24920 #2"): a second,
+ * independent Claude conversation on the same ticket, nested into the ticket's
+ * pair so both instances share its browser pane. Three flavors:
+ * - `fork`   — exact copy of the source conversation (`--fork-session`)
+ * - `prompt` — fresh conversation, investigation prompt re-sent
+ * - `empty`  — fresh conversation, nothing sent
+ */
+export function duplicateJiraTicket(
+  tabId: string,
+  source: ProjectSession,
+  mode: JiraDuplicateMode,
+): void {
+  const store = useAppStore.getState();
+  const tab = store.tabs.find((t) => t.id === tabId);
+  if (!tab || !source.ticket) return;
+  const ticket = source.ticket;
+  // Next free instance number across ALL rows of this ticket (open, closed,
+  // archived) — numbers are never reused, or two rows could share a name.
+  const siblings = (store.projectSessions[tab.workingDir.replace(/\\/g, "/")] ?? []).filter(
+    (s) => s.ticket === ticket,
+  );
+  const instance = Math.max(1, ...siblings.map((s) => s.ticketInstance ?? 1)) + 1;
+  // Once a group forms, every sibling carries the numbered convention: rows
+  // still named with the bare ticket key are renumbered ("SUPPORT-1" →
+  // "SUPPORT-1 #1"), in the rail at once and in the Claude title via --name
+  // the next time that pane launches (a RUNNING pane can't be renamed from
+  // outside). Custom names are left alone; the collapse effect in the rail
+  // reverses this when the group shrinks back to one row.
+  for (const s of siblings) {
+    if (s.name === ticket) {
+      store.renameProjectSession(tab.workingDir, s.id, `${ticket} #${s.ticketInstance ?? 1}`);
+    }
+  }
+  openJiraTicket(tabId, {
+    ticket,
+    instance,
+    // Fresh duplicates reuse the remembered dialog defaults; a fork keeps
+    // whatever model the source conversation was already running on.
+    model: mode === "fork" ? undefined : store.jiraClaudeModel,
+    swedish: store.jiraReplyInSwedish,
+    english: store.jiraReplyInEnglish,
+    noPrompt: mode === "empty",
+    forkFromSessionId: mode === "fork" ? source.id : undefined,
+  });
+}
+
+/** Show a ticket's Jira page. In the per-ticket canvas each ticket owns its
+ *  browser pane, so this just selects the ticket's pair when it exists —
+ *  NEVER openOrUpdateBrowserPane into a pair layout (a stray browser pane
+ *  would make the migration effect read it as a legacy grid and rebuild). */
 export function navigateToTicket(tabId: string, ticket: string): void {
   const store = useAppStore.getState();
   const tab = store.tabs.find((t) => t.id === tabId);
   if (!tab) return;
 
+  if (findJiraPair(tab.layout, ticket)) {
+    store.setSelectedJiraTicket(tabId, ticket);
+    return;
+  }
+  // No pair open for this ticket (closed session row) — open it externally
+  // rather than mutating the pair layout.
   const url = buildTicketUrl(store.jiraBaseUrl, ticket);
-  if (!url) return;
-
-  // Read the layout FRESH: the pane insertion above already rewrote it, and the
-  // `tab` captured earlier is the pre-insertion copy.
-  const current = useAppStore.getState().tabs.find((t) => t.id === tabId);
-  if (!current?.layout) return;
-
-  const { layout } = openOrUpdateBrowserPane(current.layout, url, {
-    linkedTabId: undefined, // a Jira browser follows tickets, not a dev server
-    fullColumn: true,
-    spawnLeft: false,
-    sizePercent: 35,
-  });
-  store.updateTabLayout(tabId, layout);
+  if (url) window.open(url, "_blank", "noopener,noreferrer");
 }

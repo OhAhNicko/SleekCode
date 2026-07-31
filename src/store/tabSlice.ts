@@ -68,6 +68,8 @@ export interface TabSlice {
   removeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabLayout: (tabId: string, layout: PaneLayout | null) => void;
+  /** Jira project: switch which ticket's pane pair the canvas shows. */
+  setSelectedJiraTicket: (tabId: string, ticket: string | undefined) => void;
   /** Atomically update a pane's sessionResumeId inside set() to avoid read-modify-write races. */
   updatePaneSessionResumeId: (tabId: string, terminalId: string, sessionResumeId: string | undefined) => void;
   togglePinTab: (tabId: string) => void;
@@ -245,6 +247,12 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
   updateTabLayout: (tabId, layout) => {
     set((state) => ({
       tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, layout } : t)),
+    }));
+  },
+
+  setSelectedJiraTicket: (tabId, ticket) => {
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, selectedJiraTicket: ticket } : t)),
     }));
   },
 
