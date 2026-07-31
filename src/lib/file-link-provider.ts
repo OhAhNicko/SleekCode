@@ -19,8 +19,11 @@ const FILE_PATH_RE = new RegExp(
     "((?:\\.{0,2}/|[a-zA-Z0-9@_-]+/)" +
     // Path segments — directories + filename
     "(?:[a-zA-Z0-9._@/$-]+/)*" +
-    // Final filename with known extension
-    "[a-zA-Z0-9._@$-]+\\.(?:" + EXTENSIONS + "))" +
+    // Final filename with known extension. The lookahead is the alternation
+    // boundary: without it "ts" wins over "tsx" (regex alternation is
+    // first-match) and "main.tsx" linked as "main.ts", dropping the x. With
+    // it the short match fails and backtracking finds the full extension.
+    "[a-zA-Z0-9._@$-]+\\.(?:" + EXTENSIONS + ")(?![a-zA-Z0-9]))" +
     // Optional line:col suffix
     "(?::(\\d+)(?::(\\d+))?|\\((\\d+),(\\d+)\\))?",
   "gi"

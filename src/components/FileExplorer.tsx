@@ -41,6 +41,10 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
   }, [expandedDirs, loadDir, toggleExpandDir]);
 
   const renderEntry = (entry: FileEntry, depth: number) => {
+    // Hard depth cap: recursion here is data-driven (cache + expandedDirs),
+    // so corrupt data must degrade to a truncated tree, never a
+    // stack-overflow crash of the whole app.
+    if (depth > 32) return null;
     const isExpanded = expandedDirs.includes(entry.path);
     const isLoading = loading[entry.path];
     const isHighlighted = entry.path === highlightedPath;
@@ -150,7 +154,10 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
   const revealRequest = useAppStore((s) => s.revealFileRequest);
   useEffect(() => {
     if (!revealRequest || !rootDir) return;
-    const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+    // `/mnt/c/...` → `c:/...` so links emitted by WSL panes still resolve
+    // against the Windows-style rootDir.
+    const norm = (p: string) =>
+      p.replace(/\\/g, "/").replace(/^\/mnt\/([a-z])\//i, (_, d: string) => `${d}:/`).toLowerCase();
     const target = norm(revealRequest.path);
     // Outside this project's tree (or the root itself) — nothing to reveal.
     if (!target.startsWith(norm(rootDir) + "/")) return;
@@ -166,7 +173,13 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
           return;
         }
         if (cancelled) return;
-        setCache((prev) => ({ ...prev, [cur]: entries }));
+        // Snapshot the key. The updater runs at React's NEXT flush, after
+        // `cur` has already advanced to the child dir — capturing `cur`
+        // itself wrote cache[childDir] = PARENT's entries, a listing that
+        // contains childDir, i.e. a self-cycle that sent renderEntry into
+        // infinite recursion (v0.2.8 "Maximum call stack size exceeded").
+        const dir = cur;
+        setCache((prev) => ({ ...prev, [dir]: entries }));
         const next = entries.find(
           (en) => target === norm(en.path) || target.startsWith(norm(en.path) + "/"),
         );

@@ -13,6 +13,8 @@ const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
 let cache: WslCliCache | null = null;
 let resolving = false;
+/** One delayed re-resolve when startup resolution finds zero CLIs. */
+let retriedEmptyResolve = false;
 
 // Promise that resolves once WSL is booted, paths are cached, and pool is warm.
 // Consumers can `await wslReady` before spawning WSL terminals.
@@ -70,6 +72,18 @@ export async function resolveWslCliPaths(): Promise<void> {
     }
     saveCache({ path, distro, resolvedPaths, timestamp: Date.now() });
     console.log("[wsl-cache] resolved:", Object.keys(resolvedPaths).join(", "), distro ? `(${distro})` : "");
+    if (Object.keys(resolvedPaths).length === 0) {
+      // No CLI resolved at all — pooled spawns lose their absolute-path fast
+      // form for the next 24h (the login-shell fallback still pools). Seen
+      // shipping {} on real hardware while the same script resolved fine by
+      // hand; Rust dlogs the raw output, and one delayed retry covers a
+      // WSL-still-booting first attempt.
+      console.error("[wsl-cache] resolution returned NO CLI paths (PATH ok:", !!path, ") — retrying once in 15s");
+      if (!retriedEmptyResolve) {
+        retriedEmptyResolve = true;
+        setTimeout(() => void resolveWslCliPaths(), 15000);
+      }
+    }
     // Pre-warm the WSL pool now that WSL VM is booted and cache is ready.
     // Await so that wslReady consumers can use the pooled spawn path.
     await invoke("pty_pool_warm", { count: 16, distro: distro || null }).catch(() => {});

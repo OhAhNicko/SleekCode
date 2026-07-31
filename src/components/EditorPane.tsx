@@ -265,7 +265,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
             style={{
               fontSize: 9,
               padding: "1px 5px",
-              borderRadius: 3,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
               backgroundColor: "var(--ezy-border)",
               color: "var(--ezy-text-muted)",
               fontWeight: 600,
