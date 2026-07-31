@@ -4,6 +4,7 @@ import { getCachedWindowsCliPath } from "./windows-cli-cache";
 import { getCachedNativeCliPath } from "./macos-cli-cache";
 import { getResumeFlag, supportsSessionResume } from "./session-resume";
 import { isWindows } from "./platform";
+import { getKeychainUnlockPreamble } from "./keychain";
 
 // POSIX shell single-quote an arbitrary string. Escapes embedded single quotes
 // via the standard `'\''` sequence. Safe for any character including (, ), $, etc.
@@ -488,8 +489,17 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
   const cachedPath = getCachedWslPath();
   const cliPath = getCachedCliPath(type);
 
-  // Require both — pooled bash has no profile, can't find CLIs by name
-  if (!cachedPath || !cliPath) return null;
+  // Fast form needs both: pooled bash has no profile, so the CLI must be an
+  // absolute path and PATH must be the cached login PATH (nvm shims need it).
+  // When CLI resolution failed — resolvedPaths shipped {} on real hardware
+  // (2026-07-30) and EVERY pane silently took the ~7s cold wsl.exe spawn —
+  // fall back to exec-ing a LOGIN shell inside the already-warm pooled
+  // session: same semantics as the cold path (profile PATH + aliases), minus
+  // the wsl.exe session boot that makes the cold path slow. Only for the
+  // CLIs whose binary name IS the terminal type; devserver's command is
+  // composed elsewhere.
+  const loginFallback = !cliPath && type !== "devserver";
+  if (!loginFallback && (!cachedPath || !cliPath)) return null;
 
   const extraSuffix = extraArgs?.length ? ` ${extraArgs.map(sh).join(" ")}` : "";
   // getResumeFlag returns e.g. "--resume <uuid>" — split + quote each token.
@@ -498,7 +508,9 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
     : "";
 
   const parts: string[] = [];
-  parts.push(`export PATH=${sh(cachedPath)}`);
+  // In the fallback the login shell rebuilds PATH itself; exporting a stale
+  // or missing cache over it would only hurt.
+  if (!loginFallback) parts.push(`export PATH=${sh(cachedPath!)}`);
   parts.push("export TERM=xterm-256color COLORTERM=truecolor");
   // Pane tagging must ride the pooled path too — it is the COMMON path for
   // fresh AI panes, and the `--session-id` regression proved that a spawn
@@ -511,7 +523,13 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
 
   // Clear the screen before exec so startup noise from Codex/Gemini is never visible.
   parts.push("printf '\\033[2J\\033[H'");
-  parts.push(`exec ${sh(cliPath)}${extraSuffix}${resumeSuffix}`);
+  if (loginFallback) {
+    // Exported vars (TERM, MADE_PANE_ID) and the cd survive the exec into the
+    // login shell. Double sh(): the inner command is one -c argument.
+    parts.push(`exec bash -lic ${sh(`exec ${sh(type)}${extraSuffix}${resumeSuffix}`)}`);
+  } else {
+    parts.push(`exec ${sh(cliPath!)}${extraSuffix}${resumeSuffix}`);
+  }
 
   return parts.join("; ");
 }
@@ -524,21 +542,41 @@ export function isWslTerminal(type: TerminalType, backend?: TerminalBackend): bo
 }
 
 /** Map terminal type to the remote command to exec over SSH */
-function getRemoteExecCommand(type: TerminalType, sessionResumeId?: string): string {
-  const resumeSuffix = sessionResumeId && supportsSessionResume(type)
-    ? ` ${getResumeFlag(type, sessionResumeId).split(" ").map(sh).join(" ")}`
-    : "";
+function getRemoteExecCommand(
+  type: TerminalType,
+  sessionResumeId?: string,
+  extraCliArgs?: string[],
+  execShell?: string,
+): string {
+  const resumeArgs = sessionResumeId && supportsSessionResume(type)
+    ? getResumeFlag(type, sessionResumeId).split(" ")
+    : [];
+  // Extra CLI flags (e.g. `--name SUPPORT-24920` for Jira ticket panes) —
+  // claude only; the other CLIs don't take them.
+  const extraArgs = type === "claude" && extraCliArgs?.length ? extraCliArgs : [];
+
+  const cliExec = (bin: string) => {
+    const inner = [bin, ...resumeArgs, ...extraArgs].map(sh).join(" ");
+    // Exec through an interactive login shell when detection knows which
+    // shell's rc files put the CLI on PATH (`remote-cli-shells.ts`): the plain
+    // remote command runs the login shell NON-interactively, so PATH entries
+    // from .zshrc/.zprofile are missing and the bare CLI name fails even
+    // though it works in a hand-typed SSH session.
+    return execShell ? `exec ${execShell} -lic ${sh(inner)}` : `exec ${inner}`;
+  };
+
   switch (type) {
     case "claude":
-      return `exec claude${resumeSuffix}`;
+      return cliExec("claude");
     case "codex":
-      return `exec codex${resumeSuffix}`;
+      return cliExec("codex");
     case "gemini":
-      return `exec gemini${resumeSuffix}`;
+      return cliExec("gemini");
     case "shell":
-      return "exec bash -l";
+      // Land the user in their actual login shell when known, not blindly bash.
+      return `exec ${execShell ?? "bash"} -l`;
     case "devserver":
-      return "exec bash -l";
+      return `exec ${execShell ?? "bash"} -l`;
   }
 }
 
@@ -547,10 +585,19 @@ function getRemoteExecCommand(type: TerminalType, sessionResumeId?: string): str
  * Uses ssh.exe on Windows, ssh on macOS/Linux.
  */
 export function getSshCommand(
-  server: { username: string; host: string; authMethod: string; sshKeyPath?: string; claudeOauthToken?: string },
+  server: {
+    username: string;
+    host: string;
+    authMethod: string;
+    sshKeyPath?: string;
+    claudeOauthToken?: string;
+    claudeAuth?: string;
+  },
   terminalType: TerminalType,
   remoteCwd?: string,
-  sessionResumeId?: string
+  sessionResumeId?: string,
+  extraCliArgs?: string[],
+  execShell?: string
 ): { command: string; args: string[] } {
   const host = server.host;
   const userHost = `${server.username}@${host}`;
@@ -572,17 +619,23 @@ export function getSshCommand(
   // banner that /etc/bashrc prints on every interactive bash login.
   let envExport = "export TERM=xterm-256color COLORTERM=truecolor BASH_SILENCE_DEPRECATION_WARNING=1;";
   // Keep Claude Code logged in across SSH panes: the remote macOS Keychain is locked to
-  // non-GUI SSH shells, so without this every new pane re-prompts for login. Injecting the
-  // long-lived OAuth token (`claude setup-token`) bypasses the Keychain entirely. Exported
-  // for any terminal type so a manually launched `claude` in a shell pane also stays signed in.
-  if (server.claudeOauthToken) {
+  // non-GUI SSH shells, so without this every new pane re-prompts for login. Preferred way
+  // (claudeAuth "keychain", the default): unlock the login keychain in-session via the
+  // preamble below — the keychain watcher in the PTY hooks answers its password sentinel.
+  // Optional fallback (claudeAuth "token"): inject the long-lived OAuth token
+  // (`claude setup-token`), bypassing the Keychain entirely. Either applies to every
+  // terminal type so a manually launched `claude` in a shell pane also stays signed in.
+  let preamble = "";
+  if (server.claudeAuth === "token" && server.claudeOauthToken) {
     envExport += ` export CLAUDE_CODE_OAUTH_TOKEN=${sh(server.claudeOauthToken)};`;
-  }
-  const remoteCmd = getRemoteExecCommand(terminalType, sessionResumeId);
-  if (remoteCwd) {
-    args.push(`${envExport} cd ${sh(remoteCwd)} && ${remoteCmd}`);
   } else {
-    args.push(`${envExport} ${remoteCmd}`);
+    preamble = ` ${getKeychainUnlockPreamble()}`;
+  }
+  const remoteCmd = getRemoteExecCommand(terminalType, sessionResumeId, extraCliArgs, execShell);
+  if (remoteCwd) {
+    args.push(`${envExport}${preamble} cd ${sh(remoteCwd)} && ${remoteCmd}`);
+  } else {
+    args.push(`${envExport}${preamble} ${remoteCmd}`);
   }
 
   return { command: isWindows() ? "ssh.exe" : "ssh", args };
@@ -595,7 +648,8 @@ export function getSshCommand(
  * Deliberately does NOT inject CLAUDE_CODE_OAUTH_TOKEN (we're creating one).
  */
 export function getClaudeSetupTokenCommand(
-  server: { username: string; host: string; authMethod: string; sshKeyPath?: string }
+  server: { username: string; host: string; authMethod: string; sshKeyPath?: string },
+  execShell?: string
 ): { command: string; args: string[] } {
   const userHost = `${server.username}@${server.host}`;
   const args: string[] = ["-t"];
@@ -605,6 +659,42 @@ export function getClaudeSetupTokenCommand(
   args.push("-o", "StrictHostKeyChecking=no");
   args.push(userHost);
   const envExport = "export TERM=xterm-256color COLORTERM=truecolor BASH_SILENCE_DEPRECATION_WARNING=1;";
-  args.push(`${envExport} claude setup-token`);
+  // Same non-interactive-PATH problem as getRemoteExecCommand — see there.
+  const cmd = execShell ? `${execShell} -lic 'claude setup-token'` : "claude setup-token";
+  args.push(`${envExport} ${cmd}`);
   return { command: isWindows() ? "ssh.exe" : "ssh", args };
+}
+
+/**
+ * Build SSH command + args to append `publicKey` to the remote
+ * `~/.ssh/authorized_keys`. Used by the key-setup wizard: it spawns this in a
+ * hidden PTY, answers ssh's password prompt from a masked dialog, and waits
+ * for the `__MADE_KEY_INSTALLED__` sentinel. The pubkey content travels as an
+ * argument (no local pipe/shell), and `grep -qxF` makes retries idempotent —
+ * re-running never duplicates authorized_keys lines.
+ */
+export function getSshInstallKeyCommand(
+  server: { username: string; host: string },
+  publicKey: string
+): { command: string; args: string[] } {
+  const userHost = `${server.username}@${server.host}`;
+  const pub = sh(publicKey);
+  const remote =
+    `mkdir -p ~/.ssh && chmod 700 ~/.ssh && ` +
+    `{ grep -qxF ${pub} ~/.ssh/authorized_keys 2>/dev/null || printf '%s\\n' ${pub} >> ~/.ssh/authorized_keys; } && ` +
+    `chmod 600 ~/.ssh/authorized_keys && echo __MADE_KEY_INSTALLED__`;
+  return {
+    command: isWindows() ? "ssh.exe" : "ssh",
+    args: [
+      "-o", "StrictHostKeyChecking=accept-new",
+      "-o", "ConnectTimeout=10",
+      "-o", "NumberOfPasswordPrompts=3",
+      // Deterministic wizard flow: go straight to the server password instead
+      // of trying local keys first (a passphrase-protected default key would
+      // otherwise hijack the prompt with "Enter passphrase for key …").
+      "-o", "PreferredAuthentications=password,keyboard-interactive",
+      userHost,
+      remote,
+    ],
+  };
 }

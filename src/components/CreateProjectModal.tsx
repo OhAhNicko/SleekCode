@@ -3,9 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../store";
 import { useModal } from "../store/modalCoordinationSlice";
+import { createRemoteProject, remoteJoin } from "../lib/remote-project";
+import RemoteFileBrowser from "./RemoteFileBrowser";
 
 interface CreateProjectModalProps {
-  onCreated: (name: string, dir: string) => void;
+  /** serverId is set when the project was created on a remote server. */
+  onCreated: (name: string, dir: string, serverId?: string) => void;
   onClose: () => void;
 }
 
@@ -47,12 +50,29 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
   const defaultGeminiMdPath = useAppStore((s) => s.defaultGeminiMdPath);
   const defaultUseSingleSourcePointers = useAppStore((s) => s.defaultUseSingleSourcePointers);
   const customScaffolds = useAppStore((s) => s.customScaffolds);
+  const servers = useAppStore((s) => s.servers);
 
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const [existsWarning, setExistsWarning] = useState(false);
+  // "local" or a RemoteServer id.
+  const [locationId, setLocationId] = useState<string>("local");
+  const [remoteParent, setRemoteParent] = useState("");
+  const [showRemoteBrowser, setShowRemoteBrowser] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const remoteServer = locationId === "local" ? null : servers.find((s) => s.id === locationId) ?? null;
+  const remoteServerHasKey = !!(remoteServer && remoteServer.authMethod === "ssh-key" && remoteServer.sshKeyPath);
+
+  const pickLocation = (id: string) => {
+    setLocationId(id);
+    setError("");
+    if (id !== "local") {
+      const sv = servers.find((s) => s.id === id);
+      setRemoteParent(sv?.projectsDir || "");
+    }
+  };
 
   // Build initial scaffold rows from settings. Rebuilt only when defaults/customs change.
   const [rows, setRows] = useState<ScaffoldRow[]>(() =>
@@ -80,15 +100,31 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
   const trimmed = name.trim();
   const validationError = validateName(trimmed);
 
+  const isRemote = remoteServer !== null;
+  const remoteParentTrimmed = remoteParent.trim();
+  const remoteParentOk = remoteParentTrimmed.startsWith("/");
   const sep = projectsDir.includes("\\") ? "\\" : "/";
-  const fullPath = trimmed ? `${projectsDir}${sep}${trimmed}` : "";
+  const fullPath = !trimmed
+    ? ""
+    : isRemote
+      ? remoteParentOk
+        ? remoteJoin(remoteParentTrimmed, trimmed)
+        : ""
+      : `${projectsDir}${sep}${trimmed}`;
 
   const agentsRow = useMemo(() => rows.find((r) => r.role === "agents"), [rows]);
   const agentsHasSource = !!agentsRow?.sourcePath;
   const singleSourceBlocked = singleSource && (!agentsRow?.checked || !agentsHasSource);
 
+  const localBlocked = !isRemote && !projectsDir;
+  const remoteBlocked = isRemote && (!remoteParentOk || !remoteServerHasKey);
   const canCreate =
-    trimmed.length > 0 && !validationError && !creating && !singleSourceBlocked;
+    trimmed.length > 0 &&
+    !validationError &&
+    !creating &&
+    !singleSourceBlocked &&
+    !localBlocked &&
+    !remoteBlocked;
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -101,15 +137,32 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
     }
     const timer = setTimeout(async () => {
       try {
-        const entries = await invoke<{ name: string }[]>("list_dir", { path: projectsDir });
-        const exists = entries.some((e) => e.name.toLowerCase() === trimmed.toLowerCase());
-        setExistsWarning(exists);
+        if (isRemote) {
+          if (!remoteServer || !remoteParentOk) {
+            setExistsWarning(false);
+            return;
+          }
+          const entries = await invoke<string[]>("ssh_ls", {
+            host: remoteServer.host,
+            username: remoteServer.username,
+            path: remoteParentTrimmed,
+            identityFile: remoteServerHasKey ? remoteServer.sshKeyPath : null,
+          });
+          const exists = entries.some(
+            (e) => e.replace(/\/$/, "").toLowerCase() === trimmed.toLowerCase(),
+          );
+          setExistsWarning(exists);
+        } else {
+          const entries = await invoke<{ name: string }[]>("list_dir", { path: projectsDir });
+          const exists = entries.some((e) => e.name.toLowerCase() === trimmed.toLowerCase());
+          setExistsWarning(exists);
+        }
       } catch {
         setExistsWarning(false);
       }
     }, 300);
     return () => clearTimeout(timer);
-  }, [trimmed, projectsDir, validationError]);
+  }, [trimmed, projectsDir, validationError, isRemote, remoteServer, remoteParentTrimmed, remoteParentOk, remoteServerHasKey]);
 
   // When pointer mode flips on, force-check AGENTS.md.
   useEffect(() => {
@@ -160,17 +213,22 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           source: r.sourcePath || null,
           role: r.role,
         }));
-      await invoke("create_project", {
-        projectDir: fullPath,
-        scaffolds,
-        singleSourcePointers: singleSource,
-      });
-      onCreated(trimmed, fullPath);
+      if (remoteServer) {
+        await createRemoteProject(remoteServer, fullPath, scaffolds, singleSource);
+        onCreated(trimmed, fullPath, remoteServer.id);
+      } else {
+        await invoke("create_project", {
+          projectDir: fullPath,
+          scaffolds,
+          singleSourcePointers: singleSource,
+        });
+        onCreated(trimmed, fullPath);
+      }
     } catch (err) {
       setError(String(err));
       setCreating(false);
     }
-  }, [canCreate, fullPath, rows, singleSource, trimmed, onCreated]);
+  }, [canCreate, fullPath, rows, singleSource, trimmed, onCreated, remoteServer]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -186,6 +244,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
   );
 
   return (
+    <>
     <div
       style={{
         position: "fixed",
@@ -206,7 +265,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           width: "100%",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
           maxHeight: "80vh",
@@ -249,6 +308,106 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
 
         {/* Body */}
         <div style={{ padding: "16px", overflowY: "auto" }}>
+          {/* Location — local machine or one of the configured servers */}
+          {servers.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
+                Location
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {[{ id: "local", label: "This computer" }, ...servers.map((s) => ({ id: s.id, label: s.name }))].map(
+                  (loc) => (
+                    <div
+                      key={loc.id}
+                      onClick={() => pickLocation(loc.id)}
+                      style={{
+                        padding: "5px 12px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                        cursor: "pointer",
+                        color: locationId === loc.id ? "#fff" : "var(--ezy-text-muted)",
+                        backgroundColor: locationId === loc.id ? "var(--ezy-accent-dim)" : "var(--ezy-surface)",
+                        border: `1px solid ${locationId === loc.id ? "var(--ezy-accent-dim)" : "var(--ezy-border)"}`,
+                        transition: "all 120ms ease",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {loc.label}
+                    </div>
+                  ),
+                )}
+              </div>
+              {isRemote && !remoteServerHasKey && (
+                <div style={{ fontSize: 11, color: "#e55", marginTop: 6 }}>
+                  This server needs a working SSH key first — set one up in the Servers panel.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Remote parent directory */}
+          {isRemote && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
+                Parent directory on {remoteServer?.name}
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  type="text"
+                  value={remoteParent}
+                  onChange={(e) => setRemoteParent(e.target.value)}
+                  placeholder="/home/user/projects"
+                  spellCheck={false}
+                  style={{
+                    flex: 1,
+                    padding: "8px 10px",
+                    fontSize: 13,
+                    color: "var(--ezy-text)",
+                    backgroundColor: "var(--ezy-surface)",
+                    border: "1px solid var(--ezy-border)",
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
+                    outline: "none",
+                    fontFamily: "inherit",
+                    boxSizing: "border-box",
+                    minWidth: 0,
+                  }}
+                />
+                <button
+                  onClick={() => setShowRemoteBrowser(true)}
+                  disabled={!remoteServerHasKey}
+                  style={{
+                    padding: "3px 12px",
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: "var(--ezy-text-secondary)",
+                    backgroundColor: "var(--ezy-surface-raised)",
+                    border: "1px solid var(--ezy-border)",
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
+                    cursor: remoteServerHasKey ? "pointer" : "not-allowed",
+                    opacity: remoteServerHasKey ? 1 : 0.5,
+                    fontFamily: "inherit",
+                    flexShrink: 0,
+                  }}
+                >
+                  Browse
+                </button>
+              </div>
+              {remoteParentTrimmed.length > 0 && !remoteParentOk && (
+                <div style={{ fontSize: 11, color: "#e55", marginTop: 4 }}>
+                  Use an absolute path starting with / (no ~).
+                </div>
+              )}
+            </div>
+          )}
+
+          {localBlocked && (
+            <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 12 }}>
+              Set a projects directory in Settings to create local projects
+              {servers.length > 0 ? ", or pick a server above." : "."}
+            </div>
+          )}
+
           <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
             Project Name
           </div>
@@ -269,7 +428,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
               border: `1px solid ${validationError ? "#e55" : "var(--ezy-border)"}`,
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               outline: "none",
               fontFamily: "inherit",
               boxSizing: "border-box",
@@ -333,7 +492,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
                 marginTop: 12,
                 padding: "8px 10px",
                 border: "1px solid var(--ezy-border)",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 backgroundColor: "var(--ezy-surface)",
                 cursor: "pointer",
                 userSelect: "none",
@@ -378,7 +537,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
               color: canCreate ? "#fff" : "var(--ezy-text-muted)",
               backgroundColor: canCreate ? "var(--ezy-accent)" : "var(--ezy-surface)",
               border: canCreate ? "none" : "1px solid var(--ezy-border)",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: canCreate ? "pointer" : "not-allowed",
               fontFamily: "inherit",
               transition: "background-color 150ms ease",
@@ -389,6 +548,18 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
         </div>
       </div>
     </div>
+    {showRemoteBrowser && remoteServer && (
+      <RemoteFileBrowser
+        server={remoteServer}
+        initialPath={remoteParentOk ? remoteParentTrimmed : undefined}
+        onSelect={(p) => {
+          setRemoteParent(p);
+          setShowRemoteBrowser(false);
+        }}
+        onClose={() => setShowRemoteBrowser(false)}
+      />
+    )}
+    </>
   );
 }
 
@@ -465,7 +636,7 @@ function ScaffoldRowView({
         alignItems: "center",
         gap: 8,
         padding: "6px 8px",
-        borderRadius: 6,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
         backgroundColor: row.checked ? "var(--ezy-surface)" : "transparent",
         border: "1px solid",
         borderColor: row.checked ? "var(--ezy-border)" : "transparent",
@@ -520,7 +691,7 @@ function ScaffoldRowView({
           color: "var(--ezy-text-secondary)",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 5,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
           cursor: "pointer",
           fontFamily: "inherit",
           flexShrink: 0,

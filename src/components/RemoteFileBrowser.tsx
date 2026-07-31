@@ -7,12 +7,16 @@ interface RemoteFileBrowserProps {
   server: RemoteServer;
   onSelect: (remotePath: string) => void;
   onClose: () => void;
+  /** Absolute directory to open at instead of "/" (falls back to "/" if it
+   *  fails to list, e.g. the dir doesn't exist yet). */
+  initialPath?: string;
 }
 
 export default function RemoteFileBrowser({
   server,
   onSelect,
   onClose,
+  initialPath,
 }: RemoteFileBrowserProps) {
   // Fullscreen modal → the native panes must hide, or its child HWNDs paint
   // straight over this. Same gap TemplatePicker had (2026-07-27 audit).
@@ -97,7 +101,25 @@ export default function RemoteFileBrowser({
   }, [newFolderName, currentPath, host, server.username, identityFile, joinPath, loadDirectory]);
 
   useEffect(() => {
-    loadDirectory("/");
+    const start = initialPath && initialPath.startsWith("/") ? initialPath : "/";
+    (async () => {
+      if (start !== "/") {
+        try {
+          const result = await invoke<string[]>("ssh_ls", {
+            host,
+            username: server.username,
+            path: start,
+            identityFile,
+          });
+          setEntries(result);
+          setCurrentPath(start);
+          return;
+        } catch {
+          // fall through to root
+        }
+      }
+      loadDirectory("/");
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -143,7 +165,7 @@ export default function RemoteFileBrowser({
           maxHeight: "70vh",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           display: "flex",
           flexDirection: "column",
@@ -186,7 +208,7 @@ export default function RemoteFileBrowser({
                   padding: "3px 8px",
                   backgroundColor: "transparent",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 5,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                   color: creatingFolder || loading ? "var(--ezy-text-muted)" : "var(--ezy-text)",
                   fontSize: 11,
                   fontWeight: 600,
@@ -280,7 +302,7 @@ export default function RemoteFileBrowser({
                   padding: "4px 8px",
                   backgroundColor: "var(--ezy-surface-raised)",
                   border: `1px solid ${createError ? "var(--ezy-red)" : "var(--ezy-border)"}`,
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   color: "var(--ezy-text)",
                   fontSize: 13,
                   fontFamily: "inherit",
@@ -294,7 +316,7 @@ export default function RemoteFileBrowser({
                   padding: "4px 10px",
                   backgroundColor: "var(--ezy-accent-dim)",
                   border: "none",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   color: "#ffffff",
                   fontSize: 11,
                   fontWeight: 600,
@@ -312,7 +334,7 @@ export default function RemoteFileBrowser({
                   padding: "4px 10px",
                   backgroundColor: "transparent",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   color: "var(--ezy-text-muted)",
                   fontSize: 11,
                   fontWeight: 600,
@@ -413,7 +435,7 @@ export default function RemoteFileBrowser({
               padding: "6px 16px",
               backgroundColor: "transparent",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               color: "var(--ezy-text-muted)",
               fontSize: 12,
               fontWeight: 600,
@@ -429,7 +451,7 @@ export default function RemoteFileBrowser({
               padding: "6px 16px",
               backgroundColor: "var(--ezy-accent-dim)",
               border: "none",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               color: "#ffffff",
               fontSize: 12,
               fontWeight: 600,

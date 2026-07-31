@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { useModal } from "../store/modalCoordinationSlice";
 import { getClaudeSetupTokenCommand } from "../lib/terminal-config";
+import { cleanOutput } from "../lib/pty-text";
+import { probeCliShells } from "../lib/remote-cli-shells";
 
 interface ClaudeTokenWizardModalProps {
   /** Connection details for the server to run `claude setup-token` on. */
@@ -20,16 +22,6 @@ const URL_RE = /https?:\/\/[^\s'"]+/g;
 
 const URL_TIMEOUT_MS = 30_000;
 const TOKEN_TIMEOUT_MS = 60_000;
-
-/** Strip terminal control sequences so regex matching sees plain text. */
-function cleanOutput(s: string): string {
-  return s
-    .replace(/\x1bP[\s\S]*?\x1b\\/g, "") // DCS (e.g. Warp version reply)
-    .replace(/\x1b\][\s\S]*?(\x07|\x1b\\)/g, "") // OSC
-    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "") // CSI
-    .replace(/\x1b[@-Z\\-_]/g, "") // other single-char escapes
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, ""); // stray control chars (keep \t \n \r)
-}
 
 export default function ClaudeTokenWizardModal({ server, onToken, onClose }: ClaudeTokenWizardModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -83,7 +75,11 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
     let cancelled = false;
     (async () => {
       try {
-        const { command, args } = getClaudeSetupTokenCommand(serverRef.current);
+        // `claude` may only be on PATH inside the user's interactive shell
+        // (zsh rc files) — probe which shell resolves it, like pane spawns do.
+        const cliInfo = await probeCliShells(serverRef.current);
+        if (cancelled) return;
+        const { command, args } = getClaudeSetupTokenCommand(serverRef.current, cliInfo?.cli.claude);
 
         const onData = new Channel<ArrayBuffer>();
         onData.onmessage = (buf) => {
@@ -227,7 +223,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
           width: "100%",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
         }}
@@ -287,7 +283,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
                   gap: 8,
                   padding: "8px 10px",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   backgroundColor: "var(--ezy-surface)",
                   marginBottom: 14,
                 }}
@@ -396,7 +392,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
                     color: "var(--ezy-text-secondary)",
                     backgroundColor: "var(--ezy-bg)",
                     border: "1px solid var(--ezy-border)",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     maxHeight: 200,
                     overflow: "auto",
                     whiteSpace: "pre-wrap",
@@ -425,7 +421,7 @@ const inlineCodeStyle: React.CSSProperties = {
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
   backgroundColor: "var(--ezy-surface)",
   padding: "1px 5px",
-  borderRadius: 3,
+  borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
   fontSize: "0.9em",
   color: "var(--ezy-text)",
 };
@@ -437,7 +433,7 @@ const inputStyle: React.CSSProperties = {
   color: "var(--ezy-text)",
   backgroundColor: "var(--ezy-surface)",
   border: "1px solid var(--ezy-border)",
-  borderRadius: 6,
+  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
   outline: "none",
   fontFamily: "inherit",
   boxSizing: "border-box",
@@ -446,7 +442,7 @@ const inputStyle: React.CSSProperties = {
 const smallBtnStyle: React.CSSProperties = {
   fontSize: 11,
   padding: "4px 8px",
-  borderRadius: 4,
+  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
   border: "1px solid var(--ezy-border)",
   backgroundColor: "var(--ezy-surface-raised)",
   color: "var(--ezy-text-secondary)",
@@ -463,7 +459,7 @@ function buttonStyle(primary: boolean, disabled: boolean): React.CSSProperties {
     color: primary ? (disabled ? "var(--ezy-text-muted)" : "#fff") : "var(--ezy-text)",
     backgroundColor: primary ? (disabled ? "var(--ezy-surface)" : "var(--ezy-accent)") : "var(--ezy-surface-raised)",
     border: primary ? (disabled ? "1px solid var(--ezy-border)" : "none") : "1px solid var(--ezy-border)",
-    borderRadius: 6,
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
     cursor: disabled ? "not-allowed" : "pointer",
     fontFamily: "inherit",
     transition: "background-color 150ms ease",
