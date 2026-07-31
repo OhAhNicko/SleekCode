@@ -35,6 +35,9 @@ interface TerminalPaneProps {
    * TerminalPaneNative.
    */
   isTabActive: boolean;
+  /** Overrides the per-project pane tint (Jira: each ticket's pane is tinted
+   *  with its ticket color regardless of the global project-tint toggle). */
+  paneTintOverride?: string | null;
   paneCount?: number;
   onClose: () => void;
   onChangeType: (type: TerminalType) => void;

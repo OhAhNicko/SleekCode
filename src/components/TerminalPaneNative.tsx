@@ -37,6 +37,8 @@ import {
   nativeTermSetWheelAcceleration,
   subscribeTitle,
   nativeTermProposeDimensions,
+  registerNativeTermForTerminal,
+  unregisterNativeTermForTerminal,
 } from "../lib/native-term-bridge";
 import { useNativeCommandBlocks } from "../hooks/useNativeCommandBlocks";
 import { useNativeFileLinks } from "../native-term/useNativeFileLinks";
@@ -250,6 +252,8 @@ interface TerminalPaneNativeProps {
   onSessionResumeId?: (id: string) => void;
   onSwitchSession?: (newSessionId: string | undefined) => void;
   backend?: TerminalBackend;
+  /** Overrides the per-project pane tint (Jira per-ticket colors). */
+  paneTintOverride?: string | null;
 }
 
 export default function TerminalPaneNative({
@@ -258,6 +262,7 @@ export default function TerminalPaneNative({
   workingDir,
   isActive,
   isTabActive,
+  paneTintOverride,
   onClose,
   onChangeType,
   onFocus,
@@ -504,7 +509,9 @@ export default function TerminalPaneNative({
   const projectColorId = useAppStore(
     (s) => s.projectColors[workingDir.replace(/\\/g, "/")] ?? null,
   );
-  const paneTint = projectPaneTint ? getProjectColor(projectColorId) : null;
+  // A per-ticket override (Jira) wins over the project wash and ignores the
+  // global tint toggle — the ticket color IS the pane's identity there.
+  const paneTint = paneTintOverride ?? (projectPaneTint ? getProjectColor(projectColorId) : null);
   const paneTintRef = useRef(paneTint);
   useEffect(() => { paneTintRef.current = paneTint; }, [paneTint]);
   // Whole percent in the store (Settings stepper) → 0..1 blend fraction here.
@@ -553,6 +560,7 @@ export default function TerminalPaneNative({
   // active and must keep blinking).
   const appWindowFocused = useAppStore((s) => s.appWindowFocused);
   const overlayFocused = useAppStore((s) => s.overlayFocused);
+  const nonTerminalPaneActive = useAppStore((s) => s.nonTerminalPaneActive);
   // Mirror isActive + the pane-activation callback into refs so the
   // focus_gained subscription (registered in the event effect below) can
   // read the latest values without growing that effect's dep array —
@@ -688,6 +696,7 @@ export default function TerminalPaneNative({
           createdId = id;
           const tCreated = performance.now();
           registerNativeTerm(id);
+          registerNativeTermForTerminal(terminalId, id);
           // ── P1c: initial-size handshake (kills the 80x24 flash) ────────
           // Re-read the anchor rect: during pane-grid mount the div can
           // report 0x0 for a frame or two. Retry on successive rAFs
@@ -754,7 +763,18 @@ export default function TerminalPaneNative({
     let lastGeomJson = "";
     const pushGeom = () => {
       geomRafId = requestAnimationFrame(pushGeom);
-      if (createdId == null || !el.isConnected) return;
+      if (createdId == null) return;
+      // A DETACHED anchor must hide the HWND, same as a zero rect: the Jira
+      // per-ticket canvas unmounts the previous ticket's placeholder (slot and
+      // all), and a bare `return` here left the old pane painting over the new
+      // ticket's pair. display:none tab switches never hit this branch — their
+      // elements stay connected — so this is the detach-while-alive twin of
+      // the zero-rect case below.
+      if (!el.isConnected) {
+        setPaneLayoutVisible(createdId, false);
+        lastGeomJson = "";
+        return;
+      }
       const rect = surfaceRectOf(el);
       // A zero-size anchor means this pane is not laid out: its tab is behind
       // App.tsx's `display: none` (tab/project switch) or the pane collapsed.
@@ -830,6 +850,7 @@ export default function TerminalPaneNative({
       ro.disconnect();
       if (createdId != null) {
         unregisterNativeTerm(createdId);
+        unregisterNativeTermForTerminal(terminalId, createdId);
         // Drop the visibility entry BEFORE destroy: ids are allocated
         // monotonically so reuse isn't a concern, but a leftover entry would
         // keep a dead id in the modal gate's reconcile loop forever.
@@ -1168,11 +1189,14 @@ export default function TerminalPaneNative({
     // the pane cursor must render UNFOCUSED (hollow, no blink) — xterm parity
     // (its cursor hollows when the DOM search input takes focus). Without
     // this both carets blinked at once.
+    // !nonTerminalPaneActive: the user is working in a browser/editor/kanban/…
+    // pane — activeTerminal is never cleared, so without this bit the cursor
+    // stayed solid while typing into a Jira login form next door.
     void nativeTermSetFocused(
       termId,
-      isActive && appWindowFocused && !overlayFocused,
+      isActive && appWindowFocused && !overlayFocused && !nonTerminalPaneActive,
     ).catch(() => {});
-  }, [termId, isActive, appWindowFocused, overlayFocused]);
+  }, [termId, isActive, appWindowFocused, overlayFocused, nonTerminalPaneActive]);
 
   // ── Win32 keyboard-focus routing (P7b) ────────────────────────────────
   // Parity with the xterm pane, which calls term.focus() when it becomes
@@ -1219,6 +1243,48 @@ export default function TerminalPaneNative({
     if (useAppStore.getState().overlayFocused) return;
     void nativeTermFocusKeyboard(termId).catch(() => {});
   }, [termId, isActive, isTabActive, appWindowFocused]);
+
+  // One-shot CREATION claim. The effect above refuses to claim while
+  // `document.activeElement` sits anywhere but <body> — but a pane spawned
+  // from the add-pane menu arrives exactly in that state: nothing blurs the
+  // PREVIOUS pane's xterm/composer textarea, so the new active pane never
+  // received keyboard focus and typing kept landing in the old pane. This
+  // claim is bounded to the pane's first activation, runs only for the
+  // single globally-active pane (isActive ∩ isTabActive), and still declines
+  // whenever focus is demonstrably somewhere that is NOT a terminal pane
+  // (settings inputs, global search, fullscreen modals, overlay search) —
+  // stealing from those is the class of bug the guards above exist for.
+  const creationClaimRef = useRef(false);
+  useEffect(() => {
+    if (termId == null || creationClaimRef.current) return;
+    if (!isActive || !isTabActive) return;
+    creationClaimRef.current = true;
+    let cancelled = false;
+    const claim = () => {
+      if (cancelled) return;
+      const st = useAppStore.getState();
+      if (st.overlayFocused) return;
+      if (st.openFullscreenModals.size > 0) return;
+      const ae = document.activeElement;
+      // Claimable: nothing focused, or focus held by a DIFFERENT pane's
+      // editable — that pane just stopped being active, so moving keyboard
+      // focus to this one is the point, not a steal.
+      const owner = ae instanceof Element ? ae.closest("[data-terminal-id]") : null;
+      const claimable =
+        ae == null ||
+        ae === document.body ||
+        (owner !== null && owner.getAttribute("data-terminal-id") !== terminalId);
+      if (!claimable) return;
+      void nativeTermFocusKeyboard(termId).catch(() => {});
+    };
+    // Retries cover creation races: the webview-focus dip while the add-pane
+    // overlay click settles, and store flags landing a beat after termId.
+    const timers = [0, 120, 400].map((delay) => window.setTimeout(claim, delay));
+    return () => {
+      cancelled = true;
+      for (const t of timers) clearTimeout(t);
+    };
+  }, [termId, isActive, isTabActive, terminalId]);
 
   // ── PTY hookup ────────────────────────────────────────────────────────
   // Native mode: bytes route to Rust via R's pty_route::sender_for(id)
@@ -1479,9 +1545,21 @@ export default function TerminalPaneNative({
   // webview or hides the panes; nothing cuts holes in the HWND anymore.
 
   // ── Focus delegation ──────────────────────────────────────────────────
-  const onPaneClick = useCallback(() => {
-    if (!isActive) onFocus();
-  }, [isActive, onFocus]);
+  const onPaneClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (!isActive) onFocus();
+      // Caret parity with the xterm pane: DOM-chrome clicks (header, padding
+      // strips) must hand the HWND keyboard focus even when the pane is
+      // already active — clicks on the SURFACE do this via WM_LBUTTONDOWN,
+      // but the chrome is webview DOM and never reaches the wnd_proc. Skip
+      // when the click landed in an editable (composer, rename, search) —
+      // taking focus from those is the steal class the claim guards exist for.
+      const t = e.target as HTMLElement | null;
+      if (t?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      if (termId != null) void nativeTermFocusKeyboard(termId).catch(() => {});
+    },
+    [isActive, onFocus, termId],
+  );
 
   // ── PromptComposer handlers ───────────────────────────────────────────
   const composerWrite = useCallback(

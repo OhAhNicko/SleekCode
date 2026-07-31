@@ -178,6 +178,13 @@ export interface TerminalSlice {
   changeTerminalType: (id: string, newType: TerminalType) => void;
   setTerminalPid: (id: string, pid: number) => void;
   setActiveTerminal: (id: string) => void;
+  /** True while a NON-terminal pane (browser, editor, kanban, …) is the one
+   *  the user last engaged. `activeTerminal` is never cleared, so without
+   *  this bit terminal cursors keep their solid focused look while the user
+   *  types in a browser pane. Set by the app-wide mousedown delegate +
+   *  BrowserPreview's made-focus; cleared by handleTerminalFocus. */
+  nonTerminalPaneActive: boolean;
+  setNonTerminalPaneActive: (value: boolean) => void;
   addDevServer: (server: DevServer) => void;
   removeDevServer: (serverId: string) => void;
   updateDevServerStatus: (
@@ -300,6 +307,10 @@ export const createTerminalSlice: StateCreator<
       return { terminals };
     });
   },
+
+  nonTerminalPaneActive: false,
+  setNonTerminalPaneActive: (value) =>
+    set((state) => (state.nonTerminalPaneActive === value ? state : { nonTerminalPaneActive: value })),
 
   addDevServer: (server) => {
     // Arm retention BEFORE the terminal can produce a byte. This runs when the

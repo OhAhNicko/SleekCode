@@ -105,6 +105,8 @@ interface TerminalPaneProps {
   onSwitchSession?: (newSessionId: string | undefined) => void;
   /** Per-tab backend override. Falls back to global setting if omitted. */
   backend?: import("../types").TerminalBackend;
+  /** Overrides the per-project pane tint (Jira per-ticket colors). */
+  paneTintOverride?: string | null;
 }
 
 export default function TerminalPane({
@@ -112,6 +114,7 @@ export default function TerminalPane({
   terminalType,
   workingDir,
   isActive,
+  paneTintOverride,
   onClose,
   onChangeType,
   onFocus,
@@ -203,6 +206,7 @@ export default function TerminalPane({
   });
   const themeId = useAppStore((s) => s.themeId);
   const vibrantColors = useAppStore((s) => s.vibrantColors);
+  const nonTerminalPaneActive = useAppStore((s) => s.nonTerminalPaneActive);
   const theme = getTheme(themeId);
   // Project-color wash (Settings > Appearance > Theme > "Project color pane
   // tint"). Key normalization mirrors TabBar's projectColors lookup.
@@ -210,7 +214,9 @@ export default function TerminalPane({
   const projectColorId = useAppStore(
     (s) => s.projectColors[workingDir.replace(/\\/g, "/")] ?? null,
   );
-  const paneTint = projectPaneTint ? getProjectColor(projectColorId) : null;
+  // A per-ticket override (Jira) wins over the project wash and ignores the
+  // global tint toggle — the ticket color IS the pane's identity there.
+  const paneTint = paneTintOverride ?? (projectPaneTint ? getProjectColor(projectColorId) : null);
   // Whole percent in the store (Settings stepper) → 0..1 blend fraction here.
   const paneTintAmount = useAppStore((s) => s.projectPaneTintStrength) / 100;
   // The isActive arg of getEffectiveTerminalTheme exists solely to apply the
@@ -712,6 +718,9 @@ export default function TerminalPane({
       // matching xterm's own non-http refusal.
       linkHandler: {
         activate: (event, uri) => {
+          // dlog seam: plain-click activation has failed silently before
+          // (openUrl swallowed rejections) — keep the fork visible.
+          void invoke("debug_log_line", { line: `[xterm-link] osc8 activate uri=${uri} ctrl=${event.ctrlKey} meta=${event.metaKey}` }).catch(() => {});
           if (/^https?:\/\//i.test(uri)) {
             window.dispatchEvent(new CustomEvent("made:open-url", {
               detail: { url: uri, inApp: event.ctrlKey || event.metaKey },
@@ -733,6 +742,7 @@ export default function TerminalPane({
       // Both routed through made:open-url — PaneGrid opens external via
       // Tauri's opener plugin because window.open() is blocked in the
       // WebView, and owns the in-app browser-pane layout mutation.
+      void invoke("debug_log_line", { line: `[xterm-link] weblinks activate uri=${uri} ctrl=${event.ctrlKey} meta=${event.metaKey}` }).catch(() => {});
       window.dispatchEvent(new CustomEvent("made:open-url", {
         detail: { url: uri, inApp: event.ctrlKey || event.metaKey },
       }));
@@ -1777,6 +1787,15 @@ export default function TerminalPane({
     }
   }, [isActive, composerAlwaysVisible, composerOpen, composerSupported]);
 
+  // Hollow the cursor while a NON-terminal pane (browser/editor/kanban/…) is
+  // the engaged one. Panes like kanban/file viewer never steal DOM focus, so
+  // xterm's own textarea-blur heuristic misses them — blur explicitly and let
+  // xterm's cursorInactiveStyle ("outline") do the rest. No auto-refocus:
+  // clicking back into the pane focuses the textarea naturally.
+  useEffect(() => {
+    if (nonTerminalPaneActive) terminalRef.current?.blur();
+  }, [nonTerminalPaneActive]);
+
   // Force repaint when container becomes visible (tab switch).
   // display:none prevents xterm rendering and resets viewport scrollTop.
   // IntersectionObserver detects when the container becomes visible again.
@@ -2146,7 +2165,20 @@ export default function TerminalPane({
       style={{ backgroundColor: containerBg }}
       data-terminal-id={terminalId}
       data-terminal-renderer="xterm"
-      onClick={onFocus}
+      onClick={(e) => {
+        onFocus();
+        // Caret parity for EVERY pane type (PowerShell included): a click
+        // anywhere in the pane — header, padding, not just xterm's own
+        // viewport — lands the caret in the terminal, even when the pane is
+        // already active but keyboard focus drifted elsewhere (browser pane,
+        // settings). The isActive focus effect only fires on TRANSITIONS, so
+        // the already-active case needs this. Never steal from an editable
+        // the user actually clicked (composer, rename input).
+        const t = e.target as HTMLElement | null;
+        if (!t?.closest('input, textarea, select, [contenteditable="true"]')) {
+          terminalRef.current?.focus();
+        }
+      }}
     >
       {!hideChrome && (
         <TerminalHeader
@@ -2223,7 +2255,7 @@ export default function TerminalPane({
               left: "50%",
               transform: "translateX(-50%)",
               padding: "4px 12px",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               backgroundColor: "var(--ezy-surface-raised)",
               border: "1px solid var(--ezy-border)",
               color: "var(--ezy-fg)",
@@ -2260,7 +2292,7 @@ export default function TerminalPane({
             right: 12,
             width: 22,
             height: 22,
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             backgroundColor: "var(--ezy-surface-raised)",
             border: "1px solid var(--ezy-border)",
             alignItems: "center",
