@@ -4,16 +4,42 @@ import { runCommand } from "../../commands";
 import { pasteTextToTerminal } from "../../terminal-paste";
 import { getActivePaneSearchOpener } from "../../pane-search-registry";
 import { getTerminalActions } from "../../terminal-actions";
+import {
+  getNativeTermIdForTerminal,
+  nativeTermCopySelection,
+  nativeTermPasteClipboard,
+} from "../../native-term-bridge";
 import { registerMenuProvider } from "../registry";
 import type { TerminalCtx } from "../context";
 import type { MenuGroup, MenuItemSpec, MenuProvider } from "../types";
 
 function copySelection(ctx: TerminalCtx): void {
+  // Native panes: fully Rust-side. While the pane HWND owns OS focus (the
+  // steady state right after a right-click on it), navigator.clipboard
+  // rejects with "document is not focused" — the JS path below can never
+  // work there. The Rust command also reads the LIVE selection instead of
+  // the mirrored snapshot.
+  if (ctx.renderer === "native") {
+    const nid = getNativeTermIdForTerminal(ctx.terminalId);
+    if (nid != null) {
+      void nativeTermCopySelection(nid).catch(() => {});
+      return;
+    }
+  }
   if (!ctx.selection) return;
   navigator.clipboard.writeText(ctx.selection).catch(() => {});
 }
 
 async function pasteFromClipboard(ctx: TerminalCtx): Promise<void> {
+  // Same focus story as copySelection — Rust reads the clipboard and writes
+  // the PTY with the pane's real bracketed-paste state.
+  if (ctx.renderer === "native") {
+    const nid = getNativeTermIdForTerminal(ctx.terminalId);
+    if (nid != null) {
+      void nativeTermPasteClipboard(nid).catch(() => {});
+      return;
+    }
+  }
   try {
     const text = await navigator.clipboard.readText();
     if (text) pasteTextToTerminal(ctx.terminalId, text);

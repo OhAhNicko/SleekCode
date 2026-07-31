@@ -405,6 +405,21 @@ pub fn native_term_set_prompt_nav(id: u32, enabled: bool) -> Result<(), String> 
     registry::with_window(id, |w| w.set_prompt_nav(enabled))
 }
 
+/// Context-menu Copy for native panes: selection → OS clipboard, entirely in
+/// Rust. The webview cannot do this itself — while the pane HWND owns OS
+/// focus, navigator.clipboard rejects with "document is not focused".
+#[tauri::command]
+pub fn native_term_copy_selection(id: u32) -> Result<(), String> {
+    registry::with_window(id, |w| w.copy_selection())
+}
+
+/// Context-menu Paste for native panes: clipboard → PTY with the pane's real
+/// bracketed-paste state. Same focus rationale as native_term_copy_selection.
+#[tauri::command]
+pub fn native_term_paste_clipboard(id: u32) -> Result<(), String> {
+    registry::with_window(id, |w| w.paste_clipboard())
+}
+
 /// Toggle Warp-style velocity acceleration on MADE's own scrollback wheel
 /// scrolling. Applies to the local-scroll path only (normal buffer); wheel
 /// events forwarded to a mouse-reporting TUI stay raw.

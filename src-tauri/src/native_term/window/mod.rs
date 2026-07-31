@@ -219,6 +219,22 @@ pub trait NativeTermWindow: Send {
         Ok(())
     }
 
+    /// Context-menu Copy: put the pane's current selection on the OS
+    /// clipboard, clear the highlight and the JS selection mirror. Rust-side
+    /// because the webview may not own OS focus while a native pane does,
+    /// making navigator.clipboard unusable there. Default no-op keeps the
+    /// macOS/Linux stubs compiling.
+    fn copy_selection(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Context-menu Paste: read clipboard text and write it to the PTY with
+    /// the pane's real bracketed-paste state. Same focus rationale as
+    /// copy_selection. Default no-op for the stubs.
+    fn paste_clipboard(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Enable/disable velocity acceleration for MADE's OWN scrollback wheel
     /// scrolling (Warp-style: fast flicks travel further per notch). Does not
     /// affect wheel events forwarded to a mouse-reporting TUI — those stay raw,

@@ -157,6 +157,11 @@ pub(crate) const WM_APP_RENDER: u32 = WM_APP + 1;
 /// (WS_EX_NOACTIVATE + MA_NOACTIVATE stay in charge of that), and the
 /// resulting WM_SETFOCUS emits `focus_gained` exactly like a click.
 const WM_APP_FOCUS: u32 = WM_APP + 2;
+/// Context-menu Copy/Paste posted by `copy_selection` / `paste_clipboard`
+/// (native_term_copy_selection / native_term_paste_clipboard). Clipboard and
+/// PTY access run on the HWND's owning thread, same rationale as WM_APP_FOCUS.
+const WM_APP_COPY: u32 = WM_APP + 3;
+const WM_APP_PASTE: u32 = WM_APP + 4;
 
 /// P1b resize-settle timer id. Armed (re-armed) on every WM_SIZE; because
 /// SetTimer with the same id RESETS the countdown, the timer only fires once
@@ -1307,6 +1312,22 @@ impl NativeTermWindow for PlatformWindow {
         Ok(())
     }
 
+    fn copy_selection(&mut self) -> Result<(), String> {
+        // Clipboard + Term access belong on the HWND's owning thread — post,
+        // same pattern as focus_keyboard.
+        unsafe {
+            PostMessageW(self.hwnd, WM_APP_COPY, WPARAM(0), LPARAM(0))
+                .map_err(|e| format!("PostMessageW(WM_APP_COPY): {e}"))
+        }
+    }
+
+    fn paste_clipboard(&mut self) -> Result<(), String> {
+        unsafe {
+            PostMessageW(self.hwnd, WM_APP_PASTE, WPARAM(0), LPARAM(0))
+                .map_err(|e| format!("PostMessageW(WM_APP_PASTE): {e}"))
+        }
+    }
+
     fn set_wheel_acceleration(&mut self, on: bool) -> Result<(), String> {
         unsafe {
             let st = self.state.as_mut();
@@ -1942,6 +1963,20 @@ unsafe extern "system" fn wnd_proc(
             let _ = SetFocus(hwnd);
             LRESULT(0)
         }
+        WM_APP_COPY => {
+            // Context-menu Copy routed through native_term_copy_selection —
+            // clipboard access on the owning thread, JS-free (see
+            // copy_selection_now).
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+            let _ = copy_selection_now(state_ptr, hwnd);
+            LRESULT(0)
+        }
+        WM_APP_PASTE => {
+            // Context-menu Paste routed through native_term_paste_clipboard.
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+            let _ = do_clipboard_paste(state_ptr, hwnd);
+            LRESULT(0)
+        }
         WM_TIMER => {
             match wparam.0 {
                 WATCHDOG_TIMER_ID => {
@@ -2281,6 +2316,7 @@ unsafe extern "system" fn wnd_proc(
                 // Covers the residual case the side fix can't — a jitter that
                 // genuinely crosses a BLANK cell's midpoint. Repaint only when
                 // we actually dropped something.
+                let mut dropped_empty = false;
                 let text = if let Some(term) = (*state_ptr).term.as_ref() {
                     let mut t = term.lock().expect("term lock poisoned");
                     let text = t.selection_to_string().filter(|s| !s.is_empty());
@@ -2290,12 +2326,23 @@ unsafe extern "system" fn wnd_proc(
                     }
                     drop(t);
                     if drop_empty {
+                        dropped_empty = true;
                         let _ = InvalidateRect(hwnd, None, BOOL(0));
                     }
                     text
                 } else {
                     None
                 };
+                // Keep the JS selection mirror honest: a dropped selection
+                // must clear it, or the context menu's Copy stays enabled on
+                // stale text forever.
+                if dropped_empty {
+                    if let (Some(app), Some(tid)) =
+                        ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                    {
+                        emit_selection(app, tid, SelectionEvent { text: String::new() });
+                    }
+                }
                 if let Some(text) = text {
                     if let (Some(app), Some(tid)) =
                         ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
@@ -2536,29 +2583,7 @@ unsafe extern "system" fn wnd_proc(
             // 0x16 SYN as a WM_CHAR, so we arm swallow_next_char (below) to drop
             // it. Handled before vk_to_ui_shortcut / vk_to_key_action.
             if !state_ptr.is_null() && is_paste_shortcut(vk, ctrl, shift, alt) {
-                let mut pasted_text = false;
-                if let Some(text) = read_clipboard_text(hwnd) {
-                    if !text.is_empty() {
-                        // A paste is input headed for the PTY — snap a
-                        // scrolled-back viewport to the live bottom first,
-                        // exactly like a keystroke (cheap no-op when pinned).
-                        snap_to_bottom_on_input(&mut *state_ptr, hwnd);
-                        let bracketed = paste_is_bracketed(&*state_ptr);
-                        let bytes: Vec<u8> = if bracketed {
-                            let mut b = Vec::with_capacity(text.len() + 12);
-                            b.extend_from_slice(b"\x1b[200~");
-                            b.extend_from_slice(text.as_bytes());
-                            b.extend_from_slice(b"\x1b[201~");
-                            b
-                        } else {
-                            text.into_bytes()
-                        };
-                        if let Some(pid) = (*state_ptr).pty_id {
-                            let _ = crate::pty::write_to_pty_sync(pid, &bytes);
-                        }
-                        pasted_text = true;
-                    }
-                }
+                let pasted_text = do_clipboard_paste(state_ptr, hwnd);
                 // No clipboard TEXT (e.g. a screenshot: image-only). We used to
                 // consume the event silently, which killed image paste on
                 // native panes entirely — JS owns the clipboard-image insert
@@ -2591,6 +2616,30 @@ unsafe extern "system" fn wnd_proc(
                 // consumed Ctrl+V so it can't trail the pasted bytes into the PTY.
                 (*state_ptr).swallow_next_char = true;
                 return LRESULT(0);
+            }
+
+            // Explicit copy — Ctrl+Shift+C and Ctrl+Insert always; plain
+            // Ctrl+C only when a selection exists (no selection keeps its
+            // SIGINT meaning). See copy_selection_now for why this cannot
+            // live in JS. Fixes copy in native panes (remote Claude,
+            // PowerShell, …) where these chords previously fell through to
+            // the PTY as 0x03.
+            if !state_ptr.is_null()
+                && ctrl
+                && !alt
+                && (vk == 0x43 /* C */ || (vk == 0x2D /* VK_INSERT */ && !shift))
+            {
+                if copy_selection_now(state_ptr, hwnd) {
+                    (*state_ptr).swallow_next_char = true;
+                    return LRESULT(0);
+                }
+                if vk == 0x43 && shift {
+                    // Ctrl+Shift+C with nothing selected: consume as a no-op
+                    // rather than leaking a stray 0x03 into the PTY.
+                    (*state_ptr).swallow_next_char = true;
+                    return LRESULT(0);
+                }
+                // Plain Ctrl+C with no selection falls through → SIGINT.
             }
 
             if !state_ptr.is_null() {
@@ -3957,6 +4006,67 @@ unsafe fn read_clipboard_text(owner: HWND) -> Option<String> {
     // CRLF first so a lone CR pass doesn't double-collapse it.
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
     Some(normalized)
+}
+
+/// Copy the current selection (non-empty) to the clipboard, clear the
+/// highlight and push the cleared state to the JS selection mirror. Returns
+/// true when text was copied. Shared by the Ctrl+C / Ctrl+Shift+C /
+/// Ctrl+Insert chords and the WM_APP_COPY context-menu path. Handled fully in
+/// Rust on purpose: while this HWND owns OS focus, the webview's
+/// navigator.clipboard rejects with "document is not focused", so no JS-side
+/// copy path can ever work for native panes.
+unsafe fn copy_selection_now(state_ptr: *mut ChildState, hwnd: HWND) -> bool {
+    if state_ptr.is_null() {
+        return false;
+    }
+    let mut copied: Option<String> = None;
+    if let Some(term) = (*state_ptr).term.as_ref() {
+        let mut t = term.lock().expect("term lock poisoned");
+        if let Some(text) = t.selection_to_string().filter(|s| !s.is_empty()) {
+            t.selection = None;
+            copied = Some(text);
+        }
+    }
+    let text = match copied {
+        Some(t) => t,
+        None => return false,
+    };
+    let _ = copy_to_clipboard(hwnd, &text);
+    let _ = InvalidateRect(hwnd, None, BOOL(0));
+    if let (Some(app), Some(tid)) = ((*state_ptr).app.as_ref(), (*state_ptr).term_id) {
+        emit_selection(app, tid, SelectionEvent { text: String::new() });
+    }
+    true
+}
+
+/// Read CF_UNICODETEXT, wrap in bracketed-paste markers when the TUI enabled
+/// DECSET 2004, and write to the PTY. Returns true when text was pasted.
+/// Shared by the Ctrl+V / Shift+Insert chord and the WM_APP_PASTE
+/// context-menu path.
+unsafe fn do_clipboard_paste(state_ptr: *mut ChildState, hwnd: HWND) -> bool {
+    if state_ptr.is_null() {
+        return false;
+    }
+    let text = match read_clipboard_text(hwnd) {
+        Some(t) if !t.is_empty() => t,
+        _ => return false,
+    };
+    // A paste is input headed for the PTY — snap a scrolled-back viewport to
+    // the live bottom first, exactly like a keystroke.
+    snap_to_bottom_on_input(&mut *state_ptr, hwnd);
+    let bytes: Vec<u8> = if paste_is_bracketed(&*state_ptr) {
+        let mut b = Vec::with_capacity(text.len() + 12);
+        b.extend_from_slice(b"\x1b[200~");
+        b.extend_from_slice(text.as_bytes());
+        b.extend_from_slice(b"\x1b[201~");
+        b
+    } else {
+        text.into_bytes()
+    };
+    if let Some(pid) = (*state_ptr).pty_id {
+        let _ = crate::pty::write_to_pty_sync(pid, &bytes);
+    }
+    true
 }
 
 /// Copy a UTF-8 string to the Windows clipboard as CF_UNICODETEXT.

@@ -705,6 +705,38 @@ export function nativeTermGetSelection(
   return invoke<string | null>("native_term_get_selection", { id });
 }
 
+/** Context-menu Copy: selection → OS clipboard, entirely Rust-side. While a
+ *  native pane HWND owns OS focus the webview's navigator.clipboard rejects
+ *  with "document is not focused", so this is the only path that works. */
+export function nativeTermCopySelection(id: NativeTermId): Promise<void> {
+  return invoke("native_term_copy_selection", { id });
+}
+
+/** Context-menu Paste: clipboard → PTY with the pane's real bracketed-paste
+ *  state. Same focus rationale as nativeTermCopySelection. */
+export function nativeTermPasteClipboard(id: NativeTermId): Promise<void> {
+  return invoke("native_term_paste_clipboard", { id });
+}
+
+// ── terminalId → native pane id lookup ──────────────────────────────────────
+// The context-menu providers know panes by MADE terminal id; the Rust
+// clipboard commands need the native term id. TerminalPaneNative registers
+// the pair on create and clears it on destroy.
+const nativeIdByTerminal = new Map<string, NativeTermId>();
+
+export function registerNativeTermForTerminal(terminalId: string, id: NativeTermId): void {
+  nativeIdByTerminal.set(terminalId, id);
+}
+
+export function unregisterNativeTermForTerminal(terminalId: string, id: NativeTermId): void {
+  // Guard against out-of-order unmount/remount of the same terminal id.
+  if (nativeIdByTerminal.get(terminalId) === id) nativeIdByTerminal.delete(terminalId);
+}
+
+export function getNativeTermIdForTerminal(terminalId: string): NativeTermId | undefined {
+  return nativeIdByTerminal.get(terminalId);
+}
+
 /**
  * Opt a pane into MADE claiming Ctrl+Up / Ctrl+Down for sticky-prompt
  * navigation. Enable only for pane types that have that UI (Claude), so the
