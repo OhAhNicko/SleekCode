@@ -47,6 +47,8 @@ export interface PromptRequest {
   /** Reject the typed value with an inline message. Runs on every keystroke;
    *  a non-null return keeps confirm disabled. */
   validate?: (value: string) => string | null;
+  /** Render the main input as a password field (server passwords etc.). */
+  masked?: boolean;
 }
 
 export interface PromptResult {

@@ -9,6 +9,8 @@ import { useAppStore } from "../store";
 import type { RemoteServer } from "../types";
 import { invoke } from "@tauri-apps/api/core";
 import ClaudeTokenWizardModal from "./ClaudeTokenWizardModal";
+import SshKeySetupWizardModal from "./SshKeySetupWizardModal";
+import { detectRemoteCliShells } from "../lib/remote-cli-shells";
 
 /* ── Types ── */
 
@@ -19,16 +21,13 @@ interface SshKeyInfo {
   comment: string;
 }
 
-/* ── Helpers ── */
-
-/** Compute a deterministic SSH key path from server name + short ID suffix */
-function getKeyPath(serverName: string, serverId: string): string {
-  const sanitized = serverName.toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
-  const suffix = serverId.replace("srv-", "").slice(-6);
-  return `~/.ssh/made_${sanitized}_${suffix}_ed25519`;
+/** Connection details the key-setup wizard needs for one server. */
+interface KeyWizardTarget {
+  id: string;
+  name: string;
+  host: string;
+  username: string;
 }
-
-type KeySetupStatus = "idle" | "checking" | "generating" | "installing" | "testing" | "done" | "error";
 
 /* ── Small components ── */
 
@@ -72,7 +71,7 @@ function StatusIndicator({ status }: { status: "idle" | "testing" | "ok" | "erro
         alignItems: "center",
         gap: 4,
         padding: "2px 8px",
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         fontSize: 11,
         fontWeight: 600,
         letterSpacing: "0.03em",
@@ -89,41 +88,17 @@ function StatusIndicator({ status }: { status: "idle" | "testing" | "ok" | "erro
 }
 
 function KeySetupButton({
-  status,
   label,
   onClick,
   compact,
 }: {
-  status: KeySetupStatus;
   label?: string;
   onClick: () => void;
   compact?: boolean;
 }) {
-  const isWorking = status === "checking" || status === "generating" || status === "installing" || status === "testing";
-  const isDone = status === "done";
-  const isError = status === "error";
-
-  const statusLabels: Record<KeySetupStatus, string> = {
-    idle: label || "Setup SSH Key",
-    checking: "Checking...",
-    generating: "Generating key...",
-    installing: "Installing...",
-    testing: "Verifying...",
-    done: "Key installed",
-    error: "Failed — retry?",
-  };
-
-  const bg = isDone
-    ? "var(--ezy-accent-dim)"
-    : isError
-      ? "var(--ezy-red)"
-      : "var(--ezy-border)";
-
-  const fg = isDone || isError ? "#fff" : "var(--ezy-text)";
-
   return (
     <div
-      onClick={isWorking ? undefined : onClick}
+      onClick={onClick}
       style={{
         display: "flex",
         alignItems: "center",
@@ -132,21 +107,16 @@ function KeySetupButton({
         padding: compact ? "3px 8px" : "5px 12px",
         fontSize: compact ? 10 : 11,
         fontWeight: 600,
-        color: fg,
-        backgroundColor: bg,
-        borderRadius: 4,
-        cursor: isWorking ? "default" : "pointer",
-        opacity: isWorking ? 0.7 : 1,
+        color: "var(--ezy-text)",
+        backgroundColor: "var(--ezy-border)",
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+        cursor: "pointer",
         transition: "all 150ms ease",
         whiteSpace: "nowrap",
       }}
     >
-      {isDone ? (
-        <FaCheck size={compact ? 8 : 9} />
-      ) : (
-        <FaKey size={compact ? 8 : 9} color={isError ? "#fff" : "var(--ezy-text-muted)"} />
-      )}
-      {statusLabels[status]}
+      <FaKey size={compact ? 8 : 9} color="var(--ezy-text-muted)" />
+      {label || "Setup SSH Key"}
     </div>
   );
 }
@@ -203,7 +173,7 @@ function KeyDropdown({
           color: selected ? "var(--ezy-text)" : "var(--ezy-text-muted)",
           backgroundColor: "var(--ezy-bg)",
           border: `1px solid ${open ? "var(--ezy-accent-dim)" : compact ? "var(--ezy-border-light)" : "var(--ezy-border)"}`,
-          borderRadius: compact ? 4 : 6,
+          borderRadius: compact ? "calc(var(--ezy-radius-scale, 1) * 4px)" : "calc(var(--ezy-radius-scale, 1) * 6px)",
           cursor: "pointer",
           fontFamily: "inherit",
           boxSizing: "border-box",
@@ -244,7 +214,7 @@ function KeyDropdown({
             zIndex: 50,
             backgroundColor: "var(--ezy-surface)",
             border: "1px solid var(--ezy-border-light)",
-            borderRadius: compact ? 4 : 6,
+            borderRadius: compact ? "calc(var(--ezy-radius-scale, 1) * 4px)" : "calc(var(--ezy-radius-scale, 1) * 6px)",
             boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
             maxHeight: 220,
             overflowY: "auto",
@@ -299,7 +269,7 @@ function KeyDropdown({
                     fontSize: 10,
                     fontWeight: 600,
                     padding: "1px 5px",
-                    borderRadius: 3,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                     backgroundColor: "var(--ezy-border)",
                     color: "var(--ezy-text-muted)",
                     flexShrink: 0,
@@ -345,6 +315,36 @@ function KeyDropdown({
   );
 }
 
+/** Small circled-i that carries an explanation as a hover tooltip — keeps the
+ *  forms clean instead of stacking helper paragraphs under every field. */
+function InfoDot({ tip, size = 11 }: { tip: string; size?: number }) {
+  return (
+    <span
+      data-tooltip={tip}
+      style={{ display: "inline-flex", alignItems: "center", cursor: "help", flexShrink: 0 }}
+    >
+      <svg
+        width={size}
+        height={size}
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="var(--ezy-text-muted)"
+        strokeWidth="2"
+        strokeLinecap="round"
+      >
+        <circle cx="12" cy="12" r="9" />
+        <line x1="12" y1="11" x2="12" y2="16" />
+        <line x1="12" y1="7.5" x2="12" y2="7.6" />
+      </svg>
+    </span>
+  );
+}
+
+const SECURITY_TOKEN_TIP =
+  "Unlocks the server's macOS login keychain when a pane connects (security unlock-keychain), so Claude stays signed in. Asks for the account password ONLY when the keychain is actually locked (usually only after a server reboot) — nothing is stored.";
+const CLAUDE_TOKEN_TIP =
+  "Exports a long-lived login token (from: claude setup-token) into every SSH session, bypassing the keychain. Paste one or capture it automatically.";
+
 /* ── Inline icon button (test / copy) ── */
 
 function SmallIconButton({
@@ -371,7 +371,7 @@ function SmallIconButton({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        borderRadius: compact ? 4 : 6,
+        borderRadius: compact ? "calc(var(--ezy-radius-scale, 1) * 4px)" : "calc(var(--ezy-radius-scale, 1) * 6px)",
         backgroundColor: "var(--ezy-bg)",
         border: "1px solid var(--ezy-border-light)",
         cursor: disabled ? "default" : "pointer",
@@ -395,7 +395,12 @@ const EMPTY_SERVER: Omit<RemoteServer, "id"> = {
   username: "",
   authMethod: "ssh-key",
   claudeOauthToken: "",
+  claudeAuth: "keychain",
+  projectsDir: "",
 };
+
+const PROJECTS_DIR_TIP =
+  "Absolute path on the server where new remote projects are created (no ~). Optional — without it you pick the parent folder when creating.";
 
 /* ── Main component ── */
 
@@ -410,8 +415,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
   const [showForm, setShowForm] = useState(false);
   const [testStatus, setTestStatus] = useState<Record<string, "idle" | "testing" | "ok" | "error">>({});
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [keySetupStatus, setKeySetupStatus] = useState<Record<string, KeySetupStatus>>({});
-  const [keySetupError, setKeySetupError] = useState<Record<string, string>>({});
+  const [keyWizardTarget, setKeyWizardTarget] = useState<KeyWizardTarget | null>(null);
   const [detectedKeys, setDetectedKeys] = useState<SshKeyInfo[]>([]);
   const [formKeyTestStatus, setFormKeyTestStatus] = useState<"idle" | "testing" | "ok" | "error">("idle");
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -456,6 +460,8 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
       authMethod: server.authMethod,
       sshKeyPath: server.sshKeyPath,
       claudeOauthToken: server.claudeOauthToken ?? "",
+      claudeAuth: server.claudeAuth ?? "keychain",
+      projectsDir: server.projectsDir ?? "",
     });
     setEditingId(server.id);
     setShowForm(true);
@@ -486,6 +492,9 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
         identityFile: server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null,
       });
       setTestStatus((s) => ({ ...s, [server.id]: result ? "ok" : "error" }));
+      // Piggyback the shell/CLI probe on a successful test — this is also the
+      // refresh path after installing a CLI on the server later.
+      if (result) void detectRemoteCliShells(server);
     } catch {
       setTestStatus((s) => ({ ...s, [server.id]: "error" }));
     }
@@ -541,69 +550,10 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
     }
   }, []);
 
-  /** SSH key generation + installation wizard */
-  const handleSetupKey = useCallback(async (serverId: string, name: string, host: string, username: string) => {
-    const keyPath = getKeyPath(name, serverId);
-    setKeySetupError((s) => ({ ...s, [serverId]: "" }));
-
-    try {
-      // Step 1: Check if key exists
-      setKeySetupStatus((s) => ({ ...s, [serverId]: "checking" }));
-      const exists = await invoke<boolean>("ssh_check_key", { keyPath });
-
-      // Step 2: Generate if needed
-      if (!exists) {
-        setKeySetupStatus((s) => ({ ...s, [serverId]: "generating" }));
-        await invoke<string>("ssh_keygen", { keyPath });
-      }
-
-      // Step 3: Install on remote via a PTY terminal
-      setKeySetupStatus((s) => ({ ...s, [serverId]: "installing" }));
-
-      // Build the install command — use manual method since Windows may not have ssh-copy-id
-      const pubKeyPath = `${keyPath}.pub`;
-      const installCmd = `cat ${pubKeyPath} | ssh -o StrictHostKeyChecking=no ${username}@${host} "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"`;
-
-      // Spawn a temporary terminal for the user to type their password
-      const { generateTerminalId } = await import("../lib/layout-utils");
-      const terminalId = generateTerminalId();
-      const store = useAppStore.getState();
-      store.addTerminal(terminalId, "shell", "");
-
-      // Find or create a tab to host this temporary terminal
-      const activeTab = store.tabs.find((t) => t.id === store.activeTabId);
-      if (activeTab && activeTab.layout && !activeTab.isDevServerTab && !activeTab.isServersTab && !activeTab.isKanbanTab) {
-        const { splitPane, findFirstLeafId } = await import("../lib/layout-utils");
-        const leafId = findFirstLeafId(activeTab.layout);
-        if (leafId) {
-          const newLayout = splitPane(activeTab.layout, leafId, "horizontal", {
-            type: "terminal",
-            id: `pane-sshsetup-${Date.now()}`,
-            terminalId,
-          });
-          store.updateTabLayout(activeTab.id, newLayout);
-        }
-      }
-
-      // Write the install command to the terminal after a short delay for shell init
-      setTimeout(async () => {
-        const { getPtyWrite } = await import("../store/terminalSlice");
-        const write = getPtyWrite(terminalId);
-        if (write) {
-          write(installCmd + "\r");
-        }
-      }, 1500);
-
-      // Auto-save the key path and refresh key list
-      updateServer(serverId, { sshKeyPath: keyPath });
-      setKeySetupStatus((s) => ({ ...s, [serverId]: "done" }));
-      refreshKeys();
-
-    } catch (e) {
-      setKeySetupError((s) => ({ ...s, [serverId]: String(e) }));
-      setKeySetupStatus((s) => ({ ...s, [serverId]: "error" }));
-    }
-  }, [updateServer, refreshKeys]);
+  /** Open the step-by-step key setup wizard (generate → install → verify). */
+  const handleSetupKey = useCallback((serverId: string, name: string, host: string, username: string) => {
+    setKeyWizardTarget({ id: serverId, name, host, username });
+  }, []);
 
   srvRef.current = {
     test: (id) => { const sv = servers.find((x) => x.id === id); if (sv) handleTestConnection(sv); },
@@ -657,27 +607,87 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
     return <BiCopy size={sz} color="var(--ezy-text-muted)" />;
   };
 
+  // Shared between BOTH render modes — the compact sidebar returns early, so
+  // mounting these only in the full-page return would leave its buttons dead.
+  const modals = (
+    <>
+      {setupWizardOpen && (
+        <ClaudeTokenWizardModal
+          server={{
+            host: formData.host,
+            username: formData.username,
+            authMethod: formData.authMethod,
+            sshKeyPath: formData.sshKeyPath,
+          }}
+          onToken={(token) => updateField("claudeOauthToken", token)}
+          onClose={() => setSetupWizardOpen(false)}
+        />
+      )}
+      {keyWizardTarget && (
+        <SshKeySetupWizardModal
+          server={keyWizardTarget}
+          onComplete={(keyPath) => {
+            updateServer(keyWizardTarget.id, { sshKeyPath: keyPath });
+            refreshKeys();
+          }}
+          onClose={() => setKeyWizardTarget(null)}
+        />
+      )}
+    </>
+  );
+
   /* ══════════════════════════════════════════════════════
    *  COMPACT SIDEBAR MODE
    * ══════════════════════════════════════════════════════ */
   if (compact) {
     const cInputStyle: React.CSSProperties = {
       width: "100%",
-      padding: "4px 8px",
+      padding: "5px 8px",
       fontSize: 11,
       color: "var(--ezy-text)",
       backgroundColor: "var(--ezy-bg)",
       border: "1px solid var(--ezy-border-light)",
-      borderRadius: 4,
+      borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
       outline: "none",
       fontFamily: "inherit",
       boxSizing: "border-box",
+      transition: "border-color 120ms ease",
     };
     const cLabelStyle: React.CSSProperties = {
-      fontSize: 10,
+      fontSize: 9,
+      fontWeight: 600,
+      letterSpacing: "0.05em",
+      textTransform: "uppercase",
       color: "var(--ezy-text-muted)",
-      marginBottom: 2,
+      marginBottom: 3,
       display: "block",
+    };
+    const cLabelRowStyle: React.CSSProperties = {
+      display: "flex",
+      alignItems: "center",
+      gap: 4,
+      marginBottom: 3,
+    };
+    const cDividerStyle: React.CSSProperties = {
+      height: 1,
+      backgroundColor: "var(--ezy-border-subtle)",
+      margin: "2px 0",
+    };
+    const cSegmentWrapStyle: React.CSSProperties = {
+      display: "flex",
+      gap: 1,
+      backgroundColor: "var(--ezy-bg)",
+      border: "1px solid var(--ezy-border-subtle)",
+      borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+      padding: 1,
+    };
+    // Inline-style :focus — accent the active input's border like the app's
+    // dropdown triggers do on open.
+    const focusIn = (e: React.FocusEvent<HTMLInputElement>) => {
+      e.currentTarget.style.borderColor = "var(--ezy-accent-dim)";
+    };
+    const focusOut = (e: React.FocusEvent<HTMLInputElement>) => {
+      e.currentTarget.style.borderColor = "var(--ezy-border-light)";
     };
 
     return (
@@ -710,7 +720,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              borderRadius: 3,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
               cursor: "pointer",
               transition: "background-color 120ms ease",
             }}
@@ -726,23 +736,73 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
           </div>
         </div>
 
-        {/* Compact add/edit form */}
+        {/* Compact add/edit form — a rounded card with a title strip, grouped
+            sections and a hairline divider before the Claude sign-in block. */}
         {showForm && (
-          <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--ezy-border-subtle)", backgroundColor: "var(--ezy-surface)" }}>
-            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text)", marginBottom: 6 }}>
-              {editingId ? "Edit Server" : "Add Server"}
-            </div>
+          <div style={{ padding: 8, borderBottom: "1px solid var(--ezy-border-subtle)" }}>
+            <div
+              style={{
+                border: "1px solid var(--ezy-border-subtle)",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
+                overflow: "hidden",
+                backgroundColor: "var(--ezy-surface)",
+              }}
+            >
+              {/* Title strip */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "7px 10px",
+                  borderBottom: "1px solid var(--ezy-border-subtle)",
+                }}
+              >
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-accent)" strokeWidth="1.5">
+                  <rect x="2" y="1" width="12" height="6" rx="1.5" />
+                  <rect x="2" y="9" width="12" height="6" rx="1.5" />
+                  <circle cx="5" cy="4" r="1" fill="var(--ezy-accent)" stroke="none" />
+                  <circle cx="5" cy="12" r="1" fill="var(--ezy-accent)" stroke="none" />
+                </svg>
+                <span
+                  style={{
+                    flex: 1,
+                    fontSize: 10,
+                    fontWeight: 700,
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: "var(--ezy-text)",
+                  }}
+                >
+                  {editingId ? "Edit Server" : "Add Server"}
+                </span>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="var(--ezy-text-muted)"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  style={{ cursor: "pointer", flexShrink: 0 }}
+                  data-tooltip="Cancel"
+                  onClick={resetForm}
+                >
+                  <line x1="4" y1="4" x2="12" y2="12" />
+                  <line x1="12" y1="4" x2="4" y2="12" />
+                </svg>
+              </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 10 }}>
               {/* Name + Username side by side */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                 <div>
                   <label style={cLabelStyle}>Name</label>
-                  <input style={cInputStyle} placeholder="Mac Mini" value={formData.name} onChange={(e) => updateField("name", e.target.value)} />
+                  <input style={cInputStyle} onFocus={focusIn} onBlur={focusOut} placeholder="My server" value={formData.name} onChange={(e) => updateField("name", e.target.value)} />
                 </div>
                 <div>
                   <label style={cLabelStyle}>Username</label>
-                  <input style={cInputStyle} placeholder="nikla" value={formData.username} onChange={(e) => updateField("username", e.target.value)} />
+                  <input style={cInputStyle} onFocus={focusIn} onBlur={focusOut} placeholder="user" value={formData.username} onChange={(e) => updateField("username", e.target.value)} />
                 </div>
               </div>
 
@@ -751,16 +811,34 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                 <label style={cLabelStyle}>Host</label>
                 <input
                   style={cInputStyle}
-                  placeholder="192.168.1.100 or mac-mini"
+                  onFocus={focusIn}
+                  onBlur={focusOut}
+                  placeholder="hostname or IP"
                   value={formData.host}
                   onChange={(e) => updateField("host", e.target.value)}
+                />
+              </div>
+
+              {/* Where new remote projects land on this server */}
+              <div>
+                <div style={cLabelRowStyle}>
+                  <label style={{ ...cLabelStyle, marginBottom: 0 }}>Projects dir</label>
+                  <InfoDot size={10} tip={PROJECTS_DIR_TIP} />
+                </div>
+                <input
+                  style={cInputStyle}
+                  onFocus={focusIn}
+                  onBlur={focusOut}
+                  placeholder="/home/user/projects"
+                  value={formData.projectsDir || ""}
+                  onChange={(e) => updateField("projectsDir", e.target.value)}
                 />
               </div>
 
               {/* Auth method toggle */}
               <div>
                 <label style={cLabelStyle}>Auth</label>
-                <div style={{ display: "flex", gap: 1, backgroundColor: "var(--ezy-bg)", borderRadius: 4, padding: 1 }}>
+                <div style={cSegmentWrapStyle}>
                   {(["ssh-key", "password"] as const).map((method) => (
                     <div
                       key={method}
@@ -770,11 +848,11 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       }}
                       style={{
                         flex: 1,
-                        padding: "3px 0",
+                        padding: "4px 0",
                         fontSize: 10,
                         fontWeight: 600,
                         textAlign: "center",
-                        borderRadius: 3,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                         cursor: "pointer",
                         color: formData.authMethod === method ? "#fff" : "var(--ezy-text-muted)",
                         backgroundColor: formData.authMethod === method ? "var(--ezy-accent-dim)" : "transparent",
@@ -826,74 +904,111 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                 </div>
               )}
 
-              {/* Claude login token — keeps Claude Code signed in over SSH */}
+              <div style={cDividerStyle} />
+
+              {/* Claude sign-in — how Claude Code stays logged in over SSH.
+                  Explanations live in hover tooltips (InfoDot + per-option
+                  data-tooltip) to keep the sidebar clean. */}
               <div>
-                <label style={cLabelStyle}>Claude login token (optional)</label>
-                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                  <input
-                    style={cInputStyle}
-                    type={showToken ? "text" : "password"}
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder="sk-ant-oat… (run: claude setup-token)"
-                    value={formData.claudeOauthToken || ""}
-                    onChange={(e) => updateField("claudeOauthToken", e.target.value)}
+                <div style={cLabelRowStyle}>
+                  <label style={{ ...cLabelStyle, marginBottom: 0 }}>Claude sign-in</label>
+                  <InfoDot
+                    size={10}
+                    tip={(formData.claudeAuth ?? "keychain") === "keychain" ? SECURITY_TOKEN_TIP : CLAUDE_TOKEN_TIP}
                   />
-                  <SmallIconButton
-                    compact
-                    title={showToken ? "Hide token" : "Show token"}
-                    onClick={() => setShowToken((v) => !v)}
-                  >
-                    {showToken ? (
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-                        <line x1="1" y1="1" x2="23" y2="23" />
-                      </svg>
-                    ) : (
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                        <circle cx="12" cy="12" r="3" />
-                      </svg>
-                    )}
-                  </SmallIconButton>
                 </div>
-                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 3, lineHeight: 1.4 }}>
-                  Lets Claude Code stay logged in across SSH panes (the macOS Keychain is unavailable over SSH). Paste a token from <span style={{ color: "var(--ezy-text)" }}>claude setup-token</span>, or set it up automatically below.
+                <div style={cSegmentWrapStyle}>
+                  {(["keychain", "token"] as const).map((mode) => (
+                    <div
+                      key={mode}
+                      onClick={() => updateField("claudeAuth", mode)}
+                      data-tooltip={mode === "keychain" ? SECURITY_TOKEN_TIP : CLAUDE_TOKEN_TIP}
+                      style={{
+                        flex: 1,
+                        padding: "4px 0",
+                        fontSize: 10,
+                        fontWeight: 600,
+                        textAlign: "center",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                        color: (formData.claudeAuth ?? "keychain") === mode ? "#fff" : "var(--ezy-text-muted)",
+                        backgroundColor: (formData.claudeAuth ?? "keychain") === mode ? "var(--ezy-accent-dim)" : "transparent",
+                        transition: "all 120ms ease",
+                      }}
+                    >
+                      {mode === "keychain" ? "Security token" : "Claude login token"}
+                    </div>
+                  ))}
                 </div>
-                <div
-                  onClick={canRunWizard ? () => setSetupWizardOpen(true) : undefined}
-                  data-tooltip={canRunWizard ? "Run claude setup-token over SSH and capture the token" : "Requires an SSH-key server with host, username and key set"}
-                  style={{
-                    marginTop: 6,
-                    padding: "4px 0",
-                    fontSize: 11,
-                    fontWeight: 600,
-                    textAlign: "center",
-                    borderRadius: 4,
-                    border: "1px solid var(--ezy-border-light)",
-                    color: canRunWizard ? "var(--ezy-text)" : "var(--ezy-text-muted)",
-                    backgroundColor: "var(--ezy-bg)",
-                    cursor: canRunWizard ? "pointer" : "default",
-                    opacity: canRunWizard ? 1 : 0.5,
-                    transition: "all 120ms ease",
-                  }}
-                >
-                  Set up automatically
-                </div>
+                {(formData.claudeAuth ?? "keychain") === "token" && (
+                  <>
+                    <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 6 }}>
+                      <input
+                        style={cInputStyle}
+                        onFocus={focusIn}
+                        onBlur={focusOut}
+                        type={showToken ? "text" : "password"}
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder="sk-ant-oat…"
+                        value={formData.claudeOauthToken || ""}
+                        onChange={(e) => updateField("claudeOauthToken", e.target.value)}
+                      />
+                      <SmallIconButton
+                        compact
+                        title={showToken ? "Hide token" : "Show token"}
+                        onClick={() => setShowToken((v) => !v)}
+                      >
+                        {showToken ? (
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                            <line x1="1" y1="1" x2="23" y2="23" />
+                          </svg>
+                        ) : (
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                            <circle cx="12" cy="12" r="3" />
+                          </svg>
+                        )}
+                      </SmallIconButton>
+                    </div>
+                    <div
+                      onClick={canRunWizard ? () => setSetupWizardOpen(true) : undefined}
+                      data-tooltip={canRunWizard ? "Run claude setup-token over SSH and capture the token" : "Requires an SSH-key server with host, username and key set"}
+                      style={{
+                        marginTop: 6,
+                        padding: "4px 0",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        textAlign: "center",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                        border: "1px solid var(--ezy-border-light)",
+                        color: canRunWizard ? "var(--ezy-text)" : "var(--ezy-text-muted)",
+                        backgroundColor: "var(--ezy-bg)",
+                        cursor: canRunWizard ? "pointer" : "default",
+                        opacity: canRunWizard ? 1 : 0.5,
+                        transition: "all 120ms ease",
+                      }}
+                    >
+                      Set up automatically
+                    </div>
+                  </>
+                )}
               </div>
 
-              {/* Buttons */}
+              {/* Footer actions — Cancel lives as the ✕ in the title strip. */}
               <div style={{ display: "flex", gap: 6, marginTop: 2 }}>
                 <div
                   onClick={handleSave}
                   style={{
                     flex: 1,
-                    padding: "4px 0",
+                    padding: "5px 0",
                     fontSize: 11,
                     fontWeight: 600,
                     color: isFormValid ? "#fff" : "var(--ezy-text-muted)",
                     backgroundColor: isFormValid ? "var(--ezy-accent)" : "var(--ezy-border)",
-                    borderRadius: 4,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                     cursor: isFormValid ? "pointer" : "default",
                     textAlign: "center",
                     opacity: isFormValid ? 1 : 0.5,
@@ -905,43 +1020,32 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                 {formData.authMethod === "ssh-key" && (
                   <div
                     onClick={isFormValid ? handleSetupKeyFromForm : undefined}
+                    data-tooltip="Generate a key and install it on the server (guided)"
                     style={{
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
                       gap: 4,
                       flex: 1,
-                      padding: "4px 0",
+                      padding: "5px 0",
                       fontSize: 11,
                       fontWeight: 600,
                       color: isFormValid ? "var(--ezy-text)" : "var(--ezy-text-muted)",
-                      backgroundColor: "var(--ezy-border)",
-                      borderRadius: 4,
+                      backgroundColor: "transparent",
+                      border: "1px solid var(--ezy-border-light)",
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                       cursor: isFormValid ? "pointer" : "default",
                       opacity: isFormValid ? 1 : 0.4,
-                      transition: "background-color 120ms ease",
+                      transition: "all 120ms ease",
                     }}
+                    onMouseEnter={(e) => { if (isFormValid) e.currentTarget.style.borderColor = "var(--ezy-accent-dim)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--ezy-border-light)"; }}
                   >
                     <FaKey size={8} />
                     New Key
                   </div>
                 )}
-                <div
-                  onClick={resetForm}
-                  style={{
-                    padding: "4px 12px",
-                    fontSize: 11,
-                    fontWeight: 500,
-                    color: "var(--ezy-text-muted)",
-                    cursor: "pointer",
-                    borderRadius: 4,
-                    transition: "background-color 120ms ease",
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-border)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                >
-                  Cancel
-                </div>
+              </div>
               </div>
             </div>
           </div>
@@ -958,7 +1062,6 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
         ) : (
           servers.map((server) => {
             const status = testStatus[server.id] ?? "idle";
-            const keyStatus = keySetupStatus[server.id] ?? "idle";
             const hasKey = !!server.sshKeyPath;
 
             return (
@@ -996,7 +1099,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       style={{
                         width: 20, height: 20,
                         display: "flex", alignItems: "center", justifyContent: "center",
-                        borderRadius: 3, cursor: status === "testing" ? "default" : "pointer",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", cursor: status === "testing" ? "default" : "pointer",
                         transition: "background-color 120ms ease",
                         opacity: status === "testing" ? 0.4 : 1,
                       }}
@@ -1011,7 +1114,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       style={{
                         width: 20, height: 20,
                         display: "flex", alignItems: "center", justifyContent: "center",
-                        borderRadius: 3, cursor: "pointer",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", cursor: "pointer",
                         transition: "background-color 120ms ease",
                       }}
                       onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
@@ -1025,7 +1128,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                       style={{
                         width: 20, height: 20,
                         display: "flex", alignItems: "center", justifyContent: "center",
-                        borderRadius: 3, cursor: "pointer",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", cursor: "pointer",
                         transition: "background-color 120ms ease",
                       }}
                       onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "rgba(220,60,60,0.15)"; }}
@@ -1048,14 +1151,8 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                   <div style={{ padding: "2px 10px 5px 22px" }}>
                     <KeySetupButton
                       compact
-                      status={keyStatus}
                       onClick={() => handleSetupKey(server.id, server.name, server.host, server.username)}
                     />
-                    {keySetupError[server.id] && (
-                      <div style={{ fontSize: 10, color: "var(--ezy-red)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {keySetupError[server.id]}
-                      </div>
-                    )}
                   </div>
                 )}
                 {hasKey && (
@@ -1079,6 +1176,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
             );
           })
         )}
+        {modals}
       </div>
     );
   }
@@ -1091,7 +1189,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
     padding: "6px 10px",
     backgroundColor: "var(--ezy-bg)",
     border: "1px solid var(--ezy-border)",
-    borderRadius: 6,
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
     color: "var(--ezy-text)",
     fontSize: 13,
     fontFamily: "inherit",
@@ -1161,7 +1259,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
             padding: "5px 12px",
             backgroundColor: "var(--ezy-accent-dim)",
             border: "none",
-            borderRadius: 6,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             color: "#ffffff",
             fontSize: 12,
             fontWeight: 600,
@@ -1181,7 +1279,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
           <div
             style={{
               border: "1px solid var(--ezy-border)",
-              borderRadius: 8,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
               padding: 16,
               marginBottom: 16,
               backgroundColor: "var(--ezy-surface)",
@@ -1196,7 +1294,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                 <label style={labelStyle}>Name</label>
                 <input
                   style={inputStyle}
-                  placeholder="Mac Mini"
+                  placeholder="My server"
                   value={formData.name}
                   onChange={(e) => updateField("name", e.target.value)}
                 />
@@ -1205,7 +1303,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                 <label style={labelStyle}>Host</label>
                 <input
                   style={inputStyle}
-                  placeholder="192.168.1.100 or mac-mini"
+                  placeholder="hostname or IP"
                   value={formData.host}
                   onChange={(e) => updateField("host", e.target.value)}
                 />
@@ -1214,18 +1312,32 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                 <label style={labelStyle}>Username</label>
                 <input
                   style={inputStyle}
-                  placeholder="nikla"
+                  placeholder="user"
                   value={formData.username}
                   onChange={(e) => updateField("username", e.target.value)}
                 />
               </div>
             </div>
 
+            {/* Where new remote projects land on this server */}
+            <div style={{ marginBottom: 12, maxWidth: 420 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}>
+                <label style={{ ...labelStyle, marginBottom: 0 }}>Projects Directory</label>
+                <InfoDot tip={PROJECTS_DIR_TIP} />
+              </div>
+              <input
+                style={inputStyle}
+                placeholder="/home/user/projects"
+                value={formData.projectsDir || ""}
+                onChange={(e) => updateField("projectsDir", e.target.value)}
+              />
+            </div>
+
             {/* Auth method + key picker row */}
             <div style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "flex-end" }}>
               <div>
                 <label style={labelStyle}>Auth Method</label>
-                <div style={{ display: "flex", gap: 1, backgroundColor: "var(--ezy-bg)", borderRadius: 6, padding: 2 }}>
+                <div style={{ display: "flex", gap: 1, backgroundColor: "var(--ezy-bg)", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", padding: 2 }}>
                   {(["ssh-key", "password"] as const).map((method) => (
                     <div
                       key={method}
@@ -1237,7 +1349,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                         padding: "5px 14px",
                         fontSize: 12,
                         fontWeight: 600,
-                        borderRadius: 4,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                         cursor: "pointer",
                         color: formData.authMethod === method ? "#fff" : "var(--ezy-text-muted)",
                         backgroundColor: formData.authMethod === method ? "var(--ezy-accent-dim)" : "transparent",
@@ -1291,6 +1403,93 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
               )}
             </div>
 
+            {/* Claude sign-in — how Claude Code stays logged in over SSH.
+                Explanations live in hover tooltips, keeping the form clean. */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}>
+                <label style={{ ...labelStyle, marginBottom: 0 }}>Claude Sign-in</label>
+                <InfoDot
+                  tip={(formData.claudeAuth ?? "keychain") === "keychain" ? SECURITY_TOKEN_TIP : CLAUDE_TOKEN_TIP}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <div style={{ display: "flex", gap: 1, backgroundColor: "var(--ezy-bg)", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", padding: 2, flexShrink: 0 }}>
+                  {(["keychain", "token"] as const).map((mode) => (
+                    <div
+                      key={mode}
+                      onClick={() => updateField("claudeAuth", mode)}
+                      data-tooltip={mode === "keychain" ? SECURITY_TOKEN_TIP : CLAUDE_TOKEN_TIP}
+                      style={{
+                        padding: "5px 14px",
+                        fontSize: 12,
+                        fontWeight: 600,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                        cursor: "pointer",
+                        color: (formData.claudeAuth ?? "keychain") === mode ? "#fff" : "var(--ezy-text-muted)",
+                        backgroundColor: (formData.claudeAuth ?? "keychain") === mode ? "var(--ezy-accent-dim)" : "transparent",
+                        transition: "all 120ms ease",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {mode === "keychain" ? "Security token" : "Claude login token"}
+                    </div>
+                  ))}
+                </div>
+                {(formData.claudeAuth ?? "keychain") === "token" && (
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <input
+                        style={inputStyle}
+                        type={showToken ? "text" : "password"}
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder="sk-ant-oat…"
+                        value={formData.claudeOauthToken || ""}
+                        onChange={(e) => updateField("claudeOauthToken", e.target.value)}
+                      />
+                      <SmallIconButton
+                        title={showToken ? "Hide token" : "Show token"}
+                        onClick={() => setShowToken((v) => !v)}
+                      >
+                        {showToken ? (
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+                            <line x1="1" y1="1" x2="23" y2="23" />
+                          </svg>
+                        ) : (
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                            <circle cx="12" cy="12" r="3" />
+                          </svg>
+                        )}
+                      </SmallIconButton>
+                      <button
+                        onClick={canRunWizard ? () => setSetupWizardOpen(true) : undefined}
+                        data-tooltip={canRunWizard ? "Run claude setup-token over SSH and capture the token" : "Requires an SSH-key server with host, username and key set"}
+                        disabled={!canRunWizard}
+                        style={{
+                          padding: "6px 12px",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
+                          border: "1px solid var(--ezy-border-light)",
+                          color: canRunWizard ? "var(--ezy-text)" : "var(--ezy-text-muted)",
+                          backgroundColor: "var(--ezy-bg)",
+                          cursor: canRunWizard ? "pointer" : "default",
+                          opacity: canRunWizard ? 1 : 0.5,
+                          fontFamily: "inherit",
+                          whiteSpace: "nowrap",
+                          flexShrink: 0,
+                        }}
+                      >
+                        Set up automatically
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="flex items-center gap-2">
               <button
                 onClick={handleSave}
@@ -1299,7 +1498,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                   padding: "6px 16px",
                   backgroundColor: "var(--ezy-accent-dim)",
                   border: "none",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   color: "#ffffff",
                   fontSize: 12,
                   fontWeight: 600,
@@ -1321,7 +1520,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                     padding: "6px 16px",
                     backgroundColor: "var(--ezy-border)",
                     border: "none",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     color: "var(--ezy-text)",
                     fontSize: 12,
                     fontWeight: 600,
@@ -1340,7 +1539,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                   padding: "6px 16px",
                   backgroundColor: "transparent",
                   border: "1px solid var(--ezy-border)",
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   color: "var(--ezy-text-muted)",
                   fontSize: 12,
                   fontWeight: 600,
@@ -1385,7 +1584,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
           <div
             style={{
               border: "1px solid var(--ezy-border)",
-              borderRadius: 8,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
               overflow: "hidden",
             }}
           >
@@ -1414,7 +1613,6 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
             {/* Table rows */}
             {servers.map((server) => {
               const status = testStatus[server.id] ?? "idle";
-              const keyStatus = keySetupStatus[server.id] ?? "idle";
               const hasKey = !!server.sshKeyPath;
 
               return (
@@ -1466,7 +1664,6 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                     <div className="flex items-center justify-end gap-1">
                       {!hasKey && server.authMethod === "ssh-key" && (
                         <KeySetupButton
-                          status={keyStatus}
                           label="Setup Key"
                           onClick={() => handleSetupKey(server.id, server.name, server.host, server.username)}
                         />
@@ -1506,12 +1703,6 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                     </div>
                   </div>
 
-                  {/* Key setup error */}
-                  {keySetupError[server.id] && (
-                    <div style={{ padding: "2px 16px 6px", fontSize: 11, color: "var(--ezy-red)" }}>
-                      {keySetupError[server.id]}
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -1519,18 +1710,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
         )}
       </div>
 
-      {setupWizardOpen && (
-        <ClaudeTokenWizardModal
-          server={{
-            host: formData.host,
-            username: formData.username,
-            authMethod: formData.authMethod,
-            sshKeyPath: formData.sshKeyPath,
-          }}
-          onToken={(token) => updateField("claudeOauthToken", token)}
-          onClose={() => setSetupWizardOpen(false)}
-        />
-      )}
+      {modals}
     </div>
   );
 }

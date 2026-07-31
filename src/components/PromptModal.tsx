@@ -36,6 +36,7 @@ export default function PromptModal() {
     if (!req) return;
     const t = setTimeout(() => {
       inputRef.current?.focus();
+      if (req.masked) return;
       // Preselect the basename so renaming "index.ts" -> "route.ts" doesn't
       // mean re-typing the extension.
       const v = inputRef.current?.value ?? "";
@@ -58,7 +59,8 @@ export default function PromptModal() {
     req.resolve(
       confirmed
         ? {
-            value: needsText ? value.trim() : "",
+            // Masked values (passwords) keep whitespace verbatim.
+            value: needsText ? (req.masked ? value : value.trim()) : "",
             toggles: toggleState,
             extra: req.extraField ? extraValue.trim() : undefined,
           }
@@ -78,8 +80,11 @@ export default function PromptModal() {
         zIndex: 300,
         background: "rgba(0,0,0,0.55)",
         display: "flex",
-        alignItems: "center",
+        // Upper third — the ONE starting point every dialog in the app shares
+        // (ticket dialog, Create Project, wizards all use 12vh). Keep in sync.
+        alignItems: "flex-start",
         justifyContent: "center",
+        paddingTop: "12vh",
       }}
       onClick={() => finish(false)}
       onContextMenu={(e) => e.preventDefault()}
@@ -98,7 +103,7 @@ export default function PromptModal() {
         style={{
           width: 380,
           maxWidth: "calc(100vw - 32px)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.1))",
@@ -136,16 +141,17 @@ export default function PromptModal() {
               </div>
               <input
                 ref={inputRef}
+                type={req.masked ? "password" : "text"}
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 spellCheck={false}
-                autoComplete="off"
+                autoComplete={req.masked ? "new-password" : "off"}
                 style={{
                   width: "100%",
                   boxSizing: "border-box",
                   padding: "7px 10px",
                   fontSize: 13,
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   outline: "none",
                   background: "var(--ezy-surface, #161b22)",
                   border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
@@ -182,7 +188,7 @@ export default function PromptModal() {
                   boxSizing: "border-box",
                   padding: "7px 10px",
                   fontSize: 13,
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   outline: "none",
                   background: "var(--ezy-surface, #161b22)",
                   border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
@@ -243,7 +249,7 @@ export default function PromptModal() {
             style={{
               padding: "6px 14px",
               fontSize: 12,
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: "pointer",
               border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
               background: "transparent",
@@ -259,7 +265,7 @@ export default function PromptModal() {
               padding: "6px 14px",
               fontSize: 12,
               fontWeight: 600,
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               border: "none",
               cursor: canConfirm ? "pointer" : "default",
               opacity: canConfirm ? 1 : 0.45,

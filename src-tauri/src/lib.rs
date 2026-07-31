@@ -909,21 +909,49 @@ fn pick_local_port(preferred: u16) -> Result<u16, String> {
     Ok(port)
 }
 
-/// Build an `ssh` command suitable for running headlessly in the background.
+/// Build a console-tool command that runs headlessly in the background.
 /// On Windows we suppress the console window the same way `wsl_command` does.
-fn ssh_background_command() -> Command {
+fn hidden_command(program: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let mut cmd = Command::new("ssh.exe");
+        let mut cmd = Command::new(program);
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
     }
     #[cfg(not(target_os = "windows"))]
     {
-        Command::new("ssh")
+        Command::new(program)
     }
+}
+
+/// Build an `ssh` command suitable for running headlessly in the background.
+fn ssh_background_command() -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        hidden_command("ssh.exe")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        hidden_command("ssh")
+    }
+}
+
+/// Expand a leading `~` to the user's home directory. The frontend hands us
+/// `~/.ssh/...` paths, but `Command`/`std::fs` never go through a shell, so a
+/// literal `~` would create a `~` folder relative to the process cwd.
+fn expand_home(path: &str) -> Result<String, String> {
+    if path == "~" || path.starts_with("~/") || path.starts_with("~\\") {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .map_err(|_| "Cannot determine home directory".to_string())?;
+        if path == "~" {
+            return Ok(home);
+        }
+        return Ok(format!("{}{}{}", home, std::path::MAIN_SEPARATOR, &path[2..]));
+    }
+    Ok(path.to_string())
 }
 
 /// Spawn `ssh -N -L <local>:localhost:<remote>` to forward a remote dev
@@ -1015,7 +1043,7 @@ async fn ssh_test_connection(
 ) -> Result<bool, String> {
     let user_host = format!("{}@{}", username, host);
 
-    let mut cmd = Command::new("ssh");
+    let mut cmd = ssh_background_command();
     cmd.args([
         "-o", "StrictHostKeyChecking=no",
         "-o", "ConnectTimeout=5",
@@ -1023,7 +1051,7 @@ async fn ssh_test_connection(
     ]);
 
     if let Some(ref key) = identity_file {
-        cmd.args(["-i", key]);
+        cmd.args(["-i", &expand_home(key)?]);
     }
 
     cmd.arg(&user_host);
@@ -1036,20 +1064,39 @@ async fn ssh_test_connection(
     Ok(output.status.success())
 }
 
+#[derive(Serialize)]
+struct SshEnsureKeyResult {
+    /// Absolute path to the private key (matches `ssh_list_keys` entries).
+    key_path: String,
+    public_key: String,
+    created: bool,
+}
+
+/// Ensure an ed25519 keypair exists at `key_path` (a `~/…` path from the
+/// frontend), generating it headlessly if missing. Idempotent.
 #[tauri::command]
-async fn ssh_keygen(key_path: String) -> Result<String, String> {
-    let path = std::path::Path::new(&key_path);
+async fn ssh_ensure_key(key_path: String) -> Result<SshEnsureKeyResult, String> {
+    let abs = expand_home(&key_path)?;
+    let path = std::path::PathBuf::from(&abs);
+    let pub_path = format!("{}.pub", abs);
+
     if path.exists() {
-        return Err(format!("Key already exists at {}", key_path));
+        let public_key = std::fs::read_to_string(&pub_path)
+            .map_err(|e| format!("Key exists but public key is unreadable: {}", e))?;
+        return Ok(SshEnsureKeyResult {
+            key_path: abs,
+            public_key: public_key.trim().to_string(),
+            created: false,
+        });
     }
-    // Ensure ~/.ssh directory exists
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create .ssh directory: {}", e))?;
     }
 
-    let output = Command::new("ssh-keygen")
-        .args(["-t", "ed25519", "-f", &key_path, "-N", ""])
+    let output = hidden_command("ssh-keygen")
+        .args(["-t", "ed25519", "-f", &abs, "-N", ""])
         .output()
         .map_err(|e| format!("Failed to run ssh-keygen: {}", e))?;
 
@@ -1058,15 +1105,24 @@ async fn ssh_keygen(key_path: String) -> Result<String, String> {
         return Err(format!("ssh-keygen failed: {}", stderr.trim()));
     }
 
-    // Return the public key content
-    let pub_path = format!("{}.pub", key_path);
-    std::fs::read_to_string(&pub_path)
-        .map_err(|e| format!("Failed to read public key: {}", e))
+    let public_key = std::fs::read_to_string(&pub_path)
+        .map_err(|e| format!("Failed to read public key: {}", e))?;
+    Ok(SshEnsureKeyResult {
+        key_path: abs,
+        public_key: public_key.trim().to_string(),
+        created: true,
+    })
 }
 
+/// Remove `host` from known_hosts (`ssh-keygen -R`). Used by the key-setup
+/// wizard's "host key changed" recovery. A nonzero exit (host absent) is fine.
 #[tauri::command]
-async fn ssh_check_key(key_path: String) -> Result<bool, String> {
-    Ok(std::path::Path::new(&key_path).exists())
+async fn ssh_forget_host(host: String) -> Result<(), String> {
+    hidden_command("ssh-keygen")
+        .args(["-R", &host])
+        .output()
+        .map_err(|e| format!("Failed to run ssh-keygen -R: {}", e))?;
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -3491,12 +3547,30 @@ async fn copy_image_to_clipboard(path: String) -> Result<(), String> {
 async fn reveal_in_explorer(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
         // Normalize forward slashes to backslashes for explorer.exe /select,
         let win_path = path.replace('/', "\\");
-        let _ = Command::new("explorer.exe")
-            .arg(format!("/select,{}", win_path))
-            .spawn()
-            .map_err(|e| format!("Failed to launch explorer: {}", e))?;
+        let target = std::path::Path::new(&win_path);
+        if target.exists() {
+            // The path must be quoted ALONE, `/select,"C:\..."`. Passing the
+            // whole token through .arg() makes std quote it in full
+            // (`"/select,C:\..."`) whenever the path has spaces — which every
+            // Snipping Tool original does — and explorer.exe fails that parse
+            // by silently opening Documents instead.
+            let _ = Command::new("explorer.exe")
+                .raw_arg(format!("/select,\"{}\"", win_path))
+                .spawn()
+                .map_err(|e| format!("Failed to launch explorer: {}", e))?;
+        } else if let Some(parent) = target.parent().filter(|p| p.exists()) {
+            // File already deleted (temp sweep, manual cleanup) — its folder
+            // is still a truthful answer, unlike the Documents fallback.
+            let _ = Command::new("explorer.exe")
+                .raw_arg(format!("\"{}\"", parent.display()))
+                .spawn()
+                .map_err(|e| format!("Failed to launch explorer: {}", e))?;
+        } else {
+            return Err(format!("File no longer exists: {}", win_path));
+        }
     }
     #[cfg(target_os = "macos")]
     {
@@ -3792,6 +3866,7 @@ async fn wsl_resolve_cli_env(cli_names: Vec<String>, distro: Option<String>) -> 
     // Parse key=value lines (PATH, DISTRO)
     // Then parse delimited which output
     let mut current_cli: Option<String> = None;
+    let mut resolved_any_cli = false;
     for line in stdout.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -3803,6 +3878,7 @@ async fn wsl_resolve_cli_env(cli_names: Vec<String>, distro: Option<String>) -> 
             // This line is the output of `which <cli>` — an absolute path
             if line.starts_with('/') {
                 result.insert(cli.clone(), line.to_string());
+                resolved_any_cli = true;
             }
             current_cli = None;
         } else if let Some((key, value)) = line.split_once('=') {
@@ -3811,6 +3887,22 @@ async fn wsl_resolve_cli_env(cli_names: Vec<String>, distro: Option<String>) -> 
                 result.insert(key.to_string(), value.to_string());
             }
         }
+    }
+
+    // Diagnostic seam (2026-07-30): resolvedPaths shipped {} on real hardware
+    // for the app's entire storage history, while the identical script
+    // resolved every CLI when run by hand (WSL-side, wsl.exe interop, and
+    // PowerShell). The raw bytes the APP saw are the missing evidence — dump
+    // them to the file log whenever zero CLIs resolve so the next startup
+    // explains itself.
+    if !resolved_any_cli && !cli_names.is_empty() {
+        debug_log::dlog(&format!(
+            "[wsl-resolve] 0 of {} CLIs resolved (distro={:?}); stdout={:?} stderr={:?}",
+            cli_names.len(),
+            distro,
+            stdout,
+            String::from_utf8_lossy(&output.stderr),
+        ));
     }
 
     Ok(result)
@@ -7152,12 +7244,13 @@ async fn ssh_exec_internal(
         _ => return Err("SSH-key auth required (no identity file)".to_string()),
     };
     let user_host = format!("{}@{}", username, host);
-    let mut cmd = Command::new("ssh");
+    let key = expand_home(key)?;
+    let mut cmd = ssh_background_command();
     cmd.args([
         "-o", "BatchMode=yes",
         "-o", "StrictHostKeyChecking=no",
         "-o", "ConnectTimeout=10",
-        "-i", key,
+        "-i", &key,
         &user_host,
         command,
     ]);
@@ -7169,6 +7262,30 @@ async fn ssh_exec_internal(
         return Err(format!("ssh exec failed: {}", stderr.trim()));
     }
     String::from_utf8(output.stdout).map_err(|e| format!("ssh stdout not UTF-8: {}", e))
+}
+
+/// Probe a remote host for its login shell, which shells exist, and which of
+/// them can resolve each AI CLI in interactive-login mode (`<shell> -lic`).
+/// One SSH round-trip; parsed in src/lib/remote-cli-shells.ts. Needed because
+/// `ssh host "exec claude"` runs the login shell NON-interactively — PATH
+/// additions from .zshrc/.zprofile are absent and the bare CLI name fails
+/// even though it works in an interactive SSH session. `command -v` under
+/// `-lic` also catches function/alias wrappers (nvm lazy-loading).
+#[tauri::command]
+async fn ssh_detect_cli_shells(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+) -> Result<String, String> {
+    let script = concat!(
+        "echo \"SHELL:$SHELL\"; ",
+        "for s in zsh bash fish; do command -v \"$s\" >/dev/null 2>&1 && echo \"HAVE:$s\"; done; ",
+        "for s in zsh bash; do command -v \"$s\" >/dev/null 2>&1 || continue; ",
+        "for c in claude codex gemini; do ",
+        "\"$s\" -lic \"command -v $c >/dev/null 2>&1\" 2>/dev/null && echo \"CLI:$s:$c\"; ",
+        "done; done; true",
+    );
+    ssh_exec_internal(&host, &username, identity_file.as_deref(), script).await
 }
 
 /// Encode a remote project path the way Claude/Codex/Gemini do, e.g.
@@ -7818,6 +7935,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
+        .plugin(tauri_plugin_notification::init())
         // The overlay is positioned programmatically (sync_geometry covers the
         // main window's client area) — window-state must never save/restore it.
         .plugin(
@@ -7827,7 +7945,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_keygen, ssh_check_key, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
         .setup(|app| {
             // A3: build the shared wgpu Instance+Adapter on a background thread
             // NOW, so the one-time driver/DXGI enumeration (~534ms measured on
