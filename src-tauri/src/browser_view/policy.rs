@@ -204,6 +204,10 @@ const ALLOWED_KINDS: &[&str] = &[
     // it), which blurs MADE's main webview — without this the app would read as
     // unfocused and drop its accent ring while you browse.
     "focus",
+    // Navigation-history depth (canGoBack/canGoForward booleans) so the
+    // toolbar can gray its back/forward buttons like a real browser. Reported
+    // by the page's Navigation API; untrusted like everything else here.
+    "navstate",
     // Right-click position + what sits under the cursor (link / image /
     // selection). UNTRUSTED like everything else here: a hostile page can forge
     // any of it, so the URLs it reports are scheme-checked before the menu

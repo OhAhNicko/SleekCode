@@ -47,6 +47,14 @@ interface BrowserPreviewProps {
    *  server isn't ready yet, the iframe area shows a "Waiting for dev server"
    *  placeholder instead of attempting to load an unreachable URL. */
   linkedTabId?: string;
+  /** "minimal" strips the dev-tooling chrome (hard reload, inspect, devtools,
+   *  viewport bar, auto-reload, expand, close) — the Jira ticket browser is a
+   *  reading surface, not a dev preview. */
+  chrome?: "full" | "minimal";
+  /** The pane's layout id. REQUIRED for Expand to work: this component
+   *  renders inside a portaled slot parked under document.body, so
+   *  PaneExpandButton's closest("[data-pane-id]") walk finds nothing. */
+  paneId?: string;
 }
 
 interface NetworkEntry {
@@ -131,6 +139,7 @@ const KIND_TO_MESSAGE_TYPE: Record<string, string> = {
   url: "made-url",
   ready: "made-ready",
   focus: "made-focus",
+  navstate: "made-navstate",
   // Owned by the context-menu workstream (browser_view/mod.rs emits it from a
   // passive contextmenu listener). Listed here so this validator does not
   // silently drop their records — without the entry the kind/type check fails
@@ -184,7 +193,7 @@ function NavButton({
         justifyContent: "center",
         width: 24,
         height: 24,
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         cursor: disabled ? "default" : "pointer",
         opacity: disabled ? 0.3 : 1,
         pointerEvents: disabled ? "none" : "auto",
@@ -282,7 +291,10 @@ export default function BrowserPreview({
   initialUrl,
   onClose,
   linkedTabId,
+  chrome = "full",
+  paneId,
 }: BrowserPreviewProps) {
+  const minimal = chrome === "minimal";
   /* ---- Linked dev server (live URL + waiting state) ---- */
   // Subscribe to the dev server attached to linkedTabId. The pane is "ready"
   // when the server reports running with a real port — for SSH this is the
@@ -308,6 +320,8 @@ export default function BrowserPreview({
   const [inputUrl, setInputUrl] = useState(initialResolvedUrl);
   const [history, setHistory] = useState<string[]>([initialResolvedUrl]);
   const [historyIndex, setHistoryIndex] = useState(0);
+  /** Native surface's real history depth (made-navstate); null until reported. */
+  const [nativeNav, setNativeNav] = useState<{ back: boolean; fwd: boolean } | null>(null);
 
   // One-shot waiting gate: show the "Waiting for dev server" overlay UNTIL
   // the dev server has been ready at least once. After that, never block —
@@ -558,12 +572,14 @@ export default function BrowserPreview({
     [historyIndex],
   );
 
-  // The native surface keeps its own history and exposes no way to query depth,
-  // so the buttons stay live and a no-op back is simply a no-op — the same thing
-  // a real browser does at the start of its history.
-  const canGoBack = browserViewId != null || historyIndex > 0;
+  // Native surface: history depth comes from the page's Navigation API
+  // (made-navstate). `?? true` keeps the buttons live until the first report
+  // (or on an engine without the API) — a no-op back is what a real browser
+  // does at history's start.
+  const canGoBack =
+    browserViewId != null ? (nativeNav?.back ?? true) : historyIndex > 0;
   const canGoForward =
-    browserViewId != null || historyIndex < history.length - 1;
+    browserViewId != null ? (nativeNav?.fwd ?? true) : historyIndex < history.length - 1;
 
   // On the native surface the WEBVIEW owns history, so back/forward drive its
   // own history object (exactly what a browser's buttons do) rather than
@@ -850,7 +866,7 @@ export default function BrowserPreview({
       subscribeBrowserDevtools(browserViewId, (e) => {
         for (const item of e.items) {
           // Every payload is the same message object the iframe path posts.
-          let parsed: { type?: string; url?: string; focused?: boolean } | null =
+          let parsed: { type?: string; url?: string; focused?: boolean; back?: boolean; fwd?: boolean } | null =
             null;
           try {
             parsed = JSON.parse(item.payload);
@@ -867,11 +883,21 @@ export default function BrowserPreview({
           // true the next time a listener is added.)
           if (parsed.type !== KIND_TO_MESSAGE_TYPE[item.kind]) continue;
 
+          if (parsed.type === "made-navstate") {
+            // History depth from the page's Navigation API — what grays the
+            // back/forward buttons like a real browser.
+            setNativeNav({ back: !!parsed.back, fwd: !!parsed.fwd });
+            continue;
+          }
           if (parsed.type === "made-focus") {
             // The surface owns real Win32 focus while you type in it, which
             // blurs MADE's main webview. Folded into appWindowFocused so the
             // accent ring doesn't drop the moment you click a page.
             useAppStore.getState().setBrowserViewFocused(!!parsed.focused);
+            // Page-content clicks never reach the DOM delegate in App.tsx —
+            // flip the pane-kind flag here so terminal cursors hollow while
+            // the user works in the page.
+            if (parsed.focused) useAppStore.getState().setNonTerminalPaneActive(true);
             continue;
           }
           if (parsed.type === "made-url") {
@@ -1322,9 +1348,32 @@ export default function BrowserPreview({
           </NavButton>
         )}
 
-        <NavButton title="Hard Reload (clear storage)" onClick={hardReload}>
-          <FaArrowsRotate size={14} color="currentColor" />
-        </NavButton>
+        {!minimal && (
+          <NavButton title="Hard Reload (clear storage)" onClick={hardReload}>
+            <FaArrowsRotate size={14} color="currentColor" />
+          </NavButton>
+        )}
+
+        {/* Ticket home — Jira chrome only: back to the pane's ticket URL.
+            Deliberately a TICKET glyph, not a house: this button exists only
+            on the Jira browser and always means "this pane's ticket page". */}
+        {minimal && (
+          <NavButton title="Ticket home" onClick={() => navigateTo(initialUrl)}>
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="2.5" y="2.5" width="11" height="11" rx="2" />
+              <path d="M5.5 6h5M5.5 9h3" />
+            </svg>
+          </NavButton>
+        )}
 
         {/* URL input */}
         <div
@@ -1332,7 +1381,7 @@ export default function BrowserPreview({
           style={{
             height: 24,
             backgroundColor: "var(--ezy-bg)",
-            borderRadius: 4,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             border: "1px solid var(--ezy-border)",
             padding: "0 8px",
           }}
@@ -1388,22 +1437,26 @@ export default function BrowserPreview({
         </NavButton>
 
         {/* Inspect element */}
-        <NavButton
-          title={inspectMode ? "Stop Inspecting" : "Inspect Element"}
-          onClick={toggleInspect}
-          active={inspectMode}
-        >
-          <FaCrosshairs size={14} color="currentColor" />
-        </NavButton>
+        {!minimal && (
+          <NavButton
+            title={inspectMode ? "Stop Inspecting" : "Inspect Element"}
+            onClick={toggleInspect}
+            active={inspectMode}
+          >
+            <FaCrosshairs size={14} color="currentColor" />
+          </NavButton>
+        )}
 
         {/* DevTools toggle */}
-        <NavButton
-          title={devtoolsTab !== null ? "Hide DevTools" : "Show DevTools"}
-          onClick={toggleDevtools}
-          active={devtoolsTab !== null}
-        >
-          <FaTerminal size={14} color="currentColor" />
-        </NavButton>
+        {!minimal && (
+          <NavButton
+            title={devtoolsTab !== null ? "Hide DevTools" : "Show DevTools"}
+            onClick={toggleDevtools}
+            active={devtoolsTab !== null}
+          >
+            <FaTerminal size={14} color="currentColor" />
+          </NavButton>
+        )}
 
         {/* Downloads */}
         <div ref={downloadsBtnRef} style={{ position: "relative", flexShrink: 0 }}>
@@ -1423,7 +1476,7 @@ export default function BrowserPreview({
                 minWidth: 13,
                 height: 13,
                 padding: "0 3px",
-                borderRadius: 7,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 7px)",
                 backgroundColor: "var(--ezy-accent)",
                 color: "#000",
                 fontSize: 10,
@@ -1440,30 +1493,41 @@ export default function BrowserPreview({
         </div>
 
         {/* Viewport bar toggle */}
-        <NavButton
-          title={showViewportBar ? "Hide Viewport Bar" : "Show Viewport Bar"}
-          onClick={() => setShowViewportBar((v) => !v)}
-          active={showViewportBar}
-        >
-          <FaDesktop size={14} color="currentColor" />
-        </NavButton>
+        {!minimal && (
+          <NavButton
+            title={showViewportBar ? "Hide Viewport Bar" : "Show Viewport Bar"}
+            onClick={() => setShowViewportBar((v) => !v)}
+            active={showViewportBar}
+          >
+            <FaDesktop size={14} color="currentColor" />
+          </NavButton>
+        )}
 
         {/* Auto-reload toggle */}
-        <NavButton
-          title={autoReload ? "Stop Auto-reload" : "Auto-reload every 2s"}
-          onClick={() => setAutoReload((v) => !v)}
-          active={autoReload}
-        >
-          <BiTimer size={14} color="currentColor" />
-        </NavButton>
+        {!minimal && (
+          <NavButton
+            title={autoReload ? "Stop Auto-reload" : "Auto-reload every 2s"}
+            onClick={() => setAutoReload((v) => !v)}
+            active={autoReload}
+          >
+            <BiTimer size={14} color="currentColor" />
+          </NavButton>
+        )}
 
         {/* Expand */}
-        <PaneExpandButton className="p-1.5 rounded transition-colors hover:bg-[var(--ezy-border)]" />
+        {!minimal && (
+          <PaneExpandButton
+            paneId={paneId}
+            className="p-1.5 rounded transition-colors hover:bg-[var(--ezy-border)]"
+          />
+        )}
 
         {/* Close */}
-        <NavButton title="Close Preview" onClick={onClose} hoverColor="var(--ezy-red)">
-          <FaXmark size={12} color="currentColor" />
-        </NavButton>
+        {!minimal && (
+          <NavButton title="Close Preview" onClick={onClose} hoverColor="var(--ezy-red)">
+            <FaXmark size={12} color="currentColor" />
+          </NavButton>
+        )}
       </div>
 
       {/* ---- Viewport Toolbar ---- */}
@@ -1484,7 +1548,7 @@ export default function BrowserPreview({
               style={{
                 fontSize: 11,
                 padding: "2px 8px",
-                borderRadius: 10,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
                 border: "none",
                 cursor: "pointer",
                 backgroundColor:
@@ -1511,7 +1575,7 @@ export default function BrowserPreview({
                 style={{
                   width: 52, height: 20, fontSize: 11,
                   backgroundColor: "var(--ezy-bg)", color: "var(--ezy-text)",
-                  border: "1px solid var(--ezy-border)", borderRadius: 3,
+                  border: "1px solid var(--ezy-border)", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                   padding: "0 4px", fontFamily: "inherit",
                   fontVariantNumeric: "tabular-nums", outline: "none",
                 }}
@@ -1524,7 +1588,7 @@ export default function BrowserPreview({
                 style={{
                   width: 52, height: 20, fontSize: 11,
                   backgroundColor: "var(--ezy-bg)", color: "var(--ezy-text)",
-                  border: "1px solid var(--ezy-border)", borderRadius: 3,
+                  border: "1px solid var(--ezy-border)", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                   padding: "0 4px", fontFamily: "inherit",
                   fontVariantNumeric: "tabular-nums", outline: "none",
                 }}
@@ -1632,7 +1696,7 @@ export default function BrowserPreview({
             overflowY: "auto",
             backgroundColor: "var(--ezy-surface-raised, var(--ezy-surface))",
             border: "1px solid var(--ezy-border)",
-            borderRadius: 6,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
             zIndex: 400,
             overflowX: "hidden",
@@ -1718,7 +1782,7 @@ export default function BrowserPreview({
                       fontSize: 11,
                       fontWeight: 600,
                       padding: "3px 10px",
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       cursor: "pointer",
                       backgroundColor: "var(--ezy-accent)",
                       color: "#000",
@@ -1738,7 +1802,7 @@ export default function BrowserPreview({
                       fontSize: 11,
                       fontWeight: 600,
                       padding: "3px 10px",
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       cursor: "pointer",
                       backgroundColor: "var(--ezy-border)",
                       color: "var(--ezy-text)",
@@ -1798,7 +1862,7 @@ export default function BrowserPreview({
                 style={{
                   fontSize: 11,
                   padding: "2px 8px",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   cursor: "pointer",
                   backgroundColor:
                     devtoolsTab === tab
@@ -1821,7 +1885,7 @@ export default function BrowserPreview({
             {captureActive && (
               <span
                 style={{
-                  fontSize: 10, padding: "1px 6px", borderRadius: 8,
+                  fontSize: 10, padding: "1px 6px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                   backgroundColor: "var(--ezy-accent-dim)",
                   color: "#ffffff", marginLeft: 2, fontWeight: 600,
                 }}
@@ -1833,7 +1897,7 @@ export default function BrowserPreview({
             {tabBadgeCount() > 0 && (
               <span
                 style={{
-                  fontSize: 10, padding: "1px 6px", borderRadius: 8,
+                  fontSize: 10, padding: "1px 6px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                   backgroundColor: "var(--ezy-surface-raised)",
                   color: "var(--ezy-text-muted)",
                   fontVariantNumeric: "tabular-nums",
@@ -2063,7 +2127,7 @@ export default function BrowserPreview({
                         <span
                           style={{
                             fontSize: 11, marginLeft: 6, padding: "1px 6px",
-                            borderRadius: 4, backgroundColor: "var(--ezy-surface-raised)",
+                            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)", backgroundColor: "var(--ezy-surface-raised)",
                             color: "var(--ezy-text)",
                           }}
                         >
@@ -2175,7 +2239,7 @@ function StorageSection({
         {title}
         <span
           style={{
-            fontSize: 10, padding: "0px 5px", borderRadius: 6,
+            fontSize: 10, padding: "0px 5px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             backgroundColor: "var(--ezy-surface-raised)",
             color: "var(--ezy-text-muted)",
             fontWeight: 400, fontVariantNumeric: "tabular-nums",
@@ -2346,7 +2410,7 @@ function DevServerWaitingState({
               color: "var(--ezy-text-secondary)",
               backgroundColor: "var(--ezy-surface-raised, var(--ezy-bg))",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               display: "inline-block",
               maxWidth: "100%",
               overflow: "hidden",

@@ -63,6 +63,23 @@ pub const HOST_INIT_SCRIPT: &str = r#"
   if (document.readyState === 'complete') ready();
   else window.addEventListener('load', ready);
 
+  // History depth for the toolbar's back/forward buttons — a real browser
+  // grays them out, and wry exposes no history query, so the page's own
+  // Navigation API (Chromium) is the only accurate source. PASSIVE (listener
+  // only), and like everything here the two booleans are untrusted — worst
+  // case a hostile page wrongly grays a nav button.
+  if (window.navigation) {
+    var navState = function () {
+      send('navstate', {
+        type: 'made-navstate',
+        back: !!window.navigation.canGoBack,
+        fwd: !!window.navigation.canGoForward
+      });
+    };
+    window.navigation.addEventListener('currententrychange', navState);
+    navState();
+  }
+
   // Right-click -> MADE's own context menu.
   //
   // The click never reaches a host wnd_proc: WebView2 owns input inside the
