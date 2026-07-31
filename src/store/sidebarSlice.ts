@@ -11,6 +11,12 @@ export interface SidebarSlice {
    *  requestRevealFile). Nonce so the same file can be revealed twice.
    *  Deliberately NOT persisted. */
   revealFileRequest: { path: string; nonce: number } | null;
+  /** True while the file sidebar is open because a reveal opened it, not the
+   *  user. Any manual toggle clears it — the user owns the sidebar from then
+   *  on. Drives closeAutoOpenedSidebar on editor close. Not persisted. */
+  sidebarAutoOpened: boolean;
+  /** Close the file sidebar IF the last reveal auto-opened it. */
+  closeAutoOpenedSidebar: () => void;
   toggleSidebar: () => void;
   setSidebarTab: (tab: SidebarTab) => void;
   toggleDevServerPanel: () => void;
@@ -35,13 +41,22 @@ export const createSidebarSlice: StateCreator<
   expandedDirs: [],
   expandedRemoteDirs: [],
   revealFileRequest: null,
+  sidebarAutoOpened: false,
 
   toggleSidebar: () => {
     set((state) => ({
       sidebarOpen: !state.sidebarOpen,
+      // Manual toggle — the user owns the sidebar state from here on.
+      sidebarAutoOpened: false,
       // Mutual exclusion: close dev server panel when opening sidebar
       devServerPanelOpen: !state.sidebarOpen ? false : state.devServerPanelOpen,
     }));
+  },
+
+  closeAutoOpenedSidebar: () => {
+    set((state) =>
+      state.sidebarAutoOpened ? { sidebarOpen: false, sidebarAutoOpened: false } : {},
+    );
   },
 
   setSidebarTab: (tab) => {
@@ -70,6 +85,9 @@ export const createSidebarSlice: StateCreator<
   requestRevealFile: (path) => {
     set((state) => ({
       sidebarOpen: true,
+      // Auto-opened only when this call actually opened it — a sidebar the
+      // user had open stays theirs and won't close with the editor.
+      sidebarAutoOpened: state.sidebarAutoOpened || !state.sidebarOpen,
       // Same mutual exclusion as toggleSidebar.
       devServerPanelOpen: false,
       // Remote tabs keep their tab — Sidebar's own effect owns the

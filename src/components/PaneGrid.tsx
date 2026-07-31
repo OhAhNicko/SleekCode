@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PaneLayout, GameType } from "../types";
 import {
@@ -143,11 +144,17 @@ export default function PaneGrid({
   // tabId — matching Workspace's made:font-zoom guard. The same guard keeps
   // the inApp branch single-writer: only the active tab's grid mutates layout.
   useEffect(() => {
+    const dlog = (line: string) =>
+      void invoke("debug_log_line", { line }).catch(() => {});
     const handler = (e: Event) => {
-      if (useAppStore.getState().activeTabId !== tabId) return;
       const url = (e as CustomEvent).detail?.url;
+      if (useAppStore.getState().activeTabId !== tabId) {
+        dlog(`[open-url] grid ${tabId} skipped (inactive tab) url=${url}`);
+        return;
+      }
       if (typeof url !== "string" || !url) return;
       if ((e as CustomEvent).detail?.inApp) {
+        dlog(`[open-url] grid ${tabId} → browser pane url=${url}`);
         const s = useAppStore.getState();
         const { layout: newLayout } = openOrUpdateBrowserPane(layout, url, {
           sizePercent: 35,
@@ -158,7 +165,15 @@ export default function PaneGrid({
         onLayoutChange(newLayout);
         return;
       }
-      openUrl(url).catch(() => {});
+      // NOT silently — a rejected openUrl (opener scope, shell failure)
+      // looked exactly like "clicking does nothing" for weeks.
+      openUrl(url).then(
+        () => dlog(`[open-url] grid ${tabId} → external OK url=${url}`),
+        (err) => {
+          console.error("[PaneGrid] openUrl failed", url, err);
+          dlog(`[open-url] grid ${tabId} → external FAILED url=${url} err=${String(err)}`);
+        },
+      );
     };
     window.addEventListener("made:open-url", handler);
     return () => window.removeEventListener("made:open-url", handler);
@@ -378,6 +393,10 @@ export default function PaneGrid({
         snapshotPane(tabId, layout);
         onLayoutChange(redistributeOnClose ? redistributeEqually(next) : next);
       }
+      // The editor is gone — take the file sidebar with it IF a reveal
+      // auto-opened it (never a sidebar the user opened). Idempotent, so
+      // every mounted grid running this handler is fine.
+      useAppStore.getState().closeAutoOpenedSidebar();
     };
     window.addEventListener("made:close-fileviewer", handler);
     return () => window.removeEventListener("made:close-fileviewer", handler);

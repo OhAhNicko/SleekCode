@@ -132,14 +132,18 @@ export default function ScreenshotsOverlay({
   const [stage, setStage] = useState({ w: 0, h: 0 });
   const [armDelete, setArmDelete] = useState(false);
   const [armClear, setArmClear] = useState(false);
-  /** Copy button just fired — swaps its icon for a green check, then reverts. */
-  const [copied, setCopied] = useState(false);
+  /**
+   * Copy button just fired — swaps its icon for a green check, then reverts.
+   * A counter, not a boolean: it keys the check SVG so copying again while
+   * the check is still showing remounts it and replays the pop-in.
+   */
+  const [copied, setCopied] = useState(0);
   const copiedTimerRef = useRef<number | null>(null);
 
   // The check confirms THIS image was copied — moving through the filmstrip
   // or reopening the viewer goes back to the plain copy icon immediately.
   useEffect(() => {
-    setCopied(false);
+    setCopied(0);
   }, [activeId, open]);
   useEffect(
     () => () => {
@@ -548,12 +552,12 @@ export default function ScreenshotsOverlay({
         void invoke("copy_image_to_clipboard", { path: target.winPath }).then(() => {
           // Confirm only what actually happened — a failed copy keeps the
           // plain icon rather than lying with a check mark.
-          setCopied(true);
+          setCopied((n) => n + 1);
           if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
           copiedTimerRef.current = window.setTimeout(() => {
             copiedTimerRef.current = null;
-            setCopied(false);
-          }, 1500);
+            setCopied(0);
+          }, 2600);
         }).catch(() => {});
       });
     },
@@ -1052,7 +1056,7 @@ export default function ScreenshotsOverlay({
           flexDirection: "column",
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 10,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
         }}
@@ -1100,7 +1104,7 @@ export default function ScreenshotsOverlay({
                   fontWeight: 600,
                   lineHeight: 1,
                   padding: "3px 7px",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   backgroundColor: "var(--ezy-surface)",
                   border: "1px solid var(--ezy-border)",
                   color: "var(--ezy-text-secondary)",
@@ -1142,7 +1146,7 @@ export default function ScreenshotsOverlay({
                       fontFamily: "inherit",
                       height: 26,
                       padding: "0 10px",
-                      borderRadius: 5,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                       border: "none",
                       backgroundColor: "var(--ezy-red, #dc2626)",
                       color: "#fff",
@@ -1261,7 +1265,7 @@ export default function ScreenshotsOverlay({
                         position: "relative",
                         height: THUMB_HEIGHT,
                         flexShrink: 0,
-                        borderRadius: 5,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                         overflow: "hidden",
                         cursor: "pointer",
                         scrollSnapAlign: "center",
@@ -1440,7 +1444,7 @@ export default function ScreenshotsOverlay({
                 margin: "12px 14px",
                 position: "relative",
                 overflow: "hidden",
-                borderRadius: 8,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                 // A recessed well, so a white screenshot has an edge to sit
                 // against instead of bleeding into the card.
                 backgroundColor: "rgba(0,0,0,0.28)",
@@ -1475,7 +1479,7 @@ export default function ScreenshotsOverlay({
                     maxWidth: sized ? undefined : "100%",
                     maxHeight: sized ? undefined : "100%",
                     transform: `translate(${pan.x}px, ${pan.y}px)`,
-                    borderRadius: 3,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                     border: "1px solid rgba(255,255,255,0.08)",
                     boxShadow: "0 10px 30px rgba(0,0,0,0.5)",
                     flexShrink: 0,
@@ -1618,7 +1622,7 @@ export default function ScreenshotsOverlay({
                   style={{
                     display: "flex",
                     marginLeft: 4,
-                    borderRadius: 5,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                     overflow: "hidden",
                     border: "1px solid var(--ezy-border)",
                   }}
@@ -1653,7 +1657,7 @@ export default function ScreenshotsOverlay({
                   style={{
                     height: 28,
                     padding: "0 12px",
-                    borderRadius: 5,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                     border: "none",
                     backgroundColor: "var(--ezy-accent)",
                     color: "#fff",
@@ -1686,8 +1690,15 @@ export default function ScreenshotsOverlay({
                   tooltip={copied ? "Copied" : "Copy image (Ctrl+C)"}
                   aria-label="Copy image"
                 >
-                  {copied ? (
-                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                  {copied > 0 ? (
+                    <svg
+                      key={copied}
+                      width="12"
+                      height="12"
+                      viewBox="0 0 12 12"
+                      aria-hidden="true"
+                      className="check-pop-in"
+                    >
                       <path
                         d="M2.5 6.5 L5 9 L9.5 3.5"
                         stroke="#3fb950"
@@ -1735,7 +1746,7 @@ export default function ScreenshotsOverlay({
                     style={{
                       height: 28,
                       padding: "0 10px",
-                      borderRadius: 5,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                       border: "none",
                       backgroundColor: "var(--ezy-red, #dc2626)",
                       color: "#fff",
@@ -1897,7 +1908,7 @@ function GhostButton({
         height: 26,
         width: square ? 26 : undefined,
         padding: square ? 0 : "0 10px",
-        borderRadius: 5,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
         border: "1px solid var(--ezy-border)",
         backgroundColor: "transparent",
         color: danger ? "var(--ezy-red, #dc2626)" : "var(--ezy-text-secondary)",
@@ -2059,7 +2070,7 @@ function EmptyState({ onSnip }: { onSnip: () => void }) {
         style={{
           height: 30,
           padding: "0 14px",
-          borderRadius: 6,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
           border: "none",
           backgroundColor: "var(--ezy-accent)",
           color: "#fff",
