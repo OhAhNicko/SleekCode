@@ -17,16 +17,18 @@ import { useModalWhen } from "../store/modalCoordinationSlice";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
 import { THEMES, getTheme } from "../lib/themes";
 import { getDefaultBackend } from "../lib/platform";
+import { previewSound } from "../lib/notification-sounds";
 import {
   readJiraMcpStatus,
   installJiraMcp,
   JIRA_MCP_AUTH_HINT,
   type JiraMcpStatus,
 } from "../lib/jira-mcp";
+import { normalizeJiraBaseUrl } from "../lib/jira";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { isWindows } from "../lib/platform";
 import { currentIsoWeek } from "../lib/iso-week";
-import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
+import { DEFAULT_CLI_FONT_SIZE, type DevServerTabIconMode } from "../store/recentProjectsSlice";
 import { FaCheck } from "react-icons/fa";
 import { STATUSLINE_FEATURES, getStatuslineDefault } from "./TerminalHeader";
 import ClearDataModal from "./ClearDataModal";
@@ -85,12 +87,13 @@ function ToggleSwitch({ checked, onChange, color }: { checked: boolean; onChange
   );
 }
 
-function FontSizeStepper({ value, onChange, min = 10, max = 24, suffix = "" }: {
+function FontSizeStepper({ value, onChange, min = 10, max = 24, suffix = "", stepSize = 1 }: {
   value: number;
   onChange: (v: number) => void;
   min?: number;
   max?: number;
   suffix?: string;
+  stepSize?: number;
 }) {
   const step = (delta: number, blocked: boolean) => (
     <div
@@ -98,7 +101,7 @@ function FontSizeStepper({ value, onChange, min = 10, max = 24, suffix = "" }: {
       style={{
         width: 24,
         height: 24,
-        borderRadius: 4,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -120,11 +123,11 @@ function FontSizeStepper({ value, onChange, min = 10, max = 24, suffix = "" }: {
   );
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      {step(-1, value <= min)}
+      {step(-stepSize, value <= min)}
       <span style={{ fontSize: 13, color: "var(--ezy-text)", minWidth: 24, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
         {value}{suffix}
       </span>
-      {step(1, value >= max)}
+      {step(stepSize, value >= max)}
     </div>
   );
 }
@@ -136,7 +139,7 @@ function SegmentedControl<T extends string>({ options, value, onChange, disabled
   disabled?: boolean;
 }) {
   return (
-    <div style={{ display: "flex", borderRadius: 6, border: "1px solid var(--ezy-border)", overflow: "hidden", minWidth: 180 }}>
+    <div style={{ display: "flex", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", border: "1px solid var(--ezy-border)", overflow: "hidden", minWidth: 180 }}>
       {options.map((opt) => {
         const isActive = value === opt.value;
         const isOff = disabled || opt.disabled;
@@ -264,15 +267,20 @@ function PathPicker({ value, onChange, directory, filters }: {
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-      <div style={{
-        fontSize: 11,
-        color: value ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
-        maxWidth: 180,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        fontStyle: value ? "normal" : "italic",
-      }}>
+      {/* Only the basename fits here, so the full path lives in the tooltip —
+          otherwise two picks from different folders look identical. */}
+      <div
+        data-tooltip={value || undefined}
+        style={{
+          fontSize: 11,
+          color: value ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
+          maxWidth: 180,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          fontStyle: value ? "normal" : "italic",
+        }}
+      >
         {value ? value.split(/[\\/]/).pop() : "Not set"}
       </div>
       <button
@@ -284,7 +292,7 @@ function PathPicker({ value, onChange, directory, filters }: {
           color: "var(--ezy-text-secondary)",
           backgroundColor: "var(--ezy-surface)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 5,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
           cursor: "pointer",
           fontFamily: "inherit",
         }}
@@ -483,7 +491,7 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
                   color: "#fff",
                   backgroundColor: "var(--ezy-red, #e55)",
                   padding: "4px 10px",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   cursor: "pointer",
                 }}
               >
@@ -679,7 +687,7 @@ function UpdatesSection() {
             style={{
               height: 30,
               padding: "0 14px",
-              borderRadius: 6,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               border: "1px solid var(--ezy-border)",
               background: "var(--ezy-surface-raised)",
               color: "var(--ezy-text)",
@@ -706,7 +714,7 @@ function UpdatesSection() {
               style={{
                 height: 30,
                 padding: "0 14px",
-                borderRadius: 6,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 border: "none",
                 background: "var(--ezy-accent-dim)",
                 color: "#fff",
@@ -749,7 +757,7 @@ function UpdatesSection() {
             <div style={{
               flex: 1,
               height: 4,
-              borderRadius: 2,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
               backgroundColor: "var(--ezy-border)",
               overflow: "hidden",
               minWidth: 60,
@@ -758,7 +766,7 @@ function UpdatesSection() {
                 height: "100%",
                 width: pct != null ? `${pct}%` : "30%",
                 backgroundColor: "var(--ezy-accent)",
-                borderRadius: 2,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
                 transition: pct != null ? "width 200ms ease" : "none",
               }} />
             </div>
@@ -817,7 +825,7 @@ function UpdatesSection() {
                           style={{
                             height: 24,
                             padding: "0 10px",
-                            borderRadius: 5,
+                            borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                             border: "none",
                             background: "var(--ezy-accent-dim)",
                             color: "#fff",
@@ -835,7 +843,7 @@ function UpdatesSection() {
                           style={{
                             height: 24,
                             padding: "0 10px",
-                            borderRadius: 5,
+                            borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                             border: "1px solid var(--ezy-border)",
                             background: "var(--ezy-surface-raised)",
                             color: "var(--ezy-text)",
@@ -861,7 +869,7 @@ function UpdatesSection() {
                         style={{
                           height: 24,
                           padding: "0 10px",
-                          borderRadius: 5,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                           border: "1px solid var(--ezy-border)",
                           background: "var(--ezy-surface-raised)",
                           color: "var(--ezy-text)",
@@ -1004,7 +1012,7 @@ function Dropdown<T extends string>({
           color: current ? "var(--ezy-text)" : "var(--ezy-text-muted)",
           backgroundColor: "var(--ezy-surface)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 5,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
           outline: "none",
           cursor: "pointer",
           display: "flex",
@@ -1054,7 +1062,7 @@ function Dropdown<T extends string>({
             overflowY: "auto",
             zIndex: 1000,
             padding: "4px 0",
-            borderRadius: 6,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             backgroundColor: "var(--ezy-surface-raised)",
             border: "1px solid var(--ezy-border)",
             boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
@@ -1101,11 +1109,15 @@ function Dropdown<T extends string>({
 function TextInput({
   value,
   onChange,
+  onBlurValue,
   placeholder,
   monospace,
 }: {
   value: string;
   onChange: (v: string) => void;
+  /** Called with the final value when the field loses focus — for inputs that
+   *  normalize what was typed (normalizing per keystroke would fight typing). */
+  onBlurValue?: (v: string) => void;
   placeholder?: string;
   monospace?: boolean;
 }) {
@@ -1115,6 +1127,7 @@ function TextInput({
       value={value}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
+      onBlur={onBlurValue ? (e) => onBlurValue(e.target.value) : undefined}
       style={{
         width: 260,
         padding: "5px 8px",
@@ -1123,7 +1136,7 @@ function TextInput({
         color: "var(--ezy-text)",
         backgroundColor: "var(--ezy-surface)",
         border: "1px solid var(--ezy-border)",
-        borderRadius: 5,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
         outline: "none",
       }}
     />
@@ -1216,7 +1229,7 @@ function JiraPluginRow() {
               color: "var(--ezy-text-secondary)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 5,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
               cursor: busy ? "default" : "pointer",
               fontFamily: "inherit",
             }}
@@ -1251,7 +1264,7 @@ function TestButton({ onClick, state }: { onClick: () => void; state: PingState 
           color: "var(--ezy-text-secondary)",
           backgroundColor: "var(--ezy-surface)",
           border: "1px solid var(--ezy-border)",
-          borderRadius: 5,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
           cursor: state.status === "checking" ? "default" : "pointer",
           fontFamily: "inherit",
         }}
@@ -1304,7 +1317,7 @@ function HotkeyCapture({ value, onChange }: { value: string; onChange: (v: strin
         color: recording ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
         backgroundColor: recording ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
         border: `1px solid ${recording ? "var(--ezy-accent)" : "var(--ezy-border)"}`,
-        borderRadius: 5,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
         cursor: "pointer",
         outline: "none",
         textAlign: "center",
@@ -1616,12 +1629,20 @@ export default function SettingsPane() {
   const setAutoHibernateEnabled = useAppStore((s) => s.setAutoHibernateEnabled);
   const autoHibernateMinutes = useAppStore((s) => s.autoHibernateMinutes ?? 30);
   const setAutoHibernateMinutes = useAppStore((s) => s.setAutoHibernateMinutes);
+  const notifEnabled = useAppStore((s) => s.notifEnabled ?? true);
+  const setNotifEnabled = useAppStore((s) => s.setNotifEnabled);
   const notifAutoDismiss = useAppStore((s) => s.notifAutoDismiss ?? false);
   const setNotifAutoDismiss = useAppStore((s) => s.setNotifAutoDismiss);
   const notifAutoDismissSeconds = useAppStore((s) => s.notifAutoDismissSeconds ?? 30);
   const setNotifAutoDismissSeconds = useAppStore((s) => s.setNotifAutoDismissSeconds);
   const notifAutoSwitchMinimized = useAppStore((s) => s.notifAutoSwitchMinimized ?? false);
   const setNotifAutoSwitchMinimized = useAppStore((s) => s.setNotifAutoSwitchMinimized);
+  const notifSystemMinimized = useAppStore((s) => s.notifSystemMinimized ?? true);
+  const setNotifSystemMinimized = useAppStore((s) => s.setNotifSystemMinimized);
+  const notifSoundEnabled = useAppStore((s) => s.notifSoundEnabled ?? true);
+  const setNotifSoundEnabled = useAppStore((s) => s.setNotifSoundEnabled);
+  const notifSoundVolume = useAppStore((s) => s.notifSoundVolume ?? 50);
+  const setNotifSoundVolume = useAppStore((s) => s.setNotifSoundVolume);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
   const confirmReloadPanes = useAppStore((s) => s.confirmReloadPanes ?? true);
   const setConfirmReloadPanes = useAppStore((s) => s.setConfirmReloadPanes);
@@ -1656,8 +1677,8 @@ export default function SettingsPane() {
   const setBrowserSpawnLeft = useAppStore((s) => s.setBrowserSpawnLeft);
   const devServerButtonInHeader = useAppStore((s) => s.devServerButtonInHeader);
   const setDevServerButtonInHeader = useAppStore((s) => s.setDevServerButtonInHeader);
-  const devServerButtonOnTab = useAppStore((s) => s.devServerButtonOnTab);
-  const setDevServerButtonOnTab = useAppStore((s) => s.setDevServerButtonOnTab);
+  const devServerTabIcon = useAppStore((s) => s.devServerTabIcon);
+  const setDevServerTabIcon = useAppStore((s) => s.setDevServerTabIcon);
   const codeReviewCollapseAll = useAppStore((s) => s.codeReviewCollapseAll);
   const setCodeReviewCollapseAll = useAppStore((s) => s.setCodeReviewCollapseAll);
   const projectsDir = useAppStore((s) => s.projectsDir);
@@ -1684,6 +1705,14 @@ export default function SettingsPane() {
   const setJiraPromptTemplate = useAppStore((s) => s.setJiraPromptTemplate);
   const jiraReplyInSwedish = useAppStore((s) => s.jiraReplyInSwedish ?? false);
   const setJiraReplyInSwedish = useAppStore((s) => s.setJiraReplyInSwedish);
+  const defaultJiraClaudeMdPath = useAppStore((s) => s.defaultJiraClaudeMdPath ?? "");
+  const setDefaultJiraClaudeMdPath = useAppStore((s) => s.setDefaultJiraClaudeMdPath);
+  const jiraClaudeSide = useAppStore((s) => s.jiraClaudeSide ?? "left");
+  const setJiraClaudeSide = useAppStore((s) => s.setJiraClaudeSide);
+  const jiraRowFullColor = useAppStore((s) => s.jiraRowFullColor ?? false);
+  const setJiraRowFullColor = useAppStore((s) => s.setJiraRowFullColor);
+  const jiraMode = useAppStore((s) => s.jiraMode ?? true);
+  const setJiraMode = useAppStore((s) => s.setJiraMode);
   const cliFontSizes = useAppStore((s) => s.cliFontSizes);
   const setCliFontSize = useAppStore((s) => s.setCliFontSize);
   const cliYolo = useAppStore((s) => s.cliYolo);
@@ -1839,7 +1868,10 @@ export default function SettingsPane() {
               <SettingsRow label="Open panes in background">
                 <ToggleSwitch checked={openPanesInBackground} onChange={setOpenPanesInBackground} />
               </SettingsRow>
-              <SettingsRow label="Open add-pane menu on hover">
+              <SettingsRow
+                label="Open tab-bar menus on hover"
+                description="The + projects menu and the add-pane menu open on hover; moving between the two buttons switches menus instantly."
+              >
                 <ToggleSwitch checked={hoverOpenAddPaneMenu} onChange={setHoverOpenAddPaneMenu} />
               </SettingsRow>
               <SettingsRow label="Wide grid layout" description="First 4 panes go side-by-side before stacking.">
@@ -1871,7 +1903,7 @@ export default function SettingsPane() {
                   style={{
                     height: 30,
                     padding: "0 14px",
-                    borderRadius: 6,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     border: "none",
                     backgroundColor: "var(--ezy-red, #e55)",
                     color: "#fff",
@@ -1907,7 +1939,7 @@ export default function SettingsPane() {
                     style={{
                       height: 30,
                       padding: "0 14px",
-                      borderRadius: 6,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                       border: "none",
                       backgroundColor: "var(--ezy-red, #e55)",
                       color: "#fff",
@@ -1946,7 +1978,7 @@ export default function SettingsPane() {
                         alignItems: "center",
                         gap: 10,
                         padding: "10px 12px",
-                        borderRadius: 8,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                         // The border stays 1px in every state. It used to go to
                         // 2px when selected, and since these cards are
                         // auto-height that added 2px of box on selection — every
@@ -1970,9 +2002,9 @@ export default function SettingsPane() {
                       }}
                     >
                       <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
-                        <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: t.surface.bg }} />
-                        <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: t.surface.accent }} />
-                        <div style={{ width: 12, height: 12, borderRadius: 3, backgroundColor: t.surface.cyan }} />
+                        <div style={{ width: 12, height: 12, borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: t.surface.bg }} />
+                        <div style={{ width: 12, height: 12, borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: t.surface.accent }} />
+                        <div style={{ width: 12, height: 12, borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: t.surface.cyan }} />
                       </div>
                       <span style={{ fontSize: 13, fontWeight: isSelected ? 600 : 400, color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)" }}>
                         {t.name}
@@ -2070,7 +2102,7 @@ export default function SettingsPane() {
                           fontSize: 10,
                           fontWeight: 700,
                           padding: "2px 5px",
-                          borderRadius: 3,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                           backgroundColor: "var(--ezy-red, #e55)",
                           color: "#fff",
                           lineHeight: 1,
@@ -2099,7 +2131,7 @@ export default function SettingsPane() {
                           onClick={disabled ? undefined : onClick}
                           style={{
                             padding: "2px 8px",
-                            borderRadius: 4,
+                            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                             border: "1px solid var(--ezy-border-light)",
                             color: "var(--ezy-text-secondary)",
                             fontSize: 11,
@@ -2321,10 +2353,15 @@ export default function SettingsPane() {
               title="Notifications"
               description="In-app cards when a background pane finishes a turn or needs permission."
             >
-              <SettingsRow label="Auto-dismiss pane notifications">
-                <ToggleSwitch checked={notifAutoDismiss} onChange={setNotifAutoDismiss} />
+              <SettingsRow label="Pane notifications">
+                <ToggleSwitch checked={notifEnabled} onChange={setNotifEnabled} />
               </SettingsRow>
-              {notifAutoDismiss && (
+              {notifEnabled && (
+                <SettingsRow label="Auto-dismiss pane notifications">
+                  <ToggleSwitch checked={notifAutoDismiss} onChange={setNotifAutoDismiss} />
+                </SettingsRow>
+              )}
+              {notifEnabled && notifAutoDismiss && (
                 <SettingsRow label="Dismiss after">
                   <Dropdown<string>
                     value={String(notifAutoDismissSeconds)}
@@ -2339,12 +2376,55 @@ export default function SettingsPane() {
                   />
                 </SettingsRow>
               )}
-              <SettingsRow
-                label="Switch to notifying pane while minimized"
-                description="Re-targets the tab and pane in the background — the window stays minimized."
-              >
-                <ToggleSwitch checked={notifAutoSwitchMinimized} onChange={setNotifAutoSwitchMinimized} />
-              </SettingsRow>
+              {notifEnabled && (
+                <SettingsRow
+                  label="Notification sound"
+                  description="Each project gets its own sound — change it from the tab's right-click menu."
+                >
+                  <ToggleSwitch checked={notifSoundEnabled} onChange={setNotifSoundEnabled} />
+                </SettingsRow>
+              )}
+              {notifEnabled && notifSoundEnabled && (
+                <SettingsRow label="Volume">
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <FontSizeStepper
+                      value={notifSoundVolume}
+                      onChange={setNotifSoundVolume}
+                      min={0}
+                      max={100}
+                      stepSize={10}
+                      suffix="%"
+                    />
+                    <svg
+                      onClick={() => previewSound("chime")}
+                      role="button"
+                      aria-label="Test notification sound"
+                      width="20"
+                      height="20"
+                      viewBox="0 0 16 16"
+                      fill="currentColor"
+                      style={{ cursor: "pointer", color: "var(--ezy-text-muted)", padding: 2 }}
+                      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--ezy-text)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.color = "var(--ezy-text-muted)"; }}
+                    >
+                      <path d="M4.75 2.57a.75.75 0 011.14-.64l8 5.43a.75.75 0 010 1.28l-8 5.43a.75.75 0 01-1.14-.64V2.57z" />
+                    </svg>
+                  </div>
+                </SettingsRow>
+              )}
+              {notifEnabled && (
+                <SettingsRow label="System notifications while minimized">
+                  <ToggleSwitch checked={notifSystemMinimized} onChange={setNotifSystemMinimized} />
+                </SettingsRow>
+              )}
+              {notifEnabled && (
+                <SettingsRow
+                  label="Switch to notifying pane while minimized"
+                  description="Re-targets the tab and pane in the background — the window stays minimized."
+                >
+                  <ToggleSwitch checked={notifAutoSwitchMinimized} onChange={setNotifAutoSwitchMinimized} />
+                </SettingsRow>
+              )}
             </SettingsSection>
           </>
         );
@@ -2385,7 +2465,7 @@ export default function SettingsPane() {
                         gap: 8,
                         padding: "6px 8px",
                         border: "1px solid var(--ezy-border)",
-                        borderRadius: 6,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                         backgroundColor: "var(--ezy-surface)",
                       }}
                     >
@@ -2403,7 +2483,7 @@ export default function SettingsPane() {
                           color: "var(--ezy-text)",
                           backgroundColor: "var(--ezy-surface-raised)",
                           border: `1px solid ${filenameInvalid ? "#e55" : "var(--ezy-border)"}`,
-                          borderRadius: 5,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                           outline: "none",
                           fontFamily: "inherit",
                         }}
@@ -2466,7 +2546,7 @@ export default function SettingsPane() {
                     color: "var(--ezy-text-secondary)",
                     backgroundColor: "var(--ezy-surface)",
                     border: "1px solid var(--ezy-border)",
-                    borderRadius: 5,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                     cursor: "pointer",
                     fontFamily: "inherit",
                   }}
@@ -2525,8 +2605,16 @@ export default function SettingsPane() {
               <SettingsRow label="Spawn on left">
                 <ToggleSwitch checked={browserSpawnLeft} onChange={setBrowserSpawnLeft} />
               </SettingsRow>
-              <SettingsRow label="Dev server button on project tab">
-                <ToggleSwitch checked={devServerButtonOnTab} onChange={setDevServerButtonOnTab} />
+              <SettingsRow label="Dev server button on tabs">
+                <SegmentedControl
+                  options={[
+                    { value: "all" as DevServerTabIconMode, label: "All tabs" },
+                    { value: "active" as DevServerTabIconMode, label: "Active tab" },
+                    { value: "off" as DevServerTabIconMode, label: "Off" },
+                  ]}
+                  value={devServerTabIcon}
+                  onChange={setDevServerTabIcon}
+                />
               </SettingsRow>
               <SettingsRow label="Dev server button in pane headers">
                 <ToggleSwitch checked={devServerButtonInHeader} onChange={setDevServerButtonInHeader} />
@@ -2618,11 +2706,44 @@ export default function SettingsPane() {
             </SettingsSection>
             <SettingsSection id="jira" title="Jira">
               <JiraPluginRow />
-              <SettingsRow label="Jira address">
+              <SettingsRow
+                label="Jira mode"
+                description="Declutter the tab bar while a Jira project tab is active — the dev server and file sidebar buttons hide there. Ordinary project tabs keep them."
+              >
+                <ToggleSwitch checked={jiraMode} onChange={setJiraMode} />
+              </SettingsRow>
+              <SettingsRow
+                label="Jira address"
+                description="Company name is enough — it becomes https://<company>.atlassian.net. Full addresses also work (self-hosted)."
+              >
                 <TextInput
                   value={jiraBaseUrl}
                   onChange={setJiraBaseUrl}
-                  placeholder="https://yourcompany.atlassian.net"
+                  onBlurValue={(v) => setJiraBaseUrl(normalizeJiraBaseUrl(v))}
+                  placeholder="yourcompany"
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Claude pane side"
+                description="Which side the Claude pane sits on in a ticket view — the ticket's browser takes the other side."
+              >
+                <SegmentedControl<"left" | "right">
+                  options={[
+                    { value: "left", label: "Left" },
+                    { value: "right", label: "Right" },
+                  ]}
+                  value={jiraClaudeSide}
+                  onChange={setJiraClaudeSide}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Default Jira CLAUDE.md"
+                description="Offered when creating a Jira project — copied into the source folder unless it already has a CLAUDE.md. Separate from the normal project template."
+              >
+                <PathPicker
+                  value={defaultJiraClaudeMdPath}
+                  onChange={setDefaultJiraClaudeMdPath}
+                  filters={[{ name: "Markdown", extensions: ["md"] }]}
                 />
               </SettingsRow>
               <SettingsRow
@@ -2646,7 +2767,7 @@ export default function SettingsPane() {
                     color: "var(--ezy-text)",
                     backgroundColor: "var(--ezy-surface)",
                     border: "1px solid var(--ezy-border)",
-                    borderRadius: 5,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                     outline: "none",
                   }}
                 />
@@ -2656,6 +2777,12 @@ export default function SettingsPane() {
                   checked={jiraReplyInSwedish}
                   onChange={setJiraReplyInSwedish}
                 />
+              </SettingsRow>
+              <SettingsRow
+                label="Full-color ticket rows"
+                description="Paint each ticket row in its ticket color instead of just the left edge — text flips automatically for contrast."
+              >
+                <ToggleSwitch checked={jiraRowFullColor} onChange={setJiraRowFullColor} />
               </SettingsRow>
             </SettingsSection>
             <AiTimeStatsSection bursts={aiTimeBursts} onClear={clearAiTimeStats} />
@@ -2745,7 +2872,7 @@ export default function SettingsPane() {
               minWidth: 0,
               height: 22,
               padding: "0 6px",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               backgroundColor: "var(--ezy-surface)",
               gap: 6,
               transition: "width 160ms ease",
@@ -2790,7 +2917,7 @@ export default function SettingsPane() {
                   justifyContent: "center",
                   backgroundColor: "transparent",
                   border: "none",
-                  borderRadius: 3,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                   color: "var(--ezy-text-muted)",
                   cursor: "pointer",
                   flexShrink: 0,
@@ -2820,7 +2947,7 @@ export default function SettingsPane() {
                   justifyContent: "center",
                   backgroundColor: "transparent",
                   border: "none",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   color: "var(--ezy-text-muted)",
                   cursor: "pointer",
                   fontFamily: "inherit",
@@ -2861,7 +2988,7 @@ export default function SettingsPane() {
                   justifyContent: "center",
                   backgroundColor: "transparent",
                   border: "none",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   color: "var(--ezy-text-muted)",
                   cursor: "pointer",
                   fontFamily: "inherit",
@@ -2986,7 +3113,7 @@ export default function SettingsPane() {
             style={{
               backgroundColor: "var(--ezy-surface-raised)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 10,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
               boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
               padding: "24px 28px 20px",
               width: 340,
@@ -3009,7 +3136,7 @@ export default function SettingsPane() {
                   style={{
                     width: 15,
                     height: 15,
-                    borderRadius: 3,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                     border: reloadRemember ? "none" : "1px solid var(--ezy-border-light)",
                     backgroundColor: reloadRemember ? "var(--ezy-accent)" : "transparent",
                     display: "flex",
@@ -3030,7 +3157,7 @@ export default function SettingsPane() {
                   padding: "6px 16px",
                   fontSize: 12,
                   fontWeight: 500,
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   cursor: "pointer",
                   border: "1px solid var(--ezy-border-light)",
                   color: "var(--ezy-text-secondary)",
@@ -3055,7 +3182,7 @@ export default function SettingsPane() {
                   padding: "6px 16px",
                   fontSize: 12,
                   fontWeight: 500,
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   cursor: "pointer",
                   border: "none",
                   color: "#fff",
