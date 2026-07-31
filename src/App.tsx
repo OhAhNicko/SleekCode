@@ -42,12 +42,15 @@ import PromptHistorySearch from "./components/PromptHistorySearch";
 import DevServerTerminalHost from "./components/DevServerTerminalHost";
 import DevServerRestoreToast from "./components/DevServerRestoreToast";
 import PaneNotificationStack from "./components/PaneNotificationStack";
+import SoundPickerHost from "./components/SoundPickerHost";
+import { installAudioUnlock } from "./lib/notification-sounds";
 import SettingsPane from "./components/SettingsPane";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
 import { matchCommand, probeKeybinding, MIGRATED } from "./lib/keybindings";
 import { runCommand } from "./lib/commands";
 import PromptModal from "./components/PromptModal";
+import NewJiraTicketModal from "./components/NewJiraTicketModal";
 import TooltipHost from "./components/TooltipHost";
 import WslHealthCheck from "./components/WslHealthCheck";
 import HibernationEngine from "./components/HibernationEngine";
@@ -61,6 +64,7 @@ import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { getVersion } from "@tauri-apps/api/app";
 import { getActivePaneSearchOpener } from "./lib/pane-search-registry";
 import { emitOverlayTheme, listenOverlayFocus, listenOverlayReady } from "./lib/overlay-bridge";
+import { maybeOfferAgentFile } from "./lib/agent-file-backfill";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
@@ -230,6 +234,11 @@ export default function App() {
         serverId: pendingDir.serverId,
       }));
       addTerminals(batch);
+      // A CLI whose guideline file is missing (e.g. Codex pane, project has
+      // only CLAUDE.md) gets a one-click pointer-file offer.
+      for (const t of new Set(batch.map((b) => b.type))) {
+        maybeOfferAgentFile(t, pendingDir.dir, pendingDir.serverId);
+      }
       const tabId = addTabWithLayout(pendingDir.name, pendingDir.dir, finalLayout, pendingDir.serverId);
       addRecentProject({
         path: pendingDir.dir,
@@ -588,6 +597,23 @@ export default function App() {
     return () => { unlisten?.(); };
   }, []);
 
+  // App-wide "which KIND of pane did the user last engage" delegate: a click
+  // inside any non-terminal pane (editor, file viewer, kanban, code review,
+  // game, browser chrome) must hollow every terminal cursor. Terminal panes
+  // carry data-terminal-id on the same element as data-pane-id; clicks outside
+  // any pane (tab bar, sidebar) deliberately leave the state unchanged.
+  // Native-pane and browser-page clicks never reach the DOM — those flip the
+  // flag via focus_gained→handleTerminalFocus and BrowserPreview's made-focus.
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      const pane = (e.target as HTMLElement | null)?.closest?.("[data-pane-id]");
+      if (!pane) return;
+      useAppStore.getState().setNonTerminalPaneActive(!pane.hasAttribute("data-terminal-id"));
+    };
+    document.addEventListener("mousedown", onMouseDown, true);
+    return () => document.removeEventListener("mousedown", onMouseDown, true);
+  }, []);
+
   // OS-window minimized state (transition events from the win32_border
   // wnd_proc — onFocusChanged above cannot see this, it mirrors webview
   // focus). Feeds pane-notification suppression + auto-switch-while-minimized.
@@ -598,6 +624,12 @@ export default function App() {
     }).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
   }, []);
+
+  // Unlock Web Audio for notification sounds on the first interaction this
+  // webview sees. Chromium user activation is sticky per document, but native
+  // pane HWNDs never grant it — the earlier the context resumes, the smaller
+  // the window where a notification chime is silently blocked.
+  useEffect(() => installAudioUnlock(), []);
 
   // Belt-and-braces flush in case the webview unloads without onCloseRequested
   // firing (browser preview, unusual Tauri paths). localStorage writes inside
@@ -648,6 +680,9 @@ export default function App() {
       "--ezy-accent-glow": s.accentGlow,
       "--ezy-red": s.red,
       "--ezy-cyan": s.cyan,
+      // Unitless multiplier consumed by every corner-radius calc() in the
+      // app (and mirrored to the overlay like the color vars).
+      "--ezy-radius-scale": String(theme.radiusScale ?? 1),
     };
     const root = document.documentElement;
     for (const [name, value] of Object.entries(vars)) {
@@ -1189,7 +1224,7 @@ export default function App() {
                         onClick={() => window.dispatchEvent(new CustomEvent("made:open-recent", { detail: { path: project.path, name: project.name } }))}
                         style={{
                           display: "flex", alignItems: "center", gap: 10,
-                          padding: "8px 12px", borderRadius: 6, border: "none",
+                          padding: "8px 12px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", border: "none",
                           background: "transparent", cursor: "pointer", textAlign: "left", width: "100%",
                         }}
                         onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface-raised)"}
@@ -1215,7 +1250,7 @@ export default function App() {
                 className="made-splash-rise"
                 onClick={() => window.dispatchEvent(new Event("made:new-tab"))}
                 style={{
-                  padding: "9px 22px", borderRadius: 8, position: "relative",
+                  padding: "9px 22px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)", position: "relative",
                   border: "1px solid var(--ezy-border)",
                   background: "var(--ezy-surface-raised)", color: "var(--ezy-text)",
                   fontSize: 13, fontWeight: 500, cursor: "pointer",
@@ -1272,12 +1307,14 @@ export default function App() {
       {VOICE_ENABLED && <VoiceController />}
       <GlobalContextMenu />
       <PromptModal />
+      <NewJiraTicketModal />
       <TooltipHost />
       <WslHealthCheck />
       <HibernationEngine />
       <DevServerTerminalHost />
       <DevServerRestoreToast />
       <PaneNotificationStack />
+      <SoundPickerHost />
       {!onboardingCompleted && (
         <WelcomeModal
           onComplete={() => setOnboardingCompleted(true)}
