@@ -345,6 +345,69 @@ for the provider to read (`browser-view/page-context.ts`).
   `docs/learnings/YYYY-MM-DD-<short-title>.md`
 - Include: Summary, Symptoms, Root cause, Fix, Prevention, Verification.
 - Create `docs/learnings/` if it doesn't exist.
+- **Stamp the session (see below).** A learnings doc without its session id is a
+  dead end — the reader cannot get back to the conversation that produced it.
+
+## Session stamps — EVERY session-authored doc records its own session
+
+Any doc written to hand knowledge or work to a **later session** starts with a
+session stamp, so the reader can reopen the original conversation instead of
+reconstructing it from the prose.
+
+```markdown
+# <the doc's normal H1 title>
+
+**Session:** `03955890-c569-4b20-a9cd-0d24469f7314`
+**Name:** Add setting for horizontal and vertical tabs
+**Resume:** `claude --resume 03955890-c569-4b20-a9cd-0d24469f7314`
+
+## Summary
+...
+```
+
+### Where to find your own id and name
+
+- **Session id** — the directory segment in the scratchpad path from your system
+  prompt: `/tmp/claude-<uid>/<project-slug>/<SESSION_ID>/scratchpad`. Free, always
+  present, no tool call. Never invent one and never copy an id out of another
+  doc.
+- **Session name** — the *last* `ai-title` record in your own transcript. The
+  harness generates it and refines it as the session goes, so read it at write
+  time, not from memory:
+
+  ```bash
+  grep -o '"aiTitle":"[^"]*"' \
+    ~/.claude/projects/-mnt-c-Users-nikla-Documents-projects-2codeCC/<SESSION_ID>.jsonl \
+    | tail -1
+  ```
+
+  A young session may have no `ai-title` yet. Then omit the **Name:** line —
+  never guess a title.
+
+### Which docs get a stamp
+
+- `docs/learnings/*.md` — every one.
+- `docs/session-prompts.txt` — each session's block header carries
+  `Session: <id> — "<name>"` and a `Resume:` line under the `## <date> — <topic>` line.
+- `docs/superpowers/specs/*.md` — brainstorm/design specs.
+- Handoff, STATUS and next-session docs — the whole point of these is a fresh
+  session picking the work up, so the stamp matters most here.
+
+### Which docs do NOT
+
+Rolling docs that many sessions co-own: `docs/architecture.md`, `tasks/todo.md`,
+`docs/context-menu-backlog.md`, `MEMORY.md`. One id on a file 20 sessions have
+edited implies an authorship that isn't real.
+
+### Back-filling an existing doc
+
+Attribute from transcripts ONLY when exactly one surviving transcript contains a
+`Write`/`Edit` whose `file_path` is that doc. A doc being *mentioned* in a
+transcript proves nothing — a session that merely `Read` it, or grepped a
+directory listing, matches too. If two sessions edited it, or no transcript
+survives, leave the doc alone rather than guessing. Transcripts rotate: as of
+2026-07-30 only 41 remained for 134 learnings docs, so most older docs are
+permanently unattributable and that is fine.
 
 ## Testing & validation (before committing)
 1) Run `npm run build` (if it exists; otherwise use the repo's build command)
@@ -400,6 +463,7 @@ When I write…
 ### /lesson
 - Capture learnings from the current conversation in a markdown file
 - File: `docs/learnings/YYYY-MM-DD-<short-title>.md`
+- Start it with the session stamp (see "Session stamps") — id, name, resume command
 - Include: Summary, Symptoms, Root cause, Fix, Prevention, Verification
 - **If a major bug or important gotcha was discovered**, save a concise one-liner to `MEMORY.md` to prevent repeating it
 
@@ -420,6 +484,7 @@ When I write…
 1. Verify work: best practices, efficiency, security, build/tests/lint pass
 2. Check if anything needs to go into the plan file
 3. Create learnings doc: `docs/learnings/YYYY-MM-DD-<short-title>.md`
+   - Start it with the session stamp (see "Session stamps") — id, name, resume command
    - Write it with the same depth and quality as `/lesson` — not a surface-level summary
    - If there were bugs or failed attempts, explain the faulty reasoning behind each attempt and why it failed
    - The goal is to prevent repeating the same mistakes — a one-liner like "three attempts failed" is useless; explain WHY they failed
@@ -427,4 +492,10 @@ When I write…
 4. **If a major bug or important gotcha was discovered**, save a concise one-liner to `MEMORY.md` to prevent repeating it
 5. Append all USER prompts from this session to `docs/session-prompts.txt`
    - Format: numbered messages with date/session header
+   - The block header carries the session stamp:
+     ```
+     ## YYYY-MM-DD — <topic>
+     Session: <session-id> — "<session name>"
+     Resume: claude --resume <session-id>
+     ```
    - Only user messages, not Claude responses

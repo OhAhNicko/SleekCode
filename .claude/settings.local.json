@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wsl.exe -- cat ~/.claude/settings.json 2>&1)",
+      "Bash(wsl.exe -- bash -lic 'TMP=$\\(mktemp\\) && jq \".statusLine.type = \\\\\"command\\\\\"\" ~/.claude/settings.json > \"$TMP\" && mv \"$TMP\" ~/.claude/settings.json && cat ~/.claude/settings.json' 2>&1)",
+      "Bash(wsl.exe -e bash -c 'file ~/.made/statusline-wrapper.sh && xxd ~/.made/statusline-wrapper.sh | head -5' 2>&1)",
+      "Bash(wsl.exe -e bash -c 'echo \"{\\\\\"context_window\\\\\":{\\\\\"context_window_size\\\\\":200000,\\\\\"current_usage\\\\\":{\\\\\"input_tokens\\\\\":5000}}}\" | ~/.made/statusline-wrapper.sh 2>&1; echo \"EXIT:$?\"' 2>&1)",
+      "Bash(wsl.exe -e bash -c 'cat ~/.made/statusline-chain 2>&1' 2>&1)",
+      "Bash(wsl.exe --shutdown 2>&1; sleep 3; wsl.exe -e cat /home/nicko/.made/statusline-chain 2>&1)",
+      "Bash(wsl.exe -e bash -c 'rm -f ~/.made/statusline-chain && echo \"REMOVED\"' 2>&1)",
+      "Bash(npm run:*)",
+      "Bash(gh run:*)",
+      "Bash(node:*)",
+      "Bash(gh release:*)",
+      "Bash(mkdir -p /mnt/c/Users/nikla/Documents/projects/2codeCC/docs)",
+      "Bash(touch /mnt/c/Users/nikla/Documents/projects/2codeCC/docs/session-prompts.txt)",
+      "Bash(printf '\\\\n[AskUserQuestion] Q: Which behavior do you want when the user closes the last pane in a tab? → A: Empty state with launcher \\(Recommended\\)\\\\n')",
+      "Bash(awk 'NR>=560 && NR<=720 && \\(/return \\\\\\(/ || /<div/ || /position:/ || /className=/ || /height/ || /flex/ || /padding/ || /data-/\\)' src/components/TerminalHeader.tsx)",
+      "Read(//home/nicko/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/alacritty_terminal-0.24.2/src/term/**)",
+      "Bash(sort -t: -k2 -rn)",
+      "Bash(ls *)",
+      "Bash(echo === *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(timeout 30 cat src-tauri/capabilities/default.json)",
+      "Bash(timeout 30 node -e \"const p=require\\('./package.json'\\);console.log\\(JSON.stringify\\(p.dependencies,null,1\\)\\)\")",
+      "Bash(timeout 30 sed -n '1,60p' /mnt/c/Users/nikla/Documents/projects/2codeCC/src/components/ScreenshotsOverlay.tsx)"
+    ]
+  }
+}
