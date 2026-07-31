@@ -100,4 +100,8 @@ export type OverlayMenuPayload = {
   gap?: number;
   /** Max height px before the item list scrolls. */
   maxHeight?: number;
+  /** Hover-to-open mode: the menu reports pointer enter/leave on its root
+   *  ("__hoverin__" / "__hoverout__" actions) so the main side can close it
+   *  when the pointer leaves button AND menu. */
+  hoverTracking?: boolean;
 };

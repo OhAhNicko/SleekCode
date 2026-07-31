@@ -37,7 +37,7 @@ export default function VerticalTabBar() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServers = useAppStore((s) => s.devServers);
-  const devServerButtonOnTab = useAppStore((s) => s.devServerButtonOnTab);
+  const devServerTabIcon = useAppStore((s) => s.devServerTabIcon);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
   const projectColors = useAppStore((s) => s.projectColors);
@@ -98,6 +98,10 @@ export default function VerticalTabBar() {
     (t) => !t.isDevServerTab && !t.isKanbanTab && !t.isServersTab && !t.isSettingsTab
   );
   const activeTab = tabs.find((t) => t.id === activeTabId);
+  // Jira mode: while a Jira project tab is active, the dev server and file
+  // sidebar buttons hide — the ticket workflow doesn't use either.
+  const jiraMode = useAppStore((s) => s.jiraMode ?? true);
+  const hideJiraChrome = jiraMode && !!activeTab?.isJiraProject;
   const activeIsProject =
     !!activeTab &&
     !activeTab.isDevServerTab &&
@@ -143,7 +147,7 @@ export default function VerticalTabBar() {
   const handleBrowserClick = () => {
     const store = useAppStore.getState();
     const tab = store.tabs.find((t) => t.id === store.activeTabId);
-    if (!tab || !tab.layout || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
+    if (!tab || !tab.layout || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab || tab.isJiraProject) return;
     const existing = findAllBrowserPanes(tab.layout);
     if (existing.length > 0) {
       let newLayout: import("../types").PaneLayout | null = tab.layout;
@@ -302,118 +306,127 @@ export default function VerticalTabBar() {
           </div>
         </div>
 
-        {/* Sidebar toggle */}
-        <div
-         
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: compact ? "center" : "flex-start",
-            gap: 10,
-            height: 36,
-            padding: compact ? "0 6px" : "0 12px",
-            cursor: "pointer",
-            backgroundColor: sidebarOpen ? "var(--ezy-surface)" : "transparent",
-            color: sidebarOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-            fontSize: 12,
-            transition: "background-color 120ms ease, color 120ms ease",
-          }}
-          onClick={handleSidebarClick}
-          onMouseEnter={(e) => {
-            if (!sidebarOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-          }}
-          onMouseLeave={(e) => {
-            if (!sidebarOpen) e.currentTarget.style.backgroundColor = "transparent";
-          }}
-        >
-          <BiSidebar size={14} color="currentColor" />
-          {!compact && <span>Sidebar</span>}
-        </div>
+        {/* Sidebar toggle — hidden in Jira mode on Jira tabs */}
+        {!hideJiraChrome && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: compact ? "center" : "flex-start",
+              gap: 10,
+              height: 36,
+              padding: compact ? "0 6px" : "0 12px",
+              cursor: "pointer",
+              backgroundColor: sidebarOpen ? "var(--ezy-surface)" : "transparent",
+              color: sidebarOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
+              fontSize: 12,
+              transition: "background-color 120ms ease, color 120ms ease",
+            }}
+            onClick={handleSidebarClick}
+            onMouseEnter={(e) => {
+              if (!sidebarOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+            }}
+            onMouseLeave={(e) => {
+              if (!sidebarOpen) e.currentTarget.style.backgroundColor = "transparent";
+            }}
+          >
+            <BiSidebar size={14} color="currentColor" />
+            {!compact && <span>Sidebar</span>}
+          </div>
+        )}
 
-        {/* Browser Preview — only meaningful for project tabs, but always visible for symmetry */}
-        <div
-          onClick={activeIsProject ? handleBrowserClick : undefined}
-          data-tooltip="Browser Preview"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: compact ? "center" : "flex-start",
-            gap: 10,
-            height: 36,
-            padding: compact ? "0 6px" : "0 12px",
-            cursor: activeIsProject ? "pointer" : "not-allowed",
-            backgroundColor: activeHasBrowser ? "var(--ezy-surface)" : "transparent",
-            color: activeHasBrowser ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-            opacity: activeIsProject ? 1 : 0.4,
-            fontSize: 12,
-            transition: "background-color 120ms ease, color 120ms ease",
-          }}
-          onMouseEnter={(e) => {
-            if (!activeHasBrowser && activeIsProject) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-          }}
-          onMouseLeave={(e) => {
-            if (!activeHasBrowser) e.currentTarget.style.backgroundColor = "transparent";
-          }}
-        >
-          {activeHasBrowser ? (
-            <TbBrowserMinus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
-          ) : (
-            <TbBrowserPlus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
-          )}
-          {!compact && <span>Browser</span>}
-        </div>
+        {/* Browser Preview — only meaningful for project tabs, but visible-
+            disabled for symmetry. Removed entirely for Jira projects: every
+            ticket owns its browser pane inside its pair, and a free-standing
+            browser would make the migration effect read the layout as legacy
+            and rebuild it. */}
+        {!activeTab?.isJiraProject && (
+          <div
+            onClick={activeIsProject ? handleBrowserClick : undefined}
+            data-tooltip="Browser Preview"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: compact ? "center" : "flex-start",
+              gap: 10,
+              height: 36,
+              padding: compact ? "0 6px" : "0 12px",
+              cursor: activeIsProject ? "pointer" : "not-allowed",
+              backgroundColor: activeHasBrowser ? "var(--ezy-surface)" : "transparent",
+              color: activeHasBrowser ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
+              opacity: activeIsProject ? 1 : 0.4,
+              fontSize: 12,
+              transition: "background-color 120ms ease, color 120ms ease",
+            }}
+            onMouseEnter={(e) => {
+              if (!activeHasBrowser && activeIsProject) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+            }}
+            onMouseLeave={(e) => {
+              if (!activeHasBrowser) e.currentTarget.style.backgroundColor = "transparent";
+            }}
+          >
+            {activeHasBrowser ? (
+              <TbBrowserMinus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
+            ) : (
+              <TbBrowserPlus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
+            )}
+            {!compact && <span>Browser</span>}
+          </div>
+        )}
 
-        {/* Dev Servers */}
-        <div
-          data-tooltip="Dev Servers"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: compact ? "center" : "flex-start",
-            gap: 10,
-            height: 36,
-            padding: compact ? "0 6px" : "0 12px",
-            cursor: "pointer",
-            position: "relative",
-            backgroundColor: devServerPanelOpen ? "var(--ezy-surface)" : "transparent",
-            color: devServerPanelOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-            fontSize: 12,
-            borderBottom: "1px solid var(--ezy-border-subtle)",
-            transition: "background-color 120ms ease, color 120ms ease",
-          }}
-          onClick={handleDevServersClick}
-          onMouseEnter={(e) => {
-            if (!devServerPanelOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-          }}
-          onMouseLeave={(e) => {
-            if (!devServerPanelOpen) e.currentTarget.style.backgroundColor = "transparent";
-          }}
-        >
-          <FaServer size={13} color="currentColor" />
-          {!compact && <span>Servers</span>}
-          {runningDevCount > 0 && (
-            <span
-              style={{
-                marginLeft: compact ? 4 : "auto",
-                minWidth: 14,
-                height: 14,
-                borderRadius: 7,
-                backgroundColor: "var(--ezy-accent)",
-                border: "1px solid var(--ezy-bg)",
-                fontSize: 9,
-                fontWeight: 700,
-                color: "#fff",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                lineHeight: 1,
-                padding: "0 4px",
-              }}
-            >
-              {runningDevCount}
-            </span>
-          )}
-        </div>
+        {/* Dev Servers — hidden in Jira mode on Jira tabs */}
+        {!hideJiraChrome && (
+          <div
+            data-tooltip="Dev Servers"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: compact ? "center" : "flex-start",
+              gap: 10,
+              height: 36,
+              padding: compact ? "0 6px" : "0 12px",
+              cursor: "pointer",
+              position: "relative",
+              backgroundColor: devServerPanelOpen ? "var(--ezy-surface)" : "transparent",
+              color: devServerPanelOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
+              fontSize: 12,
+              borderBottom: "1px solid var(--ezy-border-subtle)",
+              transition: "background-color 120ms ease, color 120ms ease",
+            }}
+            onClick={handleDevServersClick}
+            onMouseEnter={(e) => {
+              if (!devServerPanelOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+            }}
+            onMouseLeave={(e) => {
+              if (!devServerPanelOpen) e.currentTarget.style.backgroundColor = "transparent";
+            }}
+          >
+            <FaServer size={13} color="currentColor" />
+            {!compact && <span>Servers</span>}
+            {runningDevCount > 0 && (
+              <span
+                style={{
+                  marginLeft: compact ? 4 : "auto",
+                  minWidth: 14,
+                  height: 14,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 7px)",
+                  backgroundColor: "var(--ezy-accent)",
+                  border: "1px solid var(--ezy-bg)",
+                  fontSize: 9,
+                  fontWeight: 700,
+                  color: "#fff",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  lineHeight: 1,
+                  padding: "0 4px",
+                }}
+              >
+                {runningDevCount}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* MIDDLE — scrollable tabs + git status + per-tab actions */}
@@ -495,7 +508,7 @@ export default function VerticalTabBar() {
                       justifyContent: "center",
                       width: 26,
                       height: 22,
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       fontSize: 10,
                       fontWeight: 700,
                       letterSpacing: "0.02em",
@@ -528,7 +541,7 @@ export default function VerticalTabBar() {
                       alignItems: "center",
                       lineHeight: 1,
                       padding: "1px 4px",
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       backgroundColor: "var(--ezy-surface-raised)",
                       border: "1px solid var(--ezy-border)",
                       color: "var(--ezy-text-muted)",
@@ -549,7 +562,7 @@ export default function VerticalTabBar() {
                       right: 4,
                       width: 8,
                       height: 8,
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       backgroundColor: "var(--ezy-surface-raised)",
                       border: "1px solid var(--ezy-border)",
                     }}
@@ -562,7 +575,7 @@ export default function VerticalTabBar() {
                       fontWeight: 600,
                       lineHeight: 1,
                       padding: "1px 4px",
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       position: "relative",
                       backgroundColor: "var(--ezy-surface-raised)",
                       border: "1px solid var(--ezy-border)",
@@ -579,7 +592,7 @@ export default function VerticalTabBar() {
                           right: -8,
                           minWidth: 12,
                           height: 12,
-                          borderRadius: 6,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                           backgroundColor: "var(--ezy-accent)",
                           border: "1px solid var(--ezy-bg)",
                           fontSize: 7,
@@ -603,7 +616,7 @@ export default function VerticalTabBar() {
                     reserve-slot is needed here — active tab only, skipped in
                     compact mode. Plain click = external browser, Ctrl/Cmd =
                     MADE browser pane. */}
-                {!compact && isActive && devServerButtonOnTab && (() => {
+                {!compact && devServerTabIcon !== "off" && (devServerTabIcon === "all" || isActive) && (() => {
                   const tabNorm = tab.workingDir?.replace(/\\/g, "/");
                   const ds = devServers.find(
                     (srv) =>
@@ -622,23 +635,26 @@ export default function VerticalTabBar() {
                         e.stopPropagation();
                         openDevServerUrl(ds, { inApp: wantsInAppOpen(e) });
                       }}
+                      // Color-only hover, no background — matches the
+                      // horizontal tab bar's icon (see TabBar for why).
                       style={{
                         display: "inline-flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        width: 18,
-                        height: 18,
-                        borderRadius: 3,
+                        width: 14,
+                        height: 14,
                         flexShrink: 0,
                         cursor: "pointer",
+                        color: "var(--ezy-text-muted)",
+                        transition: "color 120ms ease",
                       }}
-                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-border)")}
-                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-text)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ezy-text-muted)")}
                     >
-                      <svg width={12} height={12} viewBox="0 0 12 12" fill="none">
-                        <circle cx="6" cy="6" r="4.5" stroke="#4ade80" strokeWidth="1.2" />
-                        <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="#4ade80" strokeWidth="1" />
-                        <path d="M1.5 6h9" stroke="#4ade80" strokeWidth="1" />
+                      <svg width={10} height={10} viewBox="0 0 12 12" fill="none">
+                        <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.2" />
+                        <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="currentColor" strokeWidth="1" />
+                        <path d="M1.5 6h9" stroke="currentColor" strokeWidth="1" />
                       </svg>
                     </span>
                   );
@@ -654,7 +670,7 @@ export default function VerticalTabBar() {
                       right: 4,
                       width: 8,
                       height: 8,
-                      borderRadius: 4,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                       backgroundColor: "var(--ezy-accent)",
                       border: "1px solid var(--ezy-bg)",
                     }}
@@ -677,7 +693,7 @@ export default function VerticalTabBar() {
                       left: 2,
                       width: 14,
                       height: 14,
-                      borderRadius: 3,
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
@@ -769,7 +785,7 @@ export default function VerticalTabBar() {
                   width: 34,
                   height: 26,
                   cursor: "pointer",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   transition: "background-color 120ms ease",
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}
@@ -790,7 +806,7 @@ export default function VerticalTabBar() {
                   width: 34,
                   height: 26,
                   cursor: "pointer",
-                  borderRadius: 4,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   transition: "background-color 120ms ease",
                 }}
                 onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}

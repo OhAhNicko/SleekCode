@@ -25,7 +25,8 @@ import { FaXmark, FaPlus, FaGear, FaServer } from "react-icons/fa6";
 import { PiKanbanDuotone, PiGameControllerDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
 import { BiSidebar } from "react-icons/bi";
-import { createJiraProject } from "../lib/jira-project";
+import JiraProjectModal from "./JiraProjectModal";
+import { createJiraProjectAt } from "../lib/jira-project";
 
 function truncateTabPath(path: string, maxSegments = 3): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -43,6 +44,12 @@ export default function TabBar() {
   const togglePinTab = useAppStore((s) => s.togglePinTab);
   const reorderTabs = useAppStore((s) => s.reorderTabs);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
+  // Jira mode: while a Jira project tab is active, the dev server and file
+  // sidebar buttons hide — the ticket workflow doesn't use either, and the
+  // slimmer bar keeps the focus on the rail + pair canvas.
+  const jiraMode = useAppStore((s) => s.jiraMode ?? true);
+  const hideJiraChrome =
+    jiraMode && !!tabs.find((t) => t.id === activeTabId)?.isJiraProject;
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const recentProjects = useAppStore((s) => s.recentProjects);
   const addRecentProject = useAppStore((s) => s.addRecentProject);
@@ -60,7 +67,7 @@ export default function TabBar() {
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
   const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
   const devServers = useAppStore((s) => s.devServers);
-  const devServerButtonOnTab = useAppStore((s) => s.devServerButtonOnTab);
+  const devServerTabIcon = useAppStore((s) => s.devServerTabIcon);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
   const projectColors = useAppStore((s) => s.projectColors);
@@ -78,6 +85,7 @@ export default function TabBar() {
   const [showServersTab] = useState(false);
   const setPendingDir = useAppStore((s) => s.setPendingDir);
   const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
+  const [showJiraProjectModal, setShowJiraProjectModal] = useState(false);
   const projectsDir = useAppStore((s) => s.projectsDir);
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -91,6 +99,27 @@ export default function TabBar() {
   // (only when the overlay is rendered); useOverlayPublisher's rAF loop
   // tolerates null refs and re-reads each frame.
   const newTabChevronRef = useRef<HTMLDivElement>(null);
+
+  // Hover-to-open mode: menus stay open only while the pointer is inside the
+  // button or its dropdown. Leave either → grace timer → close (the grace
+  // covers the pixels between button and popup, and button-to-button swaps).
+  // One shared timer suffices — at most one of the two menus is open.
+  const hoverCloseTimerRef = useRef<number | null>(null);
+  const cancelHoverClose = useCallback(() => {
+    if (hoverCloseTimerRef.current != null) {
+      clearTimeout(hoverCloseTimerRef.current);
+      hoverCloseTimerRef.current = null;
+    }
+  }, []);
+  const scheduleHoverClose = useCallback(() => {
+    if (!hoverOpenAddPaneMenu) return;
+    cancelHoverClose();
+    hoverCloseTimerRef.current = window.setTimeout(() => {
+      hoverCloseTimerRef.current = null;
+      setShowRecentMenu(false);
+      setShowNewTabMenu(false);
+    }, 300);
+  }, [hoverOpenAddPaneMenu, cancelHoverClose]);
   // "Add pane" dropdown — overlay-rendered (kind "anchored-menu").
   useOverlayMenu({
     id: "tabbar-new-tab-menu",
@@ -101,6 +130,7 @@ export default function TabBar() {
           placement: "below-start",
           width: 220,
           gap: 2,
+          hoverTracking: hoverOpenAddPaneMenu,
           sections: [
             {
               // Sticky renderer mode: `sticky` keeps the menu OPEN, so the
@@ -138,6 +168,14 @@ export default function TabBar() {
         }
       : null,
     onAction: (actionId, data) => {
+      if (actionId === "__hoverin__") {
+        cancelHoverClose();
+        return;
+      }
+      if (actionId === "__hoverout__") {
+        scheduleHoverClose();
+        return;
+      }
       if (actionId === "toggle-native-renderer") {
         setNewPaneNativeRenderer(!newPaneNativeRenderer);
         return;
@@ -337,18 +375,33 @@ export default function TabBar() {
                   : (linkedServer?.name ?? linkedServer?.host ?? "remote")
                 : undefined,
               badgeMuted: isOrphanRemote,
-              showFresh: canQuickOpen,
-              showQuick: hasSavedLayout,
+              jira: !!project.isJira,
+              // Jira projects reopen through their own path (rail + per-ticket
+              // canvas) — the layout-restore shortcuts would rebuild them as
+              // plain grids, so hide those controls for them.
+              showFresh: !project.isJira && canQuickOpen,
+              showQuick: !project.isJira && hasSavedLayout,
               quickOn: isQuickOpenEnabled(project),
               paneCount: String(savedPaneCount ?? "?"),
               backendLabel: backend ?? undefined,
             };
           }),
-          canCreate: !!projectsDir,
+          // The modal itself offers local + server locations, so creating is
+          // possible as soon as EITHER exists.
+          canCreate: !!projectsDir || servers.length > 0,
           servers: servers.map((sv) => ({ id: sv.id, name: sv.name })),
+          hoverTracking: hoverOpenAddPaneMenu,
         }
       : null,
     onAction: (action) => {
+      if (action === "__hoverin__") {
+        cancelHoverClose();
+        return;
+      }
+      if (action === "__hoverout__") {
+        scheduleHoverClose();
+        return;
+      }
       if (action === "__dismiss__") {
         setShowRecentMenu(false);
         return;
@@ -361,6 +414,13 @@ export default function TabBar() {
         case "open":
           if (!project) return;
           setShowRecentMenu(false);
+          // Jira projects reopen as Jira tabs (rail + per-ticket canvas) —
+          // never through the template picker or layout restore, which would
+          // recreate them as plain grids.
+          if (project.isJira) {
+            void createJiraProjectAt({ path: project.path, serverId: project.serverId });
+            break;
+          }
           if ((!!project.lastLayout || !!project.lastTemplate) && isQuickOpenEnabled(project)) {
             quickOpenProject(project, false);
           } else {
@@ -404,7 +464,7 @@ export default function TabBar() {
           break;
         case "jira":
           setShowRecentMenu(false);
-          void createJiraProject();
+          setShowJiraProjectModal(true);
           break;
         case "server": {
           const server = servers.find((sv) => sv.id === arg);
@@ -533,28 +593,30 @@ export default function TabBar() {
           zIndex: 60,
         }}
       >
-        {/* Sidebar toggle (Warp-style) */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 40,
-            flexShrink: 0,
-            cursor: "pointer",
-            backgroundColor: sidebarOpen ? "var(--ezy-surface)" : "transparent",
-          }}
-          onClick={() => { closeAllMenus(); if (!sidebarOpen) useAppStore.getState().setSettingsPanelOpen(false); toggleSidebar(); }}
-          onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
-          onMouseLeave={(e) => {
-            if (!sidebarOpen) e.currentTarget.style.backgroundColor = "transparent";
-          }}
-        >
-          <BiSidebar size={14} color={sidebarOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} />
-        </div>
+        {/* Sidebar toggle (Warp-style) — hidden in Jira mode on Jira tabs */}
+        {!hideJiraChrome && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 40,
+              flexShrink: 0,
+              cursor: "pointer",
+              backgroundColor: sidebarOpen ? "var(--ezy-surface)" : "transparent",
+            }}
+            onClick={() => { closeAllMenus(); if (!sidebarOpen) useAppStore.getState().setSettingsPanelOpen(false); toggleSidebar(); }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
+            onMouseLeave={(e) => {
+              if (!sidebarOpen) e.currentTarget.style.backgroundColor = "transparent";
+            }}
+          >
+            <BiSidebar size={14} color={sidebarOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} />
+          </div>
+        )}
 
-        {/* Dev Servers icon button */}
-        {(() => {
+        {/* Dev Servers icon button — hidden in Jira mode on Jira tabs */}
+        {!hideJiraChrome && (() => {
           const isDevActive = devServerPanelOpen;
           const runningCount = devServers.filter((s) => s.status === "running" || s.status === "starting").length;
           return (
@@ -584,7 +646,7 @@ export default function TabBar() {
                   right: 3,
                   minWidth: 12,
                   height: 12,
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   backgroundColor: "var(--ezy-accent)",
                   border: "1px solid var(--ezy-bg)",
                   fontSize: 7,
@@ -734,7 +796,11 @@ export default function TabBar() {
                     fontFamily: "inherit",
                     transition: "background-color 120ms ease, color 120ms ease",
                     outline: "none",
-                    minWidth: 0,
+                    // Floor evens out the strip: short-named tabs (TV, EVP)
+                    // stop rendering as stubs next to long ones, without the
+                    // padding/truncation costs of fully fixed-width tabs.
+                    // Labels keep content sizing between the two bounds.
+                    minWidth: isSystemTab ? 0 : 90,
                     maxWidth: 200,
                     height: "100%",
                     borderRight: "1px solid var(--ezy-border-subtle)",
@@ -803,7 +869,7 @@ export default function TabBar() {
                                 fontFamily: "inherit",
                                 backgroundColor: "var(--ezy-bg)",
                                 border: "1px solid var(--ezy-accent)",
-                                borderRadius: 3,
+                                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                                 color: "var(--ezy-text)",
                                 outline: "none",
                                 padding: "0 4px",
@@ -832,7 +898,7 @@ export default function TabBar() {
                                 alignItems: "center",
                                 lineHeight: 1,
                                 padding: "1px 4px",
-                                borderRadius: 4,
+                                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                                 position: "relative" as const,
                                 top: 1,
                                 backgroundColor: "var(--ezy-surface-raised)",
@@ -852,7 +918,7 @@ export default function TabBar() {
                                 fontWeight: 600,
                                 lineHeight: 1,
                                 padding: "1px 4px",
-                                borderRadius: 4,
+                                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                                 position: "relative" as const,
                                 top: 1,
                                 backgroundColor: "var(--ezy-surface-raised)",
@@ -868,7 +934,7 @@ export default function TabBar() {
                                   right: -8,
                                   minWidth: 12,
                                   height: 12,
-                                  borderRadius: 6,
+                                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                                   backgroundColor: "var(--ezy-accent)",
                                   border: "1px solid var(--ezy-bg)",
                                   fontSize: 7,
@@ -903,7 +969,7 @@ export default function TabBar() {
                       only the ACTIVE tab actually shows and handles the icon.
                       Green = the app-wide running color (StatusDot). Plain
                       click = external browser, Ctrl/Cmd = MADE browser pane. */}
-                  {devServerButtonOnTab && !isSystemTab && (() => {
+                  {devServerTabIcon !== "off" && !isSystemTab && (() => {
                     const tabNorm = tab.workingDir?.replace(/\\/g, "/");
                     const ds = devServers.find(
                       (srv) =>
@@ -912,36 +978,46 @@ export default function TabBar() {
                           (!!tabNorm && srv.workingDir.replace(/\\/g, "/") === tabNorm)),
                     );
                     if (!ds) return null;
+                    // "all": live icon on every tab with a running server —
+                    // opens a BACKGROUND project's URL without switching tabs.
+                    // "active": icon shown on the active tab only; inactive
+                    // tabs keep an invisible slot so the width never shifts.
+                    const iconLive = devServerTabIcon === "all" || isActive;
                     return (
                       <span
-                        role={isActive ? "button" : undefined}
+                        role={iconLive ? "button" : undefined}
                         aria-label="Open dev server in browser"
-                        data-tooltip={isActive ? `Open localhost:${ds.port} in browser` : undefined}
-                        data-tooltip-hint={isActive ? "Ctrl+Click opens the MADE browser pane" : undefined}
+                        data-tooltip={iconLive ? `Open localhost:${ds.port} in browser` : undefined}
+                        data-tooltip-hint={iconLive ? "Ctrl+Click opens the MADE browser pane" : undefined}
                         onClick={(e) => {
                           e.stopPropagation();
                           openDevServerUrl(ds, { inApp: wantsInAppOpen(e) });
                         }}
+                        // No hover BACKGROUND here on purpose: the pane-count
+                        // badge's activity dot overhangs its parent and any bg
+                        // box behind this icon collides with it. Hover feedback
+                        // is a color change, like the tab's close/pin buttons.
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
                           justifyContent: "center",
-                          width: 18,
-                          height: 18,
-                          borderRadius: 3,
+                          width: 14,
+                          height: 14,
                           flexShrink: 0,
                           marginLeft: 2,
                           cursor: "pointer",
-                          visibility: isActive ? "visible" : "hidden",
-                          pointerEvents: isActive ? "auto" : "none",
+                          color: "var(--ezy-text-muted)",
+                          transition: "color 120ms ease",
+                          visibility: iconLive ? "visible" : "hidden",
+                          pointerEvents: iconLive ? "auto" : "none",
                         }}
-                        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-border)")}
-                        onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-text)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ezy-text-muted)")}
                       >
-                        <svg width={12} height={12} viewBox="0 0 12 12" fill="none">
-                          <circle cx="6" cy="6" r="4.5" stroke="#4ade80" strokeWidth="1.2" />
-                          <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="#4ade80" strokeWidth="1" />
-                          <path d="M1.5 6h9" stroke="#4ade80" strokeWidth="1" />
+                        <svg width={10} height={10} viewBox="0 0 12 12" fill="none">
+                          <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.2" />
+                          <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="currentColor" strokeWidth="1" />
+                          <path d="M1.5 6h9" stroke="currentColor" strokeWidth="1" />
                         </svg>
                       </span>
                     );
@@ -1066,7 +1142,7 @@ export default function TabBar() {
                   ? "repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(255,255,255,0.05) 4px, rgba(255,255,255,0.05) 8px)"
                   : undefined,
                 boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
-                borderRadius: 4,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 border: "1px solid var(--ezy-border)",
                 cursor: "grabbing",
                 userSelect: "none",
@@ -1078,7 +1154,7 @@ export default function TabBar() {
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 4 }}>
                   <span>{ghostTab.name}</span>
                   {gCliCount > 1 && (
-                    <span style={{ fontSize: 9, fontWeight: 600, lineHeight: 1, padding: "1px 4px", borderRadius: 4, position: "relative" as const, top: 1, backgroundColor: "var(--ezy-surface-raised)", border: "1px solid var(--ezy-border)", color: "var(--ezy-text-secondary)" }}>
+                    <span style={{ fontSize: 9, fontWeight: 600, lineHeight: 1, padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)", position: "relative" as const, top: 1, backgroundColor: "var(--ezy-surface-raised)", border: "1px solid var(--ezy-border)", color: "var(--ezy-text-secondary)" }}>
                       {gCliCount}
                     </span>
                   )}
@@ -1124,9 +1200,23 @@ export default function TabBar() {
               }
             }}
             onMouseEnter={(e) => {
+              cancelHoverClose();
+              // Same hover-to-open setting as the add-pane chevron next door;
+              // each button closes the other's menu, so moving the pointer
+              // between the two is an instant switch.
+              if (
+                hoverOpenAddPaneMenu &&
+                !showRecentMenu &&
+                (recentProjects.length > 0 || projectsDir || servers.length > 0)
+              ) {
+                setShowNewTabMenu(false);
+                setShowRecentMenu(true);
+                return;
+              }
               if (!showRecentMenu) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
             }}
             onMouseLeave={(e) => {
+              scheduleHoverClose();
               if (!showRecentMenu) e.currentTarget.style.backgroundColor = "transparent";
             }}
           >
@@ -1136,8 +1226,14 @@ export default function TabBar() {
           {/* Recent Projects dropdown */}
           {/* Recent-projects menu — overlay-rendered (kind "recent-menu", hook above). */}
 
-          {/* Chevron — opens dropdown menu (only when a project is open) */}
-          {tabs.some(t => !t.isKanbanTab && !t.isDevServerTab && !t.isServersTab && !t.isSettingsTab) && <><div
+          {/* Chevron — opens the Add-pane menu. Gated on the ACTIVE tab (same
+              precedent as the Git bar below): the menu only ever spawns panes
+              into the active tab, so a system tab hides it — and so does a
+              Jira project, whose panes are opened from the ticket rail. */}
+          {(() => {
+            const at = tabs.find((t) => t.id === activeTabId);
+            return at && !at.isKanbanTab && !at.isDevServerTab && !at.isServersTab && !at.isSettingsTab && !at.isJiraProject;
+          })() && <><div
             ref={newTabChevronRef}
             style={{
               display: "flex",
@@ -1154,6 +1250,7 @@ export default function TabBar() {
               setShowNewTabMenu((v) => !v);
             }}
             onMouseEnter={(e) => {
+              cancelHoverClose();
               if (hoverOpenAddPaneMenu && !showNewTabMenu) {
                 setShowRecentMenu(false);
                 setShowNewTabMenu(true);
@@ -1162,6 +1259,7 @@ export default function TabBar() {
               if (!showNewTabMenu) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
             }}
             onMouseLeave={(e) => {
+              scheduleHoverClose();
               if (!showNewTabMenu) e.currentTarget.style.backgroundColor = "transparent";
             }}
           >
@@ -1222,7 +1320,7 @@ export default function TabBar() {
               width: 34,
               height: 26,
               cursor: "pointer",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               backgroundColor: "transparent",
               transition: "background-color 120ms ease",
             }}
@@ -1233,16 +1331,19 @@ export default function TabBar() {
           </div>
         )}
 
-        {/* Browser Preview — only for project tabs */}
+        {/* Browser Preview — only for project tabs. Hidden for Jira projects:
+            every ticket owns its browser pane inside its pair, and a manually
+            added free-standing browser would make the migration effect read
+            the layout as legacy and rebuild it. */}
         {(() => {
           const at = tabs.find((t) => t.id === activeTabId);
-          return at && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
+          return at && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab && !at.isJiraProject;
         })() && (
           <div
             onClick={() => {
               const store = useAppStore.getState();
               const tab = store.tabs.find((t) => t.id === store.activeTabId);
-              if (!tab || !tab.layout || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return;
+              if (!tab || !tab.layout || tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab || tab.isJiraProject) return;
 
               // If browser pane already exists, remove it (toggle off)
               const existing = findAllBrowserPanes(tab.layout);
@@ -1282,7 +1383,7 @@ export default function TabBar() {
               width: 34,
               height: 26,
               cursor: "pointer",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               backgroundColor: "transparent",
               transition: "background-color 120ms ease",
             }}
@@ -1317,7 +1418,7 @@ export default function TabBar() {
               width: 34,
               height: 26,
               cursor: "pointer",
-              borderRadius: 4,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
               backgroundColor: "transparent",
               transition: "background-color 120ms ease",
             }}
@@ -1470,7 +1571,7 @@ export default function TabBar() {
             style={{
               backgroundColor: "var(--ezy-surface-raised)",
               border: "1px solid var(--ezy-border)",
-              borderRadius: 10,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
               boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
               padding: "24px 28px 20px",
               width: 320,
@@ -1494,7 +1595,7 @@ export default function TabBar() {
                 style={{
                   width: 15,
                   height: 15,
-                  borderRadius: 3,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                   border: quitDontShow ? "none" : "1px solid var(--ezy-border-light)",
                   backgroundColor: quitDontShow ? "var(--ezy-accent)" : "transparent",
                   display: "flex",
@@ -1518,7 +1619,7 @@ export default function TabBar() {
                   padding: "6px 16px",
                   fontSize: 12,
                   fontWeight: 500,
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   cursor: "pointer",
                   border: "1px solid var(--ezy-border-light)",
                   color: "var(--ezy-text-secondary)",
@@ -1540,7 +1641,7 @@ export default function TabBar() {
                   padding: "6px 16px",
                   fontSize: 12,
                   fontWeight: 500,
-                  borderRadius: 6,
+                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   cursor: "pointer",
                   border: "none",
                   color: "#fff",
@@ -1560,12 +1661,17 @@ export default function TabBar() {
       {/* Create Project modal */}
       {showCreateProjectModal && (
         <CreateProjectModal
-          onCreated={(name, dir) => {
+          onCreated={(name, dir, serverId) => {
             setShowCreateProjectModal(false);
-            setPendingDir({ name, dir });
+            setPendingDir({ name, dir, serverId });
           }}
           onClose={() => setShowCreateProjectModal(false)}
         />
+      )}
+
+      {/* New Jira Project modal */}
+      {showJiraProjectModal && (
+        <JiraProjectModal onClose={() => setShowJiraProjectModal(false)} />
       )}
 
       {/* Delayed path tooltip (2s hover on tab) */}
