@@ -9,11 +9,20 @@
  * WebView2's default light-gray scrollbar, which reads as a foreign element
  * sitting on top of a dark panel.
  *
- * These are the SAME values as index.css:80-93, deliberately duplicated rather
- * than shared: the two webviews have no common stylesheet, and a scrollbar that
- * silently drifts from the main app is worse than a six-line copy. If you change
- * one, change the other.
+ * These are the SAME values as index.css's ::-webkit-scrollbar rules,
+ * deliberately duplicated rather than shared: the two webviews share no
+ * stylesheet that STYLES anything, and a scrollbar that silently drifts from
+ * the main app is worse than a six-line copy. If you change one, change the
+ * other.
  */
+
+/* The sole shared stylesheet, and it styles nothing — the selectable UI faces.
+   A file of pure @font-face declares faces without applying them, so importing
+   it carries no layout, resets or app globals into the overlay. Shared rather
+   than copied because the copied version fails silently and asymmetrically: a
+   face declared in only one of the two renders in the app while context menus
+   quietly fall back, which reads as a rendering glitch, not a missing block. */
+@import "../fonts/ui-fonts.css";
 
 ::-webkit-scrollbar {
   width: 6px;
@@ -25,12 +34,12 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--ezy-border, #30363d);
+  background: var(--ezy-border, #323232);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--ezy-border-light, #484f58);
+  background: var(--ezy-border-light, #454545);
 }
 
 /* Firefox / spec-track equivalent, so the overlay degrades the same way the
@@ -47,6 +56,11 @@ body {
   margin: 0;
   overflow: hidden;
   background: transparent;
+  /* Root of the inherit chain. Popups that say `fontFamily: "inherit"` have no
+     other ancestor carrying a family — without this they bottom out at the
+     WebView2 default instead of the app's face. Fallback matches what the
+     popups asked for before --ezy-font-ui existed. */
+  font-family: var(--ezy-font-ui, Inter, system-ui, sans-serif);
 }
 
 /*

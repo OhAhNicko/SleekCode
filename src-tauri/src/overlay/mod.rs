@@ -41,7 +41,7 @@ static LAST_REGION: std::sync::Mutex<Option<Vec<(i32, i32, i32, i32, i32)>>> =
 /// popups. THE hard rule (hardware-captured 2026-07-24): `SetWindowRgn` on a
 /// VISIBLE window invalidates every window beneath the changed area, and the
 /// main window + its WebView2/wgpu children then race the next DWM frame to
-/// re-present — losing the race showed the whole app as bare #0d1117 for 1-2
+/// re-present — losing the race showed the whole app as bare #131313 for 1-2
 /// frames (the menu open/close flicker, ~30% of transitions). So popup
 /// open/close is expressed as SHOW/HIDE of the whole overlay window (a pure
 /// DWM composition op that invalidates nothing beneath), and every region

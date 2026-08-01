@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "tauri:dev": "bash scripts/tauri-dev.sh",
     "tauri:build": "bash scripts/tauri-build.sh",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "icons": "python3 scripts/generate-icons.py"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",

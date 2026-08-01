@@ -760,6 +760,99 @@ const headsTheme: MadeTheme = {
   },
 };
 
+// ─── Heads 2.0 (POS pastels, rationed) ──────────────────────────────
+//
+// Same source app as `heads`, but designed from it rather than sampled
+// off it. The screenshot's real idea is not its hex values — it is that
+// colour is RATIONED: of ~20 action tiles only five are coloured, the
+// rest are inert grey with dimmed labels, and the tiles separate by fill
+// with no stroke at all. v1 lifted the swatches and spent them evenly;
+// 2.0 spends them the way the app does.
+//
+// Three consequences, in order of how much they change the theme:
+//
+// 1. Accent is periwinkle, not mint. In the app, periwinkle marks the
+//    tiles that TAKE YOU SOMEWHERE (Kassaoppgjør, Backoffice, Åpne
+//    kasse) and mint marks the ones that COMMIT (Opprett kunde, Hent
+//    parkert). A terminal accent is navigational — focus ring, active
+//    tab, cursor — so periwinkle is the honest mapping and v1 had it
+//    inverted. Mint keeps its commit role as `surface.cyan`, the
+//    secondary signal.
+//
+// 2. The four authentic app colours live in the BRIGHT row, verbatim:
+//    mint #80e2ad, periwinkle #92bcff, pink #f4b4d1, coral #fd8183. The
+//    normal row is those same hues pulled down ~1.4-1.7x in luminance.
+//    So the true Heads palette appears exactly where the terminal itself
+//    says "this matters" — the same rationing, one layer down. v1
+//    scattered the four across both rows and invented yellow/cyan from
+//    nothing; here they are derived at the ramp's own lightness so they
+//    read as family, and every hue clears 4.5:1 on the canvas (v1's
+//    pastels all sat at one lightness and smeared at 13px).
+//
+// 3. Neutrals carry a faint cool cast (#101315 vs v1's flat #131313) so
+//    the pastels read as emitted rather than pasted on, and `border`
+//    drops to #2b3033 — just above the tile it edges — because the app
+//    has no strokes. Separation comes from the fill steps; borderLight
+//    (#454b4e, the ghost-logo grey) is kept for edges that must be seen.
+//
+// radiusScale 2 is inherited: the pillowy 12px tile is the app's most
+// physical trait and the one thing v1 got exactly right.
+//
+// Known hole, stated rather than hidden: the white ToggleSwitch thumb
+// sits at 1.93:1 on the periwinkle track. That is short of 3:1, but it
+// is better than v1's 1.57:1 on mint, and the track colour change still
+// carries the state.
+
+const heads2Theme: MadeTheme = {
+  id: "heads2",
+  name: "Heads 2.0",
+  radiusScale: 2,
+  terminal: {
+    background: "#101315",
+    foreground: "#eef1f0",
+    cursor: "#92bcff",
+    cursorAccent: "#101315",
+    // Periwinkle-tinted rather than v1's neutral grey — selection is a
+    // navigational state, so it belongs to the accent hue.
+    selectionBackground: "#2b3742",
+    selectionForeground: "#ffffff",
+    selectionInactiveBackground: "#2b374288",
+    black: "#232829",
+    red: "#e8595c",
+    green: "#3fb87a",
+    yellow: "#c2a05e",
+    blue: "#6d9de8",
+    magenta: "#d47aa6",
+    cyan: "#4fb9b0",
+    white: "#bdc4c3",
+    brightBlack: "#5a6265",
+    brightRed: "#fd8183",
+    brightGreen: "#80e2ad",
+    brightYellow: "#f0d29b",
+    brightBlue: "#92bcff",
+    brightMagenta: "#f4b4d1",
+    brightCyan: "#8fd9d2",
+    brightWhite: "#ffffff",
+  },
+  surface: {
+    bg: "#101315",
+    surface: "#191d20",
+    surfaceRaised: "#232829",
+    border: "#2b3033",
+    borderSubtle: "#1f2426",
+    borderLight: "#454b4e",
+    text: "#eef1f0",
+    textSecondary: "#bdc4c3",
+    textMuted: "#87908f",
+    accent: "#92bcff",
+    accentHover: "#b3d0ff",
+    accentDim: "#5b82c4",
+    accentGlow: "rgba(255, 255, 255, 0.06)",
+    red: "#fd8183",
+    cyan: "#7ee0ab",
+  },
+};
+
 // ─── Panini (light) ─────────────────────────────────────────────────
 //
 // MADE's only light theme. Palette borrowed from the `panini` token set in
@@ -1319,6 +1412,7 @@ export const THEMES: MadeTheme[] = [
   graphiteTheme,
   goldphiteTheme,
   headsTheme,
+  heads2Theme,
   paniniTheme,
   porcelainTheme,
   solarizedLightTheme,
@@ -1328,7 +1422,12 @@ export const THEMES_MAP: Record<string, MadeTheme> = Object.fromEntries(
   THEMES.map((t) => [t.id, t])
 );
 
-export const DEFAULT_THEME_ID = "default";
+// MADE ships in Heads. Note this is the id of the theme a FRESH install lands
+// on — `merge()` in store/index.ts spreads persisted state last, so anyone with
+// a saved themeId keeps it and switches in Settings → Appearance instead.
+// index.css's `:root` block mirrors headsTheme.surface so the pre-hydration
+// frame matches; change both together or launch flashes the old palette.
+export const DEFAULT_THEME_ID = "heads";
 
 export function getTheme(id: string): MadeTheme {
   return THEMES_MAP[id] ?? defaultTheme;

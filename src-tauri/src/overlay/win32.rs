@@ -151,7 +151,7 @@ pub fn set_region(hwnd: isize, rects_px: &[(i32, i32, i32, i32, i32)]) -> Result
 /// VISIBLE window invalidates the window AND every window underneath the
 /// changed area (legacy GDI exposure), and the main window + its WebView2 /
 /// wgpu children then race the next DWM frame to re-present — losing the race
-/// painted the whole app in bare #0d1117 for 1-2 frames (the hardware-captured
+/// painted the whole app in bare #131313 for 1-2 frames (the hardware-captured
 /// "flicker when menus open/close" bug; ~30% of transitions). Show/hide of a
 /// whole top-level window is a pure DWM composition op and invalidates
 /// nothing beneath. Raw ShowWindow (not tauri's show/hide) so ordering with

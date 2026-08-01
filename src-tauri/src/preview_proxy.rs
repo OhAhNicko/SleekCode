@@ -587,23 +587,23 @@ fn render_error_page(
         r##"<!doctype html><html><head><meta charset="utf-8"><title>{t}</title>
 <style>
 :root{{color-scheme:dark;}}
-html,body{{margin:0;padding:0;height:100%;background:#0d1117;color:#e6edf3;
+html,body{{margin:0;padding:0;height:100%;background:#131313;color:#f5f5f5;
   font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   -webkit-font-smoothing:antialiased;}}
 .wrap{{min-height:100%;display:flex;align-items:center;justify-content:center;padding:32px;}}
-.card{{max-width:480px;width:100%;background:#161b22;border:1px solid #30363d;
+.card{{max-width:480px;width:100%;background:#1d1d1d;border:1px solid #323232;
   border-radius:8px;padding:28px 28px 24px;box-shadow:0 8px 24px rgba(0,0,0,0.3);}}
-.icon{{width:44px;height:44px;border-radius:50%;background:rgba(248,81,73,0.12);
+.icon{{width:44px;height:44px;border-radius:50%;background:rgba(253,129,131,0.12);
   display:flex;align-items:center;justify-content:center;margin-bottom:16px;}}
-h1{{margin:0 0 8px;font-size:16px;font-weight:600;color:#e6edf3;letter-spacing:-0.01em;}}
-p{{margin:0 0 14px;font-size:13px;line-height:1.55;color:#8b949e;}}
+h1{{margin:0 0 8px;font-size:16px;font-weight:600;color:#f5f5f5;letter-spacing:-0.01em;}}
+p{{margin:0 0 14px;font-size:13px;line-height:1.55;color:#8a8a8a;}}
 .target{{display:block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
-  font-size:12px;background:#1c2128;border:1px solid #30363d;border-radius:4px;
-  padding:6px 10px;color:#c9d1d9;word-break:break-all;margin-bottom:14px;}}
-.hint{{font-size:12px;color:#8b949e;border-top:1px solid #21262d;padding-top:12px;margin-top:4px;}}
-.hint b{{color:#c9d1d9;font-weight:600;}}
+  font-size:12px;background:#272727;border:1px solid #323232;border-radius:4px;
+  padding:6px 10px;color:#c4c4c4;word-break:break-all;margin-bottom:14px;}}
+.hint{{font-size:12px;color:#8a8a8a;border-top:1px solid #232323;padding-top:12px;margin-top:4px;}}
+.hint b{{color:#c4c4c4;font-weight:600;}}
 </style></head><body><div class="wrap"><div class="card">
-<div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f85149" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
+<div class="icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fd8183" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
 <h1>{t}</h1><p>{d}</p>{target_block}{hint_block}
 </div></div></body></html>"##,
         t = html_escape(title),

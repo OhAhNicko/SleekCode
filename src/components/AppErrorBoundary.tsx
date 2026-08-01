@@ -70,8 +70,8 @@ export default class AppErrorBoundary extends Component<Props, State> {
           alignItems: "center",
           justifyContent: "center",
           padding: 32,
-          backgroundColor: "var(--ezy-bg, #0d1117)",
-          color: "var(--ezy-text, #e6edf3)",
+          backgroundColor: "var(--ezy-bg, #131313)",
+          color: "var(--ezy-text, #f5f5f5)",
           fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         }}
       >
@@ -82,7 +82,7 @@ export default class AppErrorBoundary extends Component<Props, State> {
           <div
             style={{
               fontSize: 12,
-              color: "var(--ezy-text-muted, #8b949e)",
+              color: "var(--ezy-text-muted, #8a8a8a)",
               lineHeight: 1.5,
               marginBottom: 16,
             }}
@@ -94,7 +94,7 @@ export default class AppErrorBoundary extends Component<Props, State> {
           <div
             style={{
               fontSize: 12,
-              color: "var(--ezy-red, #f85149)",
+              color: "var(--ezy-red, #fd8183)",
               marginBottom: 10,
               wordBreak: "break-word",
             }}
@@ -110,9 +110,9 @@ export default class AppErrorBoundary extends Component<Props, State> {
               overflow: "auto",
               fontSize: 11,
               lineHeight: 1.45,
-              color: "var(--ezy-text-secondary, #c9d1d9)",
-              backgroundColor: "var(--ezy-surface, #161b22)",
-              border: "1px solid var(--ezy-border, #30363d)",
+              color: "var(--ezy-text-secondary, #c4c4c4)",
+              backgroundColor: "var(--ezy-surface, #1d1d1d)",
+              border: "1px solid var(--ezy-border, #323232)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               whiteSpace: "pre-wrap",
             }}
@@ -135,7 +135,7 @@ export default class AppErrorBoundary extends Component<Props, State> {
               cursor: "pointer",
               fontSize: 12,
               fontWeight: 600,
-              backgroundColor: "var(--ezy-accent, #3fb950)",
+              backgroundColor: "var(--ezy-accent, #80e2ad)",
               color: "#000",
               outline: "none",
             }}

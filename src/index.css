@@ -2,6 +2,7 @@
 @import "@xterm/xterm/css/xterm.css";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/sora";
+@import "./fonts/ui-fonts.css";
 
 @font-face {
   font-family: "Hack";
@@ -37,27 +38,39 @@
   src: local("Geist Mono"), local("GeistMono");
 }
 
+/* Selectable UI faces (Settings → Appearance → UI font) live in one shared
+   stylesheet that the overlay webview imports too — see src/fonts/ui-fonts.css.
+   Inter and Sora come from the @fontsource-variable imports at the top; Hack is
+   declared above, since the terminal face is not user-selectable. */
+
+/* These are the frame-zero values: they paint from the moment the stylesheet
+   parses until App.tsx's theme effect writes the real theme onto :root. They
+   are a verbatim copy of `headsTheme.surface` in lib/themes.ts, because Heads
+   is DEFAULT_THEME_ID — a fresh install must not flash one palette and then
+   swap to another. If you change the default theme, change these too. */
 :root {
-  --ezy-bg: #0d1117;
-  --ezy-surface: #161b22;
-  --ezy-surface-raised: #1c2128;
-  --ezy-border: #30363d;
-  --ezy-border-subtle: #21262d;
-  --ezy-border-light: #484f58;
-  --ezy-text: #e6edf3;
-  --ezy-text-secondary: #c9d1d9;
-  --ezy-text-muted: #8b949e;
-  --ezy-accent: #39d353;
-  --ezy-accent-hover: #2ea043;
-  --ezy-accent-dim: #238636;
+  --ezy-bg: #131313;
+  --ezy-surface: #1d1d1d;
+  --ezy-surface-raised: #272727;
+  --ezy-border: #323232;
+  --ezy-border-subtle: #232323;
+  --ezy-border-light: #454545;
+  --ezy-text: #f5f5f5;
+  --ezy-text-secondary: #c4c4c4;
+  --ezy-text-muted: #8a8a8a;
+  --ezy-accent: #80e2ad;
+  --ezy-accent-hover: #a0e9c2;
+  --ezy-accent-dim: #57b585;
   --ezy-accent-glow: rgba(255, 255, 255, 0.06);
-  --ezy-red: #f85149;
-  --ezy-cyan: #58d5c1;
+  --ezy-red: #fd8183;
+  --ezy-cyan: #92bcff;
   /* Per-theme corner-radius multiplier (themes.ts `radiusScale`, injected by
      App.tsx). Every radius in the app is authored as
      calc(var(--ezy-radius-scale, 1) * Npx) so one theme can round the whole
-     chrome at once; 1 reproduces the standard MADE radii exactly. */
-  --ezy-radius-scale: 1;
+     chrome at once; 1 reproduces the standard MADE radii exactly. Heads is 2,
+     so this starts at 2 — otherwise first paint is square-cornered and pops
+     round on hydration. */
+  --ezy-radius-scale: 2;
 }
 
 /* Tailwind 4 inlines the bare `rounded` utility (border-radius: .25rem), so
@@ -78,12 +91,18 @@ body,
   overflow: hidden;
   background-color: var(--ezy-bg);
   color: var(--ezy-text);
-  font-family:
+  /* The app's sans face, switchable in Settings → Appearance → UI font.
+     App.tsx injects --ezy-font-ui alongside the theme vars (and mirrors it to
+     the overlay webview); the fallback here is the Inter default, so the app
+     renders correctly before the first injection and if the var is ever unset. */
+  font-family: var(
+    --ezy-font-ui,
     "Inter Variable",
     "Inter",
     system-ui,
     -apple-system,
-    sans-serif;
+    sans-serif
+  );
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -228,7 +247,7 @@ body,
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   pointer-events: none;
   white-space: nowrap;
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--ezy-font-ui, system-ui, -apple-system, sans-serif);
 }
 .ezy-flt-label {
   font-size: 12px;
@@ -241,7 +260,7 @@ body,
   border: 1px solid var(--ezy-border);
   border-radius: calc(var(--ezy-radius-scale, 1) * 3px);
   color: var(--ezy-text-muted);
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: var(--ezy-font-ui, system-ui, -apple-system, sans-serif);
 }
 
 /* ── Markdown preview (FileViewerPane, MD button) ──────────────────────────

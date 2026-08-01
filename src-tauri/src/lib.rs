@@ -533,12 +533,12 @@ mod win32_border {
         }
         //
         // 1b) WM_ERASEBKGND is swallowed: tao's handler FillRects the ENTIRE
-        //    client rect with the configured backgroundColor (#0d1117), and the
+        //    client rect with the configured backgroundColor (#131313), and the
         //    window has no WS_CLIPCHILDREN, so that fill wipes the WebView2 and
         //    wgpu pane children out of the redirection surface. Any external
         //    invalidation (the overlay window's SetWindowRgn on popup open/close
         //    is the hot one) then races the children's next present — losing the
-        //    race showed 1-2 frames of bare #0d1117 over the whole app (the
+        //    race showed 1-2 frames of bare #131313 over the whole app (the
         //    "flicker when menus open/close" bug; hardware-captured 2026-07-24).
         //    Claiming "erased" without painting keeps the previous surface
         //    content, which the children fully cover anyway. This subclass is
@@ -559,7 +559,7 @@ mod win32_border {
         //    — even for the microseconds of a DefSubclassProc call — races
         //    DWM's composition sampling, and losing dropped the WebView2 +
         //    wgpu children for 1-2 frames, flashing the entire app to bare
-        //    #0d1117. Overlay-popup clicks deactivate/reactivate main within
+        //    #131313. Overlay-popup clicks deactivate/reactivate main within
         //    ~40ms (Chromium's child in the overlay steals activation), so
         //    this bracket ran on EVERY menu dismiss/item click and flashed
         //    ~25% of them (hardware-captured 2026-07-24; Chromium reserves
@@ -761,7 +761,7 @@ mod win32_border {
             apply_border_suppression(hwnd);
 
             // 2) Enable rounded corners (Windows 11+). DWM rounds the opaque
-            //    borderless window; the opaque client (#0d1117) fills under the
+            //    borderless window; the opaque client (#131313) fills under the
             //    rounded mask, so no CSS corner work is needed.
             let corner_pref = DWMWCP_ROUND;
             DwmSetWindowAttribute(
@@ -5034,16 +5034,42 @@ fn set_window_corners(window: tauri::WebviewWindow, rounded: bool) -> Result<(),
     Ok(())
 }
 
-/// Install the MADE statusline wrapper in WSL.
-/// Creates ~/.made/statusline-wrapper.sh that saves the raw statusline JSON
-/// to /tmp/made-claude-statusline.json and chains to the user's existing
-/// statusline command (e.g. cc-statusline) so it keeps working.
-#[tauri::command]
-async fn install_statusline_wrapper(distro: Option<String>) -> Result<String, String> {
-    let wrapper_script = r#"#!/bin/bash
+/// The MADE statusline wrapper — ONE copy, shared verbatim by the local and
+/// the SSH installer. They used to hold separate literals of "the same" script,
+/// the SSH one carrying a comment asking that they stay identical: exactly the
+/// arrangement in which two copies of a file drift apart.
+///
+/// Claude pipes its statusline JSON here on every render. We keep copies for
+/// the header poll to read, then chain to whatever statusline the user already
+/// had so theirs keeps working.
+///
+/// Three outputs, and the last two are new:
+///   • /tmp/made-claude-statusline.json       — newest render from ANY session
+///   • /tmp/made-claude-statusline-<sid>.json — per session, so two panes on
+///     one host stop overwriting each other's model / window / cost
+///   • /tmp/made-claude-cost-<sid>.txt        — `cost|duration`, the only
+///     record of a session's spend once it is no longer the active one. The
+///     header's project-cost total is the sum of these across a project dir.
+///
+/// `sed`, not `jq`: this runs on EVERY statusline render, so it must not depend
+/// on a tool the host may not have. The session id is pattern-checked before it
+/// is allowed near a path — it arrives as JSON written by another process and
+/// is about to become a filename.
+const STATUSLINE_WRAPPER: &str = r#"#!/bin/bash
 input=$(cat)
 # Save raw statusline JSON for MADE to read
 echo "$input" > /tmp/made-claude-statusline.json 2>/dev/null
+# Per-session copies, so sibling panes on one host don't clobber each other.
+_sid=$(printf '%s' "$input" | sed -n 's/.*"session_id"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
+case "$_sid" in
+  ""|*[!0-9a-fA-F-]*) ;;
+  *)
+    echo "$input" > "/tmp/made-claude-statusline-$_sid.json" 2>/dev/null
+    _cost=$(printf '%s' "$input" | sed -n 's/.*"total_cost_usd"[ ]*:[ ]*\([0-9.eE+-]*\).*/\1/p')
+    _dur=$(printf '%s' "$input" | sed -n 's/.*"total_duration_ms"[ ]*:[ ]*\([0-9]*\).*/\1/p')
+    [ -n "$_cost" ] && printf '%s|%s' "$_cost" "$_dur" > "/tmp/made-claude-cost-$_sid.txt" 2>/dev/null
+    ;;
+esac
 # Chain to original statusline command (e.g. cc-statusline)
 _chain="$(cat "$HOME/.made/statusline-chain" 2>/dev/null)"
 # Guard: never chain to ourselves (prevents infinite recursion / fork bomb)
@@ -5054,7 +5080,7 @@ else
   # No user statusline configured — emit a minimal one-liner instead of the
   # raw JSON (Claude Code renders this directly in the prompt area, so dumping
   # the JSON would leak {"session_id":...,"cwd":...} into the user's view).
-  cwd=$(printf '%s' "$input" | sed -n 's/.*"cwd":"\([^"]*\)".*/\1/p')
+  cwd=$(printf '%s' "$input" | sed -n 's/.*"cwd"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
   base="${cwd##*/}"
   if [ -n "$base" ]; then
     printf '%s' "$base"
@@ -5062,41 +5088,64 @@ else
 fi
 "#;
 
-    // Base64-encode the wrapper to avoid heredoc expansion issues in bash -lic
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(wrapper_script.trim());
+/// Bumped whenever STATUSLINE_WRAPPER changes; both installers compare it with
+/// ~/.made/statusline-wrapper.version to decide whether to rewrite.
+const STATUSLINE_WRAPPER_VERSION: u32 = 4;
 
-    // Single bash script: check if installed, create dir, write wrapper, save chain, update settings
-    let script = format!(
-        r#"
+/// The installer, also shared by both paths.
+///
+/// Placeholders are `__B64__` / `__VER__` and substitution is `replace()`, NOT
+/// `format!`: the script is dense with `{`/`}` (shell groups, a JSON literal)
+/// and every one of them would need doubling, which is a silent-corruption
+/// hazard in a string no compiler checks.
+///
+/// Two defects fixed here, both of which made the install a silent no-op that
+/// still reported success:
+///   • It only wrote `statusLine` into an EXISTING settings.json. On a host
+///     where Claude had never written that file, the wrapper was installed and
+///     nothing ever invoked it — and the script printed INSTALLED anyway.
+///   • The SSH variant short-circuited on a matching version file alone, so it
+///     never re-checked that settings.json still pointed at the wrapper. Once
+///     anything rewrote that file the header stayed dead until the version
+///     constant changed.
+/// A missing `jq` on a host that HAS a settings.json is now reported as
+/// ERR_NO_JQ rather than silently skipped — we cannot merge JSON safely
+/// without it, and pretending otherwise is what hid this for so long.
+const STATUSLINE_INSTALL_TEMPLATE: &str = r#"
 WRAPPER="$HOME/.made/statusline-wrapper.sh"
+VERSION_FILE="$HOME/.made/statusline-wrapper.version"
 CHAIN_FILE="$HOME/.made/statusline-chain"
 SETTINGS="$HOME/.claude/settings.json"
 
-# Read current statusline command from settings
+# What settings.json points at NOW. Read before any short-circuit: the version
+# file alone is not evidence that Claude is actually invoking the wrapper.
 CURRENT=""
-if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
-  CURRENT=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || true)
+if [ -f "$SETTINGS" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    CURRENT=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || true)
+  else
+    CURRENT=$(sed -n 's/.*"command"[ ]*:[ ]*"\([^"]*statusline-wrapper[^"]*\)".*/\1/p' "$SETTINGS" 2>/dev/null | head -1)
+  fi
+fi
+POINTED=""
+case "$CURRENT" in *"/.made/statusline-wrapper"*) POINTED=1 ;; esac
+
+if [ -n "$POINTED" ] && [ -x "$WRAPPER" ] && [ "$(cat "$VERSION_FILE" 2>/dev/null)" = "__VER__" ]; then
+  echo "ALREADY_INSTALLED"
+  exit 0
 fi
 
 mkdir -p "$HOME/.made" 2>/dev/null
-
-# Always (re)write wrapper script (base64-encoded to avoid heredoc expansion issues)
-echo "{b64}" | base64 -d > "$WRAPPER"
+echo "__B64__" | base64 -d > "$WRAPPER"
 chmod +x "$WRAPPER" 2>/dev/null || true
+echo "__VER__" > "$VERSION_FILE"
 
-# Chain + migration handling:
-#  - */.made/statusline-wrapper*: already installed — wrapper refreshed above, done.
-#  - other *statusline-wrapper*: STALE wrapper from a previous app identity
-#    (e.g. ~/.ezydev before the MADE rename). Never save it as the chain target
-#    (the wrapper fork-bomb guard would blank it and the user original
-#    statusline would be lost) — migrate the old dir chain target instead,
-#    then fall through so settings.json gets repointed at the ~/.made wrapper.
-#  - anything else: user own statusline command — save as chain target.
+# Preserve the user's own statusline as the chain target, migrating one left by
+# a previous app identity (~/.ezydev, before the MADE rename). Never record a
+# wrapper as its own chain target: the fork-bomb guard would blank it and the
+# user's original statusline would be lost.
 case "$CURRENT" in
   *"/.made/statusline-wrapper"*)
-    echo "UPDATED_WRAPPER"
-    exit 0
     ;;
   *statusline-wrapper*)
     OLDEXP=$(eval echo "$CURRENT" 2>/dev/null || echo "$CURRENT")
@@ -5117,21 +5166,55 @@ case "$CURRENT" in
     ;;
 esac
 
-if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
+if [ ! -f "$SETTINGS" ]; then
+  mkdir -p "$HOME/.claude" 2>/dev/null
+  printf '%s\n' '{"statusLine":{"type":"command","command":"~/.made/statusline-wrapper.sh"}}' > "$SETTINGS" 2>/dev/null || { echo "ERR_SETTINGS_CREATE"; exit 1; }
+  echo "INSTALLED"
+  exit 0
+fi
+
+if command -v jq >/dev/null 2>&1; then
   TMP=$(mktemp)
-  if jq '.statusLine = {{"type": "command", "command": "~/.made/statusline-wrapper.sh"}}' "$SETTINGS" > "$TMP" 2>/dev/null; then
+  if jq '.statusLine = {"type": "command", "command": "~/.made/statusline-wrapper.sh"}' "$SETTINGS" > "$TMP" 2>/dev/null; then
     mv "$TMP" "$SETTINGS"
   else
     rm -f "$TMP"
     echo "ERR_JQ_UPDATE"
     exit 1
   fi
+else
+  echo "ERR_NO_JQ"
+  exit 1
 fi
 
 echo "INSTALLED"
-"#,
-        b64 = b64
-    );
+"#;
+
+/// Fill the install template. See STATUSLINE_INSTALL_TEMPLATE for why this is
+/// `replace()` and not `format!`.
+fn statusline_install_script(wrapper_b64: &str) -> String {
+    STATUSLINE_INSTALL_TEMPLATE
+        .replace("__B64__", wrapper_b64)
+        .replace("__VER__", &STATUSLINE_WRAPPER_VERSION.to_string())
+}
+
+/// Base64 of the wrapper — avoids heredoc/expansion issues when the installer
+/// is itself delivered through `bash -lic` or `ssh host '<script>'`.
+fn statusline_wrapper_b64() -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(STATUSLINE_WRAPPER.trim())
+}
+
+/// Install the MADE statusline wrapper in WSL.
+/// Creates ~/.made/statusline-wrapper.sh that saves the raw statusline JSON
+/// to /tmp/made-claude-statusline.json and chains to the user's existing
+/// statusline command (e.g. cc-statusline) so it keeps working.
+#[tauri::command]
+async fn install_statusline_wrapper(distro: Option<String>) -> Result<String, String> {
+    let b64 = statusline_wrapper_b64();
+
+    // Single bash script: check if installed, create dir, write wrapper, save chain, update settings
+    let script = statusline_install_script(&b64);
 
     // On macOS/Linux (no distro param), run bash directly.
     // On Windows (with or without distro), pipe through wsl.exe.
@@ -5189,26 +5272,27 @@ echo "INSTALLED"
 /// Returns the percentage remaining as a string ("0"-"100"), or empty string if not available.
 ///
 /// Uses a temp-file cache (/tmp/made-sessionpath-{session_id}) to avoid repeated `find` calls.
-#[tauri::command]
-async fn read_session_context(
-    terminal_type: String,
-    session_id: String,
-    distro: Option<String>,
-) -> Result<String, String> {
-    if session_id.is_empty() {
-        return Ok(String::new());
-    }
-    // "__latest__" = no specific session yet, search all recent sessions
-    let is_latest = session_id == "__latest__";
-
-    // Build a bash script that:
-    // 1. Locates the session file (cached after first lookup)
-    // 2. Reads the last usage/token_count entry
-    // 3. Calculates remaining context percentage
-    let script = match terminal_type.as_str() {
+/// The shell script that reads a CLI's session context — shared by EVERY
+/// backend: WSL, native, Windows, and (since the header showed nothing at all
+/// on a remote pane) SSH.
+///
+/// The SSH reader used to be a separate Rust re-implementation that fetched a
+/// few files and parsed a subset of the fields. In the claude arm alone it was
+/// missing the model fallback from the transcript, the session-name fallback,
+/// the per-session cost cache and the entire project-cost total — and every
+/// one of those gaps was invisible unless someone diffed the two by hand.
+/// Running the SAME script makes parity structural instead of aspirational.
+///
+/// None for a terminal type that has no context to read.
+fn context_script(terminal_type: &str, session_id: &str) -> Option<String> {
+    Some(match terminal_type {
         "claude" => format!(
             r#"
 command -v jq >/dev/null 2>&1 || exit 0
+
+# tac is GNU-only; macOS/BSD spells it `tail -r`. These scripts now run on
+# remote hosts too, where either may be the case.
+_rev() {{ tac "$1" 2>/dev/null || tail -r "$1" 2>/dev/null; }}
 
 # Read effortLevel from ~/.claude/settings.json
 effort_level=""
@@ -5217,8 +5301,14 @@ if [ -f "$SETTINGS" ]; then
   effort_level=$(jq -r '.effortLevel // empty' "$SETTINGS" 2>/dev/null)
 fi
 
-# Read statusline JSON (if available)
+# Read statusline JSON (if available). Prefer THIS session's own copy: the
+# global file holds whichever session rendered last, so two panes sharing a
+# host would otherwise read each other's model, window and cost.
+SID='{session_id}'
 SL="/tmp/made-claude-statusline.json"
+if [ "$SID" != "__latest__" ] && [ -f "/tmp/made-claude-statusline-$SID.json" ]; then
+  SL="/tmp/made-claude-statusline-$SID.json"
+fi
 sl_window=""
 sl_model=""
 sl_used_pct=""
@@ -5290,7 +5380,7 @@ if [ -d "$proj_dir" ]; then
 fi
 
 # Extract custom title (from /rename command)
-custom_title=$(tac "$f" 2>/dev/null | grep '"custom-title"' | head -1 | jq -r '.customTitle // empty' 2>/dev/null)
+custom_title=$(_rev "$f" 2>/dev/null | grep '"custom-title"' | head -1 | jq -r '.customTitle // empty' 2>/dev/null)
 # Fallback: read session name from ~/.claude/sessions/*.json (Claude CLI v2.1+)
 if [ -z "$custom_title" ]; then
   for sf in "$HOME/.claude/sessions"/*.json; do
@@ -5300,7 +5390,7 @@ if [ -z "$custom_title" ]; then
   done
 fi
 
-line=$(tac "$f" 2>/dev/null | grep '"message"' | grep '"usage"' | head -1)
+line=$(_rev "$f" 2>/dev/null | grep '"message"' | grep '"usage"' | head -1)
 if [ -z "$line" ]; then
   if [ -n "$sl_window" ]; then
     echo "0|$sl_window|$sl_model|$sl_used_pct|$sess_cost|$sess_duration|$sl_version|||0|$proj_cost|$effort_level|$custom_title"
@@ -5321,6 +5411,10 @@ echo "$total|$window|$model|$sl_used_pct|$sess_cost|$sess_duration|$sl_version|$
         "codex" => format!(
             r#"
 command -v jq >/dev/null 2>&1 || exit 0
+
+# tac is GNU-only; macOS/BSD spells it `tail -r`. These scripts now run on
+# remote hosts too, where either may be the case.
+_rev() {{ tac "$1" 2>/dev/null || tail -r "$1" 2>/dev/null; }}
 SID='{session_id}'
 if [ "$SID" = "__latest__" ]; then
   # No specific session — use the most recent session file
@@ -5339,7 +5433,7 @@ fi
 [ -z "$f" ] && exit 0
 
 # Try current session first for token data
-line=$(tac "$f" 2>/dev/null | grep '"model_context_window"' | head -1)
+line=$(_rev "$f" 2>/dev/null | grep '"model_context_window"' | head -1)
 used=""
 window=""
 model=""
@@ -5349,7 +5443,7 @@ if [ -n "$line" ]; then
   [ "$used" = "null" ] || [ "$used" = "0" ] && used=""
   [ "$window" = "null" ] || [ "$window" = "0" ] && window=""
 fi
-tc_line=$(tac "$f" 2>/dev/null | grep -m1 'turn_context')
+tc_line=$(_rev "$f" 2>/dev/null | grep -m1 'turn_context')
 model=$(echo "$tc_line" | jq -r '.payload.model // empty' 2>/dev/null)
 effort=$(echo "$tc_line" | jq -r '.payload.effort // empty' 2>/dev/null)
 collab_mode=$(echo "$tc_line" | jq -r '.payload.collaboration_mode.mode // empty' 2>/dev/null)
@@ -5362,13 +5456,13 @@ collab_mode=$(echo "$tc_line" | jq -r '.payload.collaboration_mode.mode // empty
 if [ -z "$window" ]; then
   for rf in $(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -10); do
     [ "$rf" = "$f" ] && continue
-    fb_line=$(tac "$rf" 2>/dev/null | grep '"model_context_window"' | head -1)
+    fb_line=$(_rev "$rf" 2>/dev/null | grep '"model_context_window"' | head -1)
     [ -z "$fb_line" ] && continue
     fb_window=$(echo "$fb_line" | jq '.payload.info.model_context_window // 0' 2>/dev/null)
     [ -z "$fb_window" ] || [ "$fb_window" = "null" ] || [ "$fb_window" = "0" ] && continue
     window="$fb_window"
     if [ -z "$model" ]; then
-      fb_tc=$(tac "$rf" 2>/dev/null | grep -m1 'turn_context')
+      fb_tc=$(_rev "$rf" 2>/dev/null | grep -m1 'turn_context')
       model=$(echo "$fb_tc" | jq -r '.payload.model // empty' 2>/dev/null)
       [ -z "$effort" ] && effort=$(echo "$fb_tc" | jq -r '.payload.effort // empty' 2>/dev/null)
       [ -z "$collab_mode" ] && collab_mode=$(echo "$fb_tc" | jq -r '.payload.collaboration_mode.mode // empty' 2>/dev/null)
@@ -5384,7 +5478,7 @@ fi
 # Rate limits: account-level — always search all sessions (newest file first)
 rl_line=""
 for rf in $(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -15); do
-  rl_line=$(tac "$rf" 2>/dev/null | grep '"rate_limits"' | grep -v '"rate_limits":null' | grep -m1 '"used_percent"')
+  rl_line=$(_rev "$rf" 2>/dev/null | grep '"rate_limits"' | grep -v '"rate_limits":null' | grep -m1 '"used_percent"')
   [ -n "$rl_line" ] && break
 done
 rl5h=""
@@ -5414,7 +5508,9 @@ gemini_quota_used() {{
   command -v curl >/dev/null 2>&1 || return
   # Refresh cache if stale (> 60 seconds)
   local now=$(date +%s)
-  local mtime=$(stat -c %Y "$QC" 2>/dev/null || echo 0)
+  # GNU spells this `stat -c %Y`, macOS/BSD `stat -f %m` — try both, or the
+  # cache always reads as stale on a Mac and re-curls on every render.
+  local mtime=$(stat -c %Y "$QC" 2>/dev/null || stat -f %m "$QC" 2>/dev/null || echo 0)
   if [ ! -f "$QC" ] || [ $(( now - mtime )) -gt 60 ]; then
     local CREDS="$HOME/.gemini/oauth_creds.json"
     [ ! -f "$CREDS" ] && return
@@ -5516,7 +5612,28 @@ echo "$inp|$window|$model|$rpd|$summary|$thoughts|$reset_time"
 "#,
             session_id = session_id
         ),
-        _ => return Ok(String::new()),
+        _ => return None,
+    })
+}
+
+#[tauri::command]
+async fn read_session_context(
+    terminal_type: String,
+    session_id: String,
+    distro: Option<String>,
+) -> Result<String, String> {
+    if session_id.is_empty() {
+        return Ok(String::new());
+    }
+
+    // Build a bash script that:
+    // 1. Locates the session file (cached after first lookup)
+    // 2. Reads the last usage/token_count entry
+    // 3. Calculates remaining context percentage
+    // ("__latest__" = no specific session yet; the script handles that itself.)
+    let script = match context_script(&terminal_type, &session_id) {
+        Some(s) => s,
+        None => return Ok(String::new()),
     };
 
     let mut args = Vec::new();
@@ -7313,6 +7430,24 @@ fn is_safe_shell_identifier(s: &str) -> bool {
     })
 }
 
+/// Shell snippet printing `file`'s mtime in epoch seconds, portable across
+/// remote hosts. `file` must already be a quoted shell word, e.g. `"\"$f\""`.
+///
+/// GNU coreutils spells this `stat -c %Y`; macOS/BSD spells it `stat -f %m` and
+/// REJECTS `-c` outright ("stat: illegal option -- c"). Remote servers are a
+/// mix, so every remote mtime read has to try both.
+///
+/// A `-c`-only form does not merely degrade on macOS — paired with the
+/// customary `2>/dev/null` it yields an EMPTY string, which parses as mtime 0,
+/// which every `max_age_secs` filter downstream then rejects. That is exactly
+/// why Claude session resume never worked against a macOS server:
+/// `get_claude_session_id_ssh` discarded every candidate file it found and
+/// always returned None, so the pane never learned its session id and the next
+/// launch had nothing to `--resume`.
+fn remote_mtime(file: &str) -> String {
+    format!("stat -c %Y {f} 2>/dev/null || stat -f %m {f} 2>/dev/null", f = file)
+}
+
 /// True iff `s` is `__latest__` or a UUID like `8-4-4-4-12` hex.
 fn is_uuid_or_latest(s: &str) -> bool {
     if s == "__latest__" { return true; }
@@ -7326,10 +7461,6 @@ fn is_uuid_or_latest(s: &str) -> bool {
         && b[19..23].iter().all(|&c| is_hex(c))
         && b[24..36].iter().all(|&c| is_hex(c))
 }
-
-/// Pipe-delimited block separator the SSH context fetcher uses to bundle
-/// multiple files into a single round-trip.
-const SSH_SEP: &str = "\n___EZYDEV_SSH_SEP___\n";
 
 /// Extract a UUID-like substring (8-4-4-4-12 hex) from a path. Used by the
 /// SSH session-id lookups in lieu of a regex dependency.
@@ -7356,11 +7487,13 @@ fn extract_uuid_from_path(path: &str) -> Option<String> {
 
 /// Read context info for a Claude/Codex/Gemini session over SSH.
 ///
-/// Mirrors `read_session_context_native` for the essential fields:
-/// context window, used %, model, cost, version, effort, custom title.
-/// Project-wide cost aggregation and `~/.claude/sessions/` sidecar
-/// fallback are intentionally skipped — they would require many extra
-/// SSH round-trips for marginal UX gain.
+/// Runs the SAME script as every other backend (`context_script`), so the
+/// remote header shows the same fields as a local one and cannot silently fall
+/// behind it again. This used to be a parallel Rust re-implementation that
+/// documented its own gaps — project-wide cost, the `~/.claude/sessions/`
+/// name fallback, codex rate limits and title — as deliberate omissions "for
+/// marginal UX gain". They are all present now, and they cost no extra
+/// round-trips: it was always one `ssh` invocation, and it still is.
 #[tauri::command]
 async fn read_session_context_ssh(
     host: String,
@@ -7370,232 +7503,27 @@ async fn read_session_context_ssh(
     remote_project_path: String,
     session_id: String,
 ) -> Result<String, String> {
+    // `remote_project_path` is no longer needed: the shared script locates the
+    // transcript by session id (`find ~/.claude/projects -name "$SID.jsonl"`),
+    // which also sidesteps the encoded-project-key case-sensitivity problem the
+    // old bespoke reader had. Kept in the signature so the JS call site and the
+    // other *_ssh commands stay uniform.
+    let _ = remote_project_path;
     if session_id.is_empty() {
         return Ok(String::new());
     }
     if !is_uuid_or_latest(&session_id) {
         return Err("invalid session_id (not UUID or __latest__)".to_string());
     }
-    let is_latest = session_id == "__latest__";
-
-    match terminal_type.as_str() {
-        "claude" => {
-            let key = encode_remote_project_key(&remote_project_path);
-            if !is_safe_shell_identifier(&key) {
-                return Err("invalid remote_project_path (unsafe characters in encoded key)".to_string());
-            }
-            // Single round-trip: fetch statusline JSON, settings, and the
-            // session JSONL, separated by SSH_SEP. `key` and `session_id`
-            // are both pre-validated against an allowlist so direct
-            // interpolation is safe (no shell metachars possible).
-            let cmd = format!(
-                r#"set -e; ( cat /tmp/made-claude-statusline.json 2>/dev/null || cat $HOME/.made/claude-statusline.json 2>/dev/null || true ); printf '{sep}'; ( cat $HOME/.claude/settings.json 2>/dev/null || true ); printf '{sep}'; {tail_or_empty}"#,
-                sep = SSH_SEP,
-                tail_or_empty = if is_latest {
-                    "true".to_string()
-                } else {
-                    format!("( cat \"$HOME/.claude/projects/{}/{}.jsonl\" 2>/dev/null || true )", key, session_id)
-                },
-            );
-            let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await?;
-            let parts: Vec<&str> = raw.split(SSH_SEP).collect();
-            let sl_json = parts.first().map(|s| s.trim()).unwrap_or("");
-            let settings_json = parts.get(1).map(|s| s.trim()).unwrap_or("");
-            let session_jsonl = parts.get(2).map(|s| s.trim()).unwrap_or("");
-
-            // Parse statusline JSON
-            let mut sl_window: Option<u64> = None;
-            let mut sl_model: Option<String> = None;
-            let mut sl_used_pct: Option<u64> = None;
-            let mut sl_cost: Option<f64> = None;
-            let mut sl_duration: Option<u64> = None;
-            let mut sl_version: Option<String> = None;
-            let mut sl_session_id: Option<String> = None;
-            if !sl_json.is_empty() {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(sl_json) {
-                    sl_window = v.pointer("/context_window/context_window_size").and_then(|v| v.as_u64());
-                    sl_model = v.pointer("/model/display_name").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    sl_used_pct = v.pointer("/context_window/used_percentage").and_then(|v| v.as_u64());
-                    sl_cost = v.pointer("/cost/total_cost_usd").and_then(|v| v.as_f64());
-                    sl_duration = v.pointer("/cost/total_duration_ms").and_then(|v| v.as_u64());
-                    sl_version = v.pointer("/version").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    sl_session_id = v.pointer("/session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
-                }
-            }
-
-            let used_pct_str = sl_used_pct.map(|v| v.to_string()).unwrap_or_default();
-            let ver_str = sl_version.unwrap_or_default();
-
-            // Parse settings.json for effortLevel
-            let effort_level: String = if settings_json.is_empty() {
-                String::new()
-            } else {
-                serde_json::from_str::<serde_json::Value>(settings_json).ok()
-                    .and_then(|v| v.get("effortLevel").and_then(|v| v.as_str()).map(|s| s.to_string()))
-                    .unwrap_or_default()
-            };
-
-            if is_latest {
-                if let Some(w) = sl_window {
-                    return Ok(format!("0|{}|{}|{}|||{}|||||{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, ver_str, effort_level));
-                }
-                return Ok(String::new());
-            }
-
-            // Parse session JSONL for last usage line + custom title
-            let mut total: u64 = 0;
-            let mut service_tier = String::new();
-            let mut speed = String::new();
-            for line in session_jsonl.lines().rev() {
-                if line.contains("\"message\"") && line.contains("\"usage\"") {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(usage) = v.pointer("/message/usage") {
-                            let input = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let cache_create = usage.get("cache_creation_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let cache_read = usage.get("cache_read_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let output = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            total = input + cache_create + cache_read + output;
-                            if let Some(st) = usage.get("service_tier").and_then(|v| v.as_str()) {
-                                service_tier = st.to_string();
-                            }
-                            if let Some(sp) = usage.get("speed").and_then(|v| v.as_str()) {
-                                speed = sp.to_string();
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-
-            let compact_count = session_jsonl.lines().filter(|l| l.contains("compact_boundary")).count();
-            let mut custom_title = String::new();
-            for line in session_jsonl.lines().rev() {
-                if line.contains("\"custom-title\"") {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(t) = v.get("customTitle").and_then(|v| v.as_str()) {
-                            custom_title = t.to_string();
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // Per-session cost: only available if statusline matches this session.
-            // Project-wide cost aggregation is skipped for SSH (would require many round-trips).
-            let (sess_cost, sess_duration): (Option<f64>, Option<u64>) =
-                if sl_session_id.as_deref() == Some(&session_id) {
-                    (sl_cost, sl_duration)
-                } else {
-                    (None, None)
-                };
-            let cost_str = sess_cost.map(|c| format!("{:.6}", c)).unwrap_or_default();
-            let dur_str = sess_duration.map(|d| d.to_string()).unwrap_or_default();
-            let proj_str = String::new();
-
-            if total == 0 {
-                if let Some(w) = sl_window {
-                    return Ok(format!("0|{}|{}|{}|{}|{}|{}|||{}|{}|{}|{}", w, sl_model.as_deref().unwrap_or(""), used_pct_str, cost_str, dur_str, ver_str, compact_count, proj_str, effort_level, custom_title));
-                }
-                return Ok(String::new());
-            }
-
-            let window = sl_window.unwrap_or(200000);
-            let model_str = sl_model.unwrap_or_default();
-            Ok(format!("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", total, window, model_str, used_pct_str, cost_str, dur_str, ver_str, service_tier, speed, compact_count, proj_str, effort_level, custom_title))
-        },
-        "codex" => {
-            // Find the latest sessions JSONL on the remote (or the one matching session_id).
-            // Skip rate-limit aggregation and SQLite title — best-effort for SSH.
-            // session_id is pre-validated as UUID or __latest__ — safe to interpolate.
-            let cmd = if is_latest {
-                "find $HOME/.codex/sessions -type f -name '*.jsonl' 2>/dev/null | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- | xargs -I{} cat {} 2>/dev/null".to_string()
-            } else {
-                format!(
-                    "find $HOME/.codex/sessions -type f -name '*{}*' 2>/dev/null | head -1 | xargs -I{{}} cat {{}} 2>/dev/null",
-                    session_id
-                )
-            };
-            let content = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
-            if content.trim().is_empty() {
-                return Ok(String::new());
-            }
-            let mut used: Option<u64> = None;
-            let mut window: Option<u64> = None;
-            let mut model = String::new();
-            let mut effort = String::new();
-            let mut collab_mode = String::new();
-            for line in content.lines().rev() {
-                if window.is_some() && (used.is_some() || is_latest) { break; }
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                    if window.is_none() {
-                        if let Some(w) = v.pointer("/payload/info/model_context_window").and_then(|v| v.as_u64()) {
-                            if w > 0 { window = Some(w); }
-                        }
-                        if used.is_none() && !is_latest {
-                            if let Some(u) = v.pointer("/payload/info/last_token_usage/total_tokens").and_then(|v| v.as_u64()) {
-                                if u > 0 { used = Some(u); }
-                            }
-                        }
-                    }
-                    if model.is_empty() {
-                        if let Some(m) = v.pointer("/payload/model").and_then(|v| v.as_str()) {
-                            model = m.to_string();
-                        }
-                    }
-                    if effort.is_empty() {
-                        if let Some(e) = v.pointer("/payload/effort").and_then(|v| v.as_str()) {
-                            effort = e.to_string();
-                        }
-                    }
-                    if collab_mode.is_empty() {
-                        if let Some(cm) = v.pointer("/payload/collaboration_mode/mode").and_then(|v| v.as_str()) {
-                            collab_mode = cm.to_string();
-                        }
-                    }
-                }
-            }
-            if is_latest { used = None; }
-            let used_val = used.unwrap_or(0);
-            let window_val = match window {
-                Some(w) => w,
-                None => return Ok(String::new()),
-            };
-            // Codex format: USED|WINDOW|MODEL|RL_5H|RL_WEEKLY|EFFORT|COLLAB_MODE|TITLE
-            // Rate-limits and title omitted for SSH.
-            Ok(format!("{}|{}|{}|||{}|{}|", used_val, window_val, model, effort, collab_mode))
-        },
-        "gemini" => {
-            // Best-effort: find the latest chat JSON for the project and parse it.
-            // session_id is pre-validated — safe to interpolate.
-            let cmd = if is_latest {
-                "find $HOME/.gemini/tmp -type f -name '*.json' 2>/dev/null | xargs -I{} stat -c '%Y {}' {} 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- | xargs -I{} cat {} 2>/dev/null".to_string()
-            } else {
-                format!(
-                    "find $HOME/.gemini/tmp -type f -name '*{}*' 2>/dev/null | head -1 | xargs -I{{}} cat {{}} 2>/dev/null",
-                    session_id
-                )
-            };
-            let content = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
-            if content.trim().is_empty() {
-                return Ok(String::new());
-            }
-            let v: serde_json::Value = match serde_json::from_str(&content) {
-                Ok(v) => v,
-                Err(_) => return Ok(String::new()),
-            };
-            let model = v.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let window = v.pointer("/contextWindow").and_then(|v| v.as_u64())
-                .or_else(|| v.pointer("/context_window").and_then(|v| v.as_u64()))
-                .unwrap_or(1_000_000);
-            let used = v.pointer("/usedTokens").and_then(|v| v.as_u64())
-                .or_else(|| v.pointer("/used_tokens").and_then(|v| v.as_u64()))
-                .unwrap_or(0);
-            let summary = v.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            // Gemini format: USED|WINDOW|MODEL|RPD_USED|SUMMARY|THOUGHTS|RESET_TIME
-            Ok(format!("{}|{}|{}||{}||", used, window, model, summary))
-        },
-        _ => Ok(String::new()),
-    }
+    let script = match context_script(&terminal_type, &session_id) {
+        Some(s) => s,
+        None => return Ok(String::new()),
+    };
+    // Best-effort: a host that is asleep or mid-reboot must leave the header
+    // showing its last value, not surface an error every 5s.
+    Ok(ssh_exec_internal(&host, &username, identity_file.as_deref(), &script)
+        .await
+        .unwrap_or_default())
 }
 
 /// Fetch sessions-index.json from a remote host and parse it.
@@ -7663,8 +7591,9 @@ async fn get_claude_session_id_ssh(
     // List jsonl files newest-first, with mtime in epoch seconds.
     // `key` is pre-validated against an allowlist.
     let cmd = format!(
-        "ls -t \"$HOME/.claude/projects/{}\"/*.jsonl 2>/dev/null | head -50 | while read f; do printf '%s %s\\n' \"$(stat -c %Y \"$f\" 2>/dev/null)\" \"$f\"; done",
-        key
+        "ls -t \"$HOME/.claude/projects/{key}\"/*.jsonl 2>/dev/null | head -50 | while read -r f; do mt=$({mt}); printf '%s %s\\n' \"${{mt:-0}}\" \"$f\"; done",
+        key = key,
+        mt = remote_mtime("\"$f\"")
     );
     let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
     if raw.trim().is_empty() {
@@ -7702,7 +7631,8 @@ async fn get_codex_session_id_ssh(
     let cwd = remote_project_path.replace('\'', "");
     // Walk ~/.codex/sessions/, sort by mtime, read first line of each, match cwd.
     let cmd = format!(
-        r#"find $HOME/.codex/sessions -type f -name '*.jsonl' 2>/dev/null | xargs -I{{}} stat -c '%Y {{}}' {{}} 2>/dev/null | sort -rn | head -30 | while read mt path; do first=$(head -1 "$path" 2>/dev/null); echo "$mt|$first"; done"#
+        r#"find $HOME/.codex/sessions -type f -name '*.jsonl' 2>/dev/null | while read -r f; do mt=$({mt}); printf '%s %s\n' "${{mt:-0}}" "$f"; done | sort -rn | head -30 | while read -r mt path; do first=$(head -1 "$path" 2>/dev/null); echo "$mt|$first"; done"#,
+        mt = remote_mtime("\"$f\"")
     );
     let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
     let now = std::time::SystemTime::now()
@@ -7749,8 +7679,9 @@ async fn get_gemini_session_id_ssh(
     }
     // `basename` is pre-validated against an allowlist.
     let cmd = format!(
-        r#"for d in "$HOME/.gemini/tmp/{base}"*/chats; do [ -d "$d" ] || continue; ls -t "$d"/*.json 2>/dev/null | head -20 | while read f; do mt=$(stat -c %Y "$f" 2>/dev/null); printf '%s %s\n' "$mt" "$f"; done; done"#,
-        base = basename
+        r#"for d in "$HOME/.gemini/tmp/{base}"*/chats; do [ -d "$d" ] || continue; ls -t "$d"/*.json 2>/dev/null | head -20 | while read -r f; do mt=$({mt}); printf '%s %s\n' "${{mt:-0}}" "$f"; done; done"#,
+        base = basename,
+        mt = remote_mtime("\"$f\"")
     );
     let raw = ssh_exec_internal(&host, &username, identity_file.as_deref(), &cmd).await.unwrap_or_default();
     let now = std::time::SystemTime::now()
@@ -7771,100 +7702,21 @@ async fn get_gemini_session_id_ssh(
     Ok(None)
 }
 
-/// Bundled wrapper version. Bumping this number forces a re-install on the
-/// remote on next call so wrapper drift is self-healing.
-/// v3: stale-wrapper migration — only /.made/ paths count as installed, and a
-/// previous app identity's chain file is carried over before repointing
-/// settings.json (the version gate exits before reading settings, so the
-/// repoint only re-runs on a bump).
-const SSH_STATUSLINE_WRAPPER_VERSION: u32 = 3;
-
-/// Install the MADE statusline wrapper on a remote SSH host. Idempotent:
-/// if `~/.made/statusline-wrapper.version` already matches the bundled
-/// version, returns "ALREADY_INSTALLED" without touching anything.
+/// Install the MADE statusline wrapper on a remote SSH host.
+///
+/// Uses the SAME wrapper and the SAME installer as the local path — the two
+/// used to be separate literals kept in sync by a comment. Idempotent: returns
+/// "ALREADY_INSTALLED" when the version matches AND settings.json actually
+/// points at the wrapper (the version alone used to be enough, which is how a
+/// host whose settings.json never got the statusLine entry stayed broken
+/// forever while reporting success).
 #[tauri::command]
 async fn install_statusline_wrapper_ssh(
     host: String,
     username: String,
     identity_file: Option<String>,
 ) -> Result<String, String> {
-    // Same wrapper script as the local install — keeps the on-disk format
-    // identical so SSH and local context-parser code paths stay symmetrical.
-    let wrapper_script = r#"#!/bin/bash
-input=$(cat)
-echo "$input" > /tmp/made-claude-statusline.json 2>/dev/null
-_chain="$(cat "$HOME/.made/statusline-chain" 2>/dev/null)"
-case "$_chain" in *statusline-wrapper*) _chain="" ;; esac
-if [ -n "$_chain" ] && [ -x "$_chain" ]; then
-  echo "$input" | "$_chain"
-else
-  # No user statusline configured — emit a minimal one-liner instead of the
-  # raw JSON (echoing $input would leak the session_id/cwd payload into the
-  # Claude prompt area).
-  cwd=$(printf '%s' "$input" | sed -n 's/.*"cwd":"\([^"]*\)".*/\1/p')
-  base="${cwd##*/}"
-  if [ -n "$base" ]; then
-    printf '%s' "$base"
-  fi
-fi
-"#;
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(wrapper_script.trim());
-    let version = SSH_STATUSLINE_WRAPPER_VERSION;
-    let script = format!(
-        r#"WRAPPER="$HOME/.made/statusline-wrapper.sh"
-VERSION_FILE="$HOME/.made/statusline-wrapper.version"
-CHAIN_FILE="$HOME/.made/statusline-chain"
-SETTINGS="$HOME/.claude/settings.json"
-if [ -f "$VERSION_FILE" ] && [ "$(cat "$VERSION_FILE" 2>/dev/null)" = "{ver}" ] && [ -x "$WRAPPER" ]; then
-  echo "ALREADY_INSTALLED"
-  exit 0
-fi
-mkdir -p "$HOME/.made" 2>/dev/null
-CURRENT=""
-if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
-  CURRENT=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || true)
-fi
-echo "{b64}" | base64 -d > "$WRAPPER"
-chmod +x "$WRAPPER" 2>/dev/null || true
-echo "{ver}" > "$VERSION_FILE"
-case "$CURRENT" in
-  *"/.made/statusline-wrapper"*)
-    echo "UPDATED_WRAPPER"
-    exit 0
-    ;;
-  *statusline-wrapper*)
-    OLDEXP=$(eval echo "$CURRENT" 2>/dev/null || echo "$CURRENT")
-    OLDDIR=$(dirname "$OLDEXP")
-    if [ -f "$OLDDIR/statusline-chain" ]; then
-      OLDCHAIN=$(cat "$OLDDIR/statusline-chain" 2>/dev/null)
-      case "$OLDCHAIN" in
-        *statusline-wrapper*) ;;
-        *) [ -n "$OLDCHAIN" ] && echo "$OLDCHAIN" > "$CHAIN_FILE" ;;
-      esac
-    fi
-    ;;
-  *)
-    if [ -n "$CURRENT" ]; then
-      EXPANDED=$(eval echo "$CURRENT" 2>/dev/null || echo "$CURRENT")
-      echo "$EXPANDED" > "$CHAIN_FILE"
-    fi
-    ;;
-esac
-if [ -f "$SETTINGS" ] && command -v jq >/dev/null 2>&1; then
-  TMP=$(mktemp)
-  if jq '.statusLine = {{"type": "command", "command": "~/.made/statusline-wrapper.sh"}}' "$SETTINGS" > "$TMP" 2>/dev/null; then
-    mv "$TMP" "$SETTINGS"
-  else
-    rm -f "$TMP"
-    echo "ERR_JQ_UPDATE"
-    exit 1
-  fi
-fi
-echo "INSTALLED""#,
-        ver = version,
-        b64 = b64
-    );
+    let script = statusline_install_script(&statusline_wrapper_b64());
     ssh_exec_internal(&host, &username, identity_file.as_deref(), &script).await
 }
 
