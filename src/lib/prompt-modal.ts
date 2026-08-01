@@ -28,6 +28,17 @@ export interface PromptExtraField {
   required?: boolean;
 }
 
+/** One option in a `choices` dialog. Clicking it confirms immediately —
+ *  a choices dialog has no separate confirm button. */
+export interface PromptChoice {
+  id: string;
+  label: string;
+  /** Second line under the label — say what picking this does. */
+  detail?: string;
+  /** Same convention as menu items: disabled + WHY, never bare-greyed. */
+  unavailable?: { reason: string };
+}
+
 export interface PromptRequest {
   title: string;
   /** Omit for a pure confirmation dialog. */
@@ -49,6 +60,9 @@ export interface PromptRequest {
   validate?: (value: string) => string | null;
   /** Render the main input as a password field (server passwords etc.). */
   masked?: boolean;
+  /** Pick-one dialog: option rows instead of an input, clicking one resolves
+   *  with its id. Mutually exclusive with `label`/`requireTyped`. */
+  choices?: PromptChoice[];
 }
 
 export interface PromptResult {
@@ -91,4 +105,16 @@ export function promptWithOptions(req: PromptRequest): Promise<PromptResult | nu
 /** Confirmation-only helper. */
 export function confirmAction(req: Omit<PromptRequest, "label" | "initialValue">): Promise<boolean> {
   return promptForInput(req).then((v) => v !== null);
+}
+
+/**
+ * Pick-one helper: resolves with the chosen option's id, or null if the user
+ * cancelled. Callers MUST treat null as "do nothing".
+ */
+export function chooseOption(
+  req: Omit<PromptRequest, "label" | "initialValue" | "requireTyped" | "masked" | "choices"> & {
+    choices: PromptChoice[];
+  },
+): Promise<string | null> {
+  return promptWithOptions(req).then((r) => (r === null ? null : r.value));
 }

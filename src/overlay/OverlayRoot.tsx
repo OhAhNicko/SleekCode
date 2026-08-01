@@ -513,7 +513,7 @@ function ExitBanner({
     background: "var(--ezy-surface-raised, #1c2128)",
     boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
     color: "var(--ezy-text-muted, rgba(230,237,243,0.65))",
-    fontFamily: "Inter, system-ui, sans-serif",
+    fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
     fontSize: 12,
     lineHeight: 1.4,
     letterSpacing: 0.2,
@@ -573,7 +573,7 @@ function Toast({
           background: p.bg ?? "#404040",
           color: "#ffffff",
           maxWidth: 420,
-          fontFamily: "Inter, system-ui, sans-serif",
+          fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
           pointerEvents: "auto",
         }}
       >
@@ -639,7 +639,7 @@ function Toast({
         borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
         background: "var(--ezy-surface-raised, #1c2128)",
         boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
-        fontFamily: "Inter, system-ui, sans-serif",
+        fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
         pointerEvents: "auto",
         cursor: p.clickAction ? "pointer" : undefined,
       }}
@@ -907,7 +907,7 @@ function NotifStack({
         // The container itself must not eat pointer events — only the cards
         // do, so the gaps stay click-through (the region excludes them too).
         pointerEvents: "none",
-        fontFamily: "Inter, system-ui, sans-serif",
+        fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
       }}
     >
       {display.map((card) => {
@@ -1125,7 +1125,7 @@ function FileLinkTip({
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
           boxShadow: "0 4px 12px rgba(0, 0, 0, 0.4)",
           whiteSpace: "nowrap",
-          fontFamily: "system-ui, -apple-system, sans-serif",
+          fontFamily: "var(--ezy-font-ui, system-ui, -apple-system, sans-serif)",
         }}
       >
         <span
@@ -1144,7 +1144,7 @@ function FileLinkTip({
             border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-            fontFamily: "system-ui, -apple-system, sans-serif",
+            fontFamily: "var(--ezy-font-ui, system-ui, -apple-system, sans-serif)",
           }}
         >
           Ctrl+Click
@@ -1473,7 +1473,7 @@ function ImeComposition({
         maxWidth: Math.max(80, rect.width - 32),
         overflow: "hidden",
         textOverflow: "ellipsis",
-        fontFamily: "Inter, system-ui, sans-serif",
+        fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
       }}
     >
       <span>{p.before ?? ""}</span>
@@ -1725,7 +1725,7 @@ function AnchoredMenu({
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.08))",
           boxShadow: "0 10px 30px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.35)",
           color: "var(--ezy-text, #e6edf3)",
-          fontFamily: "Inter, system-ui, sans-serif",
+          fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
           // REQUIRED: the wrapper is now `pointerEvents: none` (see above), and
           // that inherits. Without this the panel — and every item in it — is
           // click-dead, which is a far worse bug than the one being fixed.
@@ -2054,7 +2054,7 @@ function VoiceHudCard({
         display: "flex",
         flexDirection: "column",
         gap: 6,
-        fontFamily: "Inter, system-ui, sans-serif",
+        fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
         pointerEvents: "auto",
       }}
     >
@@ -2371,7 +2371,7 @@ function TipChip({
           // Long file paths are the common case here — wrap them instead of
           // running off the edge of the window like the old nowrap chip did.
           overflowWrap: "anywhere",
-          fontFamily: "Inter, system-ui, sans-serif",
+          fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
           display: "flex",
           flexDirection: "column",
           alignItems: "stretch",
@@ -2603,7 +2603,7 @@ function SwatchMenu({
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           padding: 8,
           boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
-          fontFamily: "Inter, system-ui, sans-serif",
+          fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
         }}
       >
         <div
@@ -2905,7 +2905,7 @@ function SoundPickerMenu({
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
           color: "var(--ezy-text, #e6edf3)",
-          fontFamily: "Inter, system-ui, sans-serif",
+          fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
         }}
       >
         <div
@@ -3043,7 +3043,7 @@ function RecentMenu({
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
           color: "var(--ezy-text, #e6edf3)",
-          fontFamily: "Inter, system-ui, sans-serif",
+          fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
           // Flex + per-child `order`: CREATE and OPEN render first, the recent
           // list sinks below them (order 29+ on its header/rows) without
           // relocating 200 lines of row JSX.
@@ -3569,7 +3569,7 @@ function PaneSearch({
         boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
         borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
         padding: "3px 4px",
-        fontFamily: "system-ui, -apple-system, sans-serif",
+        fontFamily: "var(--ezy-font-ui, system-ui, -apple-system, sans-serif)",
         fontSize: 12,
         pointerEvents: "auto",
       }}
@@ -3937,7 +3937,7 @@ function GitBranchMenu({
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-          fontFamily: "system-ui, -apple-system, sans-serif",
+          fontFamily: "var(--ezy-font-ui, system-ui, -apple-system, sans-serif)",
         }}
       >
         <div style={{ padding: "6px 6px 4px" }}>
@@ -4358,7 +4358,7 @@ function SessionPickerMenu({
           overflow: "hidden",
           boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
           maxHeight: 340,
-          fontFamily: "system-ui, -apple-system, sans-serif",
+          fontFamily: "var(--ezy-font-ui, system-ui, -apple-system, sans-serif)",
         }}
       >
         <div style={{ overflowY: "auto", maxHeight: 296 }}>

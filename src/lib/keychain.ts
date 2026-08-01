@@ -54,12 +54,18 @@ export function getKeychainUnlockPreamble(): string {
   // screen. Deliberately NOT hidden via APC/DCS wrapping — ConPTY on the
   // Windows side re-renders the stream and drops such sequences wholesale,
   // which would blind the watcher. Plain text + erase survives it.
+  //
+  // READY erases itself in the SAME printf rather than waiting for the next
+  // sentinel to erase it. It used to carry no erase, so it sat on screen for
+  // the entire time the password dialog was open — the pane's first paint was
+  // "[MADE] keychain-unlock ready" for as long as the user took to type. The
+  // bytes still reach the watcher either way; only the rendering changes.
   return (
     "if command -v security >/dev/null 2>&1 && " +
     "! security find-generic-password -s 'Claude Code-credentials' -w >/dev/null 2>&1; then " +
     "stty -echo 2>/dev/null; __kt=0; " +
     `while [ $__kt -lt ${MAX_TRIES} ]; do ` +
-    `printf '${READY}'; ` +
+    `printf '${READY}\\r\\033[2K'; ` +
     "IFS= read -r MADE_PW; " +
     'if security unlock-keychain -p "$MADE_PW" ~/Library/Keychains/login.keychain-db 2>/dev/null; then ' +
     `printf '\\r\\033[2K${OK}'; break; fi; ` +

@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import { migrateEzyDevToMade } from "./lib/migrate-ezydev-to-made";
+import { pruneArchivedJiraPanes } from "./lib/jira-project";
 import { useAppStore } from "./store";
 import AppErrorBoundary, {
   installGlobalErrorLogging,
@@ -10,6 +11,9 @@ import AppErrorBoundary, {
 
 installGlobalErrorLogging();
 migrateEzyDevToMade();
+// Before the first render, so no pane can mount and `claude --resume` an
+// archived ticket from stale persisted layout state.
+pruneArchivedJiraPanes();
 
 // Expose the store on window for DevTools-driven feature-flag toggling
 // (e.g. native terminal renderer) while no Settings UI exists yet.

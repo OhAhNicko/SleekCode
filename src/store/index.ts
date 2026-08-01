@@ -133,6 +133,7 @@ export const useAppStore = create<AppStore>()(
         projectPaneTint: state.projectPaneTint,
         projectPaneTintStrength: state.projectPaneTintStrength,
         activePaneLift: state.activePaneLift,
+        uiFont: state.uiFont,
         nativeCursorStyle: state.nativeCursorStyle,
         nativeCursorBlink: state.nativeCursorBlink,
         highscores: state.highscores,

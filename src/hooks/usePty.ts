@@ -177,7 +177,14 @@ export function usePty({
         // can be read for Claude tabs. Idempotent + per-server dedup.
         // Fire-and-forget: install in parallel with the spawn.
         if (terminalType === "claude") {
-          void installStatuslineWrapper(currentServerId);
+          // AWAITED, not fire-and-forget: the install patches the remote
+          // ~/.claude/settings.json, and Claude reads statusLine when it
+          // STARTS. Racing it against the spawn meant the first pane on a
+          // server came up with no statusline — so no model, cost, duration or
+          // version in its header for that pane's whole life. Deduped per
+          // server per app run, so only the first pane pays the round trip.
+          await installStatuslineWrapper(currentServerId);
+          if (isStale()) return;
         }
         const remoteCwd = currentWorkingDir || undefined;
         // [DIAG-SSH-RESUME] temporary: log SSH spawn boundary. Remove once verified.
@@ -223,6 +230,22 @@ export function usePty({
             }
           }
         }
+        // Every OTHER remote Claude pane gets the same up-front id the local
+        // branch mints below. Without it a remote pane had to GUESS its
+        // session back from the newest .jsonl mtime minutes later — racy on
+        // any server, and outright impossible on a macOS one until the BSD
+        // `stat` fix in get_claude_session_id_ssh, so the pane never learned
+        // an id and the NEXT launch had nothing to --resume. Skipped when
+        // already resuming: reusing that id here would collide.
+        if (!parkedTicket && !sessionResumeIdRef.current) {
+          const assigned = claudeSessionIdArgs(terminalType, undefined);
+          if (assigned.sessionId) {
+            remoteClaudeArgs.push(...assigned.args);
+            onSessionIdAssignedRef.current?.(assigned.sessionId);
+          }
+        }
+        // Must stay LAST — getRemoteExecCommand emits `<resume> <extraArgs>`,
+        // so a positional placed earlier would swallow the next flag's value.
         const remotePendingPrompt = takePendingPrompt(termId);
         if (remotePendingPrompt) remoteClaudeArgs.push(remotePendingPrompt);
         const ssh = getSshCommand(

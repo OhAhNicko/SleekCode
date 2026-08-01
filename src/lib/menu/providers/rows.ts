@@ -641,6 +641,53 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
   const isOpen = ctx.data.ctxOpen === "1";
   const gone = ctx.data.ctxGone === "1";
   const archived = ctx.data.ctxArchived === "1";
+  // The rail's hamburger opens a COMPACT menu — the flag rides the same
+  // data-ctx channel as everything else and only exists for the synthetic
+  // dispatch (see openRowMenu). Items are shared specs, so the compact menu
+  // is a strict subset of the right-click menu and the two cannot drift.
+  const compact = ctx.data.ctxCompact === "1";
+
+  const rename = actionItem("jira-ticket", "rename", id, {
+    id: "row.jira.rename",
+    label: "Rename…",
+    iconId: "rename",
+  });
+  const openInJira = actionItem("jira-ticket", "openInBrowser", id, {
+    id: "row.jira.browser",
+    label: "Open in Jira",
+    iconId: "external-link",
+  });
+  // Sub-ticket = a second, independent Claude conversation on the same
+  // ticket ("SUPPORT-1 #2"), sharing the ticket's browser pane. One entry
+  // point; the fork/fresh/empty flavor is picked in a chooser dialog
+  // (PromptModal) — the overlay menu has no flyouts.
+  const subTicket = actionItem("jira-ticket", "duplicate", id, {
+    id: "row.jira.duplicate",
+    label: "Create sub-ticket…",
+    iconId: "duplicate",
+  });
+  const closePane = actionItem("jira-ticket", "closePane", id, {
+    id: "row.jira.closePane",
+    label: "Close pane",
+    iconId: "close-pane",
+    unavailable: isOpen ? undefined : { reason: "Pane is not open" },
+  });
+  const archiveItem = actionItem("jira-ticket", "toggleArchive", id, {
+    id: "row.jira.archive",
+    label: archived ? "Unarchive" : "Archive ticket",
+  });
+
+  if (compact) {
+    // Just the actions a user reaches for in passing. No opener (a plain
+    // click on the row already opens it), no Delete (destructive stays
+    // behind the deliberate right-click), no colors / copy-key.
+    return [
+      { id: "edit", items: [rename] },
+      { id: "target", items: [openInJira, subTicket] },
+      { id: "pane", items: [closePane, archiveItem] },
+    ];
+  }
+
   const currentColor = ticket
     ? (useAppStore.getState().jiraTicketColors?.[ticket] ?? null)
     : null;
@@ -648,40 +695,23 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
     {
       id: "target",
       items: [
-        actionItem("jira-ticket", "open", id, {
-          id: "row.jira.open",
-          label: isOpen ? "Focus pane" : "Reopen investigation",
-          unavailable: gone
-            ? { reason: "This conversation's transcript is gone" }
-            : archived
-              ? { reason: "Unarchive the ticket first" }
-              : undefined,
-        }),
-        actionItem("jira-ticket", "openInBrowser", id, {
-          id: "row.jira.browser",
-          label: "Show ticket in browser",
-        }),
-        // Duplicate = a second, independent Claude conversation on the same
-        // ticket ("SUPPORT-1 #2"), sharing the ticket's browser pane. Three
-        // flavors; forking needs the source transcript to still exist.
-        actionItem("jira-ticket", "duplicateFork", id, {
-          id: "row.jira.dup.fork",
-          label: "Duplicate — fork conversation",
-          iconId: "copy",
-          unavailable: gone
-            ? { reason: "This conversation's transcript is gone" }
-            : undefined,
-        }),
-        actionItem("jira-ticket", "duplicatePrompt", id, {
-          id: "row.jira.dup.prompt",
-          label: "Duplicate — fresh investigation",
-          iconId: "copy",
-        }),
-        actionItem("jira-ticket", "duplicateEmpty", id, {
-          id: "row.jira.dup.empty",
-          label: "Duplicate — empty pane",
-          iconId: "copy",
-        }),
+        // An OPEN row's primary action is a plain click on the row itself, so
+        // the menu carries no "Focus pane" — only closed rows get an opener.
+        ...(isOpen
+          ? []
+          : [
+              actionItem("jira-ticket", "open", id, {
+                id: "row.jira.open",
+                label: "Reopen investigation",
+                unavailable: gone
+                  ? { reason: "This conversation's transcript is gone" }
+                  : archived
+                    ? { reason: "Unarchive the ticket first" }
+                    : undefined,
+              }),
+            ]),
+        openInJira,
+        subTicket,
       ],
     },
     {
@@ -713,11 +743,7 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
     {
       id: "edit",
       items: [
-        actionItem("jira-ticket", "rename", id, {
-          id: "row.jira.rename",
-          label: "Rename…",
-          iconId: "rename",
-        }),
+        rename,
         {
           id: "row.jira.copyKey",
           label: "Copy ticket number",
@@ -731,27 +757,15 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
     {
       id: "pane",
       items: [
-        actionItem("jira-ticket", "closePane", id, {
-          id: "row.jira.closePane",
-          label: "Close pane",
-          iconId: "close-pane",
-          unavailable: isOpen ? undefined : { reason: "Pane is not open" },
-        }),
-        actionItem("jira-ticket", "toggleArchive", id, {
-          id: "row.jira.archive",
-          label: archived ? "Unarchive" : "Archive ticket",
-        }),
-        actionItem("jira-ticket", "forget", id, {
-          id: "row.jira.forget",
-          label: "Remove from list",
-          iconId: "close-pane",
-          danger: true,
-          unavailable: isOpen ? { reason: "Close the pane first" } : undefined,
-        }),
+        closePane,
+        archiveItem,
+        // ONE destructive row. "Remove from list" used to sit beside this
+        // with a nearly identical outcome (row gone, transcript kept) — the
+        // only difference was who closed the pane. Delete closes it itself.
         actionItem("jira-ticket", "del", id, {
           id: "row.jira.delete",
           label: "Delete ticket…",
-          iconId: "close-pane",
+          iconId: "trash",
           danger: true,
         }),
       ],

@@ -258,11 +258,19 @@ export function useSessionContext({
       // On null, retain previous value (stale > absent)
     };
 
-    // Short delay (2s) for WSL to be ready on cold start, then poll every 5s.
+    // Short delay (2s) for WSL to be ready on cold start, then poll.
     // If data isn't available yet, null is returned and we retain the previous value.
+    //
+    // Remote panes poll far less often. A local read is a file read; an SSH
+    // read is an entire new ssh connection, because Windows OpenSSH has no
+    // ControlMaster and `ssh_exec_internal` therefore cannot multiplex — so
+    // every poll pays a full TCP + crypto handshake. At 5s, four remote panes
+    // would open ~48 connections a minute across Tailscale for a header that
+    // changes slowly.
+    const intervalMs = serverIdRef.current ? 15_000 : 5_000;
     const startTimer = setTimeout(() => {
       poll();
-      intervalId = setInterval(poll, 5000);
+      intervalId = setInterval(poll, intervalMs);
     }, 2000);
     let intervalId: ReturnType<typeof setInterval> | undefined;
 

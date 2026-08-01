@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useAppStore } from "./store";
 import { getTheme } from "./lib/themes";
+import { uiFontStack } from "./lib/ui-fonts";
 import { fetchReleaseNotes } from "./lib/release-notes";
 import TabBar from "./components/TabBar";
 import VerticalTabBar from "./components/VerticalTabBar";
@@ -72,6 +73,7 @@ export default function App() {
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
   const themeId = useAppStore((s) => s.themeId);
+  const uiFont = useAppStore((s) => s.uiFont);
   const [showPalette, setShowPalette] = useState(false);
   const settingsOpen = useAppStore((s) => s.settingsPanelOpen);
   const launchConfigs = useAppStore((s) => s.launchConfigs);
@@ -683,6 +685,14 @@ export default function App() {
       // Unitless multiplier consumed by every corner-radius calc() in the
       // app (and mirrored to the overlay like the color vars).
       "--ezy-radius-scale": String(theme.radiusScale ?? 1),
+      // The selectable sans face. Rides along with the theme vars precisely so
+      // it reaches the overlay too — the overlay has no other channel, and
+      // context menus rendering in a different font than the app is the exact
+      // inconsistency this setting exists to avoid.
+      // Resolved through the registry rather than indexed directly: the
+      // persisted id outlives the font list, and an unknown one must fall back
+      // to the default instead of writing "undefined" into the var.
+      "--ezy-font-ui": uiFontStack(uiFont),
     };
     const root = document.documentElement;
     for (const [name, value] of Object.entries(vars)) {
@@ -690,7 +700,7 @@ export default function App() {
     }
     themeVarsRef.current = vars;
     emitOverlayTheme(vars);
-  }, [theme]);
+  }, [theme, uiFont]);
 
   // The overlay may finish loading after the first theme emit — re-emit when
   // it announces itself ready (also covers overlay reloads in dev).

@@ -39,3 +39,6 @@ tasks/
 
 # Agent git worktrees (never commit)
 .claude/worktrees/
+
+# Reference assets (source-of-truth copies live in src/fonts/)
+reference/

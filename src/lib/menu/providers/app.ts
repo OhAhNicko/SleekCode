@@ -17,7 +17,10 @@ const appProvider: MenuProvider<"app"> = {
   id: "app",
   surface: "app",
   order: 1000,
-  build({ ctx }): MenuGroup[] {
+  build({ ctx, stack }): MenuGroup[] {
+    // A COMPACT menu (a row's hamburger) is scoped to its surface — the
+    // app-wide tail would be exactly the noise it exists to avoid.
+    if (stack.some((c) => c.kind === "row" && c.data.ctxCompact === "1")) return [];
     return [
       {
         id: "app",

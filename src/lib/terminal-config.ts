@@ -541,6 +541,11 @@ export function isWslTerminal(type: TerminalType, backend?: TerminalBackend): bo
   return type !== "shell";
 }
 
+/** Clear + cursor home, the same sequence the local pooled path emits before
+ *  its exec (getPooledInitCommand), so both spawn routes reach first paint
+ *  looking identical. */
+const CLEAR_SCREEN = `printf '\\033[2J\\033[H'`;
+
 /** Map terminal type to the remote command to exec over SSH */
 function getRemoteExecCommand(
   type: TerminalType,
@@ -562,7 +567,43 @@ function getRemoteExecCommand(
     // remote command runs the login shell NON-interactively, so PATH entries
     // from .zshrc/.zprofile are missing and the bare CLI name fails even
     // though it works in a hand-typed SSH session.
-    return execShell ? `exec ${execShell} -lic ${sh(inner)}` : `exec ${inner}`;
+    // Braces are load-bearing, not style: the caller emits `cd <dir> && <this>`,
+    // and an ungrouped `printf …; exec …` would bind `&&` to the printf alone,
+    // leaving the CLI to exec in the WRONG directory after a failed cd.
+    if (!execShell) return `{ ${CLEAR_SCREEN}; exec ${inner}; }`;
+
+    // …but sourcing /etc/zprofile + ~/.zshrc also prints whatever the user's
+    // setup prints — version managers, greeters, update nags — and THAT is the
+    // text that flashed in the pane for the ~0.5-1s before the CLI painted.
+    //
+    // Clearing afterwards is not enough: the bytes are still DISPLAYED first,
+    // which is exactly the flash. So rc gets /dev/null for both streams, and
+    // the real tty — dup'd to fds 9/8 by the outer shell — is restored inside
+    // the -c command immediately before exec'ing the CLI. Those fds survive
+    // the exec because POSIX only closes descriptors marked close-on-exec,
+    // which an explicit `exec 9>&1` never sets; they are closed again in the
+    // same redirection list so the CLI does not inherit strays.
+    //
+    // The login shell still RUNS, so everything ~/.zshrc exports reaches the
+    // CLI and every command its Bash tool spawns — byte-identical to before.
+    // The alternatives (exec an absolute CLI path with a probed PATH, or
+    // replay a captured env) are faster but silently drop that environment,
+    // and the replay variant would additionally copy secrets like GH_TOKEN
+    // into MADE's persisted store and the remote argv, where `ps` shows them
+    // to every other account on the box.
+    //
+    // Losing rc's stderr costs the diagnostic for a broken rc file. The far
+    // commoner failure — the CLI itself missing — is reported by the shell
+    // AFTER the restore, so `zsh:1: command not found: claude` still shows.
+    // Verified under a real pty before shipping, along with `[ -t 1 ]` and
+    // `[ -t 2 ]` still holding for the CLI.
+    //
+    // The brace group keeps the fd setup bound to the exec: the caller emits
+    // `cd <dir> && <this>`, and without grouping `&&` would bind to the fd
+    // setup alone, leaving the exec to run with fd 9 unopened after a failed
+    // cd — a shell error instead of a pane.
+    const quiet = `exec 1>&9 2>&8 9>&- 8>&-; ${CLEAR_SCREEN}; exec ${inner}`;
+    return `{ exec 9>&1 8>&2; exec ${execShell} -lic ${sh(quiet)} >/dev/null 2>&1; }`;
   };
 
   switch (type) {
@@ -611,6 +652,11 @@ export function getSshCommand(
 
   // Disable strict host key checking for convenience (local network / Tailscale)
   args.push("-o", "StrictHostKeyChecking=no");
+  // …which makes the client print "Warning: Permanently added '<host>' to the
+  // list of known hosts." into the pane on first connect. ERROR keeps genuine
+  // failures (refused, permission denied) and drops that one-time warning —
+  // the only ssh-client chatter that reaches a pane's first paint.
+  args.push("-o", "LogLevel=ERROR");
 
   args.push(userHost);
 
