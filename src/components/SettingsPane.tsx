@@ -16,6 +16,7 @@ import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
 import { THEMES, getTheme } from "../lib/themes";
+import { UI_FONT_OPTIONS, type UiFont } from "../lib/ui-fonts";
 import { getDefaultBackend } from "../lib/platform";
 import { previewSound } from "../lib/notification-sounds";
 import {
@@ -133,7 +134,9 @@ function FontSizeStepper({ value, onChange, min = 10, max = 24, suffix = "", ste
 }
 
 function SegmentedControl<T extends string>({ options, value, onChange, disabled }: {
-  options: { value: T; label: string; disabled?: boolean }[];
+  /** `fontFamily` renders that option's label in the face it selects, so a font
+   *  picker reads as a specimen instead of a word. Omitted everywhere else. */
+  options: { value: T; label: string; disabled?: boolean; fontFamily?: string }[];
   value: T;
   onChange: (v: T) => void;
   disabled?: boolean;
@@ -156,7 +159,7 @@ function SegmentedControl<T extends string>({ options, value, onChange, disabled
               backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
               border: "none",
               cursor: isOff ? "default" : "pointer",
-              fontFamily: "inherit",
+              fontFamily: opt.fontFamily ?? "inherit",
               transition: "background-color 150ms ease",
               opacity: isOff ? 0.35 : 1,
               whiteSpace: "nowrap",
@@ -1729,6 +1732,8 @@ export default function SettingsPane() {
   const setProjectPaneTintStrength = useAppStore((s) => s.setProjectPaneTintStrength);
   const activePaneLift = useAppStore((s) => s.activePaneLift);
   const setActivePaneLift = useAppStore((s) => s.setActivePaneLift);
+  const uiFont = useAppStore((s) => s.uiFont);
+  const setUiFont = useAppStore((s) => s.setUiFont);
   const hoverTooltips = useAppStore((s) => s.hoverTooltips);
   const setHoverTooltips = useAppStore((s) => s.setHoverTooltips);
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
@@ -2033,6 +2038,19 @@ export default function SettingsPane() {
               )}
               <SettingsRow label="Lighten active pane" description="Off: the pane header alone marks the active pane.">
                 <ToggleSwitch checked={activePaneLift} onChange={setActivePaneLift} />
+              </SettingsRow>
+              {/* Last in the section on purpose — the four rows above are all
+                  color, and dropping a typography row between them would split
+                  the tint toggle from its own strength stepper. */}
+              <SettingsRow
+                label="UI font"
+                description="Atkinson Hyperlegible is built for low-vision reading, with an unslashed zero. Terminal text stays Hack."
+              >
+                <SegmentedControl<UiFont>
+                  options={UI_FONT_OPTIONS}
+                  value={uiFont}
+                  onChange={setUiFont}
+                />
               </SettingsRow>
             </SettingsSection>
             <SettingsSection id="cursor" title="Cursor" description="Applies to the native terminal renderer.">

@@ -1,7 +1,13 @@
 import type { StateCreator } from "zustand";
 import { DEFAULT_THEME_ID } from "../lib/themes";
+import { DEFAULT_UI_FONT, type UiFont } from "../lib/ui-fonts";
 
 export type NativeCursorStyle = "bar" | "block" | "underline";
+
+/** The app's sans face. The union is derived from the UI_FONTS registry, so
+ *  adding a face there widens this automatically — see lib/ui-fonts.ts.
+ *  Re-exported here because the slice's public shape includes it. */
+export type { UiFont };
 
 export interface ThemeSlice {
   themeId: string;
@@ -17,6 +23,8 @@ export interface ThemeSlice {
    *  header (surface-raised + brand border) remains the only active marker. */
   activePaneLift: boolean;
   setActivePaneLift: (v: boolean) => void;
+  uiFont: UiFont;
+  setUiFont: (f: UiFont) => void;
   nativeCursorStyle: NativeCursorStyle;
   setNativeCursorStyle: (style: NativeCursorStyle) => void;
   nativeCursorBlink: boolean;
@@ -36,6 +44,8 @@ export const createThemeSlice: StateCreator<ThemeSlice, [], [], ThemeSlice> = (
   setProjectPaneTintStrength: (v) => set({ projectPaneTintStrength: v }),
   activePaneLift: true,
   setActivePaneLift: (v) => set({ activePaneLift: v }),
+  uiFont: DEFAULT_UI_FONT,
+  setUiFont: (f) => set({ uiFont: f }),
   nativeCursorStyle: "bar",
   setNativeCursorStyle: (style) => set({ nativeCursorStyle: style }),
   nativeCursorBlink: true,
