@@ -1162,7 +1162,25 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                     <div
                       data-tooltip={copiedKey === server.sshKeyPath ? "Copied!" : "Copy public key"}
                       onClick={() => handleCopyKey(server.sshKeyPath!)}
-                      style={{ cursor: "pointer", display: "flex", alignItems: "center", marginLeft: 2 }}
+                      // Same hover as this sidebar's other icon buttons (test /
+                      // edit / delete above). 14px, not the 22px SmallIconButton
+                      // chip: this sits in a 10px text row, and a taller hit box
+                      // would grow the row — see the compact-header note in
+                      // CLAUDE.md.
+                      style={{
+                        width: 14,
+                        height: 14,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        marginLeft: 2,
+                        flexShrink: 0,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                        cursor: "pointer",
+                        transition: "background-color 120ms ease",
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
                     >
                       {copiedKey === server.sshKeyPath ? (
                         <FaCheck size={7} color="#4ade80" />
@@ -1645,7 +1663,21 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                           <div
                             data-tooltip={copiedKey === server.sshKeyPath ? "Copied!" : "Copy public key"}
                             onClick={() => handleCopyKey(server.sshKeyPath!)}
-                            style={{ cursor: "pointer", display: "flex", alignItems: "center" }}
+                            // Twin of the sidebar copy button — same defect, same
+                            // fix, one size up for this row's larger icon.
+                            style={{
+                              width: 16,
+                              height: 16,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              flexShrink: 0,
+                              borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                              cursor: "pointer",
+                              transition: "background-color 120ms ease",
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
                           >
                             {copiedKey === server.sshKeyPath ? (
                               <FaCheck size={9} color="#4ade80" />

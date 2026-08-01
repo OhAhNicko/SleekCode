@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import { getPtyWrite, registerTerminalDataListener, unregisterTerminalDataListener } from "../store/terminalSlice";
 import { injectPort } from "../lib/server-commands";
+import { resolveDevServerBackend } from "../lib/spawn-dev-server";
+import { getDefaultBackend } from "../lib/platform";
 import type { DevServer } from "../types";
 import TerminalPane from "./TerminalPane";
 
@@ -179,6 +181,32 @@ export default function DevServerTerminalHost() {
    *  good: the intermittent "detecting..." forever. Keyed by dev-server id so a
    *  re-registration picks up exactly where the previous one left off. */
   const scanBuffersRef = useRef<Map<string, string>>(new Map());
+
+  /** Dev servers we've already kicked a backend resolve for, so the effect
+   *  below doesn't re-fire while `devServers` churns. */
+  const backendResolveRef = useRef<Set<string>>(new Set());
+
+  // Backstop: never leave a dev server without a backend.
+  //
+  // The pane is not rendered at all until `ds.backend` is set, so a server that
+  // never gets one shows a permanently black terminal — no PTY, no command, no
+  // error, and a sidebar row stuck on "detecting...". The create-dialog path in
+  // DevServerTab.tsx did exactly that for every server it made. That call site
+  // is fixed, but "every creation path must remember to resolve the backend" is
+  // the kind of rule a new call site quietly breaks, and the failure is silent.
+  // Resolving here covers all of them, including ones not written yet.
+  useEffect(() => {
+    for (const ds of devServers) {
+      if (ds.backend !== undefined || backendResolveRef.current.has(ds.id)) continue;
+      backendResolveRef.current.add(ds.id);
+      resolveDevServerBackend(ds.workingDir, ds.serverId)
+        .then((backend) => setDevServerBackend(ds.id, backend))
+        .catch(() => {
+          const fallback = useAppStore.getState().terminalBackend ?? getDefaultBackend();
+          setDevServerBackend(ds.id, fallback);
+        });
+    }
+  }, [devServers, setDevServerBackend]);
 
   const handlePtyReady = useCallback(
     (serverId: string, terminalId: string, command: string) => {
@@ -868,7 +896,30 @@ export default function DevServerTerminalHost() {
             // override) before mounting — otherwise we'd spawn a throwaway WSL
             // shell that runs the command and fails before the correct PowerShell
             // pane takes over.
-            if (ds.backend === undefined) return null;
+            //
+            // Say so rather than rendering nothing. An empty black pane is
+            // indistinguishable from "the server started and printed nothing",
+            // which is precisely what made this hard to diagnose. The effect
+            // above guarantees this state is transient.
+            if (ds.backend === undefined) {
+              if (ds.id !== expandedDevServerId) return null;
+              return (
+                <div
+                  key={ds.id}
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 12,
+                    color: "var(--ezy-text-muted)",
+                  }}
+                >
+                  Preparing terminal…
+                </div>
+              );
+            }
             return (
               <div
                 key={ds.id}

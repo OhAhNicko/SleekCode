@@ -10,8 +10,22 @@ import { useOverlayMenu } from "../lib/useOverlayMenu";
 import ServersPanel from "./ServersPanel";
 import { getPtyWrite } from "../store/terminalSlice";
 import { generateTerminalId } from "../lib/layout-utils";
+import { resolveDevServerBackend } from "../lib/spawn-dev-server";
+import { getDefaultBackend } from "../lib/platform";
 import type { DevServer } from "../types";
-import { getServerCommandSuggestions, BUILTIN_SERVER_COMMANDS, injectPort } from "../lib/server-commands";
+import {
+  getServerCommandSuggestions,
+  BUILTIN_SERVER_COMMANDS,
+  injectPort,
+  stripPort,
+  explicitPortInCommand,
+  resolveDefaultPort,
+  injectHost,
+  stripHost,
+  hasHostFlag,
+  detectHostStyleForProject,
+  type HostStyle,
+} from "../lib/server-commands";
 
 function StatusDot({ status }: { status: DevServer["status"] }) {
   const color =
@@ -107,6 +121,35 @@ function DevServerRow({ server }: { server: DevServer }) {
   const [editValue, setEditValue] = useState(server.command);
   const [editingPort, setEditingPort] = useState(false);
   const [portValue, setPortValue] = useState(String(server.port));
+  // Host-flag spelling and default port for THIS project, resolved only while
+  // the row is being edited — a sidebar of idle dev servers should not each go
+  // read a package.json, still less a config file over SSH.
+  const [hostStyle, setHostStyle] = useState<HostStyle>("vite");
+  // null = not resolved yet. Starting at a number would flash a WRONG default
+  // (3000) before correcting to, say, 5173 — a badge that lies briefly is worse
+  // than one that admits it is still looking.
+  const [defaultPort, setDefaultPort] = useState<number | null>(null);
+  const [defaultPortSource, setDefaultPortSource] = useState<"framework" | "config">("framework");
+  useEffect(() => {
+    if (!editing) return;
+    let cancelled = false;
+    void detectHostStyleForProject(server.workingDir, editValue, server.serverId).then((s) => {
+      if (!cancelled) setHostStyle(s);
+    });
+    void resolveDefaultPort(server.workingDir, editValue, server.serverId).then((r) => {
+      if (cancelled) return;
+      setDefaultPort(r.port);
+      setDefaultPortSource(r.fromConfig ? "config" : "framework");
+    });
+    return () => { cancelled = true; };
+    // editValue is deliberately not a dep: re-reading package.json and a config
+    // file on every keystroke would be several SSH round trips per character on
+    // a remote project.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, server.workingDir, server.serverId]);
+
+  /** A port this server was explicitly given, as opposed to the framework's. */
+  const customPort = explicitPortInCommand(editValue);
 
   const serverUrl = server.port > 0 ? `http://localhost:${server.port}` : null;
   const networkUrls = server.networkUrls ?? [];
@@ -250,20 +293,23 @@ function DevServerRow({ server }: { server: DevServer }) {
       updateProjectServerCommand(server.workingDir, trimmed, server.serverId);
     }
 
-    const num = parseInt(portValue, 10);
-    const portChanged = num > 0 && num <= 65535 && num !== server.port;
-    if (portChanged) {
-      updateDevServerPort(server.id, num);
-    }
-
-    if (portChanged) {
-      const baseCmd = commandChanged ? trimmed : server.command;
-      const cmdWithPort = injectPort(baseCmd, num);
+    // The port now rides IN the command text (`-- --port 3001`), the same way
+    // the network flag does, so "did the port change" is a question about the
+    // command rather than about a separate field. Restarting is still gated on
+    // the PORT changing, not on any command edit — fixing a typo in a running
+    // server's command should not kill it.
+    const prevPort = explicitPortInCommand(server.command);
+    const nextPort = explicitPortInCommand(trimmed);
+    if (nextPort !== prevPort) {
+      // 0 = "unknown, re-detect from output" — which is exactly true across a
+      // restart, and what keeps the dot from claiming "running" on a port that
+      // no longer exists.
+      updateDevServerPort(server.id, nextPort ?? 0);
       const write = getPtyWrite(server.terminalId);
       if (write) {
         write("\x03");
         setTimeout(() => write("\x03"), 100);
-        setTimeout(() => write(cmdWithPort + "\r"), 1500);
+        setTimeout(() => write(trimmed + "\r"), 1500);
       }
       updateDevServerStatus(server.id, "starting");
       updateDevServerError(server.id, undefined);
@@ -271,7 +317,7 @@ function DevServerRow({ server }: { server: DevServer }) {
 
     setEditing(false);
     setEditingPort(false);
-  }, [editValue, portValue, server, updateDevServerCommand, updateDevServerPort, updateDevServerStatus, updateDevServerError, updateProjectServerCommand]);
+  }, [editValue, server, updateDevServerCommand, updateDevServerPort, updateDevServerStatus, updateDevServerError, updateProjectServerCommand]);
 
   const handleCancelEdit = useCallback(() => {
     setEditValue(server.command);
@@ -356,9 +402,12 @@ function DevServerRow({ server }: { server: DevServer }) {
                 handleSaveEdit();
               } else {
                 setEditValue(server.command);
-                setPortValue(String(server.port || ""));
+                setPortValue("");
                 setEditing(true);
-                setEditingPort(true);
+                // Start on the badge. The free-type field is behind its own
+                // pencil now, so the common case (leave the port alone) needs
+                // no interaction at all.
+                setEditingPort(false);
               }
             }}
           >
@@ -411,28 +460,91 @@ function DevServerRow({ server }: { server: DevServer }) {
                 fontFamily: "inherit",
               }}
             />
-            {editingPort && (
-              <input
-                value={portValue}
-                onChange={(e) => setPortValue(e.target.value.replace(/\D/g, ""))}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSaveEdit();
-                  if (e.key === "Escape") handleCancelEdit();
-                }}
-                placeholder="port"
-                style={{
-                  width: 44,
-                  padding: "2px 4px",
-                  fontSize: 11,
-                  color: "var(--ezy-cyan)",
-                  backgroundColor: "var(--ezy-bg)",
-                  border: "1px solid var(--ezy-accent)",
-                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
-                  outline: "none",
-                  fontFamily: "inherit",
-                  flexShrink: 0,
-                }}
-              />
+            {editingPort ? (
+              <>
+                <input
+                  autoFocus
+                  value={portValue}
+                  onChange={(e) => {
+                    const digits = e.target.value.replace(/\D/g, "").slice(0, 5);
+                    setPortValue(digits);
+                    // Write straight into the command, so the field above always
+                    // shows what will actually run.
+                    const n = parseInt(digits, 10);
+                    setEditValue((c) =>
+                      n > 0 && n <= 65535 ? injectPort(c, n) : stripPort(c),
+                    );
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveEdit();
+                    if (e.key === "Escape") handleCancelEdit();
+                  }}
+                  placeholder={defaultPort === null ? "port" : String(defaultPort)}
+                  style={{
+                    width: 44,
+                    padding: "2px 4px",
+                    fontSize: 11,
+                    color: "var(--ezy-cyan)",
+                    backgroundColor: "var(--ezy-bg)",
+                    border: "1px solid var(--ezy-accent)",
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                    outline: "none",
+                    fontFamily: "inherit",
+                    flexShrink: 0,
+                  }}
+                />
+                <SmallIconButton
+                  title={defaultPort === null ? "Use the default port" : `Use the default port (${defaultPort})`}
+                  onClick={() => {
+                    setEditValue((c) => stripPort(c));
+                    setPortValue("");
+                    setEditingPort(false);
+                  }}
+                >
+                  <BiRefresh size={12} color="var(--ezy-text-muted)" style={{ transform: "scale(1.2)" }} />
+                </SmallIconButton>
+              </>
+            ) : (
+              <>
+                <span
+                  data-tooltip={
+                    customPort
+                      ? `Port ${customPort}, set for this server`
+                      : defaultPort === null
+                        ? "Working out this project's default port…"
+                        : defaultPortSource === "config"
+                          ? `Default port ${defaultPort}, from this project's config`
+                          : `Default port ${defaultPort} for this project's framework`
+                  }
+                  style={{
+                    flexShrink: 0,
+                    padding: "2px 6px",
+                    fontSize: 10,
+                    fontWeight: 600,
+                    letterSpacing: "0.02em",
+                    color: customPort ? "#fff" : "var(--ezy-text)",
+                    backgroundColor: customPort ? "var(--ezy-accent)" : "var(--ezy-border)",
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                    whiteSpace: "nowrap",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {customPort
+                    ? `Port ${customPort}`
+                    : defaultPort === null
+                      ? "Default \u2026"
+                      : `Default ${defaultPort}`}
+                </span>
+                <SmallIconButton
+                  title="Set a port manually"
+                  onClick={() => {
+                    setPortValue(String(customPort ?? ""));
+                    setEditingPort(true);
+                  }}
+                >
+                  <FaPencil size={9} color="var(--ezy-text-muted)" />
+                </SmallIconButton>
+              </>
             )}
           </>
         ) : (
@@ -498,18 +610,53 @@ function DevServerRow({ server }: { server: DevServer }) {
         )}
       </div>
 
-      {/* Error message */}
+      {/* Network access, while editing. Same rule as the create form: the flag
+          goes into the command text, so Save restarts with it exactly as
+          shown. */}
+      {editing && (
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "0 10px 5px 22px",
+            cursor: "pointer",
+            userSelect: "none",
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={hasHostFlag(editValue)}
+            onChange={() =>
+              setEditValue((c) => (hasHostFlag(c) ? stripHost(c) : injectHost(c, hostStyle)))
+            }
+            style={{ flexShrink: 0 }}
+          />
+          <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+            Reachable from other devices
+          </span>
+        </label>
+      )}
+
+      {/* Error message — solid surface, not a tinted wash (UI rules), and it
+          WRAPS. It used to be one nowrap line with an ellipsis, which cut off
+          exactly the part of a startup failure worth reading. */}
       {hasError && (
         <div
+          data-tooltip={server.errorMessage}
           style={{
-            padding: "3px 10px 4px 22px",
+            margin: "1px 10px 5px 22px",
+            padding: "4px 7px",
             fontSize: 10,
-            color: "var(--ezy-red)",
-            borderTop: "1px solid var(--ezy-red)",
-            backgroundColor: "rgba(220,60,60,0.06)",
+            lineHeight: 1.35,
+            color: "#fff",
+            backgroundColor: "var(--ezy-red)",
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+            overflowWrap: "anywhere",
+            display: "-webkit-box",
+            WebkitBoxOrient: "vertical",
+            WebkitLineClamp: 3,
             overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
           }}
         >
           {server.errorMessage}
@@ -522,10 +669,21 @@ function DevServerRow({ server }: { server: DevServer }) {
 }
 
 
+/** The flag the tickbox will add, shown so the change is never a mystery. */
+function hostStylePreview(style: HostStyle): string {
+  switch (style) {
+    case "next": return "-H 0.0.0.0";
+    case "cra": return "HOST=0.0.0.0";
+    case "angular": return "--host 0.0.0.0";
+    default: return "--host";
+  }
+}
+
 function AddServerForm({ onClose }: { onClose: () => void }) {
   const recentProjects = useAppStore((s) => s.recentProjects);
   const addTerminal = useAppStore((s) => s.addTerminal);
   const addDevServer = useAppStore((s) => s.addDevServer);
+  const setDevServerBackend = useAppStore((s) => s.setDevServerBackend);
   const addCustomServerCommand = useAppStore((s) => s.addCustomServerCommand);
   const removeCustomServerCommand = useAppStore((s) => s.removeCustomServerCommand);
   const updateProjectServerCommand = useAppStore((s) => s.updateProjectServerCommand);
@@ -537,6 +695,10 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
   const [command, setCommand] = useState("");
   const [showCmdDropdown, setShowCmdDropdown] = useState(false);
   const [showProjectDropdown, setShowProjectDropdown] = useState(false);
+  // Which host-flag spelling this project needs (vite/next/cra/angular),
+  // resolved from its package.json when a project is picked. Held here rather
+  // than looked up on toggle so ticking the box is instant.
+  const [hostStyle, setHostStyle] = useState<HostStyle>("vite");
   const cmdInputRef = useRef<HTMLInputElement>(null);
   const projectDropdownRef = useRef<HTMLDivElement>(null);
   const cmdDropdownRef = useRef<HTMLDivElement>(null);
@@ -555,6 +717,23 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
   }, [showProjectDropdown, showCmdDropdown]);
 
   const suggestions = getServerCommandSuggestions(command.trim() || undefined);
+
+  // Re-resolve the flag spelling whenever the project or command changes. The
+  // command matters because the script BODY is the best evidence: a project can
+  // depend on both vite and next, but `npm run dev` only runs one of them.
+  useEffect(() => {
+    if (!selectedPath) return;
+    let cancelled = false;
+    void detectHostStyleForProject(selectedPath, command, selectedServerId).then((style) => {
+      if (!cancelled) setHostStyle(style);
+    });
+    return () => { cancelled = true; };
+  }, [selectedPath, selectedServerId, command]);
+
+  const networkOn = hasHostFlag(command);
+  const toggleNetwork = useCallback(() => {
+    setCommand((c) => (hasHostFlag(c) ? stripHost(c) : injectHost(c, hostStyle)));
+  }, [hostStyle]);
 
   const handleBrowse = useCallback(async () => {
     try {
@@ -589,9 +768,10 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
       addCustomServerCommand(trimmed);
     }
     const terminalId = generateTerminalId();
+    const devServerId = `ds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     addTerminal(terminalId, "devserver", selectedPath, selectedServerId);
     addDevServer({
-      id: `ds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: devServerId,
       terminalId,
       tabId: "",
       projectName: selectedName,
@@ -601,6 +781,20 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
       status: "starting",
       serverId: selectedServerId,
     });
+    // Resolve the spawn backend, exactly as spawn-dev-server.ts does for the
+    // quick-open / auto-start / boot-restore path.
+    //
+    // This site never did, and `backend: undefined` is not a neutral default:
+    // DevServerTerminalHost renders NOTHING for a dev server without one, so a
+    // server created here got a permanently black pane — no PTY, no command,
+    // no error, just a row that says "detecting..." forever. It looked
+    // intermittent only because the OTHER creation path resolves it.
+    resolveDevServerBackend(selectedPath, selectedServerId)
+      .then((backend) => setDevServerBackend(devServerId, backend))
+      .catch(() => {
+        const fallback = useAppStore.getState().terminalBackend ?? getDefaultBackend();
+        setDevServerBackend(devServerId, fallback);
+      });
     // Persist the command onto the project so it's remembered across restart.
     // Upsert: a browsed-new dir may not be in recentProjects yet.
     const exists = useAppStore.getState().recentProjects.some(
@@ -612,7 +806,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
       addRecentProject({ path: selectedPath, name: selectedName, serverCommand: trimmed, serverId: selectedServerId });
     }
     onClose();
-  }, [selectedPath, selectedName, selectedServerId, command, addTerminal, addDevServer, addCustomServerCommand, updateProjectServerCommand, addRecentProject, onClose]);
+  }, [selectedPath, selectedName, selectedServerId, command, addTerminal, addDevServer, setDevServerBackend, addCustomServerCommand, updateProjectServerCommand, addRecentProject, onClose]);
 
   const inputStyle: React.CSSProperties = {
     width: "100%",
@@ -825,6 +1019,44 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
           </div>
         )}
       </div>
+
+      {/* Network access. The flag is written into the command field rather than
+          held as hidden state — the user sees exactly what will run, can edit
+          it, and it rides along with the command MADE already remembers per
+          project. */}
+      <label
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 7,
+          marginBottom: 8,
+          padding: "6px 8px",
+          border: "1px solid var(--ezy-border)",
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+          backgroundColor: "var(--ezy-surface)",
+          cursor: command.trim() ? "pointer" : "default",
+          userSelect: "none",
+          opacity: command.trim() ? 1 : 0.5,
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={networkOn}
+          disabled={!command.trim()}
+          onChange={toggleNetwork}
+          style={{ marginTop: 1 }}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, color: "var(--ezy-text)" }}>
+            Reachable from other devices
+          </div>
+          <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 1, lineHeight: 1.3 }}>
+            {networkOn
+              ? "Open it from another machine using this one's IP, over Tailscale or the local network."
+              : `Adds ${hostStylePreview(hostStyle)} so the server listens beyond localhost.`}
+          </div>
+        </div>
+      </label>
 
       {/* Start button */}
       <div
