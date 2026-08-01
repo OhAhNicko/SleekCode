@@ -11,7 +11,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
-import type { ProjectSession } from "../types";
+import type { PaneLayout, ProjectSession } from "../types";
 import { setPendingPrompt, clearPendingPrompt } from "../store/terminalSlice";
 import { rememberTicketForTerminal, clearTicketForTerminal, parkedTicketName } from "./jira-session";
 import { generateTerminalId } from "./layout-utils";
@@ -22,7 +22,10 @@ import {
   buildJiraTermLeaf,
   findJiraPair,
   findJiraTermLeaf,
+  jiraBaseTicket,
   jiraInstanceKey,
+  listJiraInstanceKeys,
+  removeJiraInstanceTerm,
 } from "./jira-layout";
 import { requestJiraTicket } from "../components/NewJiraTicketModal";
 import { buildJiraPrompt, buildTicketUrl, DEFAULT_JIRA_PROMPT } from "./jira";
@@ -296,6 +299,70 @@ export function duplicateJiraTicket(
     noPrompt: mode === "empty",
     forkFromSessionId: mode === "fork" ? source.id : undefined,
   });
+}
+
+/**
+ * Close ONE instance's pane in EVERY tab of this project — the archive/delete
+ * safety net. The rail's own close only searches the clicked tab, but a second
+ * tab on the same project can hold the same ticket's pane, and whatever stays
+ * in a persisted layout is respawned (`claude --resume`) on the next launch —
+ * an archived ticket left open elsewhere would resume forever.
+ */
+export function closeJiraInstanceInAllTabs(projectDir: string, instKey: string): void {
+  const store = useAppStore.getState();
+  const projectKey = projectDir.replace(/\\/g, "/");
+  const ticket = jiraBaseTicket(instKey);
+  for (const t of store.tabs) {
+    if (!t.layout) continue;
+    if ((t.workingDir ?? "").replace(/\\/g, "/") !== projectKey) continue;
+    const leaf = findJiraTermLeaf(t.layout, instKey);
+    if (!leaf) continue;
+    const next = removeJiraInstanceTerm(t.layout, instKey);
+    store.removeTerminals([leaf.terminalId]);
+    // Resume spawns park a name record the mint path never consumes.
+    clearTicketForTerminal(leaf.terminalId);
+    store.updateTabLayout(t.id, next);
+    if (t.selectedJiraTicket === instKey) {
+      const remaining = listJiraInstanceKeys(next);
+      const sibling = remaining.find((k) => jiraBaseTicket(k) === ticket);
+      store.setSelectedJiraTicket(t.id, sibling ?? remaining[0]);
+    }
+  }
+}
+
+/**
+ * Startup safety net: prune every ARCHIVED session's pane from every tab
+ * layout. Called from main.tsx BEFORE the first render — i.e. before any pane
+ * mounts and respawns `claude --resume` — so stale persisted state (an
+ * archive-time close that missed, or layouts written by older builds) can
+ * never resume an archived conversation. Self-healing: whatever the gap that
+ * let the pair survive, it is gone by the time anything can spawn from it.
+ */
+export function pruneArchivedJiraPanes(): void {
+  const store = useAppStore.getState();
+  for (const t of store.tabs) {
+    if (!t.isJiraProject || !t.layout) continue;
+    const sessions = store.projectSessions[(t.workingDir ?? "").replace(/\\/g, "/")] ?? [];
+    const archivedIds = new Set(sessions.filter((s) => s.archived).map((s) => s.id));
+    if (archivedIds.size === 0) continue;
+    let layout: PaneLayout | null = t.layout;
+    const doomed: string[] = [];
+    for (const instKey of listJiraInstanceKeys(layout)) {
+      const leaf = findJiraTermLeaf(layout, instKey);
+      // A leaf without a resume id is a pane mid-mint — it cannot belong to
+      // an archived row, whose session id is known by definition.
+      if (!leaf?.sessionResumeId || !archivedIds.has(leaf.sessionResumeId)) continue;
+      doomed.push(leaf.terminalId);
+      clearTicketForTerminal(leaf.terminalId);
+      layout = removeJiraInstanceTerm(layout, instKey);
+    }
+    if (doomed.length === 0) continue;
+    store.removeTerminals(doomed);
+    store.updateTabLayout(t.id, layout);
+    if (t.selectedJiraTicket && !listJiraInstanceKeys(layout).includes(t.selectedJiraTicket)) {
+      store.setSelectedJiraTicket(t.id, listJiraInstanceKeys(layout)[0]);
+    }
+  }
 }
 
 /** Show a ticket's Jira page. In the per-ticket canvas each ticket owns its

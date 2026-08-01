@@ -3,9 +3,16 @@ import { useAppStore } from "../store";
 import type { ProjectSession, Tab } from "../types";
 import { findAllTerminalLeaves } from "../lib/layout-utils";
 import { sessionStillExists } from "../lib/session-exists";
-import { askForTicket, openJiraTicket, navigateToTicket, duplicateJiraTicket } from "../lib/jira-project";
+import {
+  askForTicket,
+  openJiraTicket,
+  navigateToTicket,
+  duplicateJiraTicket,
+  closeJiraInstanceInAllTabs,
+  type JiraDuplicateMode,
+} from "../lib/jira-project";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
-import { confirmAction, promptForInput } from "../lib/prompt-modal";
+import { chooseOption, confirmAction, promptForInput } from "../lib/prompt-modal";
 import { clearTicketForTerminal, parkedTicketName } from "../lib/jira-session";
 import { resolveTicketColor, contrastTextFor } from "../lib/jira-colors";
 import { readSessionsIndex } from "../lib/sessions-index";
@@ -65,6 +72,11 @@ interface TicketRow {
 export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailProps) {
   const [query, setQuery] = useState("");
   const [missing, setMissing] = useState<Set<string>>(new Set());
+  // Ticket keys whose duplicate-group rows are folded away, toggled by
+  // clicking the group title. Session-local on purpose: a fold is a reading
+  // aid, not workspace state worth persisting. A live search bypasses the
+  // fold so a match can never hide behind a collapsed group.
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   /** Session ids whose conversation TEXT matches the query (sessions-index
    *  summaries + first prompts) — null while empty query / loading. */
   const [contentMatches, setContentMatches] = useState<Set<string> | null>(null);
@@ -116,8 +128,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     // appearing or dying changes which rows count as open.
   }, [allSessions, tab.layout, activeTerminalId]);
 
-  // "#n" suffixes appear as soon as a ticket has more than one row anywhere
-  // (incl. archived) — a lone original stays a bare key.
+  // Instance counts across ALL rows (incl. archived) — this is the NAMING
+  // truth: session names keep their "#n" while any sibling exists anywhere,
+  // so numbers never collide when an archived instance comes back.
   const instanceCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const r of rows) {
@@ -125,6 +138,22 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
       m.set(t, (m.get(t) ?? 0) + 1);
     }
     return m;
+  }, [rows]);
+
+  // DISPLAY grouping is per section: a ticket renders as a titled group only
+  // where more than one of its instances is visible. Archiving #1 leaves #2
+  // alone in the active list, and a lone row must read as a plain ticket —
+  // no group title, no "#n" — even though its session keeps the number.
+  // Counted over unfiltered rows so a live search never reshapes the groups.
+  const sectionCounts = useMemo(() => {
+    const active = new Map<string, number>();
+    const archived = new Map<string, number>();
+    for (const r of rows) {
+      const t = r.session.ticket!;
+      const m = r.session.archived ? archived : active;
+      m.set(t, (m.get(t) ?? 0) + 1);
+    }
+    return { active, archived };
   }, [rows]);
 
   const filtered = useMemo(() => {
@@ -280,6 +309,15 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     };
   }, [tab.id, tab.workingDir, tab.backend, tab.serverId, projectKey]);
 
+  const toggleGroupCollapsed = (ticket: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(ticket)) next.delete(ticket);
+      else next.add(ticket);
+      return next;
+    });
+  };
+
   const handleRowClick = (row: TicketRow) => {
     const ticket = row.session.ticket;
     if (!ticket) return;
@@ -309,6 +347,10 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
   // action that silently does nothing.
   const rowsRef = useRef(filtered);
   rowsRef.current = filtered;
+  // The registration effect below binds once per tab, so the sub-ticket
+  // chooser reads the missing-transcript set through a ref to stay fresh.
+  const missingRef = useRef(missing);
+  missingRef.current = missing;
   useEffect(() => {
     const find = (id: string) => rowsRef.current.find((r) => r.session.id === id);
     registerSurfaceActions("jira-ticket", {
@@ -352,33 +394,49 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           useAppStore.getState().renameProjectSession(tab.workingDir, id, name);
         });
       },
-      duplicateFork: (id) => {
+      duplicate: (id) => {
         const row = find(id);
-        if (row) duplicateJiraTicket(tab.id, row.session, "fork");
-      },
-      duplicatePrompt: (id) => {
-        const row = find(id);
-        if (row) duplicateJiraTicket(tab.id, row.session, "prompt");
-      },
-      duplicateEmpty: (id) => {
-        const row = find(id);
-        if (row) duplicateJiraTicket(tab.id, row.session, "empty");
-      },
-      forget: (id) => {
-        const ticket = find(id)?.session.ticket ?? "this ticket";
-        void confirmAction({
-          title: "Remove from list",
-          detail: `${ticket} disappears from the rail. The conversation itself is not deleted.`,
-          confirmLabel: "Remove",
-          danger: true,
-        }).then((ok) => {
-          if (ok) useAppStore.getState().removeProjectSession(tab.workingDir, id);
+        if (!row?.session.ticket) return;
+        const ticket = row.session.ticket;
+        // Forking replays the source transcript, so it needs the file to
+        // still exist; an open pane always has one.
+        const gone = !row.terminalId && missingRef.current.has(row.session.id);
+        void chooseOption({
+          title: "Create sub-ticket",
+          detail: `${ticket}: a second, independent Claude session on the same ticket. Both share the ticket's browser pane.`,
+          choices: [
+            {
+              id: "fork",
+              label: "Fork conversation",
+              detail: "Starts from a copy of this conversation so far.",
+              unavailable: gone
+                ? { reason: "This conversation's transcript is gone" }
+                : undefined,
+            },
+            {
+              id: "prompt",
+              label: "Fresh investigation",
+              detail: "New conversation — the investigation prompt is sent again.",
+            },
+            {
+              id: "empty",
+              label: "Empty pane",
+              detail: "New conversation — nothing is sent.",
+            },
+          ],
+        }).then((mode) => {
+          if (mode) duplicateJiraTicket(tab.id, row.session, mode as JiraDuplicateMode);
         });
       },
       toggleArchive: (id) => {
         const row = find(id);
         if (!row) return;
-        if (!row.session.archived) closeTicketPair(row);
+        // All-tabs close, not closeTicketPair: a second tab on the same
+        // project can hold this instance's pane, and a pane that survives
+        // archiving resumes from the persisted layout on the next launch.
+        if (!row.session.archived) {
+          closeJiraInstanceInAllTabs(tab.workingDir, instKeyOf(row.session));
+        }
         useAppStore
           .getState()
           .setProjectSessionArchived(tab.workingDir, id, !row.session.archived);
@@ -394,7 +452,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           danger: true,
         }).then((ok) => {
           if (!ok) return;
-          closeTicketPair(row);
+          // All tabs, same reasoning as archive: a leaf surviving in another
+          // tab's layout would respawn a session whose row no longer exists.
+          closeJiraInstanceInAllTabs(tab.workingDir, instKeyOf(row.session));
           useAppStore.getState().removeProjectSession(tab.workingDir, id);
         });
       },
@@ -580,16 +640,18 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           // uniform list is noise.
           const showClosedHeading = firstClosedIdx > 0 && i === firstClosedIdx;
           const t = row.session.ticket!;
-          const grouped = (instanceCounts.get(t) ?? 1) > 1;
-          // A duplicated ticket renders as a titled group: a non-clickable
-          // "SUPPORT-24920" heading, then its instances at equal indentation.
+          const grouped = (sectionCounts.active.get(t) ?? 1) > 1;
+          // A duplicated ticket renders as a titled group: a "SUPPORT-24920"
+          // heading (click to fold/unfold), then its instances at equal
+          // indentation — hidden while the group is folded.
           const groupStart =
             grouped && (i === 0 || activeRows[i - 1].session.ticket !== t);
+          const folded = grouped && !query.trim() && collapsedGroups.has(t);
           return (
             <div key={row.session.id}>
               {showClosedHeading && <div style={sectionHeadingStyle}>Closed</div>}
               {groupStart && renderGroupTitle(t)}
-              {renderRow(row)}
+              {!folded && renderRow(row)}
             </div>
           );
         })}
@@ -598,13 +660,14 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
             <div style={sectionHeadingStyle}>Archived</div>
             {archivedRows.map((row, i) => {
               const t = row.session.ticket!;
-              const grouped = (instanceCounts.get(t) ?? 1) > 1;
+              const grouped = (sectionCounts.archived.get(t) ?? 1) > 1;
               const groupStart =
                 grouped && (i === 0 || archivedRows[i - 1].session.ticket !== t);
+              const folded = grouped && !query.trim() && collapsedGroups.has(t);
               return (
                 <div key={row.session.id}>
                   {groupStart && renderGroupTitle(t)}
-                  {renderRow(row)}
+                  {!folded && renderRow(row)}
                 </div>
               );
             })}
@@ -614,42 +677,102 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     </div>
   );
 
-  /** Open the row's context menu from its hamburger: synthesize a contextmenu
+  /** Open the row's COMPACT menu from its hamburger: synthesize a contextmenu
    *  event on the row element, anchored under the anchor icon. Same event path
-   *  as a real right-click, so the two menus are one and can never drift. */
+   *  and providers as a real right-click — the temporary data-ctx-compact flag
+   *  is all that differs, and the provider answers it with a strict subset of
+   *  the full menu, so the two cannot drift. The flag comes off right after
+   *  the dispatch (menu build is synchronous inside it), so an actual
+   *  right-click on the row still gets the full menu. */
   function openRowMenu(anchor: Element): void {
     const rowEl = anchor.closest('[data-ctx-surface="jira-ticket"]');
     if (!rowEl) return;
     const r = anchor.getBoundingClientRect();
-    rowEl.dispatchEvent(
-      new MouseEvent("contextmenu", {
-        bubbles: true,
-        cancelable: true,
-        clientX: Math.round(r.left),
-        clientY: Math.round(r.bottom + 2),
-      }),
-    );
+    rowEl.setAttribute("data-ctx-compact", "1");
+    try {
+      rowEl.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: Math.round(r.left),
+          clientY: Math.round(r.bottom + 2),
+        }),
+      );
+    } finally {
+      rowEl.removeAttribute("data-ctx-compact");
+    }
   }
 
-  /** Non-clickable heading over a duplicated ticket's instance rows — always
-   *  the plain ticket key, whatever the instances are renamed to. */
+  /** Heading over a duplicated ticket's instance rows — always the plain
+   *  ticket key, whatever the instances are renamed to. Clicking it folds the
+   *  group's rows away; the chevron shows the state. While a search is live
+   *  the fold is bypassed (matches must stay visible), so the chevron reads
+   *  expanded then too. */
   function renderGroupTitle(ticket: string) {
     const color = resolveTicketColor(ticket, jiraTicketColors);
     const paintFull = fullColor && !!color;
+    const folded = collapsedGroups.has(ticket) && !query.trim();
     return (
       <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={!folded}
+        aria-label={`${ticket} — ${folded ? "expand" : "collapse"} group`}
+        onClick={() => toggleGroupCollapsed(ticket)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggleGroupCollapsed(ticket);
+          }
+        }}
+        // Hover feedback lives on the CHEVRON alone — no row-surface tint on
+        // the title. It grows slightly and (on neutral rows) brightens; the
+        // transform composes with the fold rotation so hovering never undoes
+        // the expanded state. Full-color rows keep their contrast color — a
+        // brightened gray could vanish against an arbitrary ticket color.
+        onMouseEnter={(e) => {
+          const ch = e.currentTarget.querySelector("svg");
+          if (!ch) return;
+          ch.style.transform = folded ? "scale(1.25)" : "rotate(90deg) scale(1.25)";
+          if (!paintFull) ch.style.color = "var(--ezy-text)";
+        }}
+        onMouseLeave={(e) => {
+          const ch = e.currentTarget.querySelector("svg");
+          if (!ch) return;
+          ch.style.transform = folded ? "" : "rotate(90deg)";
+          ch.style.color = "";
+        }}
         style={{
           display: "flex",
           alignItems: "center",
+          gap: 4,
           height: 22,
           padding: "0 10px 0 8px",
-          cursor: "default",
+          cursor: "pointer",
           userSelect: "none",
+          outline: "none",
           backgroundColor: paintFull ? color! : undefined,
           borderLeft: `2px solid ${paintFull ? "transparent" : color ?? "transparent"}`,
           color: paintFull ? contrastTextFor(color!) : "var(--ezy-text-muted)",
         }}
       >
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            flexShrink: 0,
+            transform: folded ? undefined : "rotate(90deg)",
+            transition: "transform 0.15s ease, color 0.15s ease",
+          }}
+        >
+          <path d="m6 3.5 5 4.5-5 4.5" />
+        </svg>
         <span
           style={{
             fontSize: 11,
@@ -679,10 +802,19 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     // context menu still gets the FULL name so "#2" never appears without
     // its ticket. Claude-side session names stay "TICKET #n" — a bare "#2"
     // would be meaningless in the CLI's own resume picker.
-    const hasSiblings = (instanceCounts.get(ticket ?? "") ?? 1) > 1;
+    // Three label tiers. Grouped in THIS section → "#n" under the group
+    // title. Alone in this section but with siblings elsewhere (e.g. the
+    // other instance is archived) → the full "TICKET #n", so the instance
+    // identity never disappears and two sections can't show identical rows.
+    // No siblings anywhere → the bare ticket key.
+    const groupedHere =
+      ((archived ? sectionCounts.archived : sectionCounts.active).get(ticket ?? "") ?? 1) > 1;
+    const siblingsAnywhere = (instanceCounts.get(ticket ?? "") ?? 1) > 1;
     const custom = customNameOf(row.session);
-    const label = custom ?? (hasSiblings ? `#${instanceOf(row.session)}` : ticket);
-    const menuLabel = custom ?? (hasSiblings ? `${ticket} #${instanceOf(row.session)}` : ticket);
+    const numbered = `${ticket} #${instanceOf(row.session)}`;
+    const label =
+      custom ?? (groupedHere ? `#${instanceOf(row.session)}` : siblingsAnywhere ? numbered : ticket);
+    const menuLabel = custom ?? (siblingsAnywhere ? numbered : ticket);
     // The row whose pane the canvas is currently showing.
     const isActive = isOpen && !archived && tab.selectedJiraTicket === instKeyOf(row.session);
     const restingBg = paintFull ? color! : isActive ? "var(--ezy-surface)" : undefined;
@@ -718,7 +850,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           alignItems: "center",
           gap: 8,
           height: ROW_HEIGHT,
-          padding: `0 10px 0 ${hasSiblings ? 18 : 8}px`,
+          padding: `0 10px 0 ${groupedHere ? 18 : 8}px`,
           cursor: unavailable || archived ? "default" : "pointer",
           opacity: unavailable ? 0.4 : archived ? 0.5 : 1,
           filter: restingFilter,
@@ -757,8 +889,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         >
           {label}
         </span>
-        {/* Hamburger — opens the SAME menu as right-click by synthesizing a
-            contextmenu event on the row, so the two can never drift apart.
+        {/* Hamburger — opens a COMPACT subset of the right-click menu through
+            the same synthesized contextmenu path (see openRowMenu), so the
+            items can never drift from the full menu's.
             Styled like the browser pane header's NavButton (rounded pill,
             bg transparent → var(--ezy-border) on hover); a div role=button
             has no <button> line-height inflation. Revealed on row hover via
