@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "made"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "alacritty_terminal",
  "base64 0.22.1",
