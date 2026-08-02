@@ -64,6 +64,14 @@
   --ezy-accent-glow: rgba(255, 255, 255, 0.06);
   --ezy-red: #fd8183;
   --ezy-cyan: #92bcff;
+  /* Diff counts (+N / −N). Semantic, so a theme only overrides them via
+     `diffAdd`/`diffRemove`; everything else inherits #4ade80 / #f87171 from
+     App.tsx. These are Heads' pastels for the same frame-zero reason as the
+     colors above. */
+  --ezy-diff-add: #80e2ad;
+  --ezy-diff-remove: #f4b4d1;
+  --ezy-selection: #56253b;
+  --ezy-selection-text: #ffffff;
   /* Per-theme corner-radius multiplier (themes.ts `radiusScale`, injected by
      App.tsx). Every radius in the app is authored as
      calc(var(--ezy-radius-scale, 1) * Npx) so one theme can round the whole
@@ -71,6 +79,15 @@
      so this starts at 2 — otherwise first paint is square-cornered and pops
      round on hydration. */
   --ezy-radius-scale: 2;
+}
+
+/* Text selection in the DOM chrome — settings, labels, markdown, inputs. The
+   terminal and the editor draw their own from the same two theme values, so
+   selecting text anywhere in the app highlights identically. Without this the
+   chrome falls back to the browser's blue, which matches no theme. */
+::selection {
+  background-color: var(--ezy-selection);
+  color: var(--ezy-selection-text);
 }
 
 /* Tailwind 4 inlines the bare `rounded` utility (border-radius: .25rem), so

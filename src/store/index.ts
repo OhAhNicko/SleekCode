@@ -257,6 +257,17 @@ export const useAppStore = create<AppStore>()(
             return rest;
           });
         }
+
+        // Seed serverCommands from the single serverCommand a project was
+        // saved with before dev servers could be plural. Idempotent — once the
+        // list exists it is the truth and serverCommand is only its mirror.
+        if (state.recentProjects && Array.isArray(state.recentProjects)) {
+          state.recentProjects = state.recentProjects.map((p) =>
+            p.serverCommand && !p.serverCommands
+              ? { ...p, serverCommands: [p.serverCommand] }
+              : p,
+          );
+        }
         filteredTabs = filteredTabs.map((t) => {
           if (t.backend !== "windows") return t;
           const { backend, ...rest } = t;

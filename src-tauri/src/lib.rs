@@ -1821,31 +1821,9 @@ async fn git_status(directory: String) -> Result<Vec<GitFileStatus>, String> {
         return Err(format!("git status failed: {}", stderr.trim()));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut files = Vec::new();
-
-    for line in stdout.lines() {
-        if line.len() < 3 { continue; }
-        let status = line[..2].trim().to_string();
-        let rest = &line[3..];
-
-        // Handle renames: "R  old -> new"
-        if status.starts_with('R') {
-            if let Some(arrow_pos) = rest.find(" -> ") {
-                files.push(GitFileStatus {
-                    path: rest[arrow_pos + 4..].to_string(),
-                    status,
-                    old_path: Some(rest[..arrow_pos].to_string()),
-                });
-            } else {
-                files.push(GitFileStatus { path: rest.to_string(), status, old_path: None });
-            }
-        } else {
-            files.push(GitFileStatus { path: rest.to_string(), status, old_path: None });
-        }
-    }
-
-    Ok(files)
+    // Parser lives in parse_status_porcelain (near the SSH commands) so the
+    // local and remote paths cannot drift apart.
+    Ok(parse_status_porcelain(&String::from_utf8_lossy(&output.stdout)))
 }
 
 #[tauri::command]
@@ -2208,6 +2186,284 @@ async fn git_ahead_behind(directory: String) -> Result<GitAheadBehind, String> {
     }
     // Count ahead/behind
     let output = run_git(&directory, &["rev-list", "--left-right", "--count", "HEAD...@{u}"])?;
+    let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let parts: Vec<&str> = line.split('\t').collect();
+    let ahead = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let behind = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    Ok(GitAheadBehind { ahead, behind, has_remote: true })
+}
+
+// ── Git over SSH (READ-ONLY) ──────────────────────────────────────────────
+//
+// Every other git command in this file runs as a LOCAL process: `run_git` has a
+// WSL branch for `\\wsl.localhost\…` UNC paths and a plain local spawn for
+// everything else. Neither can reach another machine, so a remote project —
+// whose `workingDir` is a path on the SSH host — had no git at all, and the
+// status bar silently rendered nothing.
+//
+// These mirror the local commands as `ssh <user>@<host> "cd <dir> && git …"`,
+// byte-for-byte the command the user would type in a shell pane on that box.
+// What they report is therefore the remote repository's real state, not an
+// approximation.
+//
+// READ-ONLY ON PURPOSE — nothing that mutates a repository is exposed here. A
+// commit made over this path would be authored by the REMOTE machine's git
+// identity and pushed with its credentials rather than the user's: a silent
+// mis-attribution that is worse than the feature's absence. The user has a
+// terminal on that host for writes.
+//
+// These deliberately do NOT refactor the local commands to share a backend.
+// This crate only builds on Windows (the `windows` dependency is unconditional)
+// and the machine this was authored on could not compile it, so touching six
+// shipping commands would have meant shipping an unverifiable change to working
+// code. Additive is the reversible choice. Only the status parser — the one
+// piece big enough for a divergence to matter — is shared.
+
+/// Parse `git status --porcelain` output. Shared by the local and SSH commands
+/// so a fix to rename handling can never land in only one of them.
+fn parse_status_porcelain(stdout: &str) -> Vec<GitFileStatus> {
+    let mut files = Vec::new();
+
+    for line in stdout.lines() {
+        if line.len() < 3 { continue; }
+        let status = line[..2].trim().to_string();
+        let rest = &line[3..];
+
+        // Handle renames: "R  old -> new"
+        if status.starts_with('R') {
+            if let Some(arrow_pos) = rest.find(" -> ") {
+                files.push(GitFileStatus {
+                    path: rest[arrow_pos + 4..].to_string(),
+                    status,
+                    old_path: Some(rest[..arrow_pos].to_string()),
+                });
+            } else {
+                files.push(GitFileStatus { path: rest.to_string(), status, old_path: None });
+            }
+        } else {
+            files.push(GitFileStatus { path: rest.to_string(), status, old_path: None });
+        }
+    }
+
+    files
+}
+
+/// Run one command line on `user_host` and return its output.
+///
+/// `BatchMode=yes` is deliberate. These run on a 20-second poll, so a server
+/// configured for password auth must fail FAST rather than leave an ssh process
+/// parked on a prompt that nothing can answer — one stuck process per poll, for
+/// as long as the tab is open.
+fn run_ssh_remote(
+    user_host: &str,
+    identity_file: Option<&str>,
+    remote_cmd: &str,
+) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout=5",
+        "-o", "BatchMode=yes",
+        "-o", "LogLevel=ERROR",
+    ]);
+    if let Some(key) = identity_file {
+        cmd.args(["-i", key]);
+    }
+    cmd.arg(user_host);
+    cmd.arg(remote_cmd);
+
+    let output = cmd.output().map_err(|e| format!("Failed to run ssh: {}", e))?;
+
+    // 255 is ssh's OWN failure code (refused, auth, host key) as distinct from
+    // the remote command's exit status. Reporting it as an error is what keeps
+    // "the server is unreachable" from being displayed as "not a git repository".
+    if output.status.code() == Some(255) {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if err.is_empty() { "connection failed".to_string() } else { err };
+        return Err(format!("ssh {}: {}", user_host, detail));
+    }
+
+    Ok(output)
+}
+
+/// `cd <directory> && git <args…>` on a remote host. Both the directory and
+/// every argument are single-quoted for the REMOTE shell (`shell_escape`), so
+/// paths with spaces — and branch names with anything else — survive intact.
+fn run_git_ssh(
+    host: &str,
+    username: &str,
+    identity_file: Option<&str>,
+    directory: &str,
+    args: &[&str],
+) -> Result<std::process::Output, String> {
+    let user_host = format!("{}@{}", username, host);
+    let quoted: Vec<String> = args.iter().map(|a| shell_escape(a)).collect();
+    let remote = format!("cd {} && git {}", shell_escape(directory), quoted.join(" "));
+    run_ssh_remote(&user_host, identity_file, &remote)
+}
+
+#[tauri::command]
+async fn git_is_repo_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    directory: String,
+) -> Result<bool, String> {
+    let out = run_git_ssh(
+        &host, &username, identity_file.as_deref(), &directory,
+        &["rev-parse", "--is-inside-work-tree"],
+    )?;
+    Ok(out.status.success())
+}
+
+#[tauri::command]
+async fn git_status_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    directory: String,
+) -> Result<Vec<GitFileStatus>, String> {
+    let output = run_git_ssh(
+        &host, &username, identity_file.as_deref(), &directory,
+        &["status", "--porcelain", "-uall"],
+    )?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git status failed: {}", stderr.trim()));
+    }
+
+    Ok(parse_status_porcelain(&String::from_utf8_lossy(&output.stdout)))
+}
+
+#[tauri::command]
+async fn git_branches_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    directory: String,
+) -> Result<GitBranchInfo, String> {
+    let current_output = run_git_ssh(
+        &host, &username, identity_file.as_deref(), &directory,
+        &["branch", "--show-current"],
+    )?;
+    let current = String::from_utf8_lossy(&current_output.stdout).trim().to_string();
+    let current = if current.is_empty() { "HEAD".to_string() } else { current };
+
+    let branches_output = run_git_ssh(
+        &host, &username, identity_file.as_deref(), &directory,
+        &["branch"],
+    )?;
+    let branches: Vec<String> = String::from_utf8_lossy(&branches_output.stdout)
+        .lines()
+        .map(|l| l.trim().trim_start_matches("* ").trim_start_matches("remotes/").to_string())
+        .filter(|l| !l.is_empty() && !l.contains("->"))
+        .collect();
+
+    Ok(GitBranchInfo { current, branches })
+}
+
+#[tauri::command]
+async fn git_diff_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    directory: String,
+    file_path: Option<String>,
+    compare_to: Option<String>,
+) -> Result<String, String> {
+    let ident = identity_file.as_deref();
+    let mut combined = String::new();
+
+    match &compare_to {
+        Some(branch) => {
+            let range = format!("{}...HEAD", branch);
+            let mut args: Vec<&str> = vec!["diff", &range];
+            if let Some(ref fp) = file_path {
+                args.push("--");
+                args.push(fp.as_str());
+            }
+            let output = run_git_ssh(&host, &username, ident, &directory, &args)?;
+            combined = String::from_utf8_lossy(&output.stdout).to_string();
+        }
+        None => {
+            // Unstaged, then staged — same two-call shape as the local command,
+            // so the parsed result is identical.
+            let mut args1: Vec<&str> = vec!["diff"];
+            if let Some(ref fp) = file_path {
+                args1.push("--");
+                args1.push(fp.as_str());
+            }
+            let out1 = run_git_ssh(&host, &username, ident, &directory, &args1)?;
+            combined.push_str(&String::from_utf8_lossy(&out1.stdout));
+
+            let mut args2: Vec<&str> = vec!["diff", "--cached"];
+            if let Some(ref fp) = file_path {
+                args2.push("--");
+                args2.push(fp.as_str());
+            }
+            let out2 = run_git_ssh(&host, &username, ident, &directory, &args2)?;
+            combined.push_str(&String::from_utf8_lossy(&out2.stdout));
+        }
+    }
+
+    Ok(combined)
+}
+
+#[tauri::command]
+async fn git_diff_stats_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    directory: String,
+) -> Result<GitDiffStats, String> {
+    // POSIX only — no `<<<` herestring. The local twin runs under a bash we
+    // control; the remote login shell may be dash, so a bashism would silently
+    // produce zeros instead of an error. Output shape is identical: "files add del".
+    let user_host = format!("{}@{}", username, host);
+    let script = format!(
+        "cd {} && files=$(git status --porcelain=v1 | wc -l | tr -d ' '); \
+         nums=$(git diff --numstat HEAD 2>/dev/null | awk '{{a+=$1; d+=$2}} END {{print a+0, d+0}}'); \
+         echo \"$files $nums\"",
+        shell_escape(&directory)
+    );
+
+    let output = run_ssh_remote(&user_host, identity_file.as_deref(), &script)?;
+    let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let files_changed = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let insertions = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let deletions = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+
+    Ok(GitDiffStats { files_changed, insertions, deletions })
+}
+
+#[tauri::command]
+async fn git_ahead_behind_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    directory: String,
+) -> Result<GitAheadBehind, String> {
+    let ident = identity_file.as_deref();
+
+    let upstream = run_git_ssh(
+        &host, &username, ident, &directory,
+        &["rev-parse", "--abbrev-ref", "@{u}"],
+    );
+    match upstream {
+        Ok(ref out) if out.status.success() => {}
+        // A missing upstream is not an error — it is the "no remote" answer. A
+        // genuine ssh failure already returned Err from run_ssh_remote above.
+        Ok(_) => return Ok(GitAheadBehind { ahead: 0, behind: 0, has_remote: false }),
+        Err(e) => return Err(e),
+    }
+
+    let output = run_git_ssh(
+        &host, &username, ident, &directory,
+        &["rev-list", "--left-right", "--count", "HEAD...@{u}"],
+    )?;
     let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let parts: Vec<&str> = line.split('\t').collect();
     let ahead = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -4208,6 +4464,304 @@ fn scan_claude_sessions_dir(
     Ok(best.map(|(_, id)| id))
 }
 
+/// SQL predicate that keeps only threads the USER started.
+///
+/// Codex runs work of its own — the auto-approval reviewer, spawned sub-agents —
+/// as separate rows in the same `threads` table, with the SAME `cwd` as the
+/// pane that triggered them. They are touched after the user's own thread, so
+/// an unfiltered "newest thread for this cwd" adopts the wrong one: the pane's
+/// session id drifts onto a conversation nobody opened, its raw first message
+/// becomes the pane title, and it is written into the project-session registry
+/// permanently (nothing prunes Codex rows).
+///
+/// Four independent markers, because Codex has not committed to one:
+///   - `thread_spawn_edges.child_thread_id` — anything spawned BY another thread
+///   - `agent_role` — non-null only on agent threads
+///   - `thread_source` — 'user' on user threads; NULL on rows written before
+///     the column existed, hence COALESCE rather than `= 'user'`
+///   - `archived`
+///
+/// Every one of these is written by newer Codex versions only, so the query
+/// MUST fall back to the unfiltered form when SQLite rejects this (see the
+/// `except sqlite3.Error` in `codex_thread_query_py`) — an older
+/// `state_5.sqlite` has no such column, and also has no agent threads to hide.
+const CODEX_USER_THREAD_FILTER: &str = "AND COALESCE(archived,0)=0 \
+     AND agent_role IS NULL \
+     AND COALESCE(thread_source,'user')='user' \
+     AND id NOT IN (SELECT child_thread_id FROM thread_spawn_edges)";
+
+/// Python body shared by all three backends: print the newest non-excluded
+/// USER thread for `argv[2]`, one id per line.
+///
+/// `db_expr` is a Python expression evaluating to the `state_5.sqlite` path —
+/// the WSL backend resolves `~` inside the guest, the other two are handed an
+/// absolute host path. Keeping one body means the filter cannot drift between
+/// backends, which is exactly how the three copies of this query diverged
+/// before.
+fn codex_thread_query_py(db_expr: &str) -> String {
+    format!(
+        r#"import sqlite3,os,sys
+db={db_expr}
+if not os.path.exists(db): sys.exit(0)
+c=sqlite3.connect(db)
+exclude=set(sys.argv[1].split(',')) if sys.argv[1] else set()
+path=sys.argv[2]
+F="{filter}"
+def rows_for(where,args):
+    sql='SELECT id,cwd FROM threads WHERE '+where+' %s ORDER BY updated_at DESC LIMIT 50'
+    try: return c.execute(sql%F,args).fetchall()
+    except sqlite3.Error: return c.execute(sql%'',args).fetchall()
+rows=rows_for('cwd=?',(path,))
+if not rows and path.startswith('/mnt/'):
+    rows=[r for r in rows_for('1=1',()) if r[1].lower()==path.lower()]
+for r in rows:
+    if r[0] not in exclude:
+        print(r[0]); break
+"#,
+        db_expr = db_expr,
+        filter = CODEX_USER_THREAD_FILTER,
+    )
+}
+
+/// Python body: this project's Codex threads as a `SessionIndexEntry[]` JSON
+/// array, newest first, capped at 30 — the same shape `build_sessions_list`
+/// produces for Claude, so the session picker needs no per-CLI branch.
+///
+/// Degrades in tiers rather than failing: rich columns with the user filter,
+/// rich without it, then id + `updated_at` only. An old `state_5.sqlite` has
+/// neither the metadata columns nor any agent threads to hide, so the lean
+/// tier is the honest answer there rather than an empty list.
+fn codex_sessions_index_py(db_expr: &str) -> String {
+    format!(
+        r#"import sqlite3,os,sys,json,time
+db={db_expr}
+if not os.path.exists(db):
+    print('[]'); sys.exit(0)
+c=sqlite3.connect(db)
+path=sys.argv[1]
+F="{filter}"
+RICH="id,COALESCE(title,''),COALESCE(first_user_message,''),COALESCE(updated_at,0),COALESCE(created_at,0),COALESCE(git_branch,'')"
+LEAN="id,'','',COALESCE(updated_at,0),0,''"
+def q(cols,filt,where,args):
+    return c.execute('SELECT '+cols+' FROM threads WHERE '+where+' '+filt+' ORDER BY updated_at DESC LIMIT 30',args).fetchall()
+def rows_for(where,args):
+    for cols,filt in ((RICH,F),(RICH,''),(LEAN,F),(LEAN,'')):
+        try: return q(cols,filt,where,args)
+        except sqlite3.Error: continue
+    return []
+rows=rows_for('cwd=?',(path,))
+if not rows and path.startswith('/mnt/'):
+    try:
+        allr=c.execute('SELECT id,cwd FROM threads ORDER BY updated_at DESC LIMIT 200').fetchall()
+        want=set(r[0] for r in allr if (r[1] or '').lower()==path.lower())
+        rows=[r for r in rows_for('1=1',()) if r[0] in want][:30]
+    except sqlite3.Error:
+        rows=[]
+def iso(s):
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(s)) if s else ''
+print(json.dumps([{{
+  "sessionId": r[0], "summary": r[1][:100], "customTitle": "",
+  "firstPrompt": r[2][:100], "messageCount": 0,
+  "created": iso(r[4]), "modified": iso(r[3]),
+  "gitBranch": r[5], "isSidechain": False,
+}} for r in rows]))
+"#,
+        db_expr = db_expr,
+        filter = CODEX_USER_THREAD_FILTER,
+    )
+}
+
+/// Newest Codex rollout whose `session_meta` names `project_path` as its cwd.
+///
+/// The `__latest__` read — what a pane uses before it has locked a session id —
+/// used to take the newest rollout on the machine, unfiltered. A fresh pane
+/// therefore showed a DIFFERENT project's model, context percentage and session
+/// name for the first few seconds, which is worse than showing nothing.
+fn find_codex_rollout_for_cwd(
+    sessions_dir: &std::path::Path,
+    project_path: &str,
+) -> Option<std::path::PathBuf> {
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    walk_jsonl(sessions_dir, &mut files);
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    let exact = format!("\"cwd\":\"{}\"", project_path);
+    let spaced = format!("\"cwd\": \"{}\"", project_path);
+    for (path, _) in files.iter().take(60) {
+        use std::io::BufRead;
+        let Ok(file) = std::fs::File::open(path) else { continue };
+        let Some(Ok(first)) = std::io::BufReader::new(file).lines().next() else { continue };
+        if first.contains(&exact) || first.contains(&spaced) {
+            return Some(path.clone());
+        }
+    }
+    None
+}
+
+/// Collect every `*.jsonl` under `dir`, recursively, with its mtime.
+/// Codex shards rollouts into `sessions/YYYY/MM/DD/`, so this cannot be flat.
+fn walk_jsonl(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_jsonl(&path, out);
+        } else if path.extension().map_or(false, |ext| ext == "jsonl") {
+            if let Ok(m) = entry.metadata() {
+                if let Ok(t) = m.modified() { out.push((path, t)); }
+            }
+        }
+    }
+}
+
+// ── Gemini session files ──────────────────────────────────────────────────
+//
+// Gemini keeps chats at `~/.gemini/tmp/<project-dir>/chats/*.json`, where
+// `<project-dir>` is derived from the project's BASENAME — so `~/a/web` and
+// `~/b/web` land in the same or adjacent directories and cannot be told apart
+// by path alone.
+//
+// The answer is to stop asking the directory. For a pane that has locked a
+// session, the session ID is the authority: find the file that CONTAINS it and
+// the directory layout stops mattering. Only the two cwd-scoped questions —
+// "which sessions belong to this project" and "which is newest here" — still
+// consult directory names, and those prefer an exact match before the
+// `<basename>-…` prefix form.
+
+/// Candidate `~/.gemini/tmp/<dir>` directories for a project, EXACT basename
+/// match first, then the `<basename>-…` suffixed forms.
+fn gemini_project_dirs(home: &str, project_path: &str) -> Vec<std::path::PathBuf> {
+    let tmp_dir = std::path::Path::new(home).join(".gemini").join("tmp");
+    let basename = project_path
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_lowercase();
+    let mut exact = Vec::new();
+    let mut prefixed = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&tmp_dir) else { return exact };
+    for e in entries.filter_map(|e| e.ok()) {
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        if basename.is_empty() {
+            prefixed.push(e.path());
+        } else if name == basename {
+            exact.push(e.path());
+        } else if name.starts_with(&format!("{}-", basename)) {
+            prefixed.push(e.path());
+        }
+    }
+    exact.extend(prefixed);
+    exact
+}
+
+/// `<dir>/chats/*.json` under each of `dirs`, newest first.
+fn gemini_chat_files(dirs: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    for d in dirs {
+        let chats = d.join("chats");
+        let Ok(entries) = std::fs::read_dir(&chats) else { continue };
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "json") {
+                if let Ok(m) = entry.metadata() {
+                    if let Ok(t) = m.modified() { files.push((path, t)); }
+                }
+            }
+        }
+    }
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.into_iter().map(|(p, _)| p).collect()
+}
+
+/// The chat file whose `sessionId` is `session_id`, searched across EVERY
+/// project directory.
+///
+/// Deliberately not scoped to the project: the id is unique and is the thing we
+/// are sure of, whereas the directory is exactly what we cannot trust. This is
+/// what the WSL backend has always done (`grep -rl "$SID"`); the native and
+/// Windows ports dropped it and read whichever chat file was touched last on
+/// the machine, so every Gemini pane on those backends showed the same — often
+/// wrong — session.
+fn find_gemini_chat_by_id(home: &str, session_id: &str) -> Option<std::path::PathBuf> {
+    // Resolved paths are cached: the context poll asks every 5 seconds per
+    // Gemini pane, and the search below reads whole conversation files until it
+    // finds a match. The WSL script has always cached this for the same reason
+    // (`/tmp/made-sessionpath-$SID`); this is the in-process equivalent.
+    //
+    // A session id names one file forever, so the only staleness worth handling
+    // is deletion — hence the `exists()` re-check before trusting a hit.
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::path::PathBuf>>,
+    > = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(session_id) {
+            if hit.exists() { return Some(hit.clone()); }
+        }
+    }
+
+    let tmp_dir = std::path::Path::new(home).join(".gemini").join("tmp");
+    let all: Vec<std::path::PathBuf> = std::fs::read_dir(&tmp_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    for path in gemini_chat_files(&all) {
+        let Ok(content) = std::fs::read_to_string(&path) else { continue };
+        // Cheap reject before parsing — these files hold whole conversations.
+        if !content.contains(session_id) { continue; }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+        if v.get("sessionId").and_then(|s| s.as_str()) == Some(session_id) {
+            if let Ok(mut map) = cache.lock() {
+                map.insert(session_id.to_string(), path.clone());
+            }
+            return Some(path);
+        }
+    }
+    // Deliberately NOT cached as a miss: a pane locks its session id moments
+    // before Gemini writes the file, so "not found" is routinely temporary.
+    None
+}
+
+/// This project's Gemini chats as a `SessionIndexEntry[]` JSON array.
+///
+/// `firstPrompt` is left empty on purpose. The only fields this codebase has
+/// ever confirmed in a Gemini chat file are `sessionId`, `summary`, and
+/// `messages[].{model,tokens}` — there is no verified user-text field, and
+/// guessing one would put fabricated names in the picker. `summary` plus the
+/// modified time is what can be stated truthfully.
+fn gemini_sessions_list(home: &str, project_path: &str) -> Result<String, String> {
+    let dirs = gemini_project_dirs(home, project_path);
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for path in gemini_chat_files(&dirs).into_iter().take(30) {
+        let Ok(content) = std::fs::read_to_string(&path) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else { continue };
+        let Some(sid) = v.get("sessionId").and_then(|s| s.as_str()) else { continue };
+        let mtime = iso8601_utc(file_mtime_ms(&path));
+        let summary: String = v
+            .get("summary")
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(100)
+            .collect();
+        items.push(serde_json::json!({
+            "sessionId": sid,
+            "summary": summary,
+            "customTitle": "",
+            "firstPrompt": "",
+            "messageCount": 0,
+            "created": mtime,
+            "modified": mtime,
+            "gitBranch": "",
+            "isSidechain": false,
+        }));
+    }
+    serde_json::to_string(&items).map_err(|e| e.to_string())
+}
+
 /// Find the most recent Codex session ID for a given project.
 /// Codex ≥0.113 stores sessions in ~/.codex/state_5.sqlite `threads` table.
 /// Falls back to JSONL file scanning for older versions.
@@ -4221,27 +4775,18 @@ async fn get_codex_session_id(project_path: String, exclude_ids: Vec<String>, di
 
     // Primary: query SQLite threads table (Codex ≥0.113).
     // Try both the exact path and case-insensitive match for /mnt/c paths.
+    //
+    // The body arrives over a QUOTED heredoc (`<<'PY'`), not inside a
+    // double-quoted `python3 -c "…"` as it used to: the shared query uses both
+    // quote characters, and the old form would have been terminated early by
+    // the first `"` in it. A quoted delimiter also disables every shell
+    // expansion, so nothing in the script needs escaping.
     let exclude_csv = exclude_ids.join(",");
     let script = format!(
-        r#"python3 -c "
-import sqlite3, os, sys
-db = os.path.expanduser('~/.codex/state_5.sqlite')
-if not os.path.exists(db):
-    sys.exit(0)
-c = sqlite3.connect(db)
-exclude = set(sys.argv[1].split(',')) if sys.argv[1] else set()
-path = sys.argv[2]
-rows = c.execute('SELECT id FROM threads WHERE cwd=? ORDER BY updated_at DESC LIMIT 20', (path,)).fetchall()
-if not rows and path.startswith('/mnt/'):
-    rows = c.execute('SELECT id, cwd FROM threads ORDER BY updated_at DESC LIMIT 50').fetchall()
-    rows = [(r[0],) for r in rows if r[1].lower() == path.lower()]
-for r in rows:
-    if r[0] not in exclude:
-        print(r[0])
-        break
-" '{}' '{}'"#,
+        "python3 - '{}' '{}' <<'MADE_CODEX_PY'\n{}MADE_CODEX_PY\n",
         exclude_csv.replace('\'', "'\\''"),
-        project_path.replace('\'', "'\\''")
+        project_path.replace('\'', "'\\''"),
+        codex_thread_query_py("os.path.expanduser('~/.codex/state_5.sqlite')"),
     );
 
     let output = wsl_command_in(distro.as_deref())
@@ -4431,11 +4976,7 @@ async fn get_codex_session_id_windows(project_path: String, exclude_ids: Vec<Str
     let db_path = codex_dir.join("state_5.sqlite");
     if db_path.exists() {
         let exclude_csv = exclude_ids.join(",");
-        let py_script = format!(
-            r#"import sqlite3,sys;c=sqlite3.connect(r'{}');exclude=set(sys.argv[1].split(',')) if sys.argv[1] else set();path=sys.argv[2];rows=c.execute('SELECT id FROM threads WHERE cwd=? ORDER BY updated_at DESC LIMIT 20',(path,)).fetchall();
-[print(r[0]) or sys.exit(0) for r in rows if r[0] not in exclude]"#,
-            db_path.display()
-        );
+        let py_script = codex_thread_query_py(&format!("r'{}'", db_path.display()));
         // Try python3 first, then python (Windows often has "python" not "python3")
         let output = Command::new("python3")
             .args(["-c", &py_script, &exclude_csv, &project_path])
@@ -4609,6 +5150,7 @@ async fn get_gemini_session_id_windows(project_path: String, exclude_ids: Vec<St
 async fn read_session_context_windows(
     terminal_type: String,
     session_id: String,
+    project_path: String,
 ) -> Result<String, String> {
     if session_id.is_empty() {
         return Ok(String::new());
@@ -4818,24 +5360,8 @@ async fn read_session_context_windows(
             // Find session file
             let target_file: Option<std::path::PathBuf>;
             if is_latest {
-                // Find most recent .jsonl file
-                let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
-                fn walk(dir: &std::path::Path, files: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
-                    if let Ok(entries) = std::fs::read_dir(dir) {
-                        for entry in entries.filter_map(|e| e.ok()) {
-                            let path = entry.path();
-                            if path.is_dir() { walk(&path, files); }
-                            else if path.extension().map_or(false, |ext| ext == "jsonl") {
-                                if let Ok(m) = entry.metadata() {
-                                    if let Ok(t) = m.modified() { files.push((path, t)); }
-                                }
-                            }
-                        }
-                    }
-                }
-                walk(&sessions_dir, &mut files);
-                files.sort_by(|a, b| b.1.cmp(&a.1));
-                target_file = files.into_iter().next().map(|(p, _)| p);
+                // Scoped to THIS project — see find_codex_rollout_for_cwd.
+                target_file = find_codex_rollout_for_cwd(&sessions_dir, &project_path);
             } else {
                 // Search for file containing the session UUID
                 fn walk2(dir: &std::path::Path, uuid: &str) -> Option<std::path::PathBuf> {
@@ -4966,30 +5492,22 @@ async fn read_session_context_windows(
                 return Ok(String::new());
             }
 
-            // Find most recent session file
-            let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
-            if let Ok(projects) = std::fs::read_dir(&tmp_dir) {
-                for proj in projects.filter_map(|e| e.ok()) {
-                    let chats = proj.path().join("chats");
-                    if chats.is_dir() {
-                        if let Ok(entries) = std::fs::read_dir(&chats) {
-                            for entry in entries.filter_map(|e| e.ok()) {
-                                let path = entry.path();
-                                if path.extension().map_or(false, |ext| ext == "json") {
-                                    if let Ok(m) = entry.metadata() {
-                                        if let Ok(t) = m.modified() { files.push((path, t)); }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            // The session ID is the authority when the pane has one: find the
+            // chat file that CONTAINS it, wherever Gemini filed it. This branch
+            // used to ignore `session_id` outright and read whichever chat file
+            // on the machine was touched last, so every Gemini pane displayed
+            // the same — usually wrong — session. Only `__latest__` still asks
+            // the directory, and then only THIS project's.
+            let f = if is_latest {
+                match gemini_chat_files(&gemini_project_dirs(&home, &project_path)).into_iter().next() {
+                    Some(p) => p,
+                    None => return Ok(String::new()),
                 }
-            }
-            files.sort_by(|a, b| b.1.cmp(&a.1));
-
-            let f = match files.into_iter().next() {
-                Some((p, _)) => p,
-                None => return Ok(String::new()),
+            } else {
+                match find_gemini_chat_by_id(&home, &session_id) {
+                    Some(p) => p,
+                    None => return Ok(String::new()),
+                }
             };
 
             let content = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
@@ -5284,7 +5802,10 @@ async fn install_statusline_wrapper(distro: Option<String>) -> Result<String, St
 /// Running the SAME script makes parity structural instead of aspirational.
 ///
 /// None for a terminal type that has no context to read.
-fn context_script(terminal_type: &str, session_id: &str) -> Option<String> {
+/// `project_path` scopes the `__latest__` reads. Without it, a pane that had
+/// not yet locked a session showed whichever session was touched last ANYWHERE
+/// on the machine — another project's model, context percentage and name.
+fn context_script(terminal_type: &str, session_id: &str, project_path: &str) -> Option<String> {
     Some(match terminal_type {
         "claude" => format!(
             r#"
@@ -5416,9 +5937,15 @@ command -v jq >/dev/null 2>&1 || exit 0
 # remote hosts too, where either may be the case.
 _rev() {{ tac "$1" 2>/dev/null || tail -r "$1" 2>/dev/null; }}
 SID='{session_id}'
+PROJDIR={project_dir}
 if [ "$SID" = "__latest__" ]; then
-  # No specific session — use the most recent session file
-  f=$(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -1)
+  # No specific session — newest rollout FOR THIS PROJECT. Scoped by the cwd
+  # recorded in each rollout's session_meta first line; taking the newest file
+  # outright showed another project's context in a pane that had just opened.
+  f=""
+  for rf in $(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -60); do
+    head -1 "$rf" 2>/dev/null | grep -qF "\"cwd\":\"$PROJDIR\"" && f="$rf" && break
+  done
 else
   CACHE="/tmp/made-sessionpath-$SID"
   if [ -f "$CACHE" ]; then
@@ -5495,7 +6022,8 @@ if [ "$SID" != "__latest__" ]; then
 fi
 echo "$used|$window|$model|$rl5h|$rlweek|$effort|$collab_mode|$title"
 "#,
-            session_id = session_id
+            session_id = session_id,
+            project_dir = shell_escape(project_path)
         ),
         "gemini" => format!(
             r#"
@@ -5558,9 +6086,15 @@ gemini_quota_used() {{
 }}
 
 SID='{session_id}'
+PROJDIR={project_dir}
 if [ "$SID" = "__latest__" ]; then
   # New pane — get model from most recent session, used=0 (100% remaining).
-  f=$(ls -1t ~/.gemini/tmp/*/chats/*.json 2>/dev/null | head -1)
+  # Scoped to THIS project's chat directories. Gemini keys them by the
+  # project BASENAME, either exactly or as "<basename>-…", so both forms are
+  # searched; an unscoped `ls -1t ~/.gemini/tmp/*/chats/*.json` reported
+  # whatever Gemini chat was touched last anywhere on the machine.
+  BASE=$(basename "$PROJDIR" | tr '[:upper:]' '[:lower:]')
+  f=$(ls -1t ~/.gemini/tmp/"$BASE"/chats/*.json ~/.gemini/tmp/"$BASE"-*/chats/*.json 2>/dev/null | head -1)
   model=""
   if [ -n "$f" ]; then
     model=$(jq -r '[.messages[] | select(.model) | .model] | last // empty' "$f" 2>/dev/null)
@@ -5610,7 +6144,8 @@ if [ -f "$QC" ] && [ -n "$model" ]; then
 fi
 echo "$inp|$window|$model|$rpd|$summary|$thoughts|$reset_time"
 "#,
-            session_id = session_id
+            session_id = session_id,
+            project_dir = shell_escape(project_path)
         ),
         _ => return None,
     })
@@ -5620,6 +6155,7 @@ echo "$inp|$window|$model|$rpd|$summary|$thoughts|$reset_time"
 async fn read_session_context(
     terminal_type: String,
     session_id: String,
+    project_path: String,
     distro: Option<String>,
 ) -> Result<String, String> {
     if session_id.is_empty() {
@@ -5631,7 +6167,7 @@ async fn read_session_context(
     // 2. Reads the last usage/token_count entry
     // 3. Calculates remaining context percentage
     // ("__latest__" = no specific session yet; the script handles that itself.)
-    let script = match context_script(&terminal_type, &session_id) {
+    let script = match context_script(&terminal_type, &session_id, &project_path) {
         Some(s) => s,
         None => return Ok(String::new()),
     };
@@ -5781,11 +6317,7 @@ async fn get_codex_session_id_native(project_path: String, exclude_ids: Vec<Stri
     let db_path = codex_dir.join("state_5.sqlite");
     if db_path.exists() {
         let exclude_csv = exclude_ids.join(",");
-        let py_script = format!(
-            r#"import sqlite3,sys;c=sqlite3.connect(r'{}');exclude=set(sys.argv[1].split(',')) if sys.argv[1] else set();path=sys.argv[2];rows=c.execute('SELECT id FROM threads WHERE cwd=? ORDER BY updated_at DESC LIMIT 20',(path,)).fetchall();
-[print(r[0]) or sys.exit(0) for r in rows if r[0] not in exclude]"#,
-            db_path.display()
-        );
+        let py_script = codex_thread_query_py(&format!("r'{}'", db_path.display()));
         let output = Command::new("python3")
             .args(["-c", &py_script, &exclude_csv, &project_path])
             .output();
@@ -5924,6 +6456,7 @@ async fn get_gemini_session_id_native(project_path: String, exclude_ids: Vec<Str
 async fn read_session_context_native(
     terminal_type: String,
     session_id: String,
+    project_path: String,
 ) -> Result<String, String> {
     if session_id.is_empty() {
         return Ok(String::new());
@@ -6132,23 +6665,10 @@ async fn read_session_context_native(
 
             let target_file: Option<std::path::PathBuf>;
             if is_latest {
-                let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
-                fn walk_n(dir: &std::path::Path, files: &mut Vec<(std::path::PathBuf, std::time::SystemTime)>) {
-                    if let Ok(entries) = std::fs::read_dir(dir) {
-                        for entry in entries.filter_map(|e| e.ok()) {
-                            let path = entry.path();
-                            if path.is_dir() { walk_n(&path, files); }
-                            else if path.extension().map_or(false, |ext| ext == "jsonl") {
-                                if let Ok(m) = entry.metadata() {
-                                    if let Ok(t) = m.modified() { files.push((path, t)); }
-                                }
-                            }
-                        }
-                    }
-                }
-                walk_n(&sessions_dir, &mut files);
-                files.sort_by(|a, b| b.1.cmp(&a.1));
-                target_file = files.into_iter().next().map(|(p, _)| p);
+                // Scoped to THIS project. Taking the newest rollout on the
+                // machine meant a pane that had not yet locked a session showed
+                // another project's model, context percentage and session name.
+                target_file = find_codex_rollout_for_cwd(&sessions_dir, &project_path);
             } else {
                 fn walk_n2(dir: &std::path::Path, uuid: &str) -> Option<std::path::PathBuf> {
                     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -6276,29 +6796,22 @@ async fn read_session_context_native(
                 return Ok(String::new());
             }
 
-            let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
-            if let Ok(projects) = std::fs::read_dir(&tmp_dir) {
-                for proj in projects.filter_map(|e| e.ok()) {
-                    let chats = proj.path().join("chats");
-                    if chats.is_dir() {
-                        if let Ok(entries) = std::fs::read_dir(&chats) {
-                            for entry in entries.filter_map(|e| e.ok()) {
-                                let path = entry.path();
-                                if path.extension().map_or(false, |ext| ext == "json") {
-                                    if let Ok(m) = entry.metadata() {
-                                        if let Ok(t) = m.modified() { files.push((path, t)); }
-                                    }
-                                }
-                            }
-                        }
-                    }
+            // The session ID is the authority when the pane has one: find the
+            // chat file that CONTAINS it, wherever Gemini filed it. This branch
+            // used to ignore `session_id` outright and read whichever chat file
+            // on the machine was touched last, so every Gemini pane displayed
+            // the same — usually wrong — session. Only `__latest__` still asks
+            // the directory, and then only THIS project's.
+            let f = if is_latest {
+                match gemini_chat_files(&gemini_project_dirs(&home, &project_path)).into_iter().next() {
+                    Some(p) => p,
+                    None => return Ok(String::new()),
                 }
-            }
-            files.sort_by(|a, b| b.1.cmp(&a.1));
-
-            let f = match files.into_iter().next() {
-                Some((p, _)) => p,
-                None => return Ok(String::new()),
+            } else {
+                match find_gemini_chat_by_id(&home, &session_id) {
+                    Some(p) => p,
+                    None => return Ok(String::new()),
+                }
             };
 
             let content = std::fs::read_to_string(&f).map_err(|e| e.to_string())?;
@@ -6880,6 +7393,289 @@ fn resolve_wsl_project_dir(project_path: &str, distro: Option<&str>) -> Option<s
         }
     }
     found
+}
+
+/// The guest's home directory as a Windows UNC path, e.g.
+/// `\\wsl.localhost\Ubuntu-24.04\home\nicko`.
+///
+/// Same distro probing order as `resolve_wsl_project_dir` — the caller-supplied
+/// distro first, then the common images. Returns every home found rather than
+/// the first, because a distro can have several users and only one of them owns
+/// the CLI's dot-directory.
+///
+/// Lets the Gemini helpers run unchanged against WSL: they take a home path and
+/// do plain file reads, which work fine over the UNC share. NOT used for Codex —
+/// its state lives in a SQLite database with a WAL, and opening that across SMB
+/// is a good way to get a spurious "database is locked". Codex runs its query
+/// inside the guest instead.
+fn wsl_home_dirs(distro: Option<&str>) -> Vec<std::path::PathBuf> {
+    let mut homes = Vec::new();
+    let mut probe = |d: &str, homes: &mut Vec<std::path::PathBuf>| {
+        if d.is_empty() { return; }
+        for prefix in ["\\\\wsl.localhost", "\\\\wsl$"] {
+            let base = std::path::PathBuf::from(format!("{}\\{}\\home", prefix, d));
+            if !base.is_dir() { continue; }
+            let Ok(users) = std::fs::read_dir(&base) else { continue };
+            for u in users.filter_map(|e| e.ok()) {
+                if u.path().is_dir() { homes.push(u.path()); }
+            }
+            if !homes.is_empty() { return; }
+        }
+    };
+    probe(distro.unwrap_or("").trim(), &mut homes);
+    if homes.is_empty() {
+        for d in ["Ubuntu-24.04", "Ubuntu-22.04", "Ubuntu", "Debian"] {
+            probe(d, &mut homes);
+            if !homes.is_empty() { break; }
+        }
+    }
+    homes
+}
+
+/// A project's sessions for a NON-Claude CLI, as the same
+/// `SessionIndexEntry[]` JSON the Claude path returns (macOS/Linux).
+///
+/// Claude's list has always come from disk; Codex and Gemini had no equivalent,
+/// so their session picker could only show what MADE itself had registered — a
+/// session started in a terminal outside MADE was invisible and unresumable.
+#[tauri::command]
+async fn read_cli_sessions_index_native(
+    terminal_type: String,
+    project_path: String,
+) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    match terminal_type.as_str() {
+        "codex" => {
+            let db = std::path::Path::new(&home).join(".codex").join("state_5.sqlite");
+            if !db.exists() { return Ok("[]".to_string()); }
+            let py = codex_sessions_index_py(&format!("r'{}'", db.display()));
+            let out = Command::new("python3").args(["-c", &py, &project_path]).output();
+            Ok(codex_index_stdout(out))
+        }
+        "gemini" => gemini_sessions_list(&home, &project_path),
+        _ => Ok("[]".to_string()),
+    }
+}
+
+/// Windows-native variant of read_cli_sessions_index_native.
+#[tauri::command]
+async fn read_cli_sessions_index_windows(
+    terminal_type: String,
+    project_path: String,
+) -> Result<String, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    match terminal_type.as_str() {
+        "codex" => {
+            let db = std::path::Path::new(&home).join(".codex").join("state_5.sqlite");
+            if !db.exists() { return Ok("[]".to_string()); }
+            let py = codex_sessions_index_py(&format!("r'{}'", db.display()));
+            // Windows often ships `python` without `python3`.
+            let out = Command::new("python3")
+                .args(["-c", &py, &project_path])
+                .output()
+                .or_else(|_| Command::new("python").args(["-c", &py, &project_path]).output());
+            Ok(codex_index_stdout(out))
+        }
+        "gemini" => gemini_sessions_list(&home, &project_path),
+        _ => Ok("[]".to_string()),
+    }
+}
+
+/// WSL variant of read_cli_sessions_index_native.
+#[tauri::command]
+async fn read_cli_sessions_index(
+    terminal_type: String,
+    project_path: String,
+    distro: Option<String>,
+) -> Result<String, String> {
+    match terminal_type.as_str() {
+        "codex" => {
+            // Quoted heredoc: the body carries both quote characters, and a
+            // quoted delimiter disables every shell expansion (same contract as
+            // get_codex_session_id).
+            let script = format!(
+                "python3 - '{}' <<'MADE_CODEX_PY'\n{}MADE_CODEX_PY\n",
+                project_path.replace('\'', "'\\''"),
+                codex_sessions_index_py("os.path.expanduser('~/.codex/state_5.sqlite')"),
+            );
+            let out = wsl_command_in(distro.as_deref())
+                .args(["--", "bash", "-lic", &script])
+                .output();
+            Ok(codex_index_stdout(out))
+        }
+        "gemini" => {
+            for home in wsl_home_dirs(distro.as_deref()) {
+                let list = gemini_sessions_list(&home.to_string_lossy(), &project_path)?;
+                if list != "[]" { return Ok(list); }
+            }
+            Ok("[]".to_string())
+        }
+        _ => Ok("[]".to_string()),
+    }
+}
+
+/// Python body: print `1` if `argv[1]` is a known Codex thread, nothing
+/// otherwise. Deliberately unfiltered — an agent thread still EXISTS, and this
+/// question is only ever "will `codex resume <id>` find something".
+fn codex_thread_exists_py(db_expr: &str) -> String {
+    format!(
+        r#"import sqlite3,os,sys
+db={db_expr}
+if not os.path.exists(db): sys.exit(0)
+try:
+    r=sqlite3.connect(db).execute('SELECT 1 FROM threads WHERE id=?',(sys.argv[1],)).fetchone()
+except sqlite3.Error:
+    sys.exit(0)
+print(1 if r else 0)
+"#,
+        db_expr = db_expr,
+    )
+}
+
+/// Is a Codex/Gemini session still resumable? (macOS/Linux)
+///
+/// `checked: false` means "could not look", which the caller treats as "keep
+/// the id" — the same fail-open contract as `claude_session_file_exists`.
+/// Before this existed, `sessionStillExists` returned true unconditionally for
+/// these two CLIs, so MADE would spawn `codex resume <id>` against a thread that
+/// had been deleted and the pane came up on the CLI's error message.
+#[tauri::command]
+async fn cli_session_exists_native(
+    terminal_type: String,
+    session_id: String,
+) -> Result<SessionFileCheck, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    Ok(cli_session_exists_local(&home, &terminal_type, &session_id, false))
+}
+
+/// Windows-native variant of cli_session_exists_native.
+#[tauri::command]
+async fn cli_session_exists_windows(
+    terminal_type: String,
+    session_id: String,
+) -> Result<SessionFileCheck, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    Ok(cli_session_exists_local(&home, &terminal_type, &session_id, true))
+}
+
+/// WSL variant. Codex asks inside the guest (SQLite over SMB is not worth the
+/// risk); Gemini reads the guest's files over the UNC share.
+#[tauri::command]
+async fn cli_session_exists(
+    terminal_type: String,
+    session_id: String,
+    distro: Option<String>,
+) -> Result<SessionFileCheck, String> {
+    match terminal_type.as_str() {
+        "codex" => {
+            let script = format!(
+                "python3 - '{}' <<'MADE_CODEX_PY'\n{}MADE_CODEX_PY\n",
+                session_id.replace('\'', "'\\''"),
+                codex_thread_exists_py("os.path.expanduser('~/.codex/state_5.sqlite')"),
+            );
+            let out = wsl_command_in(distro.as_deref())
+                .args(["--", "bash", "-lic", &script])
+                .output();
+            let Ok(o) = out else {
+                return Ok(SessionFileCheck { exists: false, checked: false });
+            };
+            let text = String::from_utf8_lossy(&o.stdout);
+            match text.lines().map(|l| l.trim()).find(|l| *l == "0" || *l == "1") {
+                Some("1") => Ok(SessionFileCheck { exists: true, checked: true }),
+                Some("0") => Ok(SessionFileCheck { exists: false, checked: true }),
+                // No verdict line at all: python missing, or the DB is absent.
+                _ => Ok(SessionFileCheck { exists: false, checked: false }),
+            }
+        }
+        "gemini" => {
+            for home in wsl_home_dirs(distro.as_deref()) {
+                let h = home.to_string_lossy().to_string();
+                if !std::path::Path::new(&h).join(".gemini").join("tmp").is_dir() { continue; }
+                let exists = find_gemini_chat_by_id(&h, &session_id).is_some();
+                if exists { return Ok(SessionFileCheck { exists: true, checked: true }); }
+                return Ok(SessionFileCheck { exists: false, checked: true });
+            }
+            Ok(SessionFileCheck { exists: false, checked: false })
+        }
+        _ => Ok(SessionFileCheck { exists: false, checked: false }),
+    }
+}
+
+/// Shared body of the two local `cli_session_exists_*` commands.
+fn cli_session_exists_local(
+    home: &str,
+    terminal_type: &str,
+    session_id: &str,
+    try_python_alias: bool,
+) -> SessionFileCheck {
+    match terminal_type {
+        "codex" => {
+            let codex_dir = std::path::Path::new(home).join(".codex");
+            let db = codex_dir.join("state_5.sqlite");
+            if db.exists() {
+                let py = codex_thread_exists_py(&format!("r'{}'", db.display()));
+                let out = Command::new("python3").args(["-c", &py, session_id]).output();
+                let out = if try_python_alias {
+                    out.or_else(|_| Command::new("python").args(["-c", &py, session_id]).output())
+                } else {
+                    out
+                };
+                if let Ok(o) = out {
+                    let text = String::from_utf8_lossy(&o.stdout);
+                    match text.lines().map(|l| l.trim()).find(|l| *l == "0" || *l == "1") {
+                        Some("1") => return SessionFileCheck { exists: true, checked: true },
+                        Some("0") => {
+                            // Absent from the DB is not yet proof: a rollout
+                            // written by an older Codex has no threads row.
+                            let rollout = codex_rollout_exists(&codex_dir, session_id);
+                            return SessionFileCheck { exists: rollout, checked: true };
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // No database, or python could not answer — fall back to the files.
+            let sessions_dir = codex_dir.join("sessions");
+            if !sessions_dir.is_dir() {
+                return SessionFileCheck { exists: false, checked: false };
+            }
+            SessionFileCheck { exists: codex_rollout_exists(&codex_dir, session_id), checked: true }
+        }
+        "gemini" => {
+            if !std::path::Path::new(home).join(".gemini").join("tmp").is_dir() {
+                return SessionFileCheck { exists: false, checked: false };
+            }
+            SessionFileCheck {
+                exists: find_gemini_chat_by_id(home, session_id).is_some(),
+                checked: true,
+            }
+        }
+        _ => SessionFileCheck { exists: false, checked: false },
+    }
+}
+
+/// Is there a rollout file whose NAME carries this session id? Codex names them
+/// `rollout-<timestamp>-<uuid>.jsonl`, so the id is in the filename.
+fn codex_rollout_exists(codex_dir: &std::path::Path, session_id: &str) -> bool {
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    walk_jsonl(&codex_dir.join("sessions"), &mut files);
+    files
+        .iter()
+        .any(|(p, _)| p.file_name().map_or(false, |n| n.to_string_lossy().contains(session_id)))
+}
+
+/// Keep only a JSON array from the helper's stdout. Anything else — a python
+/// traceback, a `bash -lic` login-shell banner — becomes an empty list, so a
+/// broken environment shows no sessions rather than propagating a parse error
+/// into the picker.
+fn codex_index_stdout(out: std::io::Result<std::process::Output>) -> String {
+    let Ok(o) = out else { return "[]".to_string() };
+    let text = String::from_utf8_lossy(&o.stdout);
+    text.lines()
+        .map(|l| l.trim())
+        .find(|l| l.starts_with('[') && l.ends_with(']'))
+        .unwrap_or("[]")
+        .to_string()
 }
 
 /// Does `<project-dir>/<session_id>.jsonl` exist? (WSL)
@@ -7503,19 +8299,19 @@ async fn read_session_context_ssh(
     remote_project_path: String,
     session_id: String,
 ) -> Result<String, String> {
-    // `remote_project_path` is no longer needed: the shared script locates the
-    // transcript by session id (`find ~/.claude/projects -name "$SID.jsonl"`),
-    // which also sidesteps the encoded-project-key case-sensitivity problem the
-    // old bespoke reader had. Kept in the signature so the JS call site and the
-    // other *_ssh commands stay uniform.
-    let _ = remote_project_path;
+    // `remote_project_path` is the pane's cwd ON THE REMOTE HOST. Claude does
+    // not need it — the shared script locates the transcript by session id
+    // (`find ~/.claude/projects -name "$SID.jsonl"`), which also sidesteps the
+    // encoded-project-key case-sensitivity problem the old bespoke reader had.
+    // Codex and Gemini DO need it: it scopes their `__latest__` read to this
+    // project instead of the newest session anywhere on that host.
     if session_id.is_empty() {
         return Ok(String::new());
     }
     if !is_uuid_or_latest(&session_id) {
         return Err("invalid session_id (not UUID or __latest__)".to_string());
     }
-    let script = match context_script(&terminal_type, &session_id) {
+    let script = match context_script(&terminal_type, &session_id, &remote_project_path) {
         Some(s) => s,
         None => return Ok(String::new()),
     };
@@ -7797,7 +8593,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
         .setup(|app| {
             // A3: build the shared wgpu Instance+Adapter on a background thread
             // NOW, so the one-time driver/DXGI enumeration (~534ms measured on

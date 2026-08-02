@@ -126,9 +126,9 @@ export default function GlobalContextMenu() {
    */
   const enrich = useCallback(async (stack: MenuContext[]) => {
     const term = stack.find((c): c is Extract<MenuContext, { kind: "terminal" }> => c.kind === "terminal");
-    if (!term?.workingDir || term.serverId) return;
+    if (!term?.workingDir) return;
     if (term.isRepo !== undefined) return; // already known — nothing to do
-    await warmBranch(term.workingDir);
+    await warmBranch(term.workingDir, term.serverId);
   }, []);
 
   // Open on right-click.
@@ -162,14 +162,9 @@ export default function GlobalContextMenu() {
       const el = (e.target as HTMLElement | null)?.closest?.("[data-terminal-id]") as HTMLElement | null;
       const id = el?.dataset?.terminalId;
       if (!id) return;
-      // Remote panes are skipped for the same reason the enrich pass and the
-      // focus prewarm below skip them: git runs locally, so the lookup can only
-      // fail. This was the one of the three that still fired it, spawning a
-      // doomed git process on every right-click press in an SSH pane.
       const term = useAppStore.getState().terminals[id];
-      if (term?.serverId) return;
       const dir = term?.workingDir;
-      if (dir) void warmBranch(dir);
+      if (dir) void warmBranch(dir, term?.serverId);
     };
 
     window.addEventListener("pointerdown", prewarm, true);
@@ -196,9 +191,9 @@ export default function GlobalContextMenu() {
       const dir = active?.workingDir || s.tabs.find((t) => t.id === s.activeTabId)?.workingDir;
       // The subscription fires on every store write; only act when the
       // directory actually changed.
-      if (!dir || dir === lastDir || active?.serverId) return;
+      if (!dir || dir === lastDir) return;
       lastDir = dir;
-      void warmBranch(dir);
+      void warmBranch(dir, active?.serverId);
     };
     warmActive();
     return useAppStore.subscribe(warmActive);

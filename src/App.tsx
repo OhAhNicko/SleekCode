@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useAppStore } from "./store";
-import { getTheme } from "./lib/themes";
+import { getTheme, SEMANTIC_DIFF_ADD, SEMANTIC_DIFF_REMOVE } from "./lib/themes";
 import { uiFontStack } from "./lib/ui-fonts";
 import { fetchReleaseNotes } from "./lib/release-notes";
 import TabBar from "./components/TabBar";
@@ -468,11 +468,15 @@ export default function App() {
     const projectKey = (path: string, serverId?: string) =>
       `${path.replace(/\\/g, "/")}|${serverId ?? ""}`;
 
-    // Build a lookup from (workingDir+serverId) → serverCommand using recentProjects as fallback
-    const recentByKey = new Map<string, string>();
+    // Build a lookup from (workingDir+serverId) → EVERY command the project has.
+    // A project can run several dev servers (web + Tauri, app + API), so this is
+    // a list; `serverCommand` is only its first entry and is read here purely as
+    // the pre-multi-server fallback.
+    const recentByKey = new Map<string, string[]>();
     for (const rp of state.recentProjects) {
-      if (rp.serverCommand) {
-        recentByKey.set(projectKey(rp.path, rp.serverId), rp.serverCommand);
+      const commands = rp.serverCommands ?? (rp.serverCommand ? [rp.serverCommand] : []);
+      if (commands.length > 0) {
+        recentByKey.set(projectKey(rp.path, rp.serverId), commands);
       }
     }
 
@@ -507,39 +511,50 @@ export default function App() {
     const failures: string[] = [];
 
     for (const tab of projectTabs) {
-      const command =
-        tab.serverCommand ||
-        recentByKey.get(projectKey(tab.workingDir, tab.serverId));
-      if (!command) {
-        log(`SKIP ${tab.name} — no serverCommand on tab and no match in recentProjects (key=${projectKey(tab.workingDir, tab.serverId)})`);
+      const tabKey = projectKey(tab.workingDir, tab.serverId);
+      // The project's saved list wins over the tab's single command: it holds
+      // every server, and its first entry already mirrors what the tab carries.
+      const commands =
+        recentByKey.get(tabKey) ?? (tab.serverCommand ? [tab.serverCommand] : []);
+      if (commands.length === 0) {
+        log(`SKIP ${tab.name} — no serverCommand on tab and no match in recentProjects (key=${tabKey})`);
         skipReasons.push(`${tab.name}: no server command set (configure it in the dev-server panel)`);
         continue;
       }
-
-      const tabKey = projectKey(tab.workingDir, tab.serverId);
-      if (seenKeys.has(tabKey)) {
-        log(`SKIP ${tab.name} — duplicate of an already-spawned tab (key=${tabKey})`);
-        continue;
-      }
-      seenKeys.add(tabKey);
 
       // Backfill serverCommand on the tab if it was only in recentProjects
       if (!tab.serverCommand) {
         useAppStore.setState((s) => ({
           tabs: s.tabs.map((t) =>
-            t.id === tab.id ? { ...t, serverCommand: command } : t
+            t.id === tab.id ? { ...t, serverCommand: commands[0] } : t
           ),
         }));
       }
 
-      log(`SPAWN ${tab.name} → command="${command}" serverId=${tab.serverId ?? "(local)"} cwd=${tab.workingDir}`);
-      try {
-        spawnDevServer(tab.id, tab.name, tab.workingDir, command, tab.serverId);
-        spawned++;
-        spawnDetails.push(`${tab.name} ${tab.serverId ? "(SSH)" : "(local)"} → ${command}`);
-      } catch (err) {
-        log(`FAILED to spawn for ${tab.name}`, err);
-        failures.push(`${tab.name}: ${String(err)}`);
+      for (const command of commands) {
+        // Keyed per COMMAND now — two tabs on the same project still spawn its
+        // servers once each, but the project's second server is not mistaken
+        // for a duplicate of its first.
+        const runKey = `${tabKey}|${command}`;
+        if (seenKeys.has(runKey)) {
+          log(`SKIP ${tab.name} — duplicate of an already-spawned server (key=${runKey})`);
+          continue;
+        }
+        seenKeys.add(runKey);
+
+        log(`SPAWN ${tab.name} → command="${command}" serverId=${tab.serverId ?? "(local)"} cwd=${tab.workingDir}`);
+        try {
+          // persist=false: we are iterating the persisted list right now, and
+          // syncing mid-loop rewrites it from the rows created SO FAR — one
+          // throw partway through would silently drop the rest of the user's
+          // servers from disk.
+          spawnDevServer(tab.id, tab.name, tab.workingDir, command, tab.serverId, false);
+          spawned++;
+          spawnDetails.push(`${tab.name} ${tab.serverId ? "(SSH)" : "(local)"} → ${command}`);
+        } catch (err) {
+          log(`FAILED to spawn for ${tab.name}`, err);
+          failures.push(`${tab.name} (${command}): ${String(err)}`);
+        }
       }
     }
 
@@ -684,6 +699,14 @@ export default function App() {
       "--ezy-accent-glow": s.accentGlow,
       "--ezy-red": s.red,
       "--ezy-cyan": s.cyan,
+      "--ezy-diff-add": s.diffAdd ?? SEMANTIC_DIFF_ADD,
+      "--ezy-diff-remove": s.diffRemove ?? SEMANTIC_DIFF_REMOVE,
+      // DOM text selection, taken from the TERMINAL palette on purpose: xterm,
+      // the native renderer and CodeMirror all already draw selection from
+      // these two, so chrome text highlights the same color as terminal output
+      // instead of falling back to the browser's blue.
+      "--ezy-selection": theme.terminal.selectionBackground ?? s.surfaceRaised,
+      "--ezy-selection-text": theme.terminal.selectionForeground ?? s.text,
       // Unitless multiplier consumed by every corner-radius calc() in the
       // app (and mirrored to the overlay like the color vars).
       "--ezy-radius-scale": String(theme.radiusScale ?? 1),
