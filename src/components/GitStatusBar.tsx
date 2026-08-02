@@ -2,12 +2,18 @@ import { useState, useEffect, useRef, useCallback, useId } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitBranchInfo, GitDiffStats, GitAheadBehind } from "../types";
 import { setCachedBranch } from "../lib/git-branch-cache";
+import { gitIsRepo, gitBranches, gitDiffStats, gitAheadBehind } from "../lib/git-invoke";
 import { useAppStore } from "../store";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { validateBranchName } from "../lib/git-branch-validate";
 
 interface Props {
   workingDir: string;
+  /** Set for a project on an SSH server. Reads route to the `git_*_ssh`
+   *  commands; the write actions (pull, switch, create branch) are hidden,
+   *  because they would run under the REMOTE machine's git identity and
+   *  credentials rather than the user's. See `lib/git-invoke.ts`. */
+  serverId?: string;
   compact?: boolean;
 }
 
@@ -18,7 +24,9 @@ interface GitPullResult {
   conflicts: string[];
 }
 
-export default function GitStatusBar({ workingDir, compact = false }: Props) {
+export default function GitStatusBar({ workingDir, serverId, compact = false }: Props) {
+  /** Remote projects get the read-only bar: branch, dirty counts, ahead/behind. */
+  const readOnly = !!serverId;
   const [isGitRepo, setIsGitRepo] = useState(false);
   const [branches, setBranches] = useState<GitBranchInfo | null>(null);
   const [diffStats, setDiffStats] = useState<GitDiffStats | null>(null);
@@ -45,7 +53,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
 
   const fetchAll = useCallback(async () => {
     try {
-      const repo = await invoke<boolean>("git_is_repo", { directory: workingDir });
+      const repo = await gitIsRepo(workingDir, serverId);
       setIsGitRepo(repo);
       // Publish to the shared branch cache so the right-click menu can show the
       // branch synchronously instead of filling it in after the menu is open.
@@ -53,9 +61,9 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
       if (!repo) return;
 
       const [br, ds, ab] = await Promise.allSettled([
-        invoke<GitBranchInfo>("git_branches", { directory: workingDir }),
-        invoke<GitDiffStats>("git_diff_stats", { directory: workingDir }),
-        invoke<GitAheadBehind>("git_ahead_behind", { directory: workingDir }),
+        gitBranches(workingDir, serverId),
+        gitDiffStats(workingDir, serverId),
+        gitAheadBehind(workingDir, serverId),
       ]);
       if (br.status === "fulfilled") {
         setBranches(br.value);
@@ -70,7 +78,7 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
     } catch {
       setIsGitRepo(false);
     }
-  }, [workingDir]);
+  }, [workingDir, serverId]);
 
   const schedulePoll = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -244,23 +252,31 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
         color: "var(--ezy-text-muted)",
       }}
     >
-      {/* Branch — clickable to open dropdown */}
+      {/* Branch — clickable to open the switch/create dropdown, EXCEPT on
+          remote projects: both of those actions run git locally, so on a
+          remote project they would act on the wrong machine. Inert rather than
+          disabled-looking — the branch name itself is still real information,
+          and the tooltip says why there is nothing to click. */}
       <div
         ref={triggerRef}
-        onClick={() => setShowDropdown(!showDropdown)}
+        onClick={() => { if (!readOnly) setShowDropdown(!showDropdown); }}
         style={{
           display: "flex",
           alignItems: "center",
           gap: 5,
-          cursor: "pointer",
+          cursor: readOnly ? "default" : "pointer",
           padding: "2px 4px",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
           backgroundColor: "transparent",
           transition: "background-color 120ms ease",
         }}
-        onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}
+        onMouseEnter={(e) => { if (!readOnly) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
         onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
-        data-tooltip={branches.current}
+        data-tooltip={
+          readOnly
+            ? `${branches.current} — remote project, branch switching is local-only`
+            : branches.current
+        }
       >
         {/* Git branch icon */}
         <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
@@ -314,12 +330,15 @@ export default function GitStatusBar({ workingDir, compact = false }: Props) {
         </svg>
         <span style={{ color: "var(--ezy-text-secondary)" }}>{stats.filesChanged}</span>
         <span style={{ color: "var(--ezy-text-muted)", opacity: 0.6, fontSize: 10, lineHeight: 1 }}>&bull;</span>
-        <span style={{ color: "#4ade80" }}>+{stats.insertions}</span>
-        <span style={{ color: "#f87171" }}>-{stats.deletions}</span>
+        <span style={{ color: "var(--ezy-diff-add)" }}>+{stats.insertions}</span>
+        <span style={{ color: "var(--ezy-diff-remove)" }}>-{stats.deletions}</span>
       </div>
 
-      {/* Pull button — only when behind the remote */}
-      {aheadBehind && aheadBehind.hasRemote && aheadBehind.behind > 0 && (
+      {/* Pull button — only when behind the remote, and never on a remote
+          project: `git_pull` runs on THIS machine, so offering it here would
+          either fail or pull an unrelated local checkout. The behind-count
+          above still shows, which is the information the button was for. */}
+      {!readOnly && aheadBehind && aheadBehind.hasRemote && aheadBehind.behind > 0 && (
         <div
           onClick={(e) => {
             e.stopPropagation();

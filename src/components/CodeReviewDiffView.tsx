@@ -8,6 +8,11 @@ interface CodeReviewDiffViewProps {
   selectedFile: string | null;
   onRevertHunk: (fileDiff: FileDiff, hunkIndex: number) => void;
   onDiscardFile: (filePath: string, isUntracked: boolean) => void;
+  /** Remote (SSH) project: hide every action that WRITES to the working tree.
+   *  MADE's mutating git commands run locally, so on a remote project they
+   *  would act on this machine — see lib/git-invoke.ts. Reading the diff is
+   *  fully supported; changing it is not. */
+  readOnly?: boolean;
   onOpenInEditor: (filePath: string) => void;
   isGitRepo: boolean;
   loading: boolean;
@@ -19,6 +24,7 @@ export default function CodeReviewDiffView({
   selectedFile,
   onRevertHunk,
   onDiscardFile,
+  readOnly = false,
   onOpenInEditor,
   isGitRepo,
   loading,
@@ -200,9 +206,9 @@ export default function CodeReviewDiffView({
                     lineHeight: 1,
                   }}
                 >
-                  <span style={{ color: "#4ade80" }}>+{stats.add}</span>
+                  <span style={{ color: "var(--ezy-diff-add)" }}>+{stats.add}</span>
                   <span style={{ color: "var(--ezy-text-muted)", opacity: 0.5, fontSize: 9 }}>&bull;</span>
-                  <span style={{ color: "#f87171" }}>-{stats.del}</span>
+                  <span style={{ color: "var(--ezy-diff-remove)" }}>-{stats.del}</span>
                 </div>
 
                 {/* Right spacer — pushes diff badge to center */}
@@ -223,8 +229,9 @@ export default function CodeReviewDiffView({
                   <span>Edit</span>
                 </div>
 
-                {/* Discard */}
-                {confirmDiscard === fileDiff.filePath ? (
+                {/* Discard — hidden on remote projects: git_discard_file runs
+                    locally, so there is nothing here it could correctly act on. */}
+                {readOnly ? null : confirmDiscard === fileDiff.filePath ? (
                   <div className="flex items-center gap-1 shrink-0">
                     <button
                       onClick={() => {
@@ -283,7 +290,7 @@ export default function CodeReviewDiffView({
                   isHovered={hoveredHunk === `${fileDiff.filePath}-${hunkIdx}`}
                   onMouseEnter={() => setHoveredHunk(`${fileDiff.filePath}-${hunkIdx}`)}
                   onMouseLeave={() => setHoveredHunk(null)}
-                  onRevert={() => onRevertHunk(fileDiff, hunkIdx)}
+                  onRevert={readOnly ? undefined : () => onRevertHunk(fileDiff, hunkIdx)}
                 />
               ))
             )
@@ -300,7 +307,8 @@ interface HunkBlockProps {
   isHovered: boolean;
   onMouseEnter: () => void;
   onMouseLeave: () => void;
-  onRevert: () => void;
+  /** Omitted on remote projects — reverting writes to the working tree. */
+  onRevert?: () => void;
 }
 
 function HunkBlock({
@@ -325,14 +333,16 @@ function HunkBlock({
         }}
       >
         <span className="flex-1 truncate">{hunk.header}</span>
-        <button
-          onClick={onRevert}
-          className="px-1.5 py-0.5 rounded text-[10px] bg-red-600 text-white hover:bg-red-700 transition-colors shrink-0"
-          style={{ opacity: isHovered ? 1 : 0, pointerEvents: isHovered ? "auto" : "none" }}
-          data-tooltip="Revert this hunk" aria-label="Revert this hunk"
-        >
-          Revert
-        </button>
+        {onRevert && (
+          <button
+            onClick={onRevert}
+            className="px-1.5 py-0.5 rounded text-[10px] bg-red-600 text-white hover:bg-red-700 transition-colors shrink-0"
+            style={{ opacity: isHovered ? 1 : 0, pointerEvents: isHovered ? "auto" : "none" }}
+            data-tooltip="Revert this hunk" aria-label="Revert this hunk"
+          >
+            Revert
+          </button>
+        )}
       </div>
 
       {/* Lines */}

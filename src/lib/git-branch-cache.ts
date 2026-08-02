@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { gitIsRepo, gitBranches } from "./git-invoke";
 
 /**
  * Short-lived git branch cache, so a context menu can answer "is this a repo,
@@ -58,7 +58,7 @@ export function getCachedBranch(dir: string): BranchInfo | undefined {
  * Resolve and cache. Concurrent callers share one invoke — a right-click
  * prewarm and the enrichment pass must not fire two git processes.
  */
-export function warmBranch(dir: string): Promise<BranchInfo> {
+export function warmBranch(dir: string, serverId?: string): Promise<BranchInfo> {
   if (!dir) return Promise.resolve({ isRepo: false });
 
   const cached = getCachedBranch(dir);
@@ -69,9 +69,12 @@ export function warmBranch(dir: string): Promise<BranchInfo> {
 
   const p = (async (): Promise<BranchInfo> => {
     try {
-      const isRepo = await invoke<boolean>("git_is_repo", { directory: dir });
+      // serverId routes to the git_*_ssh commands, so a pane on an SSH server
+      // resolves its REAL branch instead of failing against a local path that
+      // does not exist here.
+      const isRepo = await gitIsRepo(dir, serverId);
       if (!isRepo) return { isRepo: false };
-      const info = await invoke<{ current?: string }>("git_branches", { directory: dir });
+      const info = await gitBranches(dir, serverId);
       return { isRepo: true, branch: info?.current };
     } catch {
       // Treat a failed lookup as "not a repo" rather than caching nothing —

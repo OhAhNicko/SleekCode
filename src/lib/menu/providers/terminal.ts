@@ -185,41 +185,34 @@ const terminalProvider: MenuProvider<"terminal"> = {
             if (t.workingDir) navigator.clipboard.writeText(t.workingDir).catch(() => {});
           },
         },
-        // HIDDEN on remote panes, not disabled. MADE's git runs as a LOCAL
-        // process against a local path, so a pane on an SSH server can never
-        // have a branch to copy — and the branch cache is deliberately never
-        // warmed for one (GlobalContextMenu's prewarm/enrich both bail on
-        // serverId). That left `isRepo` undefined forever, so the row rendered
-        // permanently greyed reading "Reading branch…" — a promise of a result
-        // that was never coming. "Can never apply" is the hide case.
-        ...(ctx.serverId
-          ? []
-          : ([
-              {
-                id: "terminal.copyBranch",
-                label: "Copy git branch",
-                iconId: "branch",
-                // The branch name shows as a sublabel — but ONLY when it is
-                // already known as this menu is built. A sublabel is a second
-                // line, so one arriving from an async pass would grow the row
-                // and resize the menu after it had painted under the pointer.
-                // The cache is what makes it known: GitStatusBar publishes into
-                // it for the active tab's directory, and the right-button press
-                // prewarms anything else.
-                sublabel: ctx.gitBranch,
-                // undefined => not resolved yet; false => not a repo.
-                unavailable:
-                  ctx.isRepo === false
-                    ? { reason: "Not a git repository" }
-                    : ctx.gitBranch
-                      ? undefined
-                      : { reason: "Reading branch…" },
-                run: (c) => {
-                  const t = c as TerminalCtx;
-                  if (t.gitBranch) navigator.clipboard.writeText(t.gitBranch).catch(() => {});
-                },
-              },
-            ] satisfies MenuItemSpec[])),
+        // Shown for remote panes too: warmBranch now resolves over SSH
+        // (git_*_ssh), so an SSH pane has a real branch to copy. It was briefly
+        // hidden here, back when the cache was never warmed for a remote pane
+        // and the row sat permanently greyed reading "Reading branch…".
+        {
+          id: "terminal.copyBranch",
+          label: "Copy git branch",
+          iconId: "branch",
+          // The branch name shows as a sublabel — but ONLY when it is
+          // already known as this menu is built. A sublabel is a second
+          // line, so one arriving from an async pass would grow the row
+          // and resize the menu after it had painted under the pointer.
+          // The cache is what makes it known: GitStatusBar publishes into
+          // it for the active tab's directory, and the right-button press
+          // prewarms anything else.
+          sublabel: ctx.gitBranch,
+          // undefined => not resolved yet; false => not a repo.
+          unavailable:
+            ctx.isRepo === false
+              ? { reason: "Not a git repository" }
+              : ctx.gitBranch
+                ? undefined
+                : { reason: "Reading branch…" },
+          run: (c) => {
+            const t = c as TerminalCtx;
+            if (t.gitBranch) navigator.clipboard.writeText(t.gitBranch).catch(() => {});
+          },
+        },
         {
           id: "terminal.openFolder",
           label: "Open folder in Explorer",

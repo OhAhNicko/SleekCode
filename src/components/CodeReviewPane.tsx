@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import PaneExpandButton from "./PaneExpandButton";
 import { useAppStore } from "../store";
+import { gitIsRepo, gitStatus, gitDiff, gitBranches, gitAheadBehind } from "../lib/git-invoke";
 import { parseUnifiedDiff, buildHunkPatch } from "../lib/diff-parser";
 import CodeReviewFileList from "./CodeReviewFileList";
 import CodeReviewDiffView from "./CodeReviewDiffView";
@@ -51,6 +52,12 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
   const tabs = useAppStore((s) => s.tabs);
   const workingDir =
     tabs.find((t) => t.id === activeTabId)?.workingDir || "";
+  /** Set when the project lives on an SSH server. Reads route to the `git_*_ssh`
+   *  commands (lib/git-invoke.ts) so the diff shown is the REMOTE repository's
+   *  real state; writes stay hidden, since they would run under the remote
+   *  machine's git identity and credentials rather than the user's. */
+  const serverId = tabs.find((t) => t.id === activeTabId)?.serverId;
+  const readOnly = !!serverId;
 
   const [isGitRepo, setIsGitRepo] = useState(false);
   const [gitFiles, setGitFiles] = useState<GitFileStatus[]>([]);
@@ -126,7 +133,7 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
     if (!workingDir) return;
 
     try {
-      const isRepo = await invoke<boolean>("git_is_repo", { directory: workingDir });
+      const isRepo = await gitIsRepo(workingDir, serverId);
       setIsGitRepo(isRepo);
 
       if (!isRepo) {
@@ -137,14 +144,10 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
       const compareArg = getCompareArg();
 
       const [statusResult, diffResult, branchResult, abResult] = await Promise.all([
-        invoke<GitFileStatus[]>("git_status", { directory: workingDir }),
-        invoke<string>("git_diff", {
-          directory: workingDir,
-          filePath: null,
-          compareTo: compareArg ?? null,
-        }),
-        invoke<GitBranchInfo>("git_branches", { directory: workingDir }),
-        invoke<GitAheadBehind>("git_ahead_behind", { directory: workingDir }),
+        gitStatus(workingDir, serverId),
+        gitDiff(workingDir, null, compareArg ?? null, serverId),
+        gitBranches(workingDir, serverId),
+        gitAheadBehind(workingDir, serverId),
       ]);
 
       setGitFiles(statusResult);
@@ -157,7 +160,7 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
     } finally {
       setLoading(false);
     }
-  }, [workingDir, getCompareArg]);
+  }, [workingDir, serverId, getCompareArg]);
 
   // Sequential poll (4s) + refresh when AI finishes working
   const mountedRef = useRef(true);
@@ -589,9 +592,15 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
           </div>
         </div>
 
-        {/* Right: commit + push + divider + refresh + fullscreen + close */}
+        {/* Right: commit + push + divider + refresh + fullscreen + close.
+            On a REMOTE project every writing action here is hidden — commit,
+            push, release and PR all run git (or gh) as a LOCAL process, so on a
+            remote project they would act on this machine rather than the server.
+            The read-only half — the diff, file list, comparison mode, refresh —
+            is fully functional; see lib/git-invoke.ts. */}
         <div className="flex items-center gap-1">
           {/* Commit button */}
+          {!readOnly && (
           <div ref={commitBtnRef} style={{ position: "relative" }}>
             <button
               onClick={() => setShowCommitPopover((v) => !v)}
@@ -621,9 +630,10 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
               />
             )}
           </div>
+          )}
 
           {/* Connect to GitHub — shown only when current branch has no upstream */}
-          {isGitRepo && aheadBehind && !aheadBehind.hasRemote && (
+          {!readOnly && isGitRepo && aheadBehind && !aheadBehind.hasRemote && (
             <button
               onClick={() => setShowConnectModal(true)}
               className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
@@ -642,7 +652,7 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
           )}
 
           {/* Release — shown when repo has an upstream (otherwise no-op to push a tag) */}
-          {isGitRepo && aheadBehind?.hasRemote && (
+          {!readOnly && isGitRepo && aheadBehind?.hasRemote && (
             <button
               onClick={() => setShowReleaseModal(true)}
               className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
@@ -674,6 +684,7 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
           )}
 
           {/* Push button */}
+          {!readOnly && (
           <div style={{ position: "relative" }}>
             <button
               onClick={handlePush}
@@ -794,6 +805,7 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
               </div>
             )}
           </div>
+          )}
 
           {/* Issues link — opens remote /issues in default browser */}
           {remoteUrl && (
@@ -822,7 +834,7 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
           )}
 
           {/* Pull Request button */}
-          {canCreatePr && (
+          {!readOnly && canCreatePr && (
             <button
               onClick={handleOpenPrFlow}
               className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-opacity hover:opacity-80"
@@ -1101,6 +1113,7 @@ export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
             selectedFile={selectedFile}
             onRevertHunk={handleRevertHunk}
             onDiscardFile={handleDiscardFile}
+            readOnly={readOnly}
             onOpenInEditor={handleOpenInEditor}
             isGitRepo={isGitRepo}
             loading={loading}
