@@ -43,6 +43,7 @@ export default function VerticalTabBar() {
   const projectColors = useAppStore((s) => s.projectColors);
   const settingsPanelOpen = useAppStore((s) => s.settingsPanelOpen);
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
+  const gameSidebarOpen = useAppStore((s) => s.gameSidebarOpen);
   const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
   const confirmQuit = useAppStore((s) => s.confirmQuit);
   const compact = useAppStore((s) => s.verticalTabBarCompact);
@@ -756,8 +757,12 @@ export default function VerticalTabBar() {
           })}
         </div>
 
-        {/* GitStatusBar — only for project tabs with workingDir */}
-        {activeTab && activeTab.workingDir && activeIsProject && (
+        {/* GitStatusBar — LOCAL project tabs with a workingDir. See the twin
+            gate in TabBar.tsx for why remote projects are excluded. Here the
+            check also removes a visible artefact: GitStatusBar itself returned
+            null on remote tabs, but this wrapper still painted its padding and
+            top border, leaving an empty ruled strip above the toggles row. */}
+        {activeTab && activeTab.workingDir && !activeTab.serverId && activeIsProject && (
           <div style={{ padding: compact ? "6px 6px" : "6px 10px", borderTop: "1px solid var(--ezy-border-subtle)" }}>
             <GitStatusBar workingDir={activeTab.workingDir} compact={compact} />
           </div>
@@ -797,7 +802,7 @@ export default function VerticalTabBar() {
 
             {showMiniGamesButton && (
               <div
-                onClick={() => window.dispatchEvent(new CustomEvent("made:open-game"))}
+                onClick={() => useAppStore.getState().toggleGameSidebar()}
                 data-tooltip="Mini Games"
                 style={{
                   display: "flex",
@@ -812,7 +817,11 @@ export default function VerticalTabBar() {
                 onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}
                 onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
               >
-                <PiGameControllerDuotone size={14} color="var(--ezy-text-muted)" style={{ transform: "scale(1.5)" }} />
+                <PiGameControllerDuotone
+                  size={14}
+                  color={gameSidebarOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)"}
+                  style={{ transform: "scale(1.5)" }}
+                />
               </div>
             )}
           </div>

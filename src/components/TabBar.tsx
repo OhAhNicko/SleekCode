@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { spawnDevServer } from "../lib/spawn-dev-server";
 import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
-import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes, hasGamePane } from "../lib/layout-utils";
+import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { getProjectColor, autoAssignColor, isQuickOpenEnabled, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
 import { isTerminalActive } from "../lib/terminal-activity";
@@ -65,6 +65,7 @@ export default function TabBar() {
   const confirmQuit = useAppStore((s) => s.confirmQuit);
   const setConfirmQuit = useAppStore((s) => s.setConfirmQuit);
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
+  const gameSidebarOpen = useAppStore((s) => s.gameSidebarOpen);
   const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
   const devServers = useAppStore((s) => s.devServers);
   const devServerTabIcon = useAppStore((s) => s.devServerTabIcon);
@@ -118,7 +119,7 @@ export default function TabBar() {
       hoverCloseTimerRef.current = null;
       setShowRecentMenu(false);
       setShowNewTabMenu(false);
-    }, 300);
+    }, 160);
   }, [hoverOpenAddPaneMenu, cancelHoverClose]);
   // "Add pane" dropdown — overlay-rendered (kind "anchored-menu").
   useOverlayMenu({
@@ -334,6 +335,65 @@ export default function TabBar() {
   // backdrop). Live payload: rows update in place (quick/backend/remove keep
   // the menu open, mirroring the old DOM menu).
   const recentBtnRef = useRef<HTMLDivElement>(null);
+
+  // Hover mode decides from pointer POSITION, not enter/leave edges.
+  //
+  // Edges are unreliable here for two reasons that between them produced every
+  // symptom reported — menus closing under a motionless pointer, menus
+  // reopening in a blink loop, and swaps that never happened:
+  //
+  //  1. `mouseenter` does NOT fire when an element appears under a stationary
+  //     pointer. Opening a menu can therefore never be "confirmed" by the
+  //     element that just appeared, and any logic waiting for that confirmation
+  //     closes the menu it just opened.
+  //  2. The dropdown lives in a SEPARATE overlay window whose hit region moves
+  //     as the menu opens and closes, so which window owns a given pixel is
+  //     itself a function of the state we are trying to compute.
+  //
+  // A pointermove hit-test against the two button rects has neither problem: it
+  // re-evaluates on every movement and needs no event to have been delivered at
+  // the right instant. While the pointer is over the DROPDOWN the main webview
+  // gets no moves at all — which is exactly right, since silence there means
+  // "not over a button", and the overlay's own `__hoverin__` holds the menu
+  // open in that case.
+  const hoverStateRef = useRef({ showRecentMenu, showNewTabMenu, canOpenRecent: false });
+  hoverStateRef.current.showRecentMenu = showRecentMenu;
+  hoverStateRef.current.showNewTabMenu = showNewTabMenu;
+  // Same gate the + button's own handler uses: with nothing to list, that
+  // button is a plain "new tab" action and must not sprout a menu on hover.
+  hoverStateRef.current.canOpenRecent =
+    recentProjects.length > 0 || !!projectsDir || servers.length > 0;
+  useEffect(() => {
+    if (!hoverOpenAddPaneMenu) return;
+    if (!showRecentMenu && !showNewTabMenu) return;
+    const inside = (el: HTMLElement | null, x: number, y: number) => {
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    };
+    const onMove = (e: PointerEvent) => {
+      const st = hoverStateRef.current;
+      const onPlus = inside(recentBtnRef.current, e.clientX, e.clientY);
+      const onChevron = inside(newTabChevronRef.current, e.clientX, e.clientY);
+      if (!onPlus && !onChevron) {
+        scheduleHoverClose();
+        return;
+      }
+      cancelHoverClose();
+      // Swapping between the two buttons is handled here as well as in
+      // onMouseEnter, so a missed enter (see 1 above) cannot strand the wrong
+      // menu open while the pointer sits on the other button.
+      if (onChevron && !st.showNewTabMenu) {
+        setShowRecentMenu(false);
+        setShowNewTabMenu(true);
+      } else if (onPlus && !st.showRecentMenu && st.canOpenRecent) {
+        setShowNewTabMenu(false);
+        setShowRecentMenu(true);
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    return () => window.removeEventListener("pointermove", onMove);
+  }, [hoverOpenAddPaneMenu, showRecentMenu, showNewTabMenu, scheduleHoverClose, cancelHoverClose]);
   useOverlayPopupAnchor({
     id: "tabbar-recent-menu",
     kind: "recent-menu",
@@ -1277,10 +1337,18 @@ export default function TabBar() {
           onDoubleClick={anyMenuOpen ? undefined : toggleMaximizeOnDoubleClick}
         />
 
-        {/* Git Status Bar — only for project tabs with workingDir */}
+        {/* Git Status Bar — LOCAL project tabs with a workingDir.
+            `!at.serverId` is the remote exclusion: MADE's git commands all run
+            as a local process against a local path (run_git in lib.rs has a WSL
+            branch and a local branch, and nothing else), so on a remote project
+            they execute against a path that does not exist on this machine.
+            The bar already ended up empty there — every poll spawned a doomed
+            git and the component returned null — so this removes wasted work
+            and, on a host where the remote path happens to also exist locally,
+            the risk of reporting the WRONG repository's branch and status. */}
         {(() => {
           const at = tabs.find((t) => t.id === activeTabId);
-          return at && at.workingDir && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
+          return at && at.workingDir && !at.serverId && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
         })() && (
           <GitStatusBar workingDir={tabs.find((t) => t.id === activeTabId)!.workingDir!} />
         )}
@@ -1406,9 +1474,7 @@ export default function TabBar() {
           return at && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
         })() && (
           <div
-            onClick={() => {
-              window.dispatchEvent(new CustomEvent("made:open-game"));
-            }}
+            onClick={() => useAppStore.getState().toggleGameSidebar()}
             data-tooltip="Mini Games"
             style={{
               display: "flex",
@@ -1425,11 +1491,13 @@ export default function TabBar() {
             onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
             onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
           >
-            {(() => {
-              const tab = tabs.find((t) => t.id === activeTabId);
-              const hasGame = tab && tab.layout ? hasGamePane(tab.layout) : false;
-              return <PiGameControllerDuotone size={14} color={hasGame ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} style={{ transform: "scale(1.3)" }} />;
-            })()}
+            {/* One app-level sidebar, so the lit state is the store flag — not
+                a per-tab layout probe. */}
+            <PiGameControllerDuotone
+              size={14}
+              color={gameSidebarOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)"}
+              style={{ transform: "scale(1.3)" }}
+            />
           </div>
         )}
 
