@@ -20,6 +20,7 @@ import CommandPalette, { type PaletteAction } from "./components/CommandPalette"
 import SnippetPanel from "./components/SnippetPanel";
 import CommandHistory from "./components/CommandHistory";
 import Sidebar from "./components/Sidebar";
+import GameSidebar from "./components/GameSidebar";
 import WindowResizeHandles from "./components/WindowResizeHandles";
 import { NativePaneVisibilityCoordinator } from "./native-term/NativePaneVisibilityCoordinator";
 import { OverlayDismissOwner } from "./native-term/OverlayDismissOwner";
@@ -84,6 +85,7 @@ export default function App() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showPromptSearch, setShowPromptSearch] = useState(false);
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
+  const gameSidebarOpen = useAppStore((s) => s.gameSidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
@@ -1292,6 +1294,10 @@ export default function App() {
             );
           })}
         </div>
+        {/* Right-docked and app-level, so one games panel is shared by every
+            project tab — opening and closing it are global by construction.
+            Sits outside the tab loop above for exactly that reason. */}
+        {gameSidebarOpen && <GameSidebar />}
       </div>
       <CommandPalette
         open={showPalette}

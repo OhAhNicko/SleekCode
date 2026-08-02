@@ -1,4 +1,4 @@
-import type { PaneLayout, PaneLeaf, PaneBrowser, PaneKanban, PaneCodeReview, PaneFileViewer, PaneGame, PaneSplit, TerminalType } from "../types";
+import type { PaneLayout, PaneLeaf, PaneBrowser, PaneKanban, PaneCodeReview, PaneFileViewer, PaneGame, PaneSplit, TerminalType, GameType } from "../types";
 
 let paneCounter = 0;
 export function generatePaneId(): string {
@@ -800,20 +800,41 @@ export function cloneLayoutWithFreshIds(
   return { layout: walk(layout), terminalIds };
 }
 
-/** Check if a game pane exists anywhere in the layout tree */
-export function hasGamePane(layout: PaneLayout): boolean {
-  if (layout.type === "game") return true;
-  if (layout.type === "split") {
-    return hasGamePane(layout.children[0]) || hasGamePane(layout.children[1]);
-  }
-  return false;
-}
+/**
+ * MIGRATION ONLY (2026-08-01). The games panel used to be a pane inside every
+ * tab's layout. Because each open project tab keeps its PaneGrid mounted, the
+ * unguarded `made:open-game` listener added a copy to EVERY tab while the pane's
+ * X removed only one — so closing it "once" left copies behind in every other
+ * project. It is now a single app-level sidebar (`gameSidebarOpen`), and nothing
+ * renders a `game` node any more.
+ *
+ * Persisted layouts still carry those nodes, so strip them on load and report
+ * the game that was open, letting the sidebar resume it.
+ *
+ * `layout` comes back null only when the whole tree WAS the game pane — a valid
+ * Tab.layout value.
+ */
+export function stripGamePanes(layout: PaneLayout): {
+  layout: PaneLayout | null;
+  game?: GameType;
+  found: boolean;
+} {
+  if (layout.type === "game") return { layout: null, game: layout.game, found: true };
+  if (layout.type !== "split") return { layout, found: false };
 
-/** Find the ID of the game pane in the layout, or null if none */
-export function findGamePaneId(layout: PaneLayout): string | null {
-  if (layout.type === "game") return layout.id;
-  if (layout.type === "split") {
-    return findGamePaneId(layout.children[0]) ?? findGamePaneId(layout.children[1]);
-  }
-  return null;
+  const left = stripGamePanes(layout.children[0]);
+  const right = stripGamePanes(layout.children[1]);
+  if (!left.found && !right.found) return { layout, found: false };
+
+  const game = left.game ?? right.game;
+  // A split that loses one child collapses into the survivor, dropping its
+  // sizes — same shape as removePane.
+  if (!left.layout && !right.layout) return { layout: null, game, found: true };
+  if (!left.layout) return { layout: right.layout, game, found: true };
+  if (!right.layout) return { layout: left.layout, game, found: true };
+  return {
+    layout: { ...layout, children: [left.layout, right.layout] },
+    game,
+    found: true,
+  };
 }

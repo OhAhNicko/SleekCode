@@ -3,7 +3,6 @@ import EditorPane from "../components/EditorPane";
 import KanbanBoard from "../components/KanbanBoard";
 import CodeReviewPane from "../components/CodeReviewPane";
 import FileViewerPane from "../components/FileViewerPane";
-import GamePane from "../components/GamePane";
 
 export interface RenderLeafCallbacks {
   onClose: (paneId: string) => void;
@@ -124,16 +123,10 @@ export function renderLeafPane(
     );
   }
 
-  if (node.type === "game") {
-    return (
-      <GamePane
-        key={node.id}
-        onClose={() => cb.onClose(node.id)}
-        initialGame={node.game}
-        startPaused={node.startPaused}
-      />
-    );
-  }
+  // `game` deliberately falls through to null: the games panel is an app-level
+  // sidebar now (GameSidebar.tsx), not a pane, and the store's merge hook strips
+  // every persisted game node on load. Mounting one here would give it a close
+  // button wired to a pane that nothing else knows about.
 
   return null;
 }

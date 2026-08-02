@@ -23,7 +23,8 @@ export type SurfaceRole =
   | "editor-tab"
   | "browser"
   | "sidebar"
-  | "jira-ticket";
+  | "jira-ticket"
+  | "game-sidebar";
 
 export type SurfaceActions = Record<string, (id: string) => void>;
 

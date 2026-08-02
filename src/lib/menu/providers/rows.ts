@@ -558,6 +558,46 @@ function browserPane(ctx: RowCtx): MenuGroup[] {
   return groups;
 }
 
+/**
+ * The games sidebar — one app-level surface, so every item here acts globally.
+ *
+ * Pause/Resume and "All games" are component-local state inside GamePane, so
+ * they come through the surface-actions registry: if GamePane is somehow not
+ * mounted the rows disable with a reason rather than silently doing nothing.
+ * Closing is a plain store action and always available.
+ */
+function gameSidebar(ctx: RowCtx): MenuGroup[] {
+  // Decided at build time — the menu must never resize after it opens.
+  const activeGame = ctx.data.ctxGame ?? "";
+  const paused = ctx.data.ctxPaused === "1";
+  const items: MenuItemSpec[] = [];
+
+  if (activeGame) {
+    items.push(
+      // No icon: CTX_ICONS has no play/pause glyph, and OverlayRoot silently
+      // drops unknown ids — an invented one would just render blank.
+      actionItem("game-sidebar", "togglePause", ctx.id, {
+        id: "row.gameSidebar.togglePause",
+        label: paused ? "Resume" : "Pause",
+      }),
+      actionItem("game-sidebar", "back", ctx.id, {
+        id: "row.gameSidebar.back",
+        label: "All games",
+        iconId: "arrow-left",
+      }),
+    );
+  }
+
+  items.push({
+    id: "row.gameSidebar.close",
+    label: "Close games sidebar",
+    iconId: "close-pane",
+    run: () => useAppStore.getState().closeGameSidebar(),
+  });
+
+  return [{ id: "target", items }];
+}
+
 function sidebarBackground(ctx: RowCtx): MenuGroup[] {
   const root = ctx.data.ctxRoot ?? "";
   const mk = async (kind: "file" | "dir") => {
@@ -797,6 +837,8 @@ const rowProvider: MenuProvider<"row"> = {
         return sidebarBackground(ctx);
       case "jira-ticket":
         return jiraTicket(ctx);
+      case "game-sidebar":
+        return gameSidebar(ctx);
       default:
         return [];
     }

@@ -1,5 +1,12 @@
 import type { StateCreator } from "zustand";
-import type { CrosswordPuzzle } from "../types";
+import type { CrosswordPuzzle, GameType } from "../types";
+
+export const GAME_SIDEBAR_MIN_WIDTH = 320;
+export const GAME_SIDEBAR_MAX_WIDTH = 900;
+export const GAME_SIDEBAR_DEFAULT_WIDTH = 420;
+
+const clampGameSidebarWidth = (w: number) =>
+  Math.max(GAME_SIDEBAR_MIN_WIDTH, Math.min(GAME_SIDEBAR_MAX_WIDTH, Math.round(w)));
 
 export interface HighscoreEntry {
   score: number;
@@ -88,6 +95,28 @@ export interface GameSlice {
   gameStats: GameStats;
   completedCrosswordIds: string[];
   customCrosswords: CrosswordPuzzle[];
+
+  /* ---- Games sidebar -------------------------------------------------
+   * The games panel is ONE app-level sidebar (rendered once in App.tsx),
+   * not a pane in any tab's layout. That is deliberate: it used to be a
+   * layout pane, and because every open project tab keeps its PaneGrid
+   * mounted, the unguarded made:open-game listener added a copy to EVERY
+   * tab while the X removed only one — so closing it "once" left copies
+   * behind everywhere. A single instance backed by a single boolean makes
+   * open and close global by construction rather than by broadcast.
+   * See docs/architecture.md ("Games sidebar"). */
+  gameSidebarOpen: boolean;
+  gameSidebarWidth: number;
+  /** Last game selected, so reopening resumes it instead of the picker. */
+  gameSidebarGame?: GameType;
+  /** Armed by the AI-done auto-close so the next open starts paused.
+   *  Transient — not persisted. */
+  gameSidebarPaused: boolean;
+  toggleGameSidebar: () => void;
+  /** `paused` arms a paused restart; a plain close disarms it. */
+  closeGameSidebar: (opts?: { paused?: boolean }) => void;
+  setGameSidebarWidth: (width: number) => void;
+  setGameSidebarGame: (game?: GameType) => void;
   addHighscore: (game: HighscoreGame, score: number) => void;
   addTimedHighscore: (game: TimedHighscoreGame, seconds: number) => void;
   updateWordleStats: (mode: "tech" | "classic", won: boolean) => void;
@@ -142,6 +171,27 @@ export const createGameSlice: StateCreator<GameSlice, [], [], GameSlice> = (set)
   },
   completedCrosswordIds: [],
   customCrosswords: [],
+
+  gameSidebarOpen: false,
+  gameSidebarWidth: GAME_SIDEBAR_DEFAULT_WIDTH,
+  gameSidebarGame: undefined,
+  gameSidebarPaused: false,
+
+  toggleGameSidebar: () =>
+    set((state) => ({
+      gameSidebarOpen: !state.gameSidebarOpen,
+      // Closing by hand disarms the paused restart; opening preserves it so an
+      // AI-done auto-close still reopens paused, matching the old pane's
+      // shouldStartPaused handoff.
+      gameSidebarPaused: state.gameSidebarOpen ? false : state.gameSidebarPaused,
+    })),
+
+  closeGameSidebar: (opts) =>
+    set({ gameSidebarOpen: false, gameSidebarPaused: opts?.paused ?? false }),
+
+  setGameSidebarWidth: (width) => set({ gameSidebarWidth: clampGameSidebarWidth(width) }),
+
+  setGameSidebarGame: (game) => set({ gameSidebarGame: game }),
 
   addHighscore: (game, score) =>
     set((state) => {

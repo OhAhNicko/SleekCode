@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { PaneLayout, GameType } from "../types";
+import type { PaneLayout } from "../types";
 import {
   removePane,
   redistributeEqually,
@@ -17,7 +17,6 @@ import EditorPane from "./EditorPane";
 import KanbanBoard from "./KanbanBoard";
 import CodeReviewPane from "./CodeReviewPane";
 import FileViewerPane from "./FileViewerPane";
-import GamePane from "./GamePane";
 
 /** True if a pane is currently outside the grid (expanded/float) or animating closed. */
 function isFloatingId(
@@ -52,10 +51,9 @@ function resolveNodeForRender(
   return null;
 }
 
-// Remember last active game so toggling off/on resumes it
-let lastActiveGame: GameType | undefined;
-// When game pane was auto-closed by AI-done, reopen it paused
-let shouldStartPaused = false;
+// (Last-active-game / start-paused state moved to the store's gameSidebar*
+// fields when the games panel became an app-level sidebar — module globals
+// could not be persisted and were shared across all grids by accident.)
 
 interface PaneGridProps {
   layout: PaneLayout;
@@ -70,7 +68,6 @@ export default function PaneGrid({
   onLayoutChange,
   getTerminalSlot,
 }: PaneGridProps) {
-  const autoMinimizeGameOnAiDone = useAppStore((s) => s.autoMinimizeGameOnAiDone);
   const redistributeOnClose = useAppStore((s) => s.redistributeOnClose);
   const paneModes = useAppStore((s) => s.paneModes);
   const closingPanes = useAppStore((s) => s.closingPanes);
@@ -214,79 +211,42 @@ export default function PaneGrid({
     return () => window.removeEventListener("made:open-codereview", handler);
   }, [layout, onLayoutChange]);
 
-  // Toggle game pane (open on right / close if already open)
-  // When closing, remember the active game; when reopening, resume it
+  // The games panel used to live here as a `game` pane, opened by an unguarded
+  // made:open-game listener that ran in EVERY mounted grid while the pane's X
+  // removed only one copy. It is now a single app-level sidebar — see
+  // GameSidebar.tsx and gameSlice's gameSidebar* state.
+
+  // Global code-review close. The X in CodeReviewPane emits this so the pane
+  // disappears from EVERY project tab at once — the counterpart to
+  // made:open-codereview, which every mounted grid handles (inactive tabs are
+  // display:none, not unmounted) and so opens the pane in every tab. Closing it
+  // locally left a copy behind in every other project. Same shape as
+  // made:close-fileviewer.
   useEffect(() => {
     const handler = () => {
-      const findGameNode = (node: PaneLayout): { id: string; game?: GameType } | null => {
-        if (node.type === "game") return { id: node.id, game: node.game };
+      const findCodeReviewIds = (node: PaneLayout, out: string[]): string[] => {
+        if (node.type === "codereview") out.push(node.id);
         if (node.type === "split") {
-          return findGameNode(node.children[0]) ?? findGameNode(node.children[1]);
+          findCodeReviewIds(node.children[0], out);
+          findCodeReviewIds(node.children[1], out);
         }
-        return null;
+        return out;
       };
-      const existing = findGameNode(layout);
-      if (existing) {
-        // Save the current game selection before closing
-        if (existing.game) lastActiveGame = existing.game;
-        const newLayout = removePane(layout, existing.id);
-        if (newLayout) onLayoutChange(newLayout);
-        return;
+      // Normally one per tab, but a layout can legitimately hold several.
+      // Remove them one at a time off the freshest layout each round.
+      let next = layout;
+      for (const id of findCodeReviewIds(layout, [])) {
+        const removed = removePane(next, id);
+        if (removed) next = removed;
       }
-      const gamePane = {
-        type: "game" as const,
-        id: generatePaneId(),
-        game: lastActiveGame, // resume previous game if any
-        startPaused: shouldStartPaused,
-      };
-      shouldStartPaused = false;
-      const newLayout: PaneLayout = {
-        type: "split",
-        id: generatePaneId(),
-        direction: "horizontal",
-        children: [layout, gamePane],
-        sizes: [65, 35],
-      };
-      onLayoutChange(newLayout);
+      if (next !== layout) {
+        snapshotPane(tabId, layout);
+        onLayoutChange(redistributeOnClose ? redistributeEqually(next) : next);
+      }
     };
-
-    // Listen for game-active broadcast from GamePane to track current game
-    const gameActiveHandler = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.game) lastActiveGame = detail.game as GameType;
-      else lastActiveGame = undefined;
-    };
-
-    window.addEventListener("made:open-game", handler);
-    window.addEventListener("made:game-active", gameActiveHandler);
-    return () => {
-      window.removeEventListener("made:open-game", handler);
-      window.removeEventListener("made:game-active", gameActiveHandler);
-    };
-  }, [layout, onLayoutChange]);
-
-  // Auto-minimize game pane when AI finishes working
-  useEffect(() => {
-    if (!autoMinimizeGameOnAiDone) return;
-    const handler = () => {
-      const findGameNode = (node: PaneLayout): { id: string; game?: GameType } | null => {
-        if (node.type === "game") return { id: node.id, game: node.game };
-        if (node.type === "split") {
-          return findGameNode(node.children[0]) ?? findGameNode(node.children[1]);
-        }
-        return null;
-      };
-      const existing = findGameNode(layout);
-      if (!existing) return;
-      // Save game and mark for paused restart
-      if (existing.game) lastActiveGame = existing.game;
-      shouldStartPaused = true;
-      const newLayout = removePane(layout, existing.id);
-      if (newLayout) onLayoutChange(newLayout);
-    };
-    window.addEventListener("made:ai-done", handler);
-    return () => window.removeEventListener("made:ai-done", handler);
-  }, [layout, onLayoutChange, autoMinimizeGameOnAiDone]);
+    window.addEventListener("made:close-codereview", handler);
+    return () => window.removeEventListener("made:close-codereview", handler);
+  }, [layout, onLayoutChange, tabId, redistributeOnClose]);
 
   // Listen for file-open events (sidebar click, terminal Ctrl+Click, code
   // review, markdown link) and route them to the tabbed file viewer.
@@ -538,17 +498,11 @@ export default function PaneGrid({
       );
     }
 
-    if (node.type === "game") {
-      return (
-        <div key={node.id} data-pane-id={node.id} className="h-full w-full">
-          <GamePane
-            onClose={() => handleClose(node.id)}
-            initialGame={node.game}
-            startPaused={node.startPaused}
-          />
-        </div>
-      );
-    }
+    // Defensive: the games panel is an app-level sidebar now, and the store's
+    // merge hook strips every persisted `game` node on load. Should one survive,
+    // render nothing rather than falling through to the split branch below,
+    // which would read `direction`/`children` off a leaf and crash the grid.
+    if (node.type === "game") return null;
 
     // Split node
     const direction =

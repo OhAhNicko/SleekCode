@@ -18,6 +18,7 @@ import { createLayoutSlice, type LayoutSlice } from "./layoutSlice";
 import { createVoiceSlice, type VoiceSlice } from "./voiceSlice";
 import { createNativeRendererSlice, type NativeRendererSlice } from "./nativeRendererSlice";
 import { createModalCoordinationSlice, type ModalCoordinationSlice } from "./modalCoordinationSlice";
+import { stripGamePanes } from "../lib/layout-utils";
 import type { Tab } from "../types";
 
 export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice & VoiceSlice & NativeRendererSlice & ModalCoordinationSlice;
@@ -141,6 +142,11 @@ export const useAppStore = create<AppStore>()(
         gameStats: state.gameStats,
         completedCrosswordIds: state.completedCrosswordIds,
         customCrosswords: state.customCrosswords,
+        // gameSidebarPaused is deliberately NOT persisted — it only arms a
+        // paused restart within a session.
+        gameSidebarOpen: state.gameSidebarOpen,
+        gameSidebarWidth: state.gameSidebarWidth,
+        gameSidebarGame: state.gameSidebarGame,
         projectSessions: state.projectSessions,
         aiTimeBursts: state.aiTimeBursts,
         onboardingCompleted: state.onboardingCompleted,
@@ -301,6 +307,23 @@ export const useAppStore = create<AppStore>()(
           ...state.projectSessions,
         };
 
+        // One-shot migration (2026-08-01): the games panel left the layout tree
+        // and became a single app-level sidebar. Strip every persisted `game`
+        // node — nothing renders them now, and a stray one would fall through to
+        // the split branch and read `direction` off a leaf — and carry the open
+        // game across so the sidebar resumes it.
+        let gameSidebarOpen = state.gameSidebarOpen ?? current.gameSidebarOpen;
+        let gameSidebarGame = state.gameSidebarGame ?? current.gameSidebarGame;
+        filteredTabs = filteredTabs.map((t) => {
+          if (!t.layout) return t;
+          const stripped = stripGamePanes(t.layout);
+          if (!stripped.found) return t;
+          // A game pane was open pre-upgrade, so the sidebar opens post-upgrade.
+          gameSidebarOpen = true;
+          gameSidebarGame = gameSidebarGame ?? stripped.game;
+          return { ...t, layout: stripped.layout };
+        });
+
         const aiTimeBursts = state.aiTimeBursts ?? current.aiTimeBursts;
 
         // Auto-complete onboarding for existing users who already have persisted state
@@ -318,10 +341,13 @@ export const useAppStore = create<AppStore>()(
           projectSessions,
           aiTimeBursts,
           onboardingCompleted,
+          gameSidebarOpen,
+          gameSidebarGame,
           // When session restore is off, reset all panel/sidebar state to defaults
           ...(!state.restoreLastSession && {
             devServerPanelOpen: false,
             sidebarOpen: false,
+            gameSidebarOpen: false,
           }),
         };
       },

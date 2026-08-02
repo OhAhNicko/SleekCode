@@ -22,8 +22,14 @@ import DuckHuntGame from "./games/DuckHuntGame";
 import DonkeyKongGame from "./games/DonkeyKongGame";
 import { CROSSWORD_PUZZLES } from "../lib/crossword-puzzles";
 import { FaXmark, FaChevronLeft, FaPause, FaPlay } from "react-icons/fa6";
-import PaneExpandButton from "./PaneExpandButton";
+import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 
+/**
+ * The games panel body. Mounted ONLY by GameSidebar — the app-level right
+ * sidebar — never as a pane in a tab's layout. It used to be a layout pane, and
+ * there is no expand/pop-out control here any more because there is no
+ * surrounding `[data-pane-id]` for PaneExpandButton to resolve against.
+ */
 interface GamePaneProps {
   onClose: () => void;
   initialGame?: GameType;
@@ -422,8 +428,22 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
   const updateChessStats = useAppStore((s) => s.updateChessStats);
   const markCrosswordCompleted = useAppStore((s) => s.markCrosswordCompleted);
   const addCustomCrossword = useAppStore((s) => s.addCustomCrossword);
+  const setGameSidebarGame = useAppStore((s) => s.setGameSidebarGame);
 
   const handleBack = useCallback(() => { setActiveGame(null); setPaused(false); }, []);
+
+  // Expose the pane-local handlers the context menu needs. Pause and "All
+  // games" are local state, so a provider cannot reach them through the store —
+  // registering them here means the rows disable with a reason if this
+  // component is ever unmounted, instead of appearing to work and doing
+  // nothing. See lib/surface-actions.ts.
+  useEffect(() => {
+    registerSurfaceActions("game-sidebar", {
+      togglePause: () => setPaused((p) => !p),
+      back: () => handleBack(),
+    });
+    return () => unregisterSurfaceActions("game-sidebar");
+  }, [handleBack]);
 
   // Space key toggles pause when a game is active AND the game pane is focused.
   // Uses the container ref instead of window to avoid stealing Space from CLI panes.
@@ -441,10 +461,12 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
     return () => container.removeEventListener("keydown", handler);
   }, [activeGame]);
 
-  // Broadcast active game to PaneGrid for pause/resume tracking
+  // Remember the selection so reopening the sidebar resumes this game instead
+  // of the picker. Was a made:game-active broadcast into a module-level global
+  // in PaneGrid, back when the panel was a pane in every tab's layout.
   useEffect(() => {
-    window.dispatchEvent(new CustomEvent("made:game-active", { detail: { game: activeGame } }));
-  }, [activeGame]);
+    setGameSidebarGame(activeGame ?? undefined);
+  }, [activeGame, setGameSidebarGame]);
 
   // Get all available crossword puzzles
   const allPuzzles = [...CROSSWORD_PUZZLES, ...customCrosswords];
@@ -604,6 +626,14 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
     <div
       ref={gamePaneRef}
       tabIndex={-1}
+      // Context-menu surface. The dynamic bits live here rather than on
+      // GameSidebar's wrapper because this is where the state is — the provider
+      // reads them at build time so the menu never resizes after opening.
+      data-ctx-surface="game-sidebar"
+      data-ctx-id="game-sidebar"
+      data-ctx-label={activeGame ? GAME_LABELS[activeGame] : "Mini Games"}
+      data-ctx-game={activeGame ?? ""}
+      data-ctx-paused={paused ? "1" : "0"}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -684,7 +714,6 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
             {paused ? <FaPlay size={10} color="var(--ezy-accent)" /> : <FaPause size={10} color="var(--ezy-text-muted)" />}
           </div>
         )}
-        <PaneExpandButton />
         <div
           onClick={onClose}
           style={{
