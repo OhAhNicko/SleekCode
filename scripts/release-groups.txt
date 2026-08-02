@@ -1,0 +1,63 @@
+# Commit groups for the next release. Read by scripts/release.sh.
+#
+# FORMAT
+#   A line with NO leading whitespace is a commit subject.
+#   Lines indented by 2+ spaces are paths belonging to the subject above them.
+#   Blank lines and # comments are ignored.
+#
+# RULES
+#   - Replace every <describe>. The release REFUSES to run while one remains.
+#   - A path may appear in only one group (first wins).
+#   - Dirty paths you leave out are fine: they land in a final sweep commit.
+#   - Paths that are missing, clean, or gitignored are skipped silently, so a
+#     slightly stale manifest still works.
+#   - Order here is the order the commits are made in.
+#
+# Regenerate a starting point any time with:
+#   bash scripts/release.sh --draft-groups
+# The draft groups by file PATH, which fragments a feature that spans layers —
+# the games migration below touches store, layout, menu and app shell. Subjects
+# were rewritten from the diffs; they become the release changelog verbatim.
+
+feat(games): move the games panel out of the layout tree into one app-level sidebar
+  src/components/GameSidebar.tsx
+  src/components/GamePane.tsx
+  src/store/gameSlice.ts
+  src/store/index.ts
+  src/components/PaneGrid.tsx
+  src/lib/layout-utils.ts
+  src/lib/render-pane.tsx
+  src/App.tsx
+  src/lib/surface-actions.ts
+  src/lib/menu/context.ts
+  src/lib/menu/providers/rows.ts
+
+fix(code-review): close the pane in every tab, not just the active one
+  src/components/CodeReviewPane.tsx
+
+fix(tabs): drive hover-mode menu switching from pointer position, not enter/leave edges
+  src/components/TabBar.tsx
+  src/components/VerticalTabBar.tsx
+
+fix(terminal): restore keyboard focus after a tab switch in both pane backends
+  src/components/TerminalPane.tsx
+  src/components/TerminalPaneNative.tsx
+  src/components/TerminalPaneXterm.tsx
+
+fix(terminal): single-quote PowerShell arguments so spaces and $ survive
+  src/lib/terminal-config.ts
+
+feat(ui): reveal the prompt-history button on header hover without shifting layout
+  src/components/TerminalHeader.tsx
+
+fix(dev-server): time out Tauri-project detection so a hung stat cannot block spawn
+  src/lib/spawn-dev-server.ts
+  src/components/DevServerTab.tsx
+  src/components/DevServerTerminalHost.tsx
+
+fix(overlay): keep the popup focus ring clear of the control that opened it
+  src/overlay/OverlayRoot.tsx
+
+chore: manifest-driven release script
+  scripts/release.sh
+  scripts/release-groups.txt
