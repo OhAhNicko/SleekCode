@@ -39,9 +39,44 @@ export async function sessionStillExists(
   serverId?: string,
 ): Promise<boolean> {
   if (!supportsSessionResume(terminalType)) return true;
-  if (terminalType !== "claude") return true; // codex/gemini store sessions elsewhere
-  if (!sessionId || !projectPath) return true;
+  if (!sessionId) return true;
   if (backend === "ssh" || serverId) return true; // no remote transcript check
+
+  // Codex and Gemini keep sessions outside `~/.claude/projects`, so they get
+  // their own check rather than the transcript-file one below. This used to
+  // return true for both unconditionally, which meant MADE happily spawned
+  // `codex resume <id>` for a thread that had been deleted and the pane came up
+  // on the CLI's "no such session" error. Same fail-open contract: only a
+  // definite "we looked and it is not there" drops the id.
+  if (terminalType === "codex" || terminalType === "gemini") {
+    try {
+      let check: SessionFileCheck;
+      if (backend === "native") {
+        check = await invoke<SessionFileCheck>("cli_session_exists_native", {
+          terminalType,
+          sessionId,
+        });
+      } else if (backend === "windows") {
+        check = await invoke<SessionFileCheck>("cli_session_exists_windows", {
+          terminalType,
+          sessionId,
+        });
+      } else {
+        const distro = getCachedDistro();
+        check = await invoke<SessionFileCheck>("cli_session_exists", {
+          terminalType,
+          sessionId,
+          distro: distro || null,
+        });
+      }
+      if (!check?.checked) return true;
+      return check.exists;
+    } catch {
+      return true;
+    }
+  }
+
+  if (!projectPath) return true;
   try {
     let check: SessionFileCheck;
     if (backend === "native") {

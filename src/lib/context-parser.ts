@@ -80,7 +80,16 @@ export async function readSessionContext(
   sessionId?: string,
   backend?: TerminalBackend,
   serverId?: string,
-  remoteProjectPath?: string,
+  /**
+   * The pane's working directory IN THE BACKEND'S OWN NAMESPACE — the WSL path
+   * for `wsl`, the remote path for `ssh`, the plain path otherwise.
+   *
+   * Scopes the `__latest__` read, which a pane performs until it locks its own
+   * session id. Without it, Codex and Gemini returned the newest session
+   * ANYWHERE on the machine, so a pane that had just opened showed a different
+   * project's model, context percentage and session name.
+   */
+  projectPath?: string,
 ): Promise<ContextInfo | null> {
 
   const supported = terminalType === "claude" || terminalType === "codex" || terminalType === "gemini";
@@ -92,13 +101,13 @@ export async function readSessionContext(
       const server = serverId
         ? useAppStore.getState().servers.find((s) => s.id === serverId)
         : undefined;
-      if (!server || server.authMethod !== "ssh-key" || !server.sshKeyPath || !remoteProjectPath) return null;
+      if (!server || server.authMethod !== "ssh-key" || !server.sshKeyPath || !projectPath) return null;
       raw = await invoke<string>("read_session_context_ssh", {
         host: server.host,
         username: server.username,
         identityFile: server.sshKeyPath,
         terminalType,
-        remoteProjectPath,
+        remoteProjectPath: projectPath,
         sessionId: sessionId || "__latest__",
       });
     } else if (backend === "native") {
@@ -106,17 +115,20 @@ export async function readSessionContext(
       raw = await invoke<string>("read_session_context_native", {
         terminalType,
         sessionId: sessionId || "__latest__",
+        projectPath: projectPath ?? "",
       });
     } else if (backend === "windows") {
       raw = await invoke<string>("read_session_context_windows", {
         terminalType,
         sessionId: sessionId || "__latest__",
+        projectPath: projectPath ?? "",
       });
     } else {
       const distro = getCachedDistro();
       raw = await invoke<string>("read_session_context", {
         terminalType,
         sessionId: sessionId || "__latest__",
+        projectPath: projectPath ?? "",
         distro: distro || null,
       });
     }

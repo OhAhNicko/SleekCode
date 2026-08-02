@@ -4305,6 +4305,10 @@ function SessionPickerMenu({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  // Row awaiting "Remove from list" confirmation. One row at a time, and the
+  // confirm renders INSIDE the row so the popup keeps its height — a list that
+  // grows under the pointer is how you mis-click the row below.
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const editingIdRef = useRef<string | null>(null);
   editingIdRef.current = editingId;
 
@@ -4346,12 +4350,16 @@ function SessionPickerMenu({
     }
   }, [editingId]);
 
-  // Escape: cancel an active rename first, else dismiss (original behavior).
+  // Escape: back out of whichever sub-state is open (rename, then remove
+  // confirm), else dismiss (original behavior).
+  const confirmRemoveIdRef = useRef<string | null>(null);
+  confirmRemoveIdRef.current = confirmRemoveId;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         if (editingIdRef.current) setEditingId(null);
+        else if (confirmRemoveIdRef.current) setConfirmRemoveId(null);
         else dismiss();
       }
     };
@@ -4411,6 +4419,7 @@ function SessionPickerMenu({
           )}
           {sessions.map((session) => {
             const isEditing = editingId === session.id;
+            const isConfirmingRemove = confirmRemoveId === session.id;
             const rowHover = hoveredId === session.id;
             return (
               <div
@@ -4430,7 +4439,74 @@ function SessionPickerMenu({
                       : "transparent",
                 }}
               >
-                {isEditing ? (
+                {isConfirmingRemove ? (
+                  <div
+                    style={{
+                      flex: 1,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "6px 10px",
+                      minWidth: 0,
+                    }}
+                  >
+                    <span
+                      style={{
+                        flex: 1,
+                        fontSize: 11,
+                        color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={session.name}
+                    >
+                      Remove from list?
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        act("remove", { id: session.id });
+                        setConfirmRemoveId(null);
+                      }}
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "#fff",
+                        background: "var(--ezy-red, #f85149)",
+                        border: "none",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                        padding: "2px 8px",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        flexShrink: 0,
+                      }}
+                    >
+                      Remove
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmRemoveId(null);
+                      }}
+                      style={{
+                        fontSize: 11,
+                        color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                        background: "transparent",
+                        boxShadow:
+                          "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.15))",
+                        border: "none",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                        padding: "2px 8px",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        flexShrink: 0,
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : isEditing ? (
                   <input
                     ref={inputRef}
                     value={editValue}
@@ -4572,6 +4648,53 @@ function SessionPickerMenu({
                           fill="var(--ezy-text-muted, rgba(230,237,243,0.5))"
                         >
                           <path d="M362.7 19.3L314.3 67.7 444.3 197.7l48.4-48.4c25-25 25-65.5 0-90.5L453.3 19.3c-25-25-65.5-25-90.5 0zm-71 71L58.6 323.5c-10.4 10.4-18 23.3-22.2 37.4L1 481.2C-1.5 489.7 .8 498.8 7 505s15.3 8.5 23.7 6.1l120.3-35.4c14.1-4.2 27-11.8 37.4-22.2L421.7 220.3 291.7 90.3z" />
+                        </svg>
+                      </div>
+                    )}
+                    {/* Remove from list. Registry rows only — a historical row
+                        comes from the CLI's own transcripts and is not ours to
+                        forget. Disabled on the pane's live session, which the
+                        context poll re-registers within ~5s: a control that
+                        undoes itself reads as broken, so say why instead. */}
+                    {session.isFromStore && rowHover && (
+                      <div
+                        role="button"
+                        aria-disabled={session.isCurrent || undefined}
+                        title={
+                          session.isCurrent
+                            ? "This pane is using the session — start or pick another one first"
+                            : "Remove from list"
+                        }
+                        style={{
+                          cursor: session.isCurrent ? "default" : "pointer",
+                          opacity: session.isCurrent ? 0.35 : 1,
+                          padding: 4,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                          flexShrink: 0,
+                          display: "flex",
+                          alignItems: "center",
+                        }}
+                        onMouseEnter={(e) => {
+                          if (session.isCurrent) return;
+                          e.currentTarget.style.backgroundColor =
+                            "var(--ezy-border, rgba(255,255,255,0.15))";
+                        }}
+                        onMouseLeave={(e) =>
+                          (e.currentTarget.style.backgroundColor = "transparent")
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (session.isCurrent) return;
+                          setConfirmRemoveId(session.id);
+                        }}
+                      >
+                        <svg
+                          width="9"
+                          height="9"
+                          viewBox="0 0 384 512"
+                          fill="var(--ezy-text-muted, rgba(230,237,243,0.5))"
+                        >
+                          <path d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3 297.4 406.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256 342.6 150.6z" />
                         </svg>
                       </div>
                     )}

@@ -8,7 +8,9 @@ import { TERMINAL_CONFIGS, toWslPath } from "../lib/terminal-config";
 import { getPlatform } from "../lib/platform";
 import { supportsSessionResume } from "../lib/session-resume";
 import { readSessionsIndex, resolveSessionName, readSessionFirstPrompt, slugify } from "../lib/sessions-index";
+import { truncateSessionTitle } from "../lib/session-title";
 import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
+import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { useAppStore } from "../store";
 import { FaChevronDown } from "react-icons/fa";
 import { FaXmark, FaGripVertical } from "react-icons/fa6";
@@ -210,6 +212,7 @@ function SessionPicker({
   terminalType,
   onSelect,
   onRename,
+  onRemove,
   onNew,
   onClose,
 }: {
@@ -224,6 +227,7 @@ function SessionPicker({
   terminalType?: TerminalType;
   onSelect: (sessionId: string) => void;
   onRename: (sessionId: string, newName: string) => void;
+  onRemove: (sessionId: string) => void;
   onNew: () => void;
   onClose: () => void;
 }) {
@@ -235,14 +239,15 @@ function SessionPicker({
   // Fetch sessions-index on mount, then poll every 30s while the dropdown is
   // open so newly created Claude Code sessions appear without reopening.
   useEffect(() => {
-    if (!workingDir || (terminalType && terminalType !== "claude")) return;
+    if (!workingDir || !terminalType || !LISTABLE_CLIS.includes(terminalType)) return;
     const isSsh = !!serverId;
     const effectiveBackend: TerminalBackend = isSsh
       ? "ssh"
       : (backend ?? (useAppStore.getState().terminalBackend as TerminalBackend | undefined) ?? "wsl");
     // WSL backend needs a Unix path; SSH workingDir is already remote Unix.
     const pathForBackend = effectiveBackend === "wsl" ? toWslPath(workingDir) : workingDir;
-    const fetch = () => readSessionsIndex(pathForBackend, effectiveBackend, serverId).then(setIndexEntries);
+    const fetch = () =>
+      readSessionsIndex(pathForBackend, effectiveBackend, serverId, terminalType).then(setIndexEntries);
     fetch();
     const interval = setInterval(fetch, 30_000);
     return () => clearInterval(interval);
@@ -251,6 +256,9 @@ function SessionPicker({
   // Fetch first-prompt slugs for sessions that lack an index entry AND a store name.
   // This covers the common v2.1.109 case where sessions-index.json doesn't exist.
   useEffect(() => {
+    // Claude-only on purpose: `read_session_first_prompt_*` reads a Claude
+    // transcript, and the Codex reader already returns `first_user_message`
+    // inline so there is nothing left to backfill.
     if (!workingDir || (terminalType && terminalType !== "claude")) return;
     const isSsh = !!serverId;
     const effectiveBackend: TerminalBackend = isSsh
@@ -361,6 +369,13 @@ function SessionPicker({
           if (d?.id && d?.name) onRename(d.id, d.name);
           break;
         }
+        case "remove": {
+          const id = (data as { id?: string } | undefined)?.id;
+          // Stays open: removing is usually one of several tidy-ups, and the
+          // list re-renders one row shorter without losing the user's place.
+          if (id) onRemove(id);
+          break;
+        }
         case "new":
           onNew();
           onClose();
@@ -393,6 +408,24 @@ function formatContextWindow(tokens: number): string {
 }
 
 /** Extract last N segments from a file path */
+/**
+ * Widest a session name may render in the pane header.
+ *
+ * The name sits last in the header's info row, so without a cap it takes every
+ * pixel the other items leave — on a wide pane that is most of the header. At
+ * 9px this holds roughly 40 characters, which is a readable name next to the
+ * model / context / version items rather than instead of them. The string is
+ * already capped at 60 chars upstream (`truncateSessionTitle`); this bounds the
+ * PIXELS, which is what a proportional font actually needs.
+ */
+const SESSION_NAME_MAX_PX = 220;
+
+/**
+ * CLIs whose sessions can be listed from disk. A pane of any other type shows
+ * only the sessions MADE itself registered.
+ */
+const LISTABLE_CLIS: TerminalType[] = ["claude", "codex", "gemini"];
+
 function truncatePath(path: string, maxSegments = 3): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
   const segments = normalized.split("/").filter(Boolean);
@@ -468,13 +501,7 @@ export default function TerminalHeader({
   // (stable identity) — same re-render-safe pattern as shellPsMode above.
   const headerDevServer = useAppStore((s) => {
     if (!s.devServerButtonInHeader || !workingDir) return undefined;
-    const norm = workingDir.replace(/\\/g, "/");
-    return s.devServers.find(
-      (ds) =>
-        ds.status === "running" &&
-        ds.workingDir.replace(/\\/g, "/") === norm &&
-        ds.serverId === serverId,
-    );
+    return getQuickOpenServer(s, { workingDir, serverId }, { requireRunning: true });
   });
   const [showTypePicker, setShowTypePicker] = useState(false);
   const typePickerAnchorRef = useRef<HTMLDivElement>(null);
@@ -568,15 +595,22 @@ export default function TerminalHeader({
     [allSessions, terminalType]
   );
   const renameSession = useAppStore((s) => s.renameProjectSession);
+  const removeSession = useAppStore((s) => s.removeProjectSession);
 
   // Current session's custom name from registry
   const currentSession = sessions.find((s) => s.id === sessionResumeId);
   // For untrusted sessions (detected from disk — may be stale), only show the name
   // if the user explicitly renamed it. Auto-detected names come from old session files.
   // For trusted sessions (restored from persist or explicit switch), show everything.
+  // `contextInfo.sessionName` is the CLI's own title, read straight off the
+  // transcript — it reaches this component UNCAPPED (the registry copy is
+  // capped on the way in, see useSessionContext). Cap it here too, or a pane
+  // that has not registered its session yet still renders a full raw prompt.
+  const contextName = contextInfo?.sessionName || contextInfo?.summary;
+  const cappedContextName = contextName ? truncateSessionTitle(contextName) : null;
   const sessionDisplayName = sessionTrusted
-    ? (currentSession?.name || contextInfo?.sessionName || contextInfo?.summary || (sessionResumeId ? sessionResumeId.slice(0, 8) : null))
-    : ((currentSession?.isRenamed ? currentSession.name : null) || contextInfo?.sessionName || contextInfo?.summary || (sessionResumeId ? sessionResumeId.slice(0, 8) : null));
+    ? (currentSession?.name || cappedContextName || (sessionResumeId ? sessionResumeId.slice(0, 8) : null))
+    : ((currentSession?.isRenamed ? currentSession.name : null) || cappedContextName || (sessionResumeId ? sessionResumeId.slice(0, 8) : null));
 
   useEffect(() => {
     if (inlineRenaming && inlineInputRef.current) {
@@ -951,9 +985,13 @@ export default function TerminalHeader({
               C:{contextInfo.compactCount}
             </span>
           )}
-          {/* Session picker — always visible for resumable CLIs, shows name when available */}
+          {/* Session picker — always visible for resumable CLIs, shows name when
+              available. SESSION_NAME_MAX_PX caps the name on a WIDE pane, where
+              flex leftover is generous enough that a long title would run the
+              whole header. On a narrow pane flexShrink still does the work and
+              the name gives up space before this cap is reached. */}
           {sl("sessionPicker") && isResumable && (
-            <div ref={sessionNameRef} style={{ minWidth: 0, flexShrink: 1 }}>
+            <div ref={sessionNameRef} style={{ minWidth: 0, flexShrink: 1, maxWidth: SESSION_NAME_MAX_PX }}>
               {inlineRenaming ? (
                 <input
                   ref={inlineInputRef}
@@ -992,13 +1030,18 @@ export default function TerminalHeader({
                   onClick={() => setShowSessionPicker((v) => !v)}
                   onDoubleClick={() => {
                     if (sessionResumeId) {
-                      setInlineRenameValue(currentSession?.name || contextInfo?.sessionName || "");
+                      // Capped: the input is 120px wide, and seeding it with a
+                      // raw first message would make the user delete a
+                      // paragraph before they can type a name.
+                      setInlineRenameValue(currentSession?.name || cappedContextName || "");
                       setInlineRenaming(true);
                     }
                   }}
                   onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-border)"}
                   onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-                  data-tooltip={sessionDisplayName || "Session"}
+                  // Tooltip carries the FULL name — the row shows the capped
+                  // one, so hovering has to be how you read the rest.
+                  data-tooltip={currentSession?.name || contextName || "Session"}
                   data-tooltip-hint={sessionDisplayName ? "Click to switch sessions · double-click to rename" : "Click to switch sessions"}
                 >
                   <span
@@ -1033,7 +1076,8 @@ export default function TerminalHeader({
               )}
             </div>
           )}
-          {/* Fallback: show session name for non-resumable or when no sessions yet */}
+          {/* Fallback: show session name for non-resumable or when no sessions yet.
+              Tooltip carries the FULL text — the cap is display only. */}
           {sl("sessionPicker") && !isResumable && contextInfo.sessionName && (
             <span
               data-tooltip={contextInfo.sessionName}
@@ -1045,10 +1089,11 @@ export default function TerminalHeader({
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 minWidth: 0,
+                maxWidth: SESSION_NAME_MAX_PX,
                 flexShrink: 1,
               }}
             >
-              {contextInfo.sessionName}
+              {truncateSessionTitle(contextInfo.sessionName)}
             </span>
           )}
           {/* Gemini: summary — hidden for resumable CLIs where it's already the session name */}
@@ -1063,10 +1108,11 @@ export default function TerminalHeader({
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 minWidth: 0,
+                maxWidth: SESSION_NAME_MAX_PX,
                 flexShrink: 1,
               }}
             >
-              {contextInfo.summary}
+              {truncateSessionTitle(contextInfo.summary)}
             </span>
           )}
           {/* Gemini: thinking tokens */}
@@ -1299,7 +1345,7 @@ export default function TerminalHeader({
         <SessionPicker
           sessions={sessions}
           currentSessionId={sessionResumeId}
-          contextSessionName={contextInfo?.sessionName ?? contextInfo?.summary ?? undefined}
+          contextSessionName={cappedContextName ?? undefined}
           anchorRef={sessionNameRef}
           workingDir={workingDir}
           backend={backend}
@@ -1308,6 +1354,9 @@ export default function TerminalHeader({
           onSelect={(id) => onSwitchSession?.(id)}
           onRename={(id, name) => {
             if (workingDir) renameSession(workingDir, id, name);
+          }}
+          onRemove={(id) => {
+            if (workingDir) removeSession(workingDir, id);
           }}
           onNew={() => onSwitchSession?.(undefined)}
           onClose={() => setShowSessionPicker(false)}

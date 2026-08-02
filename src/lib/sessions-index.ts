@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCachedDistro } from "./wsl-cache";
 import { useAppStore } from "../store";
-import type { TerminalBackend, SessionIndexEntry } from "../types";
+import { truncateSessionTitle } from "./session-title";
+import type { TerminalBackend, SessionIndexEntry, TerminalType } from "../types";
 
 /**
  * List a project's Claude sessions, newest first, capped at 30.
@@ -21,9 +22,33 @@ export async function readSessionsIndex(
   projectPath: string,
   backend: TerminalBackend,
   serverId?: string,
+  /**
+   * Which CLI's sessions to list. Defaults to Claude, which is all this
+   * returned for its first year — Codex and Gemini sessions existed on disk but
+   * had no reader, so their picker could only show what MADE had itself
+   * registered and a session started outside MADE was unresumable.
+   */
+  terminalType: TerminalType = "claude",
 ): Promise<SessionIndexEntry[]> {
   try {
     let raw: string;
+    if (terminalType === "codex" || terminalType === "gemini") {
+      // No SSH reader for these two: the remote commands are Claude-shaped
+      // (they fetch `~/.claude/projects/<key>/sessions-index.json`), and Codex
+      // needs a SQLite query on the far end rather than a file read. A remote
+      // Codex/Gemini pane keeps the registry-only list it has always had.
+      if (backend === "ssh") return [];
+      if (backend === "native") {
+        raw = await invoke<string>("read_cli_sessions_index_native", { terminalType, projectPath });
+      } else if (backend === "windows") {
+        raw = await invoke<string>("read_cli_sessions_index_windows", { terminalType, projectPath });
+      } else {
+        const distro = getCachedDistro();
+        raw = await invoke<string>("read_cli_sessions_index", { terminalType, projectPath, distro: distro || null });
+      }
+      if (!raw || raw === "[]") return [];
+      return JSON.parse(raw) as SessionIndexEntry[];
+    }
     if (backend === "ssh") {
       const server = serverId
         ? useAppStore.getState().servers.find((s) => s.id === serverId)
@@ -244,8 +269,11 @@ export function slugify(text: string): string {
  * Priority: customTitle → summary → firstPrompt (as kebab slug) → UUID slice.
  */
 export function resolveSessionName(entry: SessionIndexEntry): string {
-  if (entry.customTitle) return entry.customTitle;
-  if (entry.summary) return entry.summary;
+  // Capped on every branch. Claude's own names arrive short, but Codex's
+  // `summary` is `threads.title` — the raw first message until the CLI gets
+  // around to summarising it — so an uncapped row could be a whole paragraph.
+  if (entry.customTitle) return truncateSessionTitle(entry.customTitle);
+  if (entry.summary) return truncateSessionTitle(entry.summary);
   if (entry.firstPrompt) {
     const slug = slugify(entry.firstPrompt);
     return slug || entry.sessionId.slice(0, 8);

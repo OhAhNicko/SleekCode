@@ -23,6 +23,7 @@ import { useAppStore } from "../store";
 import type { TerminalType, TerminalBackend } from "../types";
 import { readSessionContext, type ContextInfo } from "../lib/context-parser";
 import { supportsSessionResume } from "../lib/session-resume";
+import { truncateSessionTitle } from "../lib/session-title";
 import { toWslPath } from "../lib/terminal-config";
 import { getCachedDistro } from "../lib/wsl-cache";
 import {
@@ -59,6 +60,21 @@ export interface UseSessionContextResult {
   refreshContext: () => Promise<void>;
 }
 
+/**
+ * The pane's cwd in the namespace the BACKEND reads paths in.
+ *
+ * `wsl` needs the Unix path — the CLIs run inside the guest and record
+ * `/mnt/c/...`, so handing them the Windows spelling matches nothing. `ssh`
+ * already holds a remote Unix path. Everything else passes through.
+ *
+ * Empty string when the WSL conversion fails, which the backends treat as "no
+ * project scope" — the same as before this was threaded through.
+ */
+function contextProjectPath(backend: TerminalBackend, workingDir: string): string {
+  if (backend === "wsl") return toWslPath(workingDir) || "";
+  return workingDir;
+}
+
 /** CLI types that write a readable session transcript. */
 function contextSupported(type: TerminalType): boolean {
   return type === "claude" || type === "codex" || type === "gemini";
@@ -93,7 +109,7 @@ export function useSessionContext({
       const backend = isSsh
         ? "ssh"
         : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
-      const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, isSsh ? workingDirRef.current : undefined);
+      const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, contextProjectPath(backend, workingDirRef.current));
       if (info !== null) {
         // When this pane hasn't locked its own session, `info` came from the
         // "__latest__" fallback. That's only safe to display if no sibling
@@ -183,7 +199,11 @@ export function useSessionContext({
           const store = useAppStore.getState();
           const key = workingDir.replace(/\\/g, "/");
           const existing = (store.projectSessions[key] ?? []).find((s) => s.id === sessionResumeId);
-          const autoName = info.sessionName || info.summary;
+          // Capped here, at the ONE point a CLI title becomes a MADE session
+          // name. Codex hands back the raw first message until it summarises,
+          // so an uncapped name reached the header, the picker and the
+          // persisted registry at full length. See lib/session-title.ts.
+          const autoName = truncateSessionTitle(info.sessionName || info.summary || "");
 
           // Ensure session exists in registry (disk detection doesn't register)
           if (!existing) {
@@ -290,7 +310,7 @@ export function useSessionContext({
     const backend = isSsh
       ? "ssh"
       : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
-    const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, isSsh ? workingDirRef.current : undefined);
+    const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, contextProjectPath(backend, workingDirRef.current));
     if (info !== null) {
       // Don't display an ambiguous "__latest__" result that may belong to a
       // sibling pane in the same dir (see the poll for the full rationale).
