@@ -5,6 +5,7 @@ import { promptForInput, confirmAction } from "../../prompt-modal";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getPtyWrite } from "../../../store/terminalSlice";
 import { PROJECT_COLOR_PRESETS } from "../../../store/recentProjectsSlice";
+import { isSameProject } from "../../spawn-dev-server";
 import {
   getBrowserPageContext,
   safeExternalUrl,
@@ -287,6 +288,18 @@ function devServerRow(ctx: RowCtx): MenuGroup[] {
   const s = useAppStore.getState();
   const server = s.devServers?.find((d) => d.id === ctx.id);
   const url = ctx.data.ctxUrl ?? "";
+  // Quick-open target: only meaningful once the project runs more than one
+  // server, so the row is HIDDEN rather than disabled on single-server
+  // projects — there is no choice being withheld.
+  const siblings = server
+    ? (s.devServers ?? []).filter((d) => isSameProject(d, server.workingDir, server.serverId))
+    : [];
+  const project = server
+    ? s.recentProjects.find((p) =>
+        isSameProject({ workingDir: p.path, serverId: p.serverId }, server.workingDir, server.serverId),
+      )
+    : undefined;
+  const isQuickOpen = !!server && project?.primaryServerCommand === server.command;
   return [
     {
       id: "target",
@@ -325,6 +338,23 @@ function devServerRow(ctx: RowCtx): MenuGroup[] {
           label: "Restart",
           iconId: "restart",
         }),
+        ...(siblings.length > 1
+          ? [
+              {
+                id: "row.devserver.quickOpen",
+                label: "Set as quick-open target",
+                iconId: "external-link" as const,
+                unavailable: isQuickOpen
+                  ? { reason: "Already what the globe icons open" }
+                  : undefined,
+                run: () =>
+                  server &&
+                  useAppStore
+                    .getState()
+                    .setPrimaryServerCommand(server.workingDir, server.serverId, server.command),
+              },
+            ]
+          : []),
       ],
     },
     {

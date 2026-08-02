@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane } from "../lib/layout-utils";
 import { getProjectColor } from "../store/recentProjectsSlice";
+import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
@@ -37,6 +38,7 @@ export default function VerticalTabBar() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServers = useAppStore((s) => s.devServers);
+  const recentProjects = useAppStore((s) => s.recentProjects);
   const devServerTabIcon = useAppStore((s) => s.devServerTabIcon);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
   const toggleDevServerPanel = useAppStore((s) => s.toggleDevServerPanel);
@@ -162,7 +164,7 @@ export default function VerticalTabBar() {
     // Bind the new browser pane to this tab so it tracks the live dev-server
     // URL and shows a "Waiting for dev server" state until the port is bound
     // — avoids the "can't reach page" race when starting from cold.
-    const ds = store.devServers.find((s) => s.tabId === tab.id && s.port > 0);
+    const ds = getQuickOpenServer(store, { tabId: tab.id }, { requireRunning: true });
     const url = ds ? `http://localhost:${ds.port}` : "about:blank";
     if (store.browserFullColumn) {
       const { layout } = store.browserSpawnLeft
@@ -618,12 +620,12 @@ export default function VerticalTabBar() {
                     compact mode. Plain click = external browser, Ctrl/Cmd =
                     MADE browser pane. */}
                 {!compact && devServerTabIcon !== "off" && (devServerTabIcon === "all" || isActive) && (() => {
-                  const tabNorm = tab.workingDir?.replace(/\\/g, "/");
-                  const ds = devServers.find(
-                    (srv) =>
-                      srv.status === "running" &&
-                      (srv.tabId === tab.id ||
-                        (!!tabNorm && srv.workingDir.replace(/\\/g, "/") === tabNorm)),
+                  // A project can run several dev servers; getQuickOpenServer
+                  // honours the one the user marked in the dev-server panel.
+                  const ds = getQuickOpenServer(
+                    { devServers, recentProjects },
+                    { tabId: tab.id, workingDir: tab.workingDir, serverId: tab.serverId },
+                    { requireRunning: true },
                   );
                   if (!ds) return null;
                   return (
@@ -757,14 +759,12 @@ export default function VerticalTabBar() {
           })}
         </div>
 
-        {/* GitStatusBar — LOCAL project tabs with a workingDir. See the twin
-            gate in TabBar.tsx for why remote projects are excluded. Here the
-            check also removes a visible artefact: GitStatusBar itself returned
-            null on remote tabs, but this wrapper still painted its padding and
-            top border, leaving an empty ruled strip above the toggles row. */}
-        {activeTab && activeTab.workingDir && !activeTab.serverId && activeIsProject && (
+        {/* GitStatusBar — project tabs with a workingDir, local or remote.
+            See the twin in TabBar.tsx: serverId routes reads over SSH and hides
+            the write actions. */}
+        {activeTab && activeTab.workingDir && activeIsProject && (
           <div style={{ padding: compact ? "6px 6px" : "6px 10px", borderTop: "1px solid var(--ezy-border-subtle)" }}>
-            <GitStatusBar workingDir={activeTab.workingDir} compact={compact} />
+            <GitStatusBar workingDir={activeTab.workingDir} serverId={activeTab.serverId} compact={compact} />
           </div>
         )}
 

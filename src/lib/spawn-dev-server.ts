@@ -2,7 +2,36 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import { generateTerminalId } from "./layout-utils";
 import { getDefaultBackend, getPlatform } from "./platform";
-import type { TerminalBackend } from "../types";
+import type { DevServer, TerminalBackend } from "../types";
+
+/** Path comparison for project identity — Windows and POSIX slashes are the same project. */
+const normPath = (p: string) => p.replace(/\\/g, "/");
+
+/** True when a dev server belongs to this project, i.e. same directory on the same host. */
+export function isSameProject(
+  ds: Pick<DevServer, "workingDir" | "serverId">,
+  workingDir: string,
+  serverId?: string,
+): boolean {
+  return normPath(ds.workingDir) === normPath(workingDir) && ds.serverId === serverId;
+}
+
+/**
+ * Persist a project's dev-server commands, recomputed from its LIVE rows.
+ *
+ * A project can hold several dev servers, so "save the command" is no longer a
+ * single-field write. Deriving the whole list from the rows on every add / edit
+ * / remove — rather than patching the slot a row thinks it owns — is what makes
+ * removal safe: there is no index to go stale, and the persisted list can never
+ * name a server that isn't there.
+ */
+export function syncProjectServerCommands(workingDir: string, serverId?: string): void {
+  const state = useAppStore.getState();
+  const commands = state.devServers
+    .filter((ds) => isSameProject(ds, workingDir, serverId))
+    .map((ds) => ds.command);
+  state.setProjectServerCommands(workingDir, serverId, commands);
+}
 
 /**
  * `is_tauri_project` is three filesystem stats — it answers in microseconds or
@@ -47,9 +76,8 @@ export async function resolveDevServerBackend(
   if (serverId) return globalBackend;
   if (getPlatform() !== "windows") return globalBackend;
 
-  const norm = (p: string) => p.replace(/\\/g, "/");
   const project = state.recentProjects.find(
-    (p) => norm(p.path) === norm(workingDir) && p.serverId === serverId,
+    (p) => normPath(p.path) === normPath(workingDir) && p.serverId === serverId,
   );
   const override = project?.serverInWindows;
   if (override === true) return "windows";
@@ -74,17 +102,46 @@ export async function resolveDevServerBackend(
   return globalBackend;
 }
 
-export function spawnDevServer(
-  tabId: string,
-  tabName: string,
-  workingDir: string,
-  command: string,
-  serverId?: string,
-): string {
+export interface CreateDevServerOptions {
+  /** Owning tab, or "" for a server created straight from the panel. */
+  tabId: string;
+  projectName: string;
+  workingDir: string;
+  command: string;
+  serverId?: string;
+  /**
+   * Write the project's command list back to `recentProjects`. Boot restore
+   * passes `false`: it is already iterating that list, and syncing mid-loop
+   * would rewrite it from the rows created SO FAR — truncating the user's
+   * extra servers if a later spawn in the same loop throws.
+   */
+  persist?: boolean;
+}
+
+/**
+ * The one place a `DevServer` is born.
+ *
+ * Every field here has cost someone a debugging session: `status: "starting"`
+ * rather than "running" (a green dot next to "detecting..." — 2026-07-27), and
+ * the backend resolution below, which the panel's create path once omitted and
+ * shipped a permanently black pane (2026-08-01). Three call sites drifting
+ * apart is what caused both, so they now share this function.
+ */
+export function createDevServer({
+  tabId,
+  projectName,
+  workingDir,
+  command,
+  serverId,
+  persist = true,
+}: CreateDevServerOptions): string {
   const store = useAppStore.getState();
-  const norm = (p: string) => p.replace(/\\/g, "/");
+  // Dedupe on (path, host, COMMAND). A project may legitimately run several
+  // dev servers — web + Tauri, app + API, a second instance on another port —
+  // but the same command twice is always an accident, and boot restore relies
+  // on that staying true to be idempotent.
   const existing = store.devServers.find(
-    (ds) => norm(ds.workingDir) === norm(workingDir) && ds.serverId === serverId,
+    (ds) => isSameProject(ds, workingDir, serverId) && ds.command === command,
   );
   if (existing) return existing.terminalId;
 
@@ -95,7 +152,7 @@ export function spawnDevServer(
     id: devServerId,
     terminalId,
     tabId,
-    projectName: tabName,
+    projectName,
     command,
     workingDir,
     port: 0,
@@ -112,14 +169,24 @@ export function spawnDevServer(
     // backend left undefined → DevServerTerminalHost waits to resolve it before
     // mounting the pane, so we never spawn a throwaway WSL shell first.
   });
-  useAppStore.setState((state) => ({
-    tabs: state.tabs.map((t) =>
-      t.id === tabId ? { ...t, serverCommand: command } : t,
-    ),
-  }));
-  // Persist the command onto the project so it survives restart (create-flow,
+  // Stamp the tab with the project's PRIMARY (first-row) command, not with
+  // whichever command was just added. A tab holds one command — it is what
+  // boot restore falls back to when recentProjects has nothing — so letting
+  // the newest server win would quietly re-point it at the second server.
+  if (tabId) {
+    const primary =
+      useAppStore
+        .getState()
+        .devServers.find((ds) => isSameProject(ds, workingDir, serverId))?.command ?? command;
+    useAppStore.setState((state) => ({
+      tabs: state.tabs.map((t) =>
+        t.id === tabId ? { ...t, serverCommand: primary } : t,
+      ),
+    }));
+  }
+  // Persist the project's commands so they survive restart (create-flow,
   // quick-open and boot-restore all funnel through here).
-  store.updateProjectServerCommand(workingDir, command, serverId);
+  if (persist) syncProjectServerCommands(workingDir, serverId);
 
   // Resolve the spawn backend (project override → Tauri auto-detect → global),
   // then publish it so the pane mounts in the correct shell.
@@ -135,4 +202,26 @@ export function spawnDevServer(
     });
 
   return terminalId;
+}
+
+/**
+ * Positional wrapper kept for the tab-centric callers (quick-open, project
+ * create, boot restore). New code should prefer `createDevServer`.
+ */
+export function spawnDevServer(
+  tabId: string,
+  tabName: string,
+  workingDir: string,
+  command: string,
+  serverId?: string,
+  persist = true,
+): string {
+  return createDevServer({
+    tabId,
+    projectName: tabName,
+    workingDir,
+    command,
+    serverId,
+    persist,
+  });
 }

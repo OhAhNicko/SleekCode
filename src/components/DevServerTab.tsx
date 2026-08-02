@@ -2,16 +2,14 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import { openDevServerUrlIn, wantsInAppOpen } from "../lib/open-dev-server-url";
-import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand, FaServer } from "react-icons/fa";
+import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand, FaGlobe } from "react-icons/fa";
 import { FaXmark, FaPlus, FaPencil } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
 import { useAppStore } from "../store";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
 import ServersPanel from "./ServersPanel";
 import { getPtyWrite } from "../store/terminalSlice";
-import { generateTerminalId } from "../lib/layout-utils";
-import { resolveDevServerBackend } from "../lib/spawn-dev-server";
-import { getDefaultBackend } from "../lib/platform";
+import { createDevServer, isSameProject, syncProjectServerCommands } from "../lib/spawn-dev-server";
 import type { DevServer } from "../types";
 import {
   getServerCommandSuggestions,
@@ -108,48 +106,252 @@ function classifyHost(url: string): string {
  * overflow:hidden, and rendered through a portal for the same reason.
  */
 
-function DevServerRow({ server }: { server: DevServer }) {
-  const removeDevServer = useAppStore((s) => s.removeDevServer);
-  const updateDevServerCommand = useAppStore((s) => s.updateDevServerCommand);
-  const updateDevServerStatus = useAppStore((s) => s.updateDevServerStatus);
-  const updateDevServerError = useAppStore((s) => s.updateDevServerError);
-  const updateDevServerPort = useAppStore((s) => s.updateDevServerPort);
-  const updateProjectServerCommand = useAppStore((s) => s.updateProjectServerCommand);
-  const setExpandedDevServerId = useAppStore((s) => s.setExpandedDevServerId);
+/**
+ * Row action handlers, keyed by dev-server id.
+ *
+ * `registerSurfaceActions` holds ONE entry per surface role, so a row that
+ * registers itself overwrites every other row — whichever mounted last answered
+ * for all of them, and the context menu's Restart hit the wrong server. That was
+ * survivable while a project had one server; it is the common case now. Rows
+ * publish here instead and the panel registers once, dispatching by the id the
+ * user actually right-clicked.
+ */
+const rowRestartHandlers = new Map<string, () => void>();
 
-  const [editing, setEditing] = useState(false);
-  const [editValue, setEditValue] = useState(server.command);
+/** Left inset of a row's text column, so line 2 lines up under the command. */
+function textIndent(showMarker: boolean): number {
+  //  row padding + dot + gap  (+ marker + gap)
+  return 16 + 6 + 6 + (showMarker ? 12 + 6 : 0);
+}
+
+/**
+ * The command / port / network-access editor, shared by a row's edit mode and
+ * the draft row that adds another server to a project.
+ *
+ * Both write the port and the host flag INTO the command text rather than
+ * keeping them as separate fields, which is what makes the panel's promise —
+ * what you see is what will run — literally true.
+ */
+function CommandEditor({
+  value,
+  onChange,
+  onCommit,
+  onCancel,
+  workingDir,
+  serverId,
+  indent,
+  placeholder,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+  workingDir: string;
+  serverId?: string;
+  indent: number;
+  placeholder?: string;
+}) {
   const [editingPort, setEditingPort] = useState(false);
-  const [portValue, setPortValue] = useState(String(server.port));
+  const [portValue, setPortValue] = useState("");
   // Host-flag spelling and default port for THIS project, resolved only while
-  // the row is being edited — a sidebar of idle dev servers should not each go
-  // read a package.json, still less a config file over SSH.
+  // the editor is open — a sidebar of idle dev servers should not each go read
+  // a package.json, still less a config file over SSH.
   const [hostStyle, setHostStyle] = useState<HostStyle>("vite");
   // null = not resolved yet. Starting at a number would flash a WRONG default
   // (3000) before correcting to, say, 5173 — a badge that lies briefly is worse
   // than one that admits it is still looking.
   const [defaultPort, setDefaultPort] = useState<number | null>(null);
   const [defaultPortSource, setDefaultPortSource] = useState<"framework" | "config">("framework");
+
   useEffect(() => {
-    if (!editing) return;
     let cancelled = false;
-    void detectHostStyleForProject(server.workingDir, editValue, server.serverId).then((s) => {
+    void detectHostStyleForProject(workingDir, value, serverId).then((s) => {
       if (!cancelled) setHostStyle(s);
     });
-    void resolveDefaultPort(server.workingDir, editValue, server.serverId).then((r) => {
+    void resolveDefaultPort(workingDir, value, serverId).then((r) => {
       if (cancelled) return;
       setDefaultPort(r.port);
       setDefaultPortSource(r.fromConfig ? "config" : "framework");
     });
     return () => { cancelled = true; };
-    // editValue is deliberately not a dep: re-reading package.json and a config
+    // `value` is deliberately not a dep: re-reading package.json and a config
     // file on every keystroke would be several SSH round trips per character on
     // a remote project.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, server.workingDir, server.serverId]);
+  }, [workingDir, serverId]);
 
-  /** A port this server was explicitly given, as opposed to the framework's. */
-  const customPort = explicitPortInCommand(editValue);
+  /** A port this command was explicitly given, as opposed to the framework's. */
+  const customPort = explicitPortInCommand(value);
+
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: `0 10px 5px ${indent}px`,
+        }}
+      >
+        <input
+          autoFocus
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") onCommit();
+            if (e.key === "Escape") onCancel();
+          }}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: "2px 6px",
+            fontSize: 11,
+            fontWeight: 500,
+            color: "var(--ezy-text)",
+            backgroundColor: "var(--ezy-bg)",
+            border: "1px solid var(--ezy-accent)",
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+            outline: "none",
+            fontFamily: "inherit",
+          }}
+        />
+        {editingPort ? (
+          <>
+            <input
+              autoFocus
+              value={portValue}
+              onChange={(e) => {
+                const digits = e.target.value.replace(/\D/g, "").slice(0, 5);
+                setPortValue(digits);
+                // Write straight into the command, so the field above always
+                // shows what will actually run.
+                const n = parseInt(digits, 10);
+                onChange(n > 0 && n <= 65535 ? injectPort(value, n) : stripPort(value));
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onCommit();
+                if (e.key === "Escape") onCancel();
+              }}
+              placeholder={defaultPort === null ? "port" : String(defaultPort)}
+              style={{
+                width: 44,
+                padding: "2px 4px",
+                fontSize: 11,
+                color: "var(--ezy-cyan)",
+                backgroundColor: "var(--ezy-bg)",
+                border: "1px solid var(--ezy-accent)",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                outline: "none",
+                fontFamily: "inherit",
+                flexShrink: 0,
+              }}
+            />
+            <SmallIconButton
+              title={defaultPort === null ? "Use the default port" : `Use the default port (${defaultPort})`}
+              onClick={() => {
+                onChange(stripPort(value));
+                setPortValue("");
+                setEditingPort(false);
+              }}
+            >
+              <BiRefresh size={12} color="var(--ezy-text-muted)" style={{ transform: "scale(1.2)" }} />
+            </SmallIconButton>
+          </>
+        ) : (
+          <>
+            <span
+              data-tooltip={
+                customPort
+                  ? `Port ${customPort}, set for this server`
+                  : defaultPort === null
+                    ? "Working out this project's default port…"
+                    : defaultPortSource === "config"
+                      ? `Default port ${defaultPort}, from this project's config`
+                      : `Default port ${defaultPort} for this project's framework`
+              }
+              style={{
+                flexShrink: 0,
+                padding: "2px 6px",
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: "0.02em",
+                color: customPort ? "#fff" : "var(--ezy-text)",
+                backgroundColor: customPort ? "var(--ezy-accent)" : "var(--ezy-border)",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                whiteSpace: "nowrap",
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {customPort
+                ? `Port ${customPort}`
+                : defaultPort === null
+                  ? "Default …"
+                  : `Default ${defaultPort}`}
+            </span>
+            <SmallIconButton
+              title="Set a port manually"
+              onClick={() => {
+                setPortValue(String(customPort ?? ""));
+                setEditingPort(true);
+              }}
+            >
+              <FaPencil size={9} color="var(--ezy-text-muted)" />
+            </SmallIconButton>
+          </>
+        )}
+      </div>
+
+      {/* Network access. Same rule as the create form: the flag goes into the
+          command text, so committing runs it exactly as shown. */}
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: `0 10px 5px ${indent}px`,
+          cursor: "pointer",
+          userSelect: "none",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={hasHostFlag(value)}
+          onChange={() => onChange(hasHostFlag(value) ? stripHost(value) : injectHost(value, hostStyle))}
+          style={{ flexShrink: 0 }}
+        />
+        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+          Reachable from other devices
+        </span>
+      </label>
+    </>
+  );
+}
+
+function DevServerRow({
+  server,
+  showQuickOpenMarker,
+  isQuickOpen,
+  onSetQuickOpen,
+}: {
+  server: DevServer;
+  /** Only shown when the project has a choice to make (more than one server). */
+  showQuickOpenMarker: boolean;
+  isQuickOpen: boolean;
+  onSetQuickOpen: () => void;
+}) {
+  const removeDevServer = useAppStore((s) => s.removeDevServer);
+  const updateDevServerCommand = useAppStore((s) => s.updateDevServerCommand);
+  const updateDevServerStatus = useAppStore((s) => s.updateDevServerStatus);
+  const updateDevServerError = useAppStore((s) => s.updateDevServerError);
+  const updateDevServerPort = useAppStore((s) => s.updateDevServerPort);
+  const setExpandedDevServerId = useAppStore((s) => s.setExpandedDevServerId);
+
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(server.command);
+  // Drives the quick-open marker on non-primary rows: the slot is always there
+  // (so nothing shifts) but the globe only appears under the pointer.
+  const [hovered, setHovered] = useState(false);
 
   const serverUrl = server.port > 0 ? `http://localhost:${server.port}` : null;
   const networkUrls = server.networkUrls ?? [];
@@ -235,16 +437,6 @@ function DevServerRow({ server }: { server: DevServer }) {
   // Drop the popover if the URL list changes out from under it
   useEffect(() => { if (networkUrls.length === 0) setPopoverRect(null); }, [networkUrls.length]);
 
-  const restartRef = useRef<(() => void) | null>(null);
-  useEffect(() => {
-    // Each DevServerTab renders ONE server, so the registry entry is replaced
-    // by whichever row mounted last; the handler is re-pointed per id below.
-    registerSurfaceActions("devserver", {
-      restart: (id) => { if (id === server.id) restartRef.current?.(); },
-    });
-    return () => unregisterSurfaceActions("devserver");
-  }, [server.id]);
-
   const handleRestart = useCallback(() => {
     const write = getPtyWrite(server.terminalId);
     if (write) {
@@ -258,7 +450,13 @@ function DevServerRow({ server }: { server: DevServer }) {
     updateDevServerPort(server.id, 0);
     updateDevServerError(server.id, undefined);
   }, [server, updateDevServerStatus, updateDevServerPort, updateDevServerError]);
-  restartRef.current = handleRestart;
+
+  // Publish this row's Restart for the context menu, keyed by id so the menu
+  // acts on the row that was right-clicked rather than the last one mounted.
+  useEffect(() => {
+    rowRestartHandlers.set(server.id, handleRestart);
+    return () => { rowRestartHandlers.delete(server.id); };
+  }, [server.id, handleRestart]);
 
   const handleStop = useCallback(() => {
     const write = getPtyWrite(server.terminalId);
@@ -268,12 +466,14 @@ function DevServerRow({ server }: { server: DevServer }) {
     updateDevServerStatus(server.id, "stopped");
   }, [server, updateDevServerStatus]);
 
-  // Remove forgets the saved command (Stop keeps it): clear the persisted
-  // project command so it won't be restored on next launch.
+  // Remove forgets this server's command (Stop keeps it). The project's OTHER
+  // servers must survive, so the saved list is recomputed from the rows that
+  // are left rather than cleared — clearing it here used to be right only
+  // because a project could not have a second row to lose.
   const handleRemove = useCallback(() => {
     removeDevServer(server.id);
-    updateProjectServerCommand(server.workingDir, undefined, server.serverId);
-  }, [server, removeDevServer, updateProjectServerCommand]);
+    syncProjectServerCommands(server.workingDir, server.serverId);
+  }, [server, removeDevServer]);
 
   const handleStart = useCallback(() => {
     const write = getPtyWrite(server.terminalId);
@@ -290,7 +490,15 @@ function DevServerRow({ server }: { server: DevServer }) {
     const commandChanged = trimmed && trimmed !== server.command;
     if (commandChanged) {
       updateDevServerCommand(server.id, trimmed);
-      updateProjectServerCommand(server.workingDir, trimmed, server.serverId);
+      // If this row was the project's quick-open target, the pointer has to
+      // follow the rename — it matches on the command string.
+      const wasQuickOpen = isQuickOpen;
+      syncProjectServerCommands(server.workingDir, server.serverId);
+      if (wasQuickOpen) {
+        useAppStore
+          .getState()
+          .setPrimaryServerCommand(server.workingDir, server.serverId, trimmed);
+      }
     }
 
     // The port now rides IN the command text (`-- --port 3001`), the same way
@@ -316,13 +524,11 @@ function DevServerRow({ server }: { server: DevServer }) {
     }
 
     setEditing(false);
-    setEditingPort(false);
-  }, [editValue, server, updateDevServerCommand, updateDevServerPort, updateDevServerStatus, updateDevServerError, updateProjectServerCommand]);
+  }, [editValue, server, isQuickOpen, updateDevServerCommand, updateDevServerPort, updateDevServerStatus, updateDevServerError]);
 
   const handleCancelEdit = useCallback(() => {
     setEditValue(server.command);
     setEditing(false);
-    setEditingPort(false);
   }, [server.command]);
 
   // Unified click contract (2026-07-29): plain click = external browser,
@@ -345,6 +551,7 @@ function DevServerRow({ server }: { server: DevServer }) {
   );
 
   const hasError = server.status === "error" && server.errorMessage;
+  const indent = textIndent(showQuickOpenMarker);
 
   return (
     <div
@@ -352,28 +559,59 @@ function DevServerRow({ server }: { server: DevServer }) {
       data-ctx-id={server.id}
       data-ctx-label={server.projectName}
       data-ctx-url={serverUrl ?? ""}
-      style={{
-        borderBottom: "1px solid var(--ezy-border-subtle)",
-      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ borderBottom: "1px solid var(--ezy-border-subtle)" }}
     >
-      {/* Main row: status + name + actions */}
+      {/* Main row: status + quick-open marker + command + actions.
+          The project name lives on the group header now, so the COMMAND is
+          what identifies a row — a project can have several. */}
       <div
         style={{
           display: "flex",
           alignItems: "center",
           gap: 6,
-          padding: "5px 10px 2px",
+          padding: "3px 10px 2px 16px",
         }}
       >
         <StatusDot status={server.status} />
+
+        {/* Quick-open marker. Only rendered when the project has more than one
+            server: with one there is nothing to choose, and a permanent badge
+            on every row would be noise. The slot keeps its width whether or not
+            the globe is visible, so nothing shifts under the pointer. */}
+        {showQuickOpenMarker && (
+          <span
+            role="button"
+            aria-label={isQuickOpen ? "Quick-open target" : "Make this the quick-open target"}
+            data-tooltip={
+              isQuickOpen
+                ? "Quick-open target — the globe icons open this server"
+                : "Open this server from the tab and pane globes"
+            }
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!isQuickOpen) onSetQuickOpen();
+            }}
+            style={{
+              width: 12,
+              height: 12,
+              flexShrink: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: isQuickOpen ? "default" : "pointer",
+              opacity: isQuickOpen ? 1 : hovered ? 0.55 : 0,
+              transition: "opacity 120ms ease",
+            }}
+          >
+            <FaGlobe size={9} color={isQuickOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} />
+          </span>
+        )}
+
         <span
-          // The row shows only the project NAME, and the name is ambiguous
-          // across two checkouts of the same repo — the path is the thing that
-          // tells them apart. TooltipHost suppresses tooltips that merely echo
-          // unclipped visible text, so this one only ever adds information.
-          data-tooltip={server.workingDir}
           style={{
-            fontSize: 12,
+            fontSize: 11,
             fontWeight: 500,
             color: "var(--ezy-text)",
             flex: 1,
@@ -383,7 +621,7 @@ function DevServerRow({ server }: { server: DevServer }) {
             whiteSpace: "nowrap",
           }}
         >
-          {server.projectName}
+          {server.command}
         </span>
 
         {/* Action buttons */}
@@ -407,12 +645,7 @@ function DevServerRow({ server }: { server: DevServer }) {
                 handleSaveEdit();
               } else {
                 setEditValue(server.command);
-                setPortValue("");
                 setEditing(true);
-                // Start on the badge. The free-type field is behind its own
-                // pencil now, so the common case (leave the port alone) needs
-                // no interaction at all.
-                setEditingPort(false);
               }
             }}
           >
@@ -432,215 +665,72 @@ function DevServerRow({ server }: { server: DevServer }) {
         </div>
       </div>
 
-      {/* Second row: command + port */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "0 10px 5px 22px",
-        }}
-      >
-        {editing ? (
-          <>
-            <input
-              autoFocus
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSaveEdit();
-                if (e.key === "Escape") handleCancelEdit();
-              }}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                padding: "2px 6px",
-                fontSize: 11,
-                fontWeight: 500,
-                color: "var(--ezy-text)",
-                backgroundColor: "var(--ezy-bg)",
-                border: "1px solid var(--ezy-accent)",
-                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
-                outline: "none",
-                fontFamily: "inherit",
-              }}
-            />
-            {editingPort ? (
-              <>
-                <input
-                  autoFocus
-                  value={portValue}
-                  onChange={(e) => {
-                    const digits = e.target.value.replace(/\D/g, "").slice(0, 5);
-                    setPortValue(digits);
-                    // Write straight into the command, so the field above always
-                    // shows what will actually run.
-                    const n = parseInt(digits, 10);
-                    setEditValue((c) =>
-                      n > 0 && n <= 65535 ? injectPort(c, n) : stripPort(c),
-                    );
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleSaveEdit();
-                    if (e.key === "Escape") handleCancelEdit();
-                  }}
-                  placeholder={defaultPort === null ? "port" : String(defaultPort)}
-                  style={{
-                    width: 44,
-                    padding: "2px 4px",
-                    fontSize: 11,
-                    color: "var(--ezy-cyan)",
-                    backgroundColor: "var(--ezy-bg)",
-                    border: "1px solid var(--ezy-accent)",
-                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
-                    outline: "none",
-                    fontFamily: "inherit",
-                    flexShrink: 0,
-                  }}
-                />
-                <SmallIconButton
-                  title={defaultPort === null ? "Use the default port" : `Use the default port (${defaultPort})`}
-                  onClick={() => {
-                    setEditValue((c) => stripPort(c));
-                    setPortValue("");
-                    setEditingPort(false);
-                  }}
-                >
-                  <BiRefresh size={12} color="var(--ezy-text-muted)" style={{ transform: "scale(1.2)" }} />
-                </SmallIconButton>
-              </>
-            ) : (
-              <>
-                <span
-                  data-tooltip={
-                    customPort
-                      ? `Port ${customPort}, set for this server`
-                      : defaultPort === null
-                        ? "Working out this project's default port…"
-                        : defaultPortSource === "config"
-                          ? `Default port ${defaultPort}, from this project's config`
-                          : `Default port ${defaultPort} for this project's framework`
-                  }
-                  style={{
-                    flexShrink: 0,
-                    padding: "2px 6px",
-                    fontSize: 10,
-                    fontWeight: 600,
-                    letterSpacing: "0.02em",
-                    color: customPort ? "#fff" : "var(--ezy-text)",
-                    backgroundColor: customPort ? "var(--ezy-accent)" : "var(--ezy-border)",
-                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
-                    whiteSpace: "nowrap",
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                >
-                  {customPort
-                    ? `Port ${customPort}`
-                    : defaultPort === null
-                      ? "Default \u2026"
-                      : `Default ${defaultPort}`}
-                </span>
-                <SmallIconButton
-                  title="Set a port manually"
-                  onClick={() => {
-                    setPortValue(String(customPort ?? ""));
-                    setEditingPort(true);
-                  }}
-                >
-                  <FaPencil size={9} color="var(--ezy-text-muted)" />
-                </SmallIconButton>
-              </>
-            )}
-          </>
-        ) : (
-          <>
-            <span
-              style={{
-                fontSize: 11,
-                color: "var(--ezy-text-muted)",
-                flex: 1,
-                minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {server.command}
-            </span>
-            {serverUrl ? (
-              <span
-                ref={urlSpanRef}
-                onClick={handleUrlClick}
-                data-tooltip={
-                  networkUrls.length > 0
-                    ? `${serverUrl} — Click to open in browser / Ctrl+Click for preview\nHover 3s to see ${networkUrls.length} network address${networkUrls.length === 1 ? "" : "es"}`
-                    : `${serverUrl} — Click to open in browser / Ctrl+Click for preview`
-                }
-                style={{
-                  fontSize: 11,
-                  color: "var(--ezy-cyan)",
-                  cursor: "pointer",
-                  flexShrink: 1,
-                  minWidth: 0,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  borderBottom: "1px solid transparent",
-                  transition: "border-color 120ms ease",
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.borderBottomColor = "var(--ezy-cyan)";
-                  scheduleOpen();
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.borderBottomColor = "transparent";
-                  scheduleClose();
-                }}
-              >
-                {serverUrl}
-              </span>
-            ) : server.status !== "stopped" ? (
-              <span
-                style={{
-                  fontSize: 10,
-                  color: "var(--ezy-text-muted)",
-                  flexShrink: 0,
-                  opacity: 0.5,
-                }}
-              >
-                detecting...
-              </span>
-            ) : null}
-          </>
-        )}
-      </div>
-
-      {/* Network access, while editing. Same rule as the create form: the flag
-          goes into the command text, so Save restarts with it exactly as
-          shown. */}
-      {editing && (
-        <label
+      {editing ? (
+        <CommandEditor
+          value={editValue}
+          onChange={setEditValue}
+          onCommit={handleSaveEdit}
+          onCancel={handleCancelEdit}
+          workingDir={server.workingDir}
+          serverId={server.serverId}
+          indent={indent}
+        />
+      ) : (
+        /* Second line: where this server can be reached, aligned under the
+           command it belongs to. */
+        <div
           style={{
             display: "flex",
             alignItems: "center",
             gap: 6,
-            padding: "0 10px 5px 22px",
-            cursor: "pointer",
-            userSelect: "none",
+            padding: `0 10px 5px ${indent}px`,
           }}
         >
-          <input
-            type="checkbox"
-            checked={hasHostFlag(editValue)}
-            onChange={() =>
-              setEditValue((c) => (hasHostFlag(c) ? stripHost(c) : injectHost(c, hostStyle)))
-            }
-            style={{ flexShrink: 0 }}
-          />
-          <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
-            Reachable from other devices
-          </span>
-        </label>
+          {serverUrl ? (
+            <span
+              ref={urlSpanRef}
+              onClick={handleUrlClick}
+              data-tooltip={
+                networkUrls.length > 0
+                  ? `${serverUrl} \u2014 Click to open in browser / Ctrl+Click for preview\nHover 3s to see ${networkUrls.length} network address${networkUrls.length === 1 ? "" : "es"}`
+                  : `${serverUrl} \u2014 Click to open in browser / Ctrl+Click for preview`
+              }
+              style={{
+                fontSize: 11,
+                color: "var(--ezy-cyan)",
+                cursor: "pointer",
+                flexShrink: 1,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                borderBottom: "1px solid transparent",
+                transition: "border-color 120ms ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.borderBottomColor = "var(--ezy-cyan)";
+                scheduleOpen();
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.borderBottomColor = "transparent";
+                scheduleClose();
+              }}
+            >
+              {serverUrl}
+            </span>
+          ) : server.status !== "stopped" ? (
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--ezy-text-muted)",
+                flexShrink: 0,
+                opacity: 0.5,
+              }}
+            >
+              detecting...
+            </span>
+          ) : null}
+        </div>
       )}
 
       {/* Error message — solid surface, not a tinted wash (UI rules), and it
@@ -650,7 +740,7 @@ function DevServerRow({ server }: { server: DevServer }) {
         <div
           data-tooltip={server.errorMessage}
           style={{
-            margin: "1px 10px 5px 22px",
+            margin: `1px 10px 5px ${indent}px`,
             padding: "4px 7px",
             fontSize: 10,
             lineHeight: 1.35,
@@ -673,6 +763,218 @@ function DevServerRow({ server }: { server: DevServer }) {
   );
 }
 
+/**
+ * The "add another server to this project" row.
+ *
+ * It is a draft, not a server: nothing is created until a command is committed.
+ * Creating the row first and letting the user fill it in would spawn a PTY with
+ * an empty command and leave a half-real server in the list if they changed
+ * their mind.
+ */
+function NewServerDraftRow({
+  projectName,
+  workingDir,
+  serverId,
+  tabId,
+  existingCommands,
+  onClose,
+}: {
+  projectName: string;
+  workingDir: string;
+  serverId?: string;
+  tabId: string;
+  existingCommands: string[];
+  onClose: () => void;
+}) {
+  const [value, setValue] = useState("");
+  const addCustomServerCommand = useAppStore((s) => s.addCustomServerCommand);
+
+  const trimmed = value.trim();
+  // The project already running this exact command is the one case where a
+  // second server is certainly a mistake — createDevServer would dedupe it away
+  // anyway, so say so instead of appearing to do nothing.
+  const duplicate = existingCommands.includes(trimmed);
+
+  const handleCommit = useCallback(() => {
+    const cmd = value.trim();
+    if (!cmd || existingCommands.includes(cmd)) return;
+    if (!BUILTIN_SERVER_COMMANDS.includes(cmd)) addCustomServerCommand(cmd);
+    createDevServer({ tabId, projectName, workingDir, command: cmd, serverId });
+    onClose();
+  }, [value, existingCommands, addCustomServerCommand, tabId, projectName, workingDir, serverId, onClose]);
+
+  return (
+    <div style={{ borderBottom: "1px solid var(--ezy-border-subtle)" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "3px 10px 2px 16px",
+        }}
+      >
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+            color: "var(--ezy-text-muted)",
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
+          New server
+        </span>
+        <SmallIconButton title="Cancel" onClick={onClose}>
+          <FaXmark size={10} color="var(--ezy-text-muted)" />
+        </SmallIconButton>
+      </div>
+
+      <CommandEditor
+        value={value}
+        onChange={setValue}
+        onCommit={handleCommit}
+        onCancel={onClose}
+        workingDir={workingDir}
+        serverId={serverId}
+        indent={16}
+        placeholder="npm run dev"
+      />
+
+      {duplicate && (
+        <div
+          style={{
+            margin: "0 10px 5px 16px",
+            padding: "3px 7px",
+            fontSize: 10,
+            lineHeight: 1.35,
+            color: "#fff",
+            backgroundColor: "var(--ezy-red)",
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+          }}
+        >
+          This project already runs that command. Give the new server a different
+          one, or set another port.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One project's servers: a header naming the project, then a row per server.
+ *
+ * The header exists even when a project has a single server, so "+" is always
+ * in the same place and a project reads as one block whether it runs one server
+ * or four.
+ */
+function DevServerGroup({ servers }: { servers: DevServer[] }) {
+  const [adding, setAdding] = useState(false);
+  const setPrimaryServerCommand = useAppStore((s) => s.setPrimaryServerCommand);
+  const first = servers[0];
+  const quickOpenCommand = useAppStore((s) => {
+    const project = s.recentProjects.find((p) =>
+      isSameProject({ workingDir: p.path, serverId: p.serverId }, first.workingDir, first.serverId),
+    );
+    return project?.primaryServerCommand;
+  });
+
+  // Which row the globes act on. Mirrors getQuickOpenServer's fallback so the
+  // marker never points somewhere different from what the globes actually open.
+  const resolvedQuickOpen =
+    servers.find((ds) => ds.command === quickOpenCommand) ??
+    servers.find((ds) => ds.status === "running" && ds.port > 0) ??
+    first;
+  const showMarker = servers.length > 1;
+
+  return (
+    <div>
+      {/* Group header: the project, and the only place a server is added to it.
+          The rule runs from the name to the button, binding the rows below to
+          the name above without spending a heavier divider on it. */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "6px 6px 3px 10px",
+        }}
+      >
+        <span
+          // The name is ambiguous across two checkouts of the same repo — the
+          // path is what tells them apart. TooltipHost suppresses tooltips that
+          // merely echo unclipped visible text, so this only ever adds
+          // information.
+          data-tooltip={first.workingDir}
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: "var(--ezy-text)",
+            flexShrink: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {first.projectName}
+        </span>
+        <span
+          aria-hidden
+          style={{ flex: 1, height: 1, backgroundColor: "var(--ezy-border-subtle)", minWidth: 8 }}
+        />
+        <SmallIconButton
+          title={`Add another dev server to ${first.projectName}`}
+          onClick={() => setAdding(true)}
+        >
+          <FaPlus size={9} color="var(--ezy-text-muted)" />
+        </SmallIconButton>
+      </div>
+
+      {servers.map((server) => (
+        <DevServerRow
+          key={server.id}
+          server={server}
+          showQuickOpenMarker={showMarker}
+          isQuickOpen={server.id === resolvedQuickOpen.id}
+          onSetQuickOpen={() =>
+            setPrimaryServerCommand(server.workingDir, server.serverId, server.command)
+          }
+        />
+      ))}
+
+      {adding && (
+        <NewServerDraftRow
+          projectName={first.projectName}
+          workingDir={first.workingDir}
+          serverId={first.serverId}
+          tabId={first.tabId}
+          existingCommands={servers.map((s) => s.command)}
+          onClose={() => setAdding(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Group the flat dev-server list by project, preserving creation order.
+ *
+ * The key is the project, not the first server: keying a group by a row id
+ * would remount the whole group — discarding a half-typed draft row — the
+ * moment that row was removed.
+ */
+function groupByProject(servers: DevServer[]): [string, DevServer[]][] {
+  const groups = new Map<string, DevServer[]>();
+  for (const ds of servers) {
+    const key = `${ds.workingDir.replace(/\\/g, "/")}|${ds.serverId ?? ""}`;
+    const group = groups.get(key);
+    if (group) group.push(ds);
+    else groups.set(key, [ds]);
+  }
+  return [...groups.entries()];
+}
 
 /** The flag the tickbox will add, shown so the change is never a mystery. */
 function hostStylePreview(style: HostStyle): string {
@@ -686,12 +988,8 @@ function hostStylePreview(style: HostStyle): string {
 
 function AddServerForm({ onClose }: { onClose: () => void }) {
   const recentProjects = useAppStore((s) => s.recentProjects);
-  const addTerminal = useAppStore((s) => s.addTerminal);
-  const addDevServer = useAppStore((s) => s.addDevServer);
-  const setDevServerBackend = useAppStore((s) => s.setDevServerBackend);
   const addCustomServerCommand = useAppStore((s) => s.addCustomServerCommand);
   const removeCustomServerCommand = useAppStore((s) => s.removeCustomServerCommand);
-  const updateProjectServerCommand = useAppStore((s) => s.updateProjectServerCommand);
   const addRecentProject = useAppStore((s) => s.addRecentProject);
 
   const [selectedPath, setSelectedPath] = useState("");
@@ -761,57 +1059,34 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
 
   const handleStart = useCallback(() => {
     if (!selectedPath || !command.trim()) return;
-    // Skip if a dev server already exists for the same project + server
-    const norm = (p: string) => p.replace(/\\/g, "/");
-    const existing = useAppStore.getState().devServers.find(
-      (ds) => norm(ds.workingDir) === norm(selectedPath) && ds.serverId === selectedServerId
-    );
-    if (existing) { onClose(); return; }
-
     const trimmed = command.trim();
     if (!BUILTIN_SERVER_COMMANDS.includes(trimmed)) {
       addCustomServerCommand(trimmed);
     }
-    const terminalId = generateTerminalId();
-    const devServerId = `ds-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    addTerminal(terminalId, "devserver", selectedPath, selectedServerId);
-    addDevServer({
-      id: devServerId,
-      terminalId,
-      tabId: "",
-      projectName: selectedName,
-      command: trimmed,
-      workingDir: selectedPath,
-      port: 0,
-      status: "starting",
-      serverId: selectedServerId,
-    });
-    // Resolve the spawn backend, exactly as spawn-dev-server.ts does for the
-    // quick-open / auto-start / boot-restore path.
-    //
-    // This site never did, and `backend: undefined` is not a neutral default:
-    // DevServerTerminalHost renders NOTHING for a dev server without one, so a
-    // server created here got a permanently black pane — no PTY, no command,
-    // no error, just a row that says "detecting..." forever. It looked
-    // intermittent only because the OTHER creation path resolves it.
-    resolveDevServerBackend(selectedPath, selectedServerId)
-      .then((backend) => setDevServerBackend(devServerId, backend))
-      .catch(() => {
-        const fallback = useAppStore.getState().terminalBackend ?? getDefaultBackend();
-        setDevServerBackend(devServerId, fallback);
-      });
-    // Persist the command onto the project so it's remembered across restart.
-    // Upsert: a browsed-new dir may not be in recentProjects yet.
+    // The project entry has to exist before the server is created: persisting
+    // the command list writes into recentProjects, and a browsed-new directory
+    // isn't in there yet.
+    const norm = (p: string) => p.replace(/\\/g, "/");
     const exists = useAppStore.getState().recentProjects.some(
       (p) => norm(p.path) === norm(selectedPath) && p.serverId === selectedServerId,
     );
-    if (exists) {
-      updateProjectServerCommand(selectedPath, trimmed, selectedServerId);
-    } else {
-      addRecentProject({ path: selectedPath, name: selectedName, serverCommand: trimmed, serverId: selectedServerId });
+    if (!exists) {
+      addRecentProject({ path: selectedPath, name: selectedName, serverId: selectedServerId });
     }
+    // createDevServer owns backend resolution and persistence. This site used
+    // to build the DevServer by hand and forgot `resolveDevServerBackend`,
+    // which left a permanently black pane — no PTY, no command, no error, just
+    // a row stuck on "detecting..." — and looked intermittent only because the
+    // other creation path did resolve it. Duplicating it once cost that bug.
+    createDevServer({
+      tabId: "",
+      projectName: selectedName,
+      workingDir: selectedPath,
+      command: trimmed,
+      serverId: selectedServerId,
+    });
     onClose();
-  }, [selectedPath, selectedName, selectedServerId, command, addTerminal, addDevServer, setDevServerBackend, addCustomServerCommand, updateProjectServerCommand, addRecentProject, onClose]);
+  }, [selectedPath, selectedName, selectedServerId, command, addCustomServerCommand, addRecentProject, onClose]);
 
   const inputStyle: React.CSSProperties = {
     width: "100%",
@@ -1090,6 +1365,15 @@ export default function DevServerTab() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [showRemoteServers, setShowRemoteServers] = useState(true);
 
+  // One registration for the whole panel, dispatching to the row that was
+  // right-clicked (see `rowRestartHandlers`).
+  useEffect(() => {
+    registerSurfaceActions("devserver", {
+      restart: (id) => rowRestartHandlers.get(id)?.(),
+    });
+    return () => unregisterSurfaceActions("devserver");
+  }, []);
+
   return (
     <div
       style={{
@@ -1127,26 +1411,6 @@ export default function DevServerTab() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-          {/* Remote servers toggle */}
-          <div
-            data-tooltip={showRemoteServers ? "Hide Remote Servers" : "Show Remote Servers"}
-            style={{
-              width: 20,
-              height: 20,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
-              cursor: "pointer",
-              transition: "background-color 120ms ease",
-              backgroundColor: showRemoteServers ? "var(--ezy-accent-glow)" : "transparent",
-            }}
-            onClick={() => setShowRemoteServers(!showRemoteServers)}
-            onMouseEnter={(e) => { if (!showRemoteServers) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-            onMouseLeave={(e) => { if (!showRemoteServers) e.currentTarget.style.backgroundColor = "transparent"; }}
-          >
-            <FaServer size={9} color={showRemoteServers ? "var(--ezy-accent)" : "var(--ezy-text-muted)"} />
-          </div>
           {/* Add server button */}
           <div
             data-tooltip="Add dev server"
@@ -1204,17 +1468,21 @@ export default function DevServerTab() {
             </p>
           </div>
         ) : (
-          devServers.map((server) => (
-            <DevServerRow key={server.id} server={server} />
+          groupByProject(devServers).map(([key, group]) => (
+            <DevServerGroup key={key} servers={group} />
           ))
         )}
 
-        {/* Inline Remote Servers section */}
-        {showRemoteServers && (
-          <div style={{ borderTop: "1px solid var(--ezy-border-subtle)" }}>
-            <ServersPanel compact />
-          </div>
-        )}
+        {/* Inline Remote Servers section — always mounted now that the fold
+            control lives on its own REMOTE header. Unmounting it here would
+            take the control away with it. */}
+        <div style={{ borderTop: "1px solid var(--ezy-border-subtle)" }}>
+          <ServersPanel
+            compact
+            collapsed={!showRemoteServers}
+            onToggleCollapsed={() => setShowRemoteServers((v) => !v)}
+          />
+        </div>
       </div>
     </div>
   );

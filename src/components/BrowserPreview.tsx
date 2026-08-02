@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "../store";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
+import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { useBrowserConsoleStore, type ConsoleEntry } from "../store/browserConsoleStore";
 import { FaCheck, FaChevronLeft, FaChevronRight, FaGlobe, FaExternalLinkAlt, FaCrosshairs, FaTerminal, FaDesktop, FaTrash, FaLock, FaLockOpen, FaBug } from "react-icons/fa";
 import { FaArrowsRotate, FaXmark } from "react-icons/fa6";
@@ -301,8 +302,10 @@ export default function BrowserPreview({
   // forwarded local port set by DevServerTerminalHost after the tunnel binds.
   // (See note in DevServerTerminalHost: for SSH we no longer set port until
   // the tunnel is bound, so port > 0 always means "URL is reachable".)
+  // A project can run several dev servers, so which one this pane tracks is the
+  // user's choice (the globe marker in the dev-server panel), not array order.
   const linkedDevServer = useAppStore((s) =>
-    linkedTabId ? s.devServers.find((d) => d.tabId === linkedTabId) : undefined
+    linkedTabId ? getQuickOpenServer(s, { tabId: linkedTabId }) : undefined
   );
   const linkedReady =
     !!linkedDevServer &&

@@ -404,7 +404,17 @@ const PROJECTS_DIR_TIP =
 
 /* ── Main component ── */
 
-export default function ServersPanel({ compact }: { compact?: boolean }) {
+export default function ServersPanel({
+  compact,
+  collapsed = false,
+  onToggleCollapsed,
+}: {
+  compact?: boolean;
+  /** Compact mode only: fold the section down to its header row. The header
+   *  itself always stays mounted — it carries the control that unfolds it. */
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
+}) {
   const servers = useAppStore((s) => s.servers);
   const addServer = useAppStore((s) => s.addServer);
   const updateServer = useAppStore((s) => s.updateServer);
@@ -692,17 +702,53 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
 
     return (
       <div style={{ display: "flex", flexDirection: "column" }}>
-        {/* Compact section header */}
+        {/* Compact section header — the whole row folds the section, so the
+            count stays readable while collapsed and tells you what is stowed. */}
         <div
+          role={onToggleCollapsed ? "button" : undefined}
+          tabIndex={onToggleCollapsed ? 0 : undefined}
+          aria-expanded={onToggleCollapsed ? !collapsed : undefined}
+          data-tooltip={onToggleCollapsed ? (collapsed ? "Show remote servers" : "Hide remote servers") : undefined}
+          onClick={onToggleCollapsed}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onToggleCollapsed?.();
+            }
+          }}
           style={{
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
             padding: "6px 10px",
             borderBottom: "1px solid var(--ezy-border-subtle)",
+            cursor: onToggleCollapsed ? "pointer" : "default",
+            outline: "none",
+            transition: "background-color 120ms ease",
           }}
+          // A quieter lift than the accent-glow the icon buttons use, so the +
+          // sitting inside this row still reads as its own target on hover.
+          onMouseEnter={(e) => { if (onToggleCollapsed) e.currentTarget.style.backgroundColor = "var(--ezy-surface-raised)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+          // :focus-visible, not :focus — a mouse click must not leave a ring
+          // behind on a row the pointer is already hovering.
+          onFocus={(e) => { if (onToggleCollapsed && e.currentTarget.matches(":focus-visible")) e.currentTarget.style.boxShadow = "inset 0 0 0 1px var(--ezy-accent-dim)"; }}
+          onBlur={(e) => { e.currentTarget.style.boxShadow = "none"; }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            {onToggleCollapsed && (
+              // Matches the app's section-collapse convention (see
+              // CodeReviewDiffView): down when open, -90deg when folded.
+              <FaChevronDown
+                size={8}
+                color="var(--ezy-text-muted)"
+                style={{
+                  flexShrink: 0,
+                  transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                  transition: "transform 150ms ease",
+                }}
+              />
+            )}
             <span style={{ fontSize: 10, fontWeight: 600, color: "var(--ezy-text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" }}>
               Remote
             </span>
@@ -724,11 +770,22 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
               cursor: "pointer",
               transition: "background-color 120ms ease",
             }}
-            onClick={() => { resetForm(); setShowForm(!showForm); }}
+            // Adding a server must never file it into a folded list, so a click
+            // while collapsed unfolds the section first, then opens the form.
+            onClick={(e) => {
+              e.stopPropagation();
+              resetForm();
+              if (collapsed) {
+                onToggleCollapsed?.();
+                setShowForm(true);
+                return;
+              }
+              setShowForm(!showForm);
+            }}
             onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
             onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
           >
-            {showForm ? (
+            {showForm && !collapsed ? (
               <FaXmark size={9} color="var(--ezy-text-muted)" />
             ) : (
               <FaPlus size={9} color="var(--ezy-text-muted)" />
@@ -738,7 +795,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
 
         {/* Compact add/edit form — a rounded card with a title strip, grouped
             sections and a hairline divider before the Claude sign-in block. */}
-        {showForm && (
+        {!collapsed && showForm && (
           <div style={{ padding: 8, borderBottom: "1px solid var(--ezy-border-subtle)" }}>
             <div
               style={{
@@ -1052,7 +1109,7 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
         )}
 
         {/* Compact server list */}
-        {servers.length === 0 && !showForm ? (
+        {!collapsed && (servers.length === 0 && !showForm ? (
           <div style={{ padding: "12px 10px", textAlign: "center", color: "var(--ezy-text-muted)" }}>
             <p style={{ fontSize: 11, margin: 0 }}>No remote servers</p>
             <p style={{ fontSize: 10, margin: "2px 0 0", color: "var(--ezy-border-light)" }}>
@@ -1063,6 +1120,9 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
           servers.map((server) => {
             const status = testStatus[server.id] ?? "idle";
             const hasKey = !!server.sshKeyPath;
+            // Row 3 only survives for a key-auth server that has no key yet.
+            // Whichever row ends up last carries the card's bottom padding.
+            const showKeySetup = !hasKey && server.authMethod === "ssh-key";
 
             return (
               <div
@@ -1139,15 +1199,67 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                   </div>
                 </div>
 
-                {/* Row 2: host + user */}
-                <div style={{ padding: "0 10px 2px 22px", fontSize: 11, color: "var(--ezy-text-muted)" }}>
-                  <span style={{ fontVariantNumeric: "tabular-nums" }}>{server.host}</span>
-                  <span style={{ margin: "0 5px", opacity: 0.3 }}>/</span>
-                  <span>{server.username}</span>
+                {/* Row 2: host + user, with the SSH-key marker parked on the
+                    right. A configured key is a property of the connection, not
+                    news of its own — giving it a third row made every keyed
+                    server taller for no added information. */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 10px ${showKeySetup ? 2 : 5}px 22px`, fontSize: 11, color: "var(--ezy-text-muted)" }}>
+                  <div style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <span style={{ fontVariantNumeric: "tabular-nums" }}>{server.host}</span>
+                    <span style={{ margin: "0 5px", opacity: 0.3 }}>/</span>
+                    <span>{server.username}</span>
+                  </div>
+                  {hasKey && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 3, flexShrink: 0 }}>
+                      <span
+                        data-tooltip="SSH key configured"
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 3,
+                          fontSize: 10,
+                          fontWeight: 600,
+                          letterSpacing: "0.04em",
+                          color: "var(--ezy-accent)",
+                        }}
+                      >
+                        SSH
+                        <FaKey size={8} />
+                      </span>
+                      <div
+                        data-tooltip={copiedKey === server.sshKeyPath ? "Copied!" : "Copy public key"}
+                        onClick={() => handleCopyKey(server.sshKeyPath!)}
+                        // Same hover as this sidebar's other icon buttons (test /
+                        // edit / delete above). 14px, not the 22px SmallIconButton
+                        // chip: this sits in an 11px text row, and a taller hit box
+                        // would grow the row — see the compact-header note in
+                        // CLAUDE.md.
+                        style={{
+                          width: 14,
+                          height: 14,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                          cursor: "pointer",
+                          transition: "background-color 120ms ease",
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                      >
+                        {copiedKey === server.sshKeyPath ? (
+                          <FaCheck size={7} color="#4ade80" />
+                        ) : (
+                          <BiCopy size={9} color="var(--ezy-text-muted)" style={{ opacity: 0.7 }} />
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {/* Row 3: SSH key setup (if no key yet) */}
-                {!hasKey && server.authMethod === "ssh-key" && (
+                {/* Row 3: SSH key setup (only when there is no key yet) */}
+                {showKeySetup && (
                   <div style={{ padding: "2px 10px 5px 22px" }}>
                     <KeySetupButton
                       compact
@@ -1155,45 +1267,10 @@ export default function ServersPanel({ compact }: { compact?: boolean }) {
                     />
                   </div>
                 )}
-                {hasKey && (
-                  <div style={{ padding: "0 10px 5px 22px", fontSize: 10, color: "var(--ezy-accent)", display: "flex", alignItems: "center", gap: 4 }}>
-                    <FaKey size={7} />
-                    <span style={{ opacity: 0.8 }}>Key configured</span>
-                    <div
-                      data-tooltip={copiedKey === server.sshKeyPath ? "Copied!" : "Copy public key"}
-                      onClick={() => handleCopyKey(server.sshKeyPath!)}
-                      // Same hover as this sidebar's other icon buttons (test /
-                      // edit / delete above). 14px, not the 22px SmallIconButton
-                      // chip: this sits in a 10px text row, and a taller hit box
-                      // would grow the row — see the compact-header note in
-                      // CLAUDE.md.
-                      style={{
-                        width: 14,
-                        height: 14,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        marginLeft: 2,
-                        flexShrink: 0,
-                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
-                        cursor: "pointer",
-                        transition: "background-color 120ms ease",
-                      }}
-                      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-                    >
-                      {copiedKey === server.sshKeyPath ? (
-                        <FaCheck size={7} color="#4ade80" />
-                      ) : (
-                        <BiCopy size={9} color="var(--ezy-text-muted)" style={{ opacity: 0.7 }} />
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
             );
           })
-        )}
+        ))}
         {modals}
       </div>
     );

@@ -2,6 +2,7 @@ import { useCallback, useState, useRef, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
 import { spawnDevServer } from "../lib/spawn-dev-server";
+import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
@@ -1030,12 +1031,12 @@ export default function TabBar() {
                       Green = the app-wide running color (StatusDot). Plain
                       click = external browser, Ctrl/Cmd = MADE browser pane. */}
                   {devServerTabIcon !== "off" && !isSystemTab && (() => {
-                    const tabNorm = tab.workingDir?.replace(/\\/g, "/");
-                    const ds = devServers.find(
-                      (srv) =>
-                        srv.status === "running" &&
-                        (srv.tabId === tab.id ||
-                          (!!tabNorm && srv.workingDir.replace(/\\/g, "/") === tabNorm)),
+                    // A project can run several dev servers; getQuickOpenServer
+                    // honours the one the user marked in the dev-server panel.
+                    const ds = getQuickOpenServer(
+                      { devServers, recentProjects },
+                      { tabId: tab.id, workingDir: tab.workingDir, serverId: tab.serverId },
+                      { requireRunning: true },
                     );
                     if (!ds) return null;
                     // "all": live icon on every tab with a running server —
@@ -1337,20 +1338,20 @@ export default function TabBar() {
           onDoubleClick={anyMenuOpen ? undefined : toggleMaximizeOnDoubleClick}
         />
 
-        {/* Git Status Bar — LOCAL project tabs with a workingDir.
-            `!at.serverId` is the remote exclusion: MADE's git commands all run
-            as a local process against a local path (run_git in lib.rs has a WSL
-            branch and a local branch, and nothing else), so on a remote project
-            they execute against a path that does not exist on this machine.
-            The bar already ended up empty there — every poll spawned a doomed
-            git and the component returned null — so this removes wasted work
-            and, on a host where the remote path happens to also exist locally,
-            the risk of reporting the WRONG repository's branch and status. */}
+        {/* Git Status Bar — project tabs with a workingDir, LOCAL OR REMOTE.
+            `serverId` is forwarded rather than used to exclude: it routes the
+            reads to the git_*_ssh commands so a remote project shows its real
+            branch and diff counts, and it hides the write actions, which run
+            git locally and would otherwise act on the wrong machine.
+            See lib/git-invoke.ts. */}
         {(() => {
           const at = tabs.find((t) => t.id === activeTabId);
-          return at && at.workingDir && !at.serverId && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
+          return at && at.workingDir && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
         })() && (
-          <GitStatusBar workingDir={tabs.find((t) => t.id === activeTabId)!.workingDir!} />
+          <GitStatusBar
+            workingDir={tabs.find((t) => t.id === activeTabId)!.workingDir!}
+            serverId={tabs.find((t) => t.id === activeTabId)!.serverId}
+          />
         )}
 
         {/* Voice agent mic — sits to the left of the clipboard image strip */}
@@ -1429,7 +1430,7 @@ export default function TabBar() {
               // it tracks the live dev-server URL and shows a "Waiting for
               // dev server" state if the port isn't ready yet — avoids the
               // "can't reach page" race when the server is still starting.
-              const ds = store.devServers.find((s) => s.tabId === tab.id && s.port > 0);
+              const ds = getQuickOpenServer(store, { tabId: tab.id }, { requireRunning: true });
               const url = ds ? `http://localhost:${ds.port}` : "about:blank";
               if (store.browserFullColumn) {
                 const { layout } = store.browserSpawnLeft

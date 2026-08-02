@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import { getPtyWrite, registerTerminalDataListener, unregisterTerminalDataListener } from "../store/terminalSlice";
 import { injectPort } from "../lib/server-commands";
-import { resolveDevServerBackend } from "../lib/spawn-dev-server";
+import { isSameProject, resolveDevServerBackend } from "../lib/spawn-dev-server";
 import { getDefaultBackend } from "../lib/platform";
 import type { DevServer } from "../types";
 import TerminalPane from "./TerminalPane";
@@ -110,8 +110,23 @@ function guessDefaultPort(command: string): number {
   return 3000;
 }
 
-/** Build a shell one-liner that kills old processes and removes framework lock files. */
-function buildCleanupPrefix(command: string, detectedPort: number, backend?: string): string {
+/**
+ * Build a shell one-liner that kills old processes and removes framework lock
+ * files.
+ *
+ * `sweepDefaultPort` exists because the default-port kill is a guess: it clears
+ * a stale instance of THIS server that never reported its port. When the
+ * project runs several dev servers on the same framework, that guess belongs to
+ * a sibling — restarting the Tauri server would shoot the web server sitting on
+ * 5173. With a sibling present we only kill the port this server actually
+ * reported, which is the one we know is ours.
+ */
+function buildCleanupPrefix(
+  command: string,
+  detectedPort: number,
+  backend?: string,
+  sweepDefaultPort = true,
+): string {
   const parts: string[] = [];
   const defaultPort = guessDefaultPort(command);
 
@@ -119,8 +134,8 @@ function buildCleanupPrefix(command: string, detectedPort: number, backend?: str
     // PowerShell cleanup: kill processes by port
     const killPort = (port: number) =>
       `$p = Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`;
-    parts.push(killPort(defaultPort));
-    if (detectedPort > 0 && detectedPort !== defaultPort) {
+    if (sweepDefaultPort) parts.push(killPort(defaultPort));
+    if (detectedPort > 0 && (detectedPort !== defaultPort || !sweepDefaultPort)) {
       parts.push(killPort(detectedPort));
     }
     if (/\bnext\b/.test(command)) {
@@ -132,9 +147,9 @@ function buildCleanupPrefix(command: string, detectedPort: number, backend?: str
 
   // WSL/Linux cleanup
   // Always kill the default port first — the stale instance is typically here
-  parts.push(`fuser -k ${defaultPort}/tcp 2>/dev/null`);
+  if (sweepDefaultPort) parts.push(`fuser -k ${defaultPort}/tcp 2>/dev/null`);
   // Also kill the detected port if it differs (auto-incremented by framework)
-  if (detectedPort > 0 && detectedPort !== defaultPort) {
+  if (detectedPort > 0 && (detectedPort !== defaultPort || !sweepDefaultPort)) {
     parts.push(`fuser -k ${detectedPort}/tcp 2>/dev/null`);
   }
   // Remove framework lock files
@@ -421,7 +436,13 @@ export default function DevServerTerminalHost() {
               // Use the server's resolved backend so a Windows-routed dev server
               // gets the PowerShell cleanup (Get-NetTCPConnection), not WSL fuser.
               const backend = ds.backend ?? useAppStore.getState().terminalBackend ?? "wsl";
-              const cleanup = buildCleanupPrefix(ds.command, ds.port, backend);
+              // Sweeping the framework default port is only safe while this is
+              // the project's only server — otherwise it is a sibling's port.
+              const hasSiblings =
+                useAppStore
+                  .getState()
+                  .devServers.filter((o) => isSameProject(o, ds.workingDir, ds.serverId)).length > 1;
+              const cleanup = buildCleanupPrefix(ds.command, ds.port, backend, !hasSiblings);
 
               if (attempts === 0) {
                 // First retry: kill old process on default port + remove lock, then same command

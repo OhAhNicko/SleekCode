@@ -18,7 +18,33 @@ export interface RecentProject {
   lastOpenedAt: number;
   openCount: number;
   lastTemplate?: RecentProjectTemplate;
+  /**
+   * The project's PRIMARY dev-server command — a mirror of `serverCommands[0]`,
+   * kept because most readers (recent menu, template picker, command
+   * suggestions) only ever want "the" command. Never assign it directly:
+   * `setProjectServerCommands` is the single writer and keeps the two in step.
+   */
   serverCommand?: string;
+  /**
+   * Every dev-server command configured for this project, in panel row order.
+   * A project can run several at once (web + Tauri, app + API, a second
+   * instance on another port); each gets its own row and its own PTY.
+   *
+   * Recomputed from the live rows on every add / edit / remove rather than
+   * patched slot-by-slot, so removing a row can never leave a stale index
+   * pointing at the wrong command. See `syncProjectServerCommands`.
+   */
+  serverCommands?: string[];
+  /**
+   * Which of `serverCommands` the quick-open surfaces (tab-bar globe,
+   * pane-header globe, browser preview) target. `undefined` falls back to the
+   * first running server, then the first row.
+   *
+   * Matched by command STRING rather than index so removing or reordering a
+   * different row can't silently re-point it. NOT the same thing as
+   * `quickOpen` below, which is about the recent menu reopening a layout.
+   */
+  primaryServerCommand?: string;
   noDevServer?: boolean;
   /**
    * "Quick open" — clicking the project in the recent menu reopens its saved
@@ -428,7 +454,8 @@ export interface RecentProjectsSlice {
   setPreviewInProjectTab: (value: boolean) => void;
   addCustomServerCommand: (command: string) => void;
   removeCustomServerCommand: (command: string) => void;
-  updateProjectServerCommand: (path: string, command: string | undefined, serverId?: string) => void;
+  setProjectServerCommands: (path: string, serverId: string | undefined, commands: string[], primary?: string) => void;
+  setPrimaryServerCommand: (path: string, serverId: string | undefined, command: string | undefined) => void;
   setBrowserFullColumn: (value: boolean) => void;
   setBrowserSpawnLeft: (value: boolean) => void;
   setCopyOnSelect: (value: boolean) => void;
@@ -652,11 +679,28 @@ export const createRecentProjectsSlice: StateCreator<
       let updated: RecentProject[];
       if (existing) {
         // Update existing: bump timestamp, count, template, serverCommand
-        updated = state.recentProjects.map((p) =>
-          matches(p)
-            ? { ...p, lastOpenedAt: now, openCount: p.openCount + 1, lastTemplate: template ?? p.lastTemplate, name, serverCommand: noDevServer ? undefined : (serverCommand ?? p.serverCommand), noDevServer: noDevServer ?? p.noDevServer, isJira: isJira ?? p.isJira }
-            : p
-        );
+        updated = state.recentProjects.map((p) => {
+          if (!matches(p)) return p;
+          // serverCommand names the PRIMARY command only. Any additional
+          // commands the project has (second dev server) survive untouched —
+          // overwriting the whole list here would silently delete the extra
+          // rows every time the project is reopened.
+          const nextCommand = noDevServer ? undefined : (serverCommand ?? p.serverCommand);
+          const rest = (p.serverCommands ?? []).filter(
+            (c) => c !== nextCommand && c !== p.serverCommand,
+          );
+          return {
+            ...p,
+            lastOpenedAt: now,
+            openCount: p.openCount + 1,
+            lastTemplate: template ?? p.lastTemplate,
+            name,
+            serverCommand: nextCommand,
+            serverCommands: nextCommand ? [nextCommand, ...rest] : undefined,
+            noDevServer: noDevServer ?? p.noDevServer,
+            isJira: isJira ?? p.isJira,
+          };
+        });
       } else {
         // Add new — auto-detect backend from path; falls back to current global setting.
         // Remote (SSH) projects don't use the local backend split, so leave it undefined.
@@ -671,6 +715,7 @@ export const createRecentProjectsSlice: StateCreator<
           openCount: 1,
           lastTemplate: template,
           serverCommand: noDevServer ? undefined : serverCommand,
+          serverCommands: noDevServer || !serverCommand ? undefined : [serverCommand],
           noDevServer,
           serverId,
           preferredBackend,
@@ -912,12 +957,39 @@ export const createRecentProjectsSlice: StateCreator<
     }));
   },
 
-  updateProjectServerCommand: (path, command, serverId) => {
+  /**
+   * The single writer for a project's dev-server commands. `commands` is the
+   * complete list, in row order — callers recompute it from the live rows
+   * rather than patching one slot (see `syncProjectServerCommands`), so this
+   * only has to mirror `[0]` into the legacy `serverCommand` field and keep
+   * the quick-open pointer honest.
+   */
+  setProjectServerCommands: (path, serverId, commands, primary) => {
+    const normalized = normalizePath(path);
+    set((state) => ({
+      recentProjects: state.recentProjects.map((p) => {
+        if (normalizePath(p.path) !== normalized || p.serverId !== serverId) return p;
+        // A pointer at a command that is no longer in the list is dropped, not
+        // kept: the fallback (first running row, then first row) always names
+        // a live server, a dangling string never would.
+        const nextPrimary = primary ?? p.primaryServerCommand;
+        return {
+          ...p,
+          serverCommands: commands.length > 0 ? commands : undefined,
+          serverCommand: commands[0],
+          primaryServerCommand:
+            nextPrimary && commands.includes(nextPrimary) ? nextPrimary : undefined,
+        };
+      }),
+    }));
+  },
+
+  setPrimaryServerCommand: (path, serverId, command) => {
     const normalized = normalizePath(path);
     set((state) => ({
       recentProjects: state.recentProjects.map((p) =>
         normalizePath(p.path) === normalized && p.serverId === serverId
-          ? { ...p, serverCommand: command }
+          ? { ...p, primaryServerCommand: command }
           : p
       ),
     }));
