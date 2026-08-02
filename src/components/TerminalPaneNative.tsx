@@ -230,6 +230,19 @@ function nativeThemeFor(
 // scrollback/focused), so the first frame already paints with the user's
 // settings; hot-swap effects below handle every later change.
 
+/**
+ * Does this element accept typed text?
+ *
+ * The keyboard-focus claim below uses this to tell "someone is typing there,
+ * leave it alone" from "focus merely came to rest on a control" — a tab
+ * `<button>`, a toolbar icon. Only the former is a reason to decline.
+ */
+function isTextEntry(el: Element | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  if (el.isContentEditable) return true;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT";
+}
+
 interface TerminalPaneNativeProps {
   terminalId: string;
   terminalType: TerminalType;
@@ -1198,6 +1211,36 @@ export default function TerminalPaneNative({
     ).catch(() => {});
   }, [termId, isActive, appWindowFocused, overlayFocused, nonTerminalPaneActive]);
 
+  /**
+   * Take Win32 keyboard focus for this pane, unless something that the user
+   * could actually be TYPING INTO legitimately owns it.
+   *
+   * The distinction that matters is editable vs not. A focused `<button>` —
+   * the tab just clicked, a toolbar icon, the add-pane trigger — is not a text
+   * surface, so claiming from it steals nothing; treating it as untouchable is
+   * precisely what left a freshly-switched-to tab unable to receive keystrokes.
+   * A focused `<input>`/`<textarea>`/contenteditable outside every pane
+   * (settings, global search, tab rename) IS one, and is left alone.
+   *
+   * A different pane's editable is claimable on purpose: that pane just stopped
+   * being the active one, so moving keyboard focus here is the whole point.
+   */
+  const claimKeyboardFocus = useCallback(() => {
+    if (termId == null) return;
+    const st = useAppStore.getState();
+    if (st.overlayFocused) return;
+    if (st.openFullscreenModals.size > 0) return;
+    const ae = document.activeElement;
+    const owner = ae instanceof Element ? ae.closest("[data-terminal-id]") : null;
+    if (isTextEntry(ae)) {
+      // Our own composer/search — the user is typing in this very pane.
+      if (owner?.getAttribute("data-terminal-id") === terminalId) return;
+      // A text surface that belongs to no pane at all.
+      if (owner === null) return;
+    }
+    void nativeTermFocusKeyboard(termId).catch(() => {});
+  }, [termId, terminalId]);
+
   // ── Win32 keyboard-focus routing (P7b) ────────────────────────────────
   // Parity with the xterm pane, which calls term.focus() when it becomes
   // the active pane: route Win32 keyboard focus to the native HWND so
@@ -1244,47 +1287,57 @@ export default function TerminalPaneNative({
     void nativeTermFocusKeyboard(termId).catch(() => {});
   }, [termId, isActive, isTabActive, appWindowFocused]);
 
-  // One-shot CREATION claim. The effect above refuses to claim while
-  // `document.activeElement` sits anywhere but <body> — but a pane spawned
-  // from the add-pane menu arrives exactly in that state: nothing blurs the
-  // PREVIOUS pane's xterm/composer textarea, so the new active pane never
-  // received keyboard focus and typing kept landing in the old pane. This
-  // claim is bounded to the pane's first activation, runs only for the
-  // single globally-active pane (isActive ∩ isTabActive), and still declines
-  // whenever focus is demonstrably somewhere that is NOT a terminal pane
-  // (settings inputs, global search, fullscreen modals, overlay search) —
-  // stealing from those is the class of bug the guards above exist for.
-  const creationClaimRef = useRef(false);
+  // ACTIVATION claim — fires whenever this pane BECOMES the one the user means
+  // (isActive ∩ isTabActive going false→true), which covers three moments the
+  // routine effect above cannot:
+  //
+  //   1. Pane creation. A pane spawned from the add-pane menu arrives with
+  //      focus still on the PREVIOUS pane's xterm/composer textarea — nothing
+  //      blurred it — so `activeElement !== body` and the new pane never got
+  //      keyboard focus. Typing kept landing in the old pane.
+  //   2. TAB SWITCH. Tabs are `<button>`s (TabBar.tsx), so clicking one leaves
+  //      the BUTTON as `document.activeElement`. The routine effect re-runs
+  //      (isTabActive is in its deps) and then bails on that same guard, so the
+  //      newly-shown tab's pane rendered as active — highlight, caret and all —
+  //      while every keystroke went nowhere until the user clicked into it.
+  //   3. Re-activating a pane inside the current tab.
+  //
+  // This used to be one-shot per pane (`creationClaimRef`), which is why case 1
+  // worked and cases 2/3 did not — the latch burned on the pane's first
+  // activation and never re-armed. Firing on the edge instead of once is the
+  // fix; every firing is still gated by `claimKeyboardFocus` below.
+  //
+  // No feedback loop: this runs only on the false→true EDGE, so the store
+  // writes a claim provokes (focus_lost/focus_gained → appWindowFocused) cannot
+  // re-trigger it — that self-sustaining loop is documented on the effect above
+  // and must stay impossible.
+  const wasMeantRef = useRef(false);
   useEffect(() => {
-    if (termId == null || creationClaimRef.current) return;
-    if (!isActive || !isTabActive) return;
-    creationClaimRef.current = true;
+    const meant = termId != null && isActive && isTabActive;
+    const prev = wasMeantRef.current;
+    wasMeantRef.current = meant;
+    if (!meant || prev) return;
     let cancelled = false;
     const claim = () => {
-      if (cancelled) return;
-      const st = useAppStore.getState();
-      if (st.overlayFocused) return;
-      if (st.openFullscreenModals.size > 0) return;
-      const ae = document.activeElement;
-      // Claimable: nothing focused, or focus held by a DIFFERENT pane's
-      // editable — that pane just stopped being active, so moving keyboard
-      // focus to this one is the point, not a steal.
-      const owner = ae instanceof Element ? ae.closest("[data-terminal-id]") : null;
-      const claimable =
-        ae == null ||
-        ae === document.body ||
-        (owner !== null && owner.getAttribute("data-terminal-id") !== terminalId);
-      if (!claimable) return;
-      void nativeTermFocusKeyboard(termId).catch(() => {});
+      if (!cancelled) claimKeyboardFocus();
     };
-    // Retries cover creation races: the webview-focus dip while the add-pane
+    // Retries cover activation races: the webview-focus dip while an add-pane
     // overlay click settles, and store flags landing a beat after termId.
     const timers = [0, 120, 400].map((delay) => window.setTimeout(claim, delay));
     return () => {
       cancelled = true;
       for (const t of timers) clearTimeout(t);
+      // Rewind the edge on the way out. StrictMode replays every effect as
+      // mount→cleanup→mount in dev, and `npm run tauri:dev` IS a dev build —
+      // without this the first run burns the edge, its timers are cancelled,
+      // and the replay sees `prev === true` and claims nothing. That is a
+      // whole class of "new tab opens but will not accept typing" that only
+      // ever reproduced in development. On a genuine dep change the rewind is
+      // a no-op for correctness: the next run recomputes `meant` from live
+      // props and only claims on a true false→true transition.
+      wasMeantRef.current = prev;
     };
-  }, [termId, isActive, isTabActive, terminalId]);
+  }, [termId, isActive, isTabActive, claimKeyboardFocus]);
 
   // ── PTY hookup ────────────────────────────────────────────────────────
   // Native mode: bytes route to Rust via R's pty_route::sender_for(id)

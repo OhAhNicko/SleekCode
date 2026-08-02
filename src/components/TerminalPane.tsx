@@ -65,12 +65,14 @@ export default function TerminalPane({
   const override = useAppStore((s) => s.paneRendererOverride[props.terminalId]);
   const resolved = override ?? renderer ?? (useNative ? "native" : "xterm");
   // `renderer` is deliberately NOT forwarded — neither implementation declares it.
-  // `isTabActive` goes only to the native pane: it gates a Win32 keyboard-focus
-  // claim, which the xterm pane has no equivalent of (its `.focus()` is DOM
-  // focus, which cannot be contended across hidden tabs the same way).
+  // `isTabActive` goes to BOTH. It gates the native pane's Win32 keyboard-focus
+  // claim, and the xterm pane needs it for the mirror-image reason: hiding a
+  // tab with `display:none` blurs whatever textarea it held, and `isActive`
+  // does not change across a tab switch, so without this the xterm pane had no
+  // signal to re-focus on and came back typeable only after a click.
   return resolved === "native" ? (
     <TerminalPaneNative {...props} isTabActive={isTabActive} />
   ) : (
-    <TerminalPaneXterm {...props} />
+    <TerminalPaneXterm {...props} isTabActive={isTabActive} />
   );
 }

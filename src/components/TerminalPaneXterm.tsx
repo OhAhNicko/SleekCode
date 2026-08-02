@@ -90,6 +90,10 @@ interface TerminalPaneProps {
   terminalType: TerminalType;
   workingDir: string;
   isActive: boolean;
+  /** Is this pane's tab the one on screen? `isActive` is true in one pane PER
+   *  TAB and every tab stays mounted, so `isActive` alone cannot tell a pane
+   *  the user is looking at from one parked behind `display:none`. */
+  isTabActive: boolean;
   paneCount?: number;
   onClose: () => void;
   onChangeType: (type: TerminalType) => void;
@@ -114,6 +118,7 @@ export default function TerminalPane({
   terminalType,
   workingDir,
   isActive,
+  isTabActive,
   paneTintOverride,
   onClose,
   onChangeType,
@@ -1776,16 +1781,30 @@ export default function TerminalPane({
   // Focus the active pane — also removes the DOM focus blocker if it was
   // installed by the "open in background" feature, and opens the deferred
   // composer (was skipped to prevent focus steal on background open).
+  //
+  // `isTabActive` is load-bearing in BOTH directions:
+  //   - as a dep, because a tab switch does not change `isActive` (it is
+  //     per-Workspace and every tab stays mounted), so without it this effect
+  //     never re-ran on the one transition that most needs it. Hiding the tab
+  //     had blurred the textarea, and nothing focused it again — the pane came
+  //     back looking active but swallowing every keystroke until clicked.
+  //   - as a guard, because a background tab's active pane calling .focus()
+  //     yanks DOM focus out of the tab the user is actually looking at. That
+  //     could already happen here whenever a composer flag changed.
+  // Composer opening stays on `isActive` alone: it is not focus, and deferring
+  // it until the tab is viewed would regress the background-open flow.
   useEffect(() => {
     if (isActive) {
-      focusRestorerRef.current?.();
-      terminalRef.current?.focus();
+      if (isTabActive) {
+        focusRestorerRef.current?.();
+        terminalRef.current?.focus();
+      }
       // Open composer now that the pane is active (deferred from background open)
       if (composerSupported && composerAlwaysVisible && !composerDismissedRef.current && !composerOpen) {
         setComposerOpen(true);
       }
     }
-  }, [isActive, composerAlwaysVisible, composerOpen, composerSupported]);
+  }, [isActive, isTabActive, composerAlwaysVisible, composerOpen, composerSupported]);
 
   // Hollow the cursor while a NON-terminal pane (browser/editor/kanban/…) is
   // the engaged one. Panes like kanban/file viewer never steal DOM focus, so
