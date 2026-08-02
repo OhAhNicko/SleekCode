@@ -323,15 +323,50 @@ export function OverlayRoot() {
         // it off at the panel edge, so their rect is inflated to give it room
         // INSIDE the region. That margin is not dead space — the menu's own
         // full-screen backdrop div covers it and dismisses on pointerdown.
-        const kind = popupsRef.current.get(id)?.kind;
+        const popup = popupsRef.current.get(id);
+        const kind = popup?.kind;
         const pad = kind && SHADOW_PAD_KINDS.has(kind) ? MENU_SHADOW_PAD : 0;
-        rects.push({
-          x: r.left - pad,
-          y: r.top - pad,
-          width: r.width + pad * 2,
-          height: r.height + pad * 2,
-          radius,
-        });
+        let x = r.left - pad;
+        let y = r.top - pad;
+        let w = r.width + pad * 2;
+        let h = r.height + pad * 2;
+
+        // The ring must never cover the control that opened the popup.
+        //
+        // Menus open flush against their anchor (a 2px gap), so a 36px ring
+        // reaches ~34px back OVER the button. The overlay is a separate window:
+        // once its region covers those pixels, the main webview stops seeing
+        // the pointer there. For hover-opened menus that is a feedback loop —
+        // open → region covers the button → button fires `mouseleave` →
+        // scheduled close → region shrinks → button hovered again → reopen —
+        // which reads as a menu blinking and jittering under the cursor. It
+        // also silently breaks moving between two adjacent trigger buttons,
+        // since the second one never receives `mouseenter`.
+        //
+        // Trimming only the anchor-facing edge costs nothing visually: that is
+        // the side pressed against the button, where there is no shadow to
+        // show anyway.
+        const a = popup?.rect;
+        if (pad > 0 && a) {
+          const aRight = a.x + a.width;
+          const aBottom = a.y + a.height;
+          if (r.top >= aBottom) {
+            const clamped = Math.max(y, aBottom);
+            h -= clamped - y;
+            y = clamped;
+          } else if (r.bottom <= a.y) {
+            h = Math.min(y + h, a.y) - y;
+          }
+          if (r.left >= aRight) {
+            const clamped = Math.max(x, aRight);
+            w -= clamped - x;
+            x = clamped;
+          } else if (r.right <= a.x) {
+            w = Math.min(x + w, a.x) - x;
+          }
+        }
+
+        rects.push({ x, y, width: w, height: h, radius });
       }
 
       const sig = JSON.stringify(rects);
