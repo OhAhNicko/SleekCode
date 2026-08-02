@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useModal } from "../store/modalCoordinationSlice";
 import { shortcutSections } from "../lib/keybindings";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 interface KeyboardShortcutsModalProps {
   onClose: () => void;
@@ -30,13 +31,8 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         zIndex: 200,
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "15vh",
         backgroundColor: "rgba(0,0,0,0.7)",
       }}
       onClick={onClose}
@@ -49,7 +45,7 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           padding: "16px 20px 20px",
           maxWidth: 420,
-          maxHeight: "70vh",
+          maxHeight: MODAL_MAX_HEIGHT,
           overflowY: "auto",
           width: "100%",
           display: "flex",

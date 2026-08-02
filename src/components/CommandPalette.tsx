@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { THEMES } from "../lib/themes";
+import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 export interface PaletteAction {
   id: string;
@@ -193,13 +194,8 @@ export default function CommandPalette({
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         zIndex: 9999,
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "15vh",
         backgroundColor: "rgba(0,0,0,0.5)",
       }}
       onClick={onClose}

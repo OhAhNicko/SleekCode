@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { isTicketKey, normalizeTicketKey, normalizeJiraBaseUrl } from "../lib/jira";
+import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 /**
  * New-ticket dialog: acronym ("SUPPORT", "DEV", …) and ticket number entered
@@ -170,16 +171,9 @@ export default function NewJiraTicketModal() {
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         zIndex: 300,
         background: "rgba(0,0,0,0.55)",
-        display: "flex",
-        // Upper third, matching the app's other action dialogs (Create
-        // Project, token wizard) — dead-center reads oddly low for a form.
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "12vh",
       }}
       onClick={() => finish(false)}
       onContextMenu={(e) => e.preventDefault()}

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { GitFileStatus, GitBranchInfo, GitAheadBehind } from "../types";
 import { useModal } from "../store/modalCoordinationSlice";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 type BumpLevel = "patch" | "minor" | "major";
 
@@ -247,13 +248,8 @@ export default function ReleaseModal({
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         backgroundColor: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "10vh",
         zIndex: 200,
       }}
       onClick={() => { if (!releasing) onClose(); }}
@@ -266,7 +262,7 @@ export default function ReleaseModal({
         style={{
           maxWidth: 520,
           width: "100%",
-          maxHeight: "80vh",
+          maxHeight: MODAL_MAX_HEIGHT,
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",

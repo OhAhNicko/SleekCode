@@ -3,6 +3,7 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { useModal } from "../store/modalCoordinationSlice";
 import { getSshInstallKeyCommand } from "../lib/terminal-config";
 import { cleanOutput } from "../lib/pty-text";
+import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 /**
  * Step-by-step SSH key setup: generate a keypair locally, install the public
@@ -314,13 +315,8 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         backgroundColor: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "12vh",
         zIndex: 200,
       }}
       onClick={onClose}

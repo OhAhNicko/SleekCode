@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useModal } from "../store/modalCoordinationSlice";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 interface ImagePreviewModalProps {
   dataUri: string;
@@ -30,13 +31,8 @@ export default function ImagePreviewModal({
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         zIndex: 200,
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "15vh",
         backgroundColor: "rgba(0,0,0,0.7)",
       }}
       onClick={onClose}
@@ -50,7 +46,7 @@ export default function ImagePreviewModal({
           padding: 16,
           maxWidth: 448,
           width: "100%",
-          maxHeight: "80vh",
+          maxHeight: MODAL_MAX_HEIGHT,
           display: "flex",
           flexDirection: "column",
           gap: 12,
@@ -165,7 +161,7 @@ export default function ImagePreviewModal({
           alt="Clipboard screenshot"
           style={{
             maxWidth: "100%",
-            maxHeight: "calc(80vh - 80px)",
+            maxHeight: `calc(${MODAL_MAX_HEIGHT} - 80px)`,
             objectFit: "contain",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           }}

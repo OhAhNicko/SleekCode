@@ -5,6 +5,7 @@ import { useAppStore } from "../store";
 import { useModal } from "../store/modalCoordinationSlice";
 import { createRemoteProject, remoteJoin } from "../lib/remote-project";
 import RemoteFileBrowser from "./RemoteFileBrowser";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 interface CreateProjectModalProps {
   /** serverId is set when the project was created on a remote server. */
@@ -247,13 +248,8 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
     <>
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         backgroundColor: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "12vh",
         zIndex: 200,
       }}
       onClick={onClose}
@@ -268,7 +264,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
-          maxHeight: "80vh",
+          maxHeight: MODAL_MAX_HEIGHT,
           display: "flex",
           flexDirection: "column",
         }}

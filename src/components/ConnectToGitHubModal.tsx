@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useModal } from "../store/modalCoordinationSlice";
+import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 interface GhStatus {
   installed: boolean;
@@ -117,13 +118,8 @@ export default function ConnectToGitHubModal({
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         backgroundColor: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "12vh",
         zIndex: 200,
       }}
       onClick={onClose}

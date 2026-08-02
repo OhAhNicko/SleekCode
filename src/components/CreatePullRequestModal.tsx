@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FaXmark } from "react-icons/fa6";
 import { useModal } from "../store/modalCoordinationSlice";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 interface CreatePullRequestModalProps {
   workingDir: string;
@@ -119,13 +120,8 @@ export default function CreatePullRequestModal({
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         backgroundColor: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "10vh",
         zIndex: 220,
       }}
       onClick={() => {
@@ -137,7 +133,7 @@ export default function CreatePullRequestModal({
         style={{
           maxWidth: 560,
           width: "calc(100% - 48px)",
-          maxHeight: "80vh",
+          maxHeight: MODAL_MAX_HEIGHT,
           display: "flex",
           flexDirection: "column",
           backgroundColor: "var(--ezy-surface-raised)",

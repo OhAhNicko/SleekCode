@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { PROMPT_EVENT, type PromptRequestWithResolver } from "../lib/prompt-modal";
+import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 /**
  * Single host for `promptForInput` / `confirmAction`.
@@ -86,16 +87,9 @@ export default function PromptModal() {
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         zIndex: 300,
         background: "rgba(0,0,0,0.55)",
-        display: "flex",
-        // Upper third — the ONE starting point every dialog in the app shares
-        // (ticket dialog, Create Project, wizards all use 12vh). Keep in sync.
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "12vh",
       }}
       onClick={() => finish(false)}
       onContextMenu={(e) => e.preventDefault()}

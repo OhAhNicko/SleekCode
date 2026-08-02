@@ -4,6 +4,7 @@ import { useAppStore } from "../store";
 import { useModal } from "../store/modalCoordinationSlice";
 import { createJiraProjectAt, jiraFileExists } from "../lib/jira-project";
 import RemoteFileBrowser from "./RemoteFileBrowser";
+import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 /**
  * New Jira Project — pick the source folder (local or on a remote server) the
@@ -107,13 +108,8 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
     <>
       <div
         style={{
-          position: "fixed",
-          inset: 0,
+          ...MODAL_BACKDROP,
           backgroundColor: "rgba(0,0,0,0.6)",
-          display: "flex",
-          alignItems: "flex-start",
-          justifyContent: "center",
-          paddingTop: "12vh",
           zIndex: 200,
         }}
         onClick={onClose}

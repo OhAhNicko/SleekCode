@@ -5,6 +5,7 @@ import { THEMES, getTheme } from "../lib/themes";
 import { isWindows } from "../lib/platform";
 import { FaCheck } from "react-icons/fa";
 import type { TerminalBackend } from "../types";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 // ─── Internal sub-components (mirrored from SettingsPane) ────────────
 
@@ -131,13 +132,8 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         zIndex: 250,
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "10vh",
         backgroundColor: "rgba(0,0,0,0.7)",
       }}
       onClick={onSkip}
@@ -151,7 +147,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
           padding: "28px 32px 24px",
           maxWidth: 520,
           width: "100%",
-          maxHeight: "80vh",
+          maxHeight: MODAL_MAX_HEIGHT,
           overflowY: "auto",
           display: "flex",
           flexDirection: "column",

@@ -5,6 +5,7 @@ import { useModal } from "../store/modalCoordinationSlice";
 import { getServerCommandSuggestions, BUILTIN_SERVER_COMMANDS } from "../lib/server-commands";
 import { isWindows } from "../lib/platform";
 import type { TerminalType } from "../types";
+import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 export type ExtraPaneType = "codereview" | "fileviewer" | "browser" | "kanban";
 
@@ -309,13 +310,8 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         backgroundColor: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "15vh",
         zIndex: 200,
       }}
       onClick={onClose}

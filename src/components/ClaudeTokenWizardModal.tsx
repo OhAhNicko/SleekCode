@@ -4,6 +4,7 @@ import { useModal } from "../store/modalCoordinationSlice";
 import { getClaudeSetupTokenCommand } from "../lib/terminal-config";
 import { cleanOutput } from "../lib/pty-text";
 import { probeCliShells } from "../lib/remote-cli-shells";
+import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 interface ClaudeTokenWizardModalProps {
   /** Connection details for the server to run `claude setup-token` on. */
@@ -205,13 +206,8 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
   return (
     <div
       style={{
-        position: "fixed",
-        inset: 0,
+        ...MODAL_BACKDROP,
         backgroundColor: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "center",
-        paddingTop: "12vh",
         zIndex: 200,
       }}
       onClick={onClose}
