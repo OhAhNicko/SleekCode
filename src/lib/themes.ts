@@ -16,7 +16,21 @@ export interface MadeSurface {
   accentGlow: string;
   red: string;
   cyan: string;
+  /** Diff counts (+N / −N). SEMANTIC, not decorative: these must never be
+   *  wired to `accent`/`red`, because a red-accent theme like Black Steel
+   *  collapses both into one color and the two numbers stop being readable
+   *  as added-vs-removed — see
+   *  docs/learnings/2026-03-12-semantic-colors-and-theme-additions.md.
+   *  Optional: omit and the theme gets SEMANTIC_DIFF_* below. Override only
+   *  with a pair that still reads unmistakably as green-vs-red. */
+  diffAdd?: string;
+  diffRemove?: string;
 }
+
+/** The universal diff pair, used by every theme that does not override it.
+ *  Deliberately theme-independent — see `diffAdd` above. */
+export const SEMANTIC_DIFF_ADD = "#4ade80";
+export const SEMANTIC_DIFF_REMOVE = "#f87171";
 
 export interface MadeTheme {
   id: string;
@@ -721,9 +735,14 @@ const headsTheme: MadeTheme = {
     foreground: "#ececec",
     cursor: "#80e2ad",
     cursorAccent: "#131313",
-    selectionBackground: "#323232",
+    // Selection is the app's pink at terminal weight: same hue (333°) as the
+    // "Flere rader" tile, darkened until it sits the same distance off the
+    // canvas as the plain grey it replaces (1.5:1) so it highlights without
+    // becoming a block. `selectionForeground` repaints selected text white
+    // regardless of its ANSI color, and clears 12.2:1 on this.
+    selectionBackground: "#56253b",
     selectionForeground: "#ffffff",
-    selectionInactiveBackground: "#32323288",
+    selectionInactiveBackground: "#56253b88",
     black: "#272727",
     red: "#fd8183",
     green: "#80e2ad",
@@ -757,6 +776,14 @@ const headsTheme: MadeTheme = {
     accentGlow: "rgba(255, 255, 255, 0.06)",
     red: "#fd8183",
     cyan: "#92bcff",
+    // The only theme that restyles the diff counts, straight off the POS app's
+    // own tiles: green "Opprett kunde" and pink "Flere rader" (11.9:1 / 10.9:1
+    // on this canvas). Pink rather than the coral `red` above is deliberate —
+    // it is the palette the app actually ships. The two sit at nearly the same
+    // luminance, so they are told apart by hue; the +/− signs carry the meaning
+    // regardless.
+    diffAdd: "#80e2ad",
+    diffRemove: "#f4b4d1",
   },
 };
 
