@@ -162,7 +162,13 @@ export default function GlobalContextMenu() {
       const el = (e.target as HTMLElement | null)?.closest?.("[data-terminal-id]") as HTMLElement | null;
       const id = el?.dataset?.terminalId;
       if (!id) return;
-      const dir = useAppStore.getState().terminals[id]?.workingDir;
+      // Remote panes are skipped for the same reason the enrich pass and the
+      // focus prewarm below skip them: git runs locally, so the lookup can only
+      // fail. This was the one of the three that still fired it, spawning a
+      // doomed git process on every right-click press in an SSH pane.
+      const term = useAppStore.getState().terminals[id];
+      if (term?.serverId) return;
+      const dir = term?.workingDir;
       if (dir) void warmBranch(dir);
     };
 
