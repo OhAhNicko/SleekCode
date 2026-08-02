@@ -12,6 +12,32 @@ function sh(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * PowerShell single-quote an arbitrary string. Inside `'…'` PowerShell expands
+ * nothing and the only escape is a doubled quote, so this is safe for spaces,
+ * `$`, backticks and parentheses alike.
+ */
+function psq(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Drop trailing path separators before a path is handed to a NATIVE command
+ * (wsl.exe) from inside a PowerShell string.
+ *
+ * PowerShell re-quotes native arguments with DOUBLE quotes when it builds the
+ * child's command line, so `'C:\proj\CS 16\'` leaves the callee parsing
+ * `"C:\proj\CS 16\"` — the trailing backslash escapes the closing quote and the
+ * argument swallows whatever follows. Harmless for `-LiteralPath`, which
+ * PowerShell consumes itself, so this is only applied on the wsl branch.
+ *
+ * A bare root (`/`, `C:\`) is left alone — there is nothing to trim to.
+ */
+function stripTrailingSep(p: string): string {
+  if (/^[a-zA-Z]:[\\/]?$/.test(p) || /^[\\/]+$/.test(p)) return p;
+  return p.replace(/[\\/]+$/, "");
+}
+
 /** Returns the YOLO/skip-permissions flag for a given CLI, or null if not applicable. */
 export function getYoloFlag(type: TerminalType): string | null {
   switch (type) {
@@ -175,14 +201,19 @@ export function buildPowerShellLaunchArgsForCwd(
     const tag = paneId
       ? `$env:MADE_PANE_ID='${safePaneId(paneId)}'; if ($env:WSLENV) { $env:WSLENV += ':MADE_PANE_ID' } else { $env:WSLENV = 'MADE_PANE_ID' }; `
       : "";
-    return ["-NoExit", "-Command", `${tag}wsl ${distroFlag}--cd ${cwd}`];
+    // QUOTED, always. Unquoted, PowerShell split the path on its spaces before
+    // wsl.exe ever saw it: a project at `…\projects\CS 16` became
+    // `--cd …\projects\CS` plus a stray `16` that wsl tried to EXECUTE, so the
+    // pane died with `Wsl/ERROR_FILE_NOT_FOUND` and sat at a bare PS prompt in
+    // the user's home directory. Every sibling call site here already quoted
+    // (`sh()` for bash, `-LiteralPath` below); this branch was the one that
+    // did not.
+    return ["-NoExit", "-Command", `${tag}wsl ${distroFlag}--cd ${psq(stripTrailingSep(cwd))}`];
   }
 
   // Windows filesystem (incl. /mnt/<drive>/ which is just a WSL view of a
   // Windows disk) — Set-Location to the translated Windows path.
-  const winPath = mntToWindowsPath(cwd);
-  const escaped = winPath.replace(/'/g, "''");
-  return ["-NoExit", "-Command", `Set-Location -LiteralPath '${escaped}'`];
+  return ["-NoExit", "-Command", `Set-Location -LiteralPath ${psq(mntToWindowsPath(cwd))}`];
 }
 
 /** /mnt/c/Users/foo → C:\Users\foo. Pass-through for any non-/mnt path. */
