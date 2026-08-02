@@ -49,6 +49,7 @@ import {
   clearPaneState,
 } from "../lib/pane-state-registry";
 import { registerTerminalActions, unregisterTerminalActions } from "../lib/terminal-actions";
+import { findPromptLines, promptLineText } from "../lib/prompt-lines";
 import { usePtyNative } from "../hooks/usePtyNative";
 import type { NativeRendererSlice } from "../store/nativeRendererSlice";
 import ImeCompositionPopup from "../native-term/ImeCompositionPopup";
@@ -1706,15 +1707,36 @@ export default function TerminalPaneNative({
   const promptLinesRef = useRef<number[]>([]);
   promptLinesRef.current = promptLines;
 
+  /**
+   * Every prompt position in SIGNED space, ascending, plus the live viewport.
+   *
+   * OSC 133;A wins when a pane actually has shell integration. It almost never
+   * does here — native injects none, and Claude/Codex/Gemini emit no OSC 133 —
+   * which is why both jump handlers used to be dead code: they read
+   * `promptLines`, found it empty every time, and returned. The buffer scan is
+   * the fallback the xterm pane has always had, and is the path that actually
+   * runs for a CLI pane.
+   */
+  const readPromptPositions = useCallback(async () => {
+    if (termId == null) return null;
+    const vp = await nativeTermGetViewportState(termId);
+    const osc = promptLinesRef.current;
+    if (osc.length > 0) {
+      return { vp, signed: [...osc].map((a) => a + vp.baseY).sort((x, y) => x - y) };
+    }
+    const lines = await nativeTermGetBufferLines(termId, vp.baseY, vp.rows);
+    // Index i in `lines` is signed line vp.baseY + i (the read starts at baseY).
+    const signed = findPromptLines(lines, terminalType).map((i) => i + vp.baseY);
+    return { vp, signed };
+  }, [termId, terminalType]);
+
   const handleScrollToPrompt = useCallback(() => {
     if (termId == null) return;
     void (async () => {
       try {
-        const vp = await nativeTermGetViewportState(termId);
-        const signed = promptLinesRef.current
-          .map((a) => a + vp.baseY)
-          .sort((x, y) => x - y);
-        if (signed.length === 0) return;
+        const found = await readPromptPositions();
+        if (!found || found.signed.length === 0) return;
+        const { vp, signed } = found;
         // Nearest prompt strictly ABOVE the viewport top edge; if none is
         // above, wrap to the most-recent prompt (mirrors xterm scrollToPrompt
         // "all prompts at/below viewport → scroll to the last one").
@@ -1731,17 +1753,15 @@ export default function TerminalPaneNative({
         // Benign race: pane torn down mid-invoke.
       }
     })();
-  }, [termId]);
+  }, [termId, readPromptPositions]);
 
   const handleScrollToNextPrompt = useCallback(() => {
     if (termId == null) return;
     void (async () => {
       try {
-        const vp = await nativeTermGetViewportState(termId);
-        const signed = promptLinesRef.current
-          .map((a) => a + vp.baseY)
-          .sort((x, y) => x - y);
-        if (signed.length === 0) return;
+        const found = await readPromptPositions();
+        if (!found || found.signed.length === 0) return;
+        const { vp, signed } = found;
         // First prompt at/below the viewport top + 2 (the +2 skips the prompt
         // currently pinned to the top after a jump — mirrors xterm
         // scrollToNextPrompt). No prompt below → snap to the live bottom.
@@ -1756,7 +1776,41 @@ export default function TerminalPaneNative({
         // Benign race: pane torn down mid-invoke.
       }
     })();
-  }, [termId]);
+  }, [termId, readPromptPositions]);
+
+  /**
+   * Scroll to the previous (`dir` +1) / next prompt in MADE's own scrollback.
+   *
+   * Called two ways: by TuiScrollbar when a PgUp/PgDn from the TERMINAL arrived
+   * with Rust reporting no fullscreen program on screen, and by `promptJump`
+   * below for the composer's own PgUp/PgDn.
+   */
+  const handleScrollbackPrompt = useCallback(
+    (dir: number) => {
+      if (dir > 0) handleScrollToPrompt();
+      else handleScrollToNextPrompt();
+    },
+    [handleScrollToPrompt, handleScrollToNextPrompt],
+  );
+
+  /**
+   * The composer's PgUp/PgDn, routed the same way the terminal's is.
+   *
+   * A DOM keydown in the composer carries no alt-screen context, so the pane
+   * asks TuiScrollbar (which tracks it) whether a TUI message-walk is possible
+   * right now. Without this the composer's binding was dead in exactly the
+   * panes that need it most: a CLI running fullscreen has no MADE scrollback to
+   * scan, so the scan found nothing and returned.
+   */
+  const tuiJumpRef = useRef<((dir: number) => void) | null>(null);
+  const promptJump = useCallback(
+    (dir: number) => {
+      const walk = tuiJumpRef.current;
+      if (walk) walk(dir);
+      else handleScrollbackPrompt(dir);
+    },
+    [handleScrollbackPrompt],
+  );
 
   // ── Command-history recording (S8, xterm parity ~:1556-1578) ──────────
   // Feed completed native command blocks into the shared history store so
@@ -2041,34 +2095,22 @@ export default function TerminalPaneNative({
       return [];
     }
 
-    // Filters mirror TerminalPaneXterm.getPromptEntries exactly.
-    const promptRegex = /^[>❯›»]\s/;
+    // Shared with the PgUp/PgDn jump handlers via lib/prompt-lines.
     const entries: PromptEntry[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      const raw = lines[i] ?? "";
-      const trimmed = raw.trim();
-      if (!promptRegex.test(trimmed)) continue;
-      // Skip if prompt char not at column 0-1
-      const col = raw.search(/[>❯›»]/);
-      if (col > 1) continue;
-      // Skip numbered selection items (> 3. Option)
-      const after = trimmed.replace(/^[>❯›»]\s?/, "").trim();
-      if (/^\d+[.)]/.test(after)) continue;
-      if (after.length < 2) continue;
-
+    for (const i of findPromptLines(lines, terminalType)) {
       // Try to match with a PromptComposer entry (±3 line tolerance)
       const match = promptTimestampsRef.current.find(
         (p) => Math.abs(p.line - i) <= 3,
       );
       entries.push({
         line: i,
-        text: match?.text ?? after,
+        text: match?.text ?? promptLineText(lines[i] ?? ""),
         timestamp: match?.timestamp,
         fromComposer: !!match,
       });
     }
     return entries;
-  }, [termId]);
+  }, [termId, terminalType]);
   const handleScrollToPromptLine = useCallback(
     (line: number) => {
       if (termId == null) return;
@@ -2215,6 +2257,8 @@ export default function TerminalPaneNative({
         paneRef={terminalDivRef}
         write={ptyWrite}
         submitNonce={submitNonce}
+        onScrollbackPrompt={handleScrollbackPrompt}
+        jumpRef={tuiJumpRef}
       />
       {/* Pane search — overlay-rendered with FOCUS HANDOFF (the overlay
           becomes focusable while the bar hosts the input; see the
@@ -2237,8 +2281,8 @@ export default function TerminalPaneNative({
           terminalId={terminalId}
           terminalType={terminalType}
           workingDir={workingDir}
-          scrollToPrompt={handleScrollToPrompt}
-          scrollToNextPrompt={handleScrollToNextPrompt}
+          scrollToPrompt={() => promptJump(1)}
+          scrollToNextPrompt={() => promptJump(-1)}
           isActive={isActive}
           didStealRef={composerDidStealRef}
           suppressAutoFocus={false}

@@ -299,14 +299,23 @@ export interface TuiScrollEvent {
 }
 
 /**
- * Ctrl+Up / Ctrl+Down pressed inside a fullscreen TUI: jump to the previous
- * (`dir` +1, older) or next (`dir` -1, newer) message. Rust claims the key and
- * emits this instead of forwarding it, because the TUI has no message-level
- * scroll command — the pane performs the jump by scrolling until Claude's
- * sticky prompt row changes.
+ * "Jump to the previous (`dir` +1, older) or next (`dir` -1, newer) prompt."
+ *
+ * Rust claims the key and emits this instead of forwarding it, for both
+ * Ctrl+Up/Ctrl+Down inside a fullscreen TUI and plain PgUp/PgDn. It reports the
+ * INTENT only — the pane decides how to satisfy it from its current state:
+ * scroll to a prompt line when MADE owns the scrollback, or walk the TUI when
+ * the program owns the screen.
  */
 export interface TuiPromptNavEvent {
   dir: number;
+  /**
+   * Whether a fullscreen program owned the screen at keypress. Comes from Rust
+   * rather than the pane's own `alt_screen` mirror, which only updates on
+   * TRANSITIONS and so reads `false` after a webview reload under a pane that
+   * has been fullscreen throughout.
+   */
+  altScreen: boolean;
 }
 
 /**
@@ -438,7 +447,8 @@ export type NativeTermCmd =
   | "native_term_set_search_highlights"
   | "native_term_tui_scroll"
   | "native_term_set_wheel_acceleration"
-  | "native_term_set_prompt_nav";
+  | "native_term_set_prompt_nav"
+  | "native_term_set_prompt_jump";
 
 // --- Lifecycle ---
 
@@ -738,15 +748,32 @@ export function getNativeTermIdForTerminal(terminalId: string): NativeTermId | u
 }
 
 /**
- * Opt a pane into MADE claiming Ctrl+Up / Ctrl+Down for sticky-prompt
- * navigation. Enable only for pane types that have that UI (Claude), so the
- * keys keep reaching the TUI everywhere else.
+ * Opt a pane into Claude's readline key translations (Ctrl+Backspace,
+ * Ctrl+Left/Right, Ctrl+Z) and Shift+Enter-as-newline. Claude only — its input
+ * layer reads readline tokens; shell, Codex and Gemini must keep stock
+ * behaviour for those keys.
  */
 export function nativeTermSetPromptNav(
   id: NativeTermId,
   enabled: boolean,
 ): Promise<void> {
   return invoke<void>("native_term_set_prompt_nav", { id, enabled });
+}
+
+/**
+ * Opt a pane into MADE claiming the message-navigation keys — Ctrl+Up /
+ * Ctrl+Down, and PgUp / PgDn while a fullscreen TUI is up. Enable for every CLI
+ * with a walkable transcript, so `vim`, `less` and `htop` keep their own paging.
+ *
+ * Separate from `nativeTermSetPromptNav` deliberately: one flag used to gate
+ * both, so widening message navigation to Codex/Gemini would have changed what
+ * those CLIs receive for Ctrl+Backspace and Shift+Enter as a side effect.
+ */
+export function nativeTermSetPromptJump(
+  id: NativeTermId,
+  enabled: boolean,
+): Promise<void> {
+  return invoke<void>("native_term_set_prompt_jump", { id, enabled });
 }
 
 /**

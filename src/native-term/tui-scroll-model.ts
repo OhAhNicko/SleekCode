@@ -64,6 +64,14 @@ export const ANCHOR_SETTLE_MS = 150;
  */
 export const JUMP_STEP_NOTCHES = 4;
 export const JUMP_MAX_STEPS = 60;
+/**
+ * Budget when the screen shows no prompt marker to aim at — a TUI whose user
+ * messages this code cannot recognise. The marker can then never change, so the
+ * full budget would scroll the whole scrollback on every keypress. Three steps
+ * degrade the jump to roughly a page, which is a defensible answer to "previous
+ * prompt" when there is no prompt to find.
+ */
+export const JUMP_MAX_STEPS_NO_MARKER = 3;
 /** Let the TUI repaint between steps before re-reading the row. */
 export const JUMP_SETTLE_MS = 24;
 

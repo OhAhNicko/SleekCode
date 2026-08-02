@@ -212,10 +212,23 @@ pub trait NativeTermWindow: Send {
         Ok(())
     }
 
-    /// Opt this pane into MADE claiming Ctrl+Up/Ctrl+Down for message
-    /// navigation. Off by default so the keys reach the TUI everywhere except
-    /// the panes that actually have a sticky-prompt UI to navigate.
+    /// Opt this pane into the readline key translations (Ctrl+Backspace,
+    /// Ctrl+Left/Right, Ctrl+Z) and Shift+Enter-as-newline. Off by default so
+    /// shell, Codex, Gemini and Claude's non-fullscreen mode keep stock
+    /// behaviour — those bindings are specific to Claude's fullscreen input
+    /// layer, which reads readline tokens.
     fn set_prompt_nav(&mut self, _on: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Opt this pane into MADE claiming Ctrl+Up/Ctrl+Down (and PgUp/PgDn on the
+    /// alternate screen) for message navigation.
+    ///
+    /// SEPARATE from `set_prompt_nav` on purpose. That flag used to gate both,
+    /// so extending message navigation to Codex and Gemini would have dragged
+    /// Claude's readline translations along with it and changed what those CLIs
+    /// receive for Ctrl+Backspace and Shift+Enter.
+    fn set_prompt_jump(&mut self, _on: bool) -> Result<(), String> {
         Ok(())
     }
 

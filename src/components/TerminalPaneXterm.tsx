@@ -38,6 +38,7 @@ import PaneSearchBar from "./PaneSearchBar";
 import { useXtermSearch } from "../hooks/usePaneSearch";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import { registerTerminalActions, unregisterTerminalActions } from "../lib/terminal-actions";
+import { isPromptLine as isCliPromptLine, promptLineText } from "../lib/prompt-lines";
 import hackRegularUrl from "../fonts/hack-regular.woff2?url";
 import hackBoldUrl from "../fonts/hack-bold.woff2?url";
 import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
@@ -990,25 +991,11 @@ export default function TerminalPane({
     }
 
     // Match prompt-like lines for PgUp/PgDn fallback when shell integration
-    // is absent. Previously this tested `/[$#❯]\s/` anywhere on the line,
-    // which misfired on Python/shell comments like `# Populate...`.
+    // is absent. Predicate lives in lib/prompt-lines so the native renderer
+    // runs the SAME test — a second copy there is what left native prompt
+    // navigation broken (it indexed OSC 133 lines that never arrive).
     function isPromptLine(raw: string): boolean {
-      const ttype = terminalTypeRef.current;
-      const isAI = ttype === "claude" || ttype === "codex" || ttype === "gemini";
-      const sigilRegex = isAI ? /[>❯›»]/ : /[$#❯]/;
-      const col = raw.search(sigilRegex);
-      // Require sigil at column 0 or 1 (allow one leading space for TUI boxes)
-      if (col < 0 || col > 1) return false;
-      const trimmed = raw.trim();
-      const startRegex = isAI ? /^[>❯›»]\s/ : /^[$#❯]\s/;
-      if (!startRegex.test(trimmed)) return false;
-      if (isAI) {
-        // Skip numbered selection items (`> 3. Option`) and empty markers.
-        const after = trimmed.replace(/^[>❯›»]\s?/, "").trim();
-        if (/^\d+[.)]/.test(after)) return false;
-        if (after.length < 2) return false;
-      }
-      return true;
+      return isCliPromptLine(raw, terminalTypeRef.current);
     }
 
     function scrollToPrompt() {
@@ -2056,21 +2043,13 @@ export default function TerminalPane({
     const buf = term.buffer.active;
     const maxLine = buf.baseY + term.rows;
     const entries: { line: number; text: string; timestamp?: number; fromComposer: boolean }[] = [];
-    const promptRegex = /^[>❯›»]\s/;
 
     for (let i = 0; i < maxLine; i++) {
       const line = buf.getLine(i);
       if (!line) continue;
       const raw = line.translateToString(false);
-      const trimmed = raw.trim();
-      if (!promptRegex.test(trimmed)) continue;
-      // Skip if prompt char not at column 0-1
-      const col = raw.search(/[>❯›»]/);
-      if (col > 1) continue;
-      // Skip numbered selection items (> 3. Option)
-      const after = trimmed.replace(/^[>❯›»]\s?/, "").trim();
-      if (/^\d+[.)]/.test(after)) continue;
-      if (after.length < 2) continue;
+      // Same predicate as the jump handlers and as the native pane.
+      if (!isCliPromptLine(raw, terminalTypeRef.current)) continue;
 
       // Try to match with a PromptComposer entry (±3 line tolerance)
       const match = promptTimestampsRef.current.find(
@@ -2078,7 +2057,7 @@ export default function TerminalPane({
       );
       entries.push({
         line: i,
-        text: match?.text ?? after,
+        text: match?.text ?? promptLineText(raw),
         timestamp: match?.timestamp,
         fromComposer: !!match,
       });

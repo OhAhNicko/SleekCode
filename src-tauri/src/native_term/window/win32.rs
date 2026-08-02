@@ -345,12 +345,17 @@ struct ChildState {
     /// the clipboard. Explicit copy paths (Ctrl+Shift+C via the React layer)
     /// are unaffected. Pushed from JS via `native_term_set_copy_on_select`.
     copy_on_select: bool,
-    /// Pane opts into MADE claiming Ctrl+Up/Ctrl+Down for message navigation.
-    /// Pushed from JS, which enables it only for the pane types that have a
-    /// sticky-prompt UI to navigate (Claude today). Without this the keys
-    /// would be swallowed in every alt-screen pane — Codex, vim, htop — with
-    /// nothing listening for them.
+    /// Pane opts into Claude's readline key translations (Ctrl+Backspace,
+    /// Ctrl+Left/Right, Ctrl+Z) and Shift+Enter-as-newline. Pushed from JS,
+    /// which enables it only for Claude — its input layer carries readline
+    /// tokens, and shell / Codex / Gemini must keep stock behaviour.
     prompt_nav: bool,
+    /// Pane opts into MADE claiming the message-navigation keys: Ctrl+Up /
+    /// Ctrl+Down, and PgUp / PgDn while a fullscreen TUI is up. Pushed from JS,
+    /// which enables it for every CLI with a walkable transcript. Without this
+    /// the keys would be swallowed in every alt-screen pane — vim, htop, less —
+    /// with nothing listening for them.
+    prompt_jump: bool,
     /// Wheel acceleration for MADE's OWN scrollback (the local-scroll path).
     /// Fast flicks cover more lines per notch, the way Warp and native macOS
     /// scrolling do. Pushed from JS via `native_term_set_wheel_acceleration`.
@@ -470,6 +475,7 @@ impl PlatformWindow {
                 last_scroll_emit: None,
                 copy_on_select: false,
                 prompt_nav: false,
+                prompt_jump: false,
                 wheel_accel: true,
                 last_wheel_at: None,
                 wheel_streak: 1.0,
@@ -1308,6 +1314,13 @@ impl NativeTermWindow for PlatformWindow {
     fn set_prompt_nav(&mut self, on: bool) -> Result<(), String> {
         unsafe {
             self.state.as_mut().prompt_nav = on;
+        }
+        Ok(())
+    }
+
+    fn set_prompt_jump(&mut self, on: bool) -> Result<(), String> {
+        unsafe {
+            self.state.as_mut().prompt_jump = on;
         }
         Ok(())
     }
@@ -2762,23 +2775,60 @@ unsafe extern "system" fn wnd_proc(
             // previous / next message. Claimed here and NOT forwarded (same
             // pattern as the Ctrl+K/Ctrl+B UI shortcuts) because the TUI has no
             // message-level scroll command; JS does the jump by scrolling until
-            // Claude's sticky prompt row changes. Gated on alt-screen so a
-            // normal-buffer pane keeps Ctrl+arrow for its shell.
+            // the prompt row at the top of the screen changes. Gated on
+            // alt-screen so a normal-buffer pane keeps Ctrl+arrow for its shell.
             if ctrl
                 && !shift
                 && !alt
                 && (vk == 0x26 /* VK_UP */ || vk == 0x28 /* VK_DOWN */)
                 && !state_ptr.is_null()
-                && (*state_ptr).prompt_nav
+                && (*state_ptr).prompt_jump
                 && term_alt_screen(&*state_ptr)
             {
                 if let (Some(app), Some(tid)) =
                     ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
                 {
                     let dir = if vk == 0x26 { 1 } else { -1 };
-                    emit_tui_prompt_nav(app, tid, TuiPromptNav { dir });
+                    // Always true here — the branch is gated on it.
+                    emit_tui_prompt_nav(app, tid, TuiPromptNav { dir, alt_screen: true });
                 }
                 return LRESULT(0);
+            }
+
+            // Plain PgUp / PgDn = jump between prompts, the pane-level binding
+            // the xterm renderer has always had (terminal.prevPrompt /
+            // terminal.nextPrompt). Native never claimed it, so the keys went
+            // straight to the PTY and the binding did nothing here.
+            //
+            // Two cases, and the alt-screen test is what separates them:
+            //   normal buffer — MADE owns the scrollback, so JS jumps by
+            //     scrolling to a prompt line it found there. Claimed for ANY
+            //     pane type, shell included; that is where the scrollback is.
+            //   alternate screen — the program owns the screen. Claimed ONLY
+            //     for a pane that opted into message navigation, so `less`,
+            //     `vim` and `htop` keep their own paging. JS walks the TUI.
+            //
+            // Shift+PgUp/PgDn is untouched and still pages the viewport
+            // (KeyAction::ScrollPageUp below), so the raw page keys remain
+            // reachable in every pane.
+            if !ctrl
+                && !shift
+                && !alt
+                && (vk == 0x21 /* VK_PRIOR */ || vk == 0x22 /* VK_NEXT */)
+                && !state_ptr.is_null()
+            {
+                // Read once: it decides BOTH whether to claim the key and which
+                // jump JS should perform, and it is what the payload carries.
+                let alt_screen = term_alt_screen(&*state_ptr);
+                if (*state_ptr).prompt_jump || !alt_screen {
+                    if let (Some(app), Some(tid)) =
+                        ((*state_ptr).app.as_ref(), (*state_ptr).term_id)
+                    {
+                        let dir = if vk == 0x21 { 1 } else { -1 };
+                        emit_tui_prompt_nav(app, tid, TuiPromptNav { dir, alt_screen });
+                    }
+                    return LRESULT(0);
+                }
             }
             match vk_to_key_action(vk, ctrl, shift, alt, app_cursor) {
                 // xterm parity (Keyboard.ts cases 33/34): Shift+PgUp/PgDn

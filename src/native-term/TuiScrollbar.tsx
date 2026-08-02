@@ -43,6 +43,7 @@ import {
   nativeTermGetViewportState,
   nativeTermTuiScroll,
   nativeTermSetPromptNav,
+  nativeTermSetPromptJump,
   subscribeAltScreen,
   subscribeTuiScroll,
   subscribeTuiPromptNav,
@@ -55,6 +56,7 @@ import {
   AT_BOTTOM_MARKER,
   CTRL_END,
   JUMP_MAX_STEPS,
+  JUMP_MAX_STEPS_NO_MARKER,
   JUMP_SETTLE_MS,
   JUMP_STEP_NOTCHES,
   NOTCHES_PER_PAGE,
@@ -65,16 +67,27 @@ import {
 } from "./tui-scroll-model";
 import type { TerminalBackend, TerminalType } from "../types";
 import { useOverlayPopupAnchor } from "./useOverlayPopupAnchor";
+import { findPromptLines } from "../lib/prompt-lines";
 
 /**
- * Claude Code ONLY (user decision 2026-07-25). Everything here is built on
- * Claude's fullscreen conversation view: its wheel handling, its Ctrl+End
- * `scroll:bottom`, its "Jump to bottom" affordance, its sticky prompt. Codex,
- * Gemini and shell TUIs (vim, htop) also use the alternate screen but have
- * none of that, so the bar would be inert or wrong there.
+ * The SCROLLBAR is Claude Code only (user decision 2026-07-25). Everything it
+ * draws is built on Claude's fullscreen conversation view: its wheel handling,
+ * its Ctrl+End `scroll:bottom`, its "Jump to bottom" affordance, its sticky
+ * prompt. Codex, Gemini and shell TUIs (vim, htop) also use the alternate
+ * screen but have none of that, so the bar would be inert or wrong there.
  */
 function scrollbarEnabledFor(type: TerminalType): boolean {
   return type === "claude";
+}
+
+/**
+ * PROMPT NAVIGATION is wider than the scrollbar: any CLI that renders user
+ * messages with a chevron can be walked, and the keys (Ctrl+Up/Down, PgUp/PgDn)
+ * are advertised for every pane in `lib/keybindings.ts`. Kept as its own
+ * predicate so extending it never turns the Claude-only scrollbar on elsewhere.
+ */
+function promptJumpEnabledFor(type: TerminalType): boolean {
+  return type === "claude" || type === "codex" || type === "gemini";
 }
 
 interface TuiScrollbarProps {
@@ -89,6 +102,27 @@ interface TuiScrollbarProps {
   write: (data: string) => void;
   /** Bumped by the pane whenever a prompt is submitted — lands at the bottom. */
   submitNonce?: number;
+  /**
+   * Scroll to the previous / next prompt in MADE's OWN scrollback.
+   *
+   * Used whenever the pane is NOT in a walkable fullscreen TUI — a shell, or a
+   * CLI rendering inline. This component owns the prompt-nav subscription (it
+   * already tracks alt-screen and mouse reporting, which is what decides
+   * between the two answers), so the pane hands its scrollback jumps down here
+   * rather than subscribing a second time to the same event.
+   */
+  onScrollbackPrompt?: (dir: number) => void;
+  /**
+   * Filled with the TUI message-walk while one is possible, nulled otherwise.
+   *
+   * The PgUp/PgDn key arrives with Rust's alt-screen reading attached, but the
+   * COMPOSER's PgUp/PgDn is a plain DOM keydown with no such context — and the
+   * composer lives in the pane, not here. Publishing the walk lets the pane
+   * route its own key the same way, so the binding does one thing whichever
+   * half of the pane has focus. Null means "no walk available": scroll the
+   * scrollback instead.
+   */
+  jumpRef?: React.MutableRefObject<((dir: number) => void) | null>;
 }
 
 export default function TuiScrollbar({
@@ -100,8 +134,11 @@ export default function TuiScrollbar({
   paneRef,
   write,
   submitNonce,
+  onScrollbackPrompt,
+  jumpRef,
 }: TuiScrollbarProps) {
   const enabled = scrollbarEnabledFor(terminalType);
+  const promptJump = promptJumpEnabledFor(terminalType);
   // The overlay is a SEPARATE webview with no store access, so this rides
   // along in the popup payload.
   const accelEnabled = useAppStore((st) => st.scrollThumbAcceleration);
@@ -238,8 +275,12 @@ export default function TuiScrollbar({
   );
 
   // Mirror the Rust alt-screen edge (emitted on transition only).
+  // Tracked for EVERY pane, not just `enabled` ones: prompt navigation runs in
+  // shell panes too (Rust claims plain PgUp/PgDn off the alternate screen), and
+  // the alt-screen flag is what decides between walking a TUI and scrolling our
+  // own scrollback.
   useEffect(() => {
-    if (termId == null || !enabled) {
+    if (termId == null) {
       setAltScreen(false);
       return;
     }
@@ -262,7 +303,7 @@ export default function TuiScrollbar({
       disposed = true;
       un?.();
     };
-  }, [termId, enabled, setPosition]);
+  }, [termId, setPosition]);
 
   // Track the user's OWN wheel scrolling so the thumb follows it. Rust emits
   // this only for real WM_MOUSEWHEEL forwards — never for the notches we
@@ -313,16 +354,34 @@ export default function TuiScrollbar({
     [termId, setPosition],
   );
 
-  /** Read Claude's sticky prompt row (the pinned message header at the top). */
+  /**
+   * The "which message am I in" marker, read off the screen.
+   *
+   * Claude pins a sticky copy of the current message to row 0, so that row IS
+   * the marker and nothing beats it. Codex and Gemini have no such row — their
+   * row 0 is ordinary transcript that changes on every notch, which would end a
+   * jump after one step. For those, the marker is the topmost visible USER
+   * PROMPT line instead: it survives scrolling within one message and changes
+   * exactly when the jump has crossed into another.
+   *
+   * Returns "" when no prompt is on screen (the caller keeps scrolling toward
+   * one, which is the right move) and null when the read failed.
+   */
   const readSticky = useCallback(async (): Promise<string | null> => {
     if (termId == null) return null;
     try {
-      const lines = await nativeTermGetBufferLines(termId, 0, 1);
-      return (lines[0] ?? "").trim();
+      if (terminalType === "claude") {
+        const lines = await nativeTermGetBufferLines(termId, 0, 1);
+        return (lines[0] ?? "").trim();
+      }
+      const vp = await nativeTermGetViewportState(termId);
+      const lines = await nativeTermGetBufferLines(termId, 0, vp.rows);
+      const hits = findPromptLines(lines, terminalType);
+      return hits.length ? (lines[hits[0]] ?? "").trim() : "";
     } catch {
       return null;
     }
-  }, [termId]);
+  }, [termId, terminalType]);
 
   const jumpingRef = useRef(false);
 
@@ -337,7 +396,13 @@ export default function TuiScrollbar({
       jumpingRef.current = true;
       try {
         const from = await readSticky();
-        for (let i = 0; i < JUMP_MAX_STEPS; i++) {
+        // A pane whose screen shows no marker at all gets a SHORT walk, not the
+        // full budget. Without this, a TUI that renders user messages in some
+        // form this code cannot recognise would scroll its entire scrollback on
+        // every keypress — the marker would never change, so the loop would run
+        // to JUMP_MAX_STEPS every time. Bounded, it degrades to a page-up.
+        const budget = from === "" ? JUMP_MAX_STEPS_NO_MARKER : JUMP_MAX_STEPS;
+        for (let i = 0; i < budget; i++) {
           const step = dir > 0 ? JUMP_STEP_NOTCHES : -JUMP_STEP_NOTCHES;
           const sent = await nativeTermTuiScroll(termId, step);
           if (!sent) break; // no mouse reporting — nothing to drive
@@ -356,20 +421,55 @@ export default function TuiScrollbar({
     [termId, readSticky, setPosition, scheduleAnchorSample],
   );
 
-  // Tell Rust whether to claim Ctrl+Up/Down for this pane. Off for every pane
-  // type without a sticky-prompt UI, so the keys still reach those TUIs.
+  // Tell Rust which key sets to claim for this pane.
+  //  prompt_nav  — Claude's readline translations; Claude only.
+  //  prompt_jump — message navigation; every CLI with a walkable transcript,
+  //                so vim / less / htop keep PgUp and Ctrl+arrow.
   useEffect(() => {
     if (termId == null) return;
     void nativeTermSetPromptNav(termId, enabled).catch(() => {});
-  }, [termId, enabled]);
+    void nativeTermSetPromptJump(termId, promptJump).catch(() => {});
+  }, [termId, enabled, promptJump]);
 
-  // Ctrl+Up / Ctrl+Down, claimed by Rust and routed here.
+  // Ctrl+Up / Ctrl+Down and PgUp / PgDn, claimed by Rust and routed here.
+  //
+  // ONE subscription decides between the two ways to answer "previous prompt",
+  // because the state that decides — is a fullscreen program on the screen, and
+  // is it taking mouse input — lives here. Walk the TUI when it is; otherwise
+  // hand it to the pane, which scrolls MADE's own scrollback to a prompt line.
+  // Subscribed for EVERY pane, not just `promptJump` ones. Rust claims plain
+  // PgUp/PgDn off the alternate screen in any pane — a shell included, which is
+  // exactly where the scrollback jump is most useful — so a pane without a
+  // listener would swallow the key instead of doing something with it. What
+  // `promptJump` gates is narrower: whether Rust claims those keys while a
+  // fullscreen program owns the screen.
+  const promptJumpRef = useRef(false);
+  promptJumpRef.current = promptJump;
+  const onScrollbackPromptRef = useRef(onScrollbackPrompt);
+  onScrollbackPromptRef.current = onScrollbackPrompt;
+
+  // Publish the walk for the pane's own PgUp/PgDn (the composer's). Mouse
+  // reporting is part of the test here, unlike the key path: `nativeTermTuiScroll`
+  // sends nothing without it, so a walk would silently do nothing where the
+  // scrollback jump at least tries.
   useEffect(() => {
-    if (termId == null || !enabled) return;
+    if (!jumpRef) return;
+    jumpRef.current = promptJump && altScreen && mouseReporting ? jumpMessage : null;
+    return () => {
+      jumpRef.current = null;
+    };
+  }, [jumpRef, promptJump, altScreen, mouseReporting, jumpMessage]);
+  useEffect(() => {
+    if (termId == null) return;
     let un: (() => void) | undefined;
     let disposed = false;
     subscribeTuiPromptNav(termId, (e) => {
-      void jumpMessage(e.dir);
+      // `e.altScreen` is Rust's reading at keypress, not our transition mirror.
+      // The walk additionally needs a CLI we know how to walk — a plain
+      // alt-screen program has no prompts to find, and driving its scroller
+      // would just be an unrequested page-up.
+      if (e.altScreen && promptJumpRef.current) void jumpMessage(e.dir);
+      else if (!e.altScreen) onScrollbackPromptRef.current?.(e.dir);
     }).then((u) => {
       if (disposed) u();
       else un = u;
@@ -378,7 +478,7 @@ export default function TuiScrollbar({
       disposed = true;
       un?.();
     };
-  }, [termId, enabled, jumpMessage]);
+  }, [termId, jumpMessage]);
 
   // Gate on mouse reporting as well as alt-screen. Claude's own docs call its
   // scroll settings "fullscreen mode only", and driving its scroller requires

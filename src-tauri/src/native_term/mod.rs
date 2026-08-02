@@ -398,11 +398,18 @@ pub fn native_term_focus_keyboard(id: u32) -> Result<(), String> {
     registry::with_window(id, |w| w.focus_keyboard())
 }
 
-/// Opt a pane into MADE claiming Ctrl+Up/Ctrl+Down for sticky-prompt
-/// navigation. JS enables it only for pane types that have that UI.
+/// Opt a pane into Claude's readline key translations. JS enables it only for
+/// Claude panes, whose input layer actually reads readline tokens.
 #[tauri::command]
 pub fn native_term_set_prompt_nav(id: u32, enabled: bool) -> Result<(), String> {
     registry::with_window(id, |w| w.set_prompt_nav(enabled))
+}
+
+/// Opt a pane into MADE claiming the message-navigation keys. JS enables it for
+/// every CLI whose transcript can be walked (Claude, Codex, Gemini).
+#[tauri::command]
+pub fn native_term_set_prompt_jump(id: u32, enabled: bool) -> Result<(), String> {
+    registry::with_window(id, |w| w.set_prompt_jump(enabled))
 }
 
 /// Context-menu Copy for native panes: selection → OS clipboard, entirely in

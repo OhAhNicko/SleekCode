@@ -206,14 +206,31 @@ pub fn emit_tui_scroll(app: &AppHandle, term_id: u32, payload: TuiScroll) {
     let _ = app.emit(&format!("native_term:{}:tui_scroll", term_id), payload);
 }
 
-/// Ctrl+Up / Ctrl+Down inside a fullscreen TUI: "jump to the previous / next
-/// message". `dir` is +1 for older (up) and -1 for newer (down). Emitted
-/// instead of forwarding the key, because the TUI has no message-level scroll
-/// command of its own — JS performs the jump by scrolling until Claude's
-/// sticky prompt row changes.
+/// "Jump to the previous / next prompt". `dir` is +1 for older (up) and -1 for
+/// newer (down). Emitted instead of forwarding the key, by two paths:
+///
+///   - Ctrl+Up / Ctrl+Down inside a fullscreen TUI, and
+///   - plain PgUp / PgDn (the `terminal.prevPrompt` / `terminal.nextPrompt`
+///     bindings), which the native pane did not previously claim at all.
+///
+/// One event for both because the DESTINATION is the same question — "the
+/// prompt before this one" — and only JS knows how to answer it for the pane's
+/// current state: scroll to a prompt line when MADE owns the scrollback, or
+/// walk the TUI when the program owns the screen. Rust deliberately does not
+/// pick; it reports the intent.
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct TuiPromptNav {
     pub dir: i32,
+    /// Whether a fullscreen program owned the screen when the key was pressed.
+    ///
+    /// Carried in the payload rather than left to JS, which mirrors this from
+    /// `alt_screen` — an edge event, emitted on TRANSITION only. A webview
+    /// reload leaves that mirror at its `false` default under a pane that has
+    /// been fullscreen the whole time, and the jump would then look for
+    /// scrollback that the alternate screen does not have. Rust already knows;
+    /// it says so.
+    pub alt_screen: bool,
 }
 
 pub fn emit_tui_prompt_nav(app: &AppHandle, term_id: u32, payload: TuiPromptNav) {
