@@ -40,5 +40,9 @@ tasks/
 # Agent git worktrees (never commit)
 .claude/worktrees/
 
+# Backups written by scripts/release.sh --draft-groups. The previous manifest is
+# already in git history; a .bak riding along in a release commit is just noise.
+*.bak
+
 # Reference assets (source-of-truth copies live in src/fonts/)
 reference/

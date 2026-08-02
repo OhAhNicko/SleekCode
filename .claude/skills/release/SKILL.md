@@ -1,10 +1,42 @@
 ---
 name: release
-description: Bump version, commit, tag, push, and auto-publish a release with auto-generated changelog notes
+description: Bump version, commit, tag, push, and auto-publish a release with auto-generated changelog notes. Runs only on the WSL host; hands off to scripts/release.sh elsewhere
 argument-hint: "[version]"
 ---
 
 Bump the app version, trigger a CI release build, and populate the GitHub release body with a changelog generated from git history. The changelog feeds the in-app ChangelogModal after auto-updates, so every release needs real notes — never leave the default "See the assets below" placeholder.
+
+## FIRST: which host is this? (do this before ANY other step)
+
+Releases are cut **only on the Windows/WSL dev host**. Other hosts — notably the macOS side, which mounts this repo over SMB — cannot complete a release, and the failure comes late: the version files get bumped and committed, then `git push` dies. Verified 2026-08-02 on macOS:
+
+```
+fatal: could not read Username for 'https://github.com': terminal prompts disabled
+```
+
+`gh` is not installed there, the keychain holds no GitHub credential, and `node_modules` carries win32 native binaries (installing the darwin ones breaks the Windows build). So detect the host first:
+
+```bash
+if [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/version 2>/dev/null; then
+  echo "WSL — ok to release"
+else
+  echo "NOT WSL ($(uname -s)) — hand off"
+fi
+```
+
+**If NOT WSL → STOP. Do not bump a version, do not commit, do not tag, do not push.** Nothing in steps 0–11 below may run. Report to the user that the release has to be cut from WSL, and hand them this block verbatim (adjust the version argument if they named one):
+
+```bash
+cd /mnt/c/Users/nikla/Documents/projects/2codeCC   # the WSL path to this repo
+bash scripts/release.sh --draft-groups             # regenerate the commit split
+#   ...edit scripts/release-groups.txt: replace every <describe> with what the work did
+bash scripts/release.sh --dry-run                  # print the plan, change nothing
+bash scripts/release.sh                            # patch-bump, confirm, release
+```
+
+You may still do the off-host work that needs no credentials: refresh `scripts/release-groups.txt` (its subjects become the changelog verbatim, and it goes stale the moment a release lands), run `npm run typecheck`, and tell the user exactly which commits the script will make.
+
+**If WSL → prefer `bash scripts/release.sh` over doing this by hand.** The script is the maintained path: it splits the dirty tree into real commits from the manifest, bumps all four version files, typechecks, tags, pushes and seeds the notes — the same sequence as steps 0–11, minus the chance of skipping one. Steps 0–11 remain the fallback for when the script is missing or fails partway; it never rolls anything back, so on failure read what it reported and continue by hand from there. It is idempotent for a given version — re-running with the SAME version argument resumes.
 
 0. Branch & working-tree pre-flight (do this FIRST — releases must cut from `main`, and `git add -A` in step 5 sweeps EVERYTHING dirty into the release):
    - `current=$(git branch --show-current)` and `git status --short`.
