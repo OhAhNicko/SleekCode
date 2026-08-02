@@ -1218,7 +1218,13 @@ export default function TerminalHeader({
         </div>
       )}
 
-      {/* Prompt history button — always visible for AI CLIs */}
+      {/* Prompt history button — revealed on header hover, like expand /
+          restart / close below. `opacity`, not conditional rendering: the
+          button keeps its box either way, so the header's layout (and the
+          `ml-auto` spacing that depends on it) never shifts as it fades.
+          Stays lit while its dropdown is open — the menu is anchored to this
+          button, so letting it fade out from under its own popup would read as
+          a glitch. */}
       {sl("promptHistory") && (terminalType === "claude" || terminalType === "codex" || terminalType === "gemini") && getPromptEntries && (
         <button
           ref={promptHistoryBtnRef}
@@ -1235,7 +1241,12 @@ export default function TerminalHeader({
             }
           }}
           data-tooltip="Prompt history" aria-label="Prompt history"
-          className={`p-1 rounded transition-colors hover:bg-[var(--ezy-border)] ${contextPercent == null ? "ml-auto" : ""}`}
+          // `transition`, not `transition-colors transition-opacity`: those are
+          // both `transition-property` utilities, so whichever lands later in
+          // the stylesheet wins and the other animation is silently dropped.
+          className={`p-1 rounded transition hover:bg-[var(--ezy-border)] ${
+            showPromptHistory ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          } ${contextPercent == null ? "ml-auto" : ""}`}
           style={{ flexShrink: 0 }}
         >
           <svg
