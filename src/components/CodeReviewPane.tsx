@@ -23,11 +23,30 @@ import type {
 } from "../types";
 
 interface CodeReviewPaneProps {
+  /** Part of the RenderLeafCallbacks contract every leaf pane is constructed
+   *  with. Deliberately unused here — the X closes globally via
+   *  `made:close-codereview`; see requestClose below. */
   onClose: () => void;
   paneId?: string;
 }
 
-export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps) {
+export default function CodeReviewPane({ paneId }: CodeReviewPaneProps) {
+  /**
+   * Closing the pane. Code review is a global surface: `made:open-codereview` is
+   * handled by every mounted PaneGrid (inactive tabs are display:none, not
+   * unmounted), so it opens in every project tab at once and the X has to close
+   * it in every project tab too — otherwise closing it "once" leaves copies
+   * behind in every other project. Mirrors FileViewerPane's requestClose.
+   *
+   * This supersedes the `onClose` prop rather than calling it as well: a
+   * floating/expanded copy still has its node in the tab's layout tree (the grid
+   * only skips rendering it), so the event unmounts that too, and calling both
+   * would push two undo snapshots for one close.
+   */
+  const requestClose = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("made:close-codereview"));
+  }, []);
+
   const activeTabId = useAppStore((s) => s.activeTabId);
   const tabs = useAppStore((s) => s.tabs);
   const workingDir =
@@ -888,7 +907,7 @@ export default function CodeReviewPane({ onClose, paneId }: CodeReviewPaneProps)
             fill="none"
             className="cursor-pointer hover:opacity-80 transition-opacity"
             style={{ color: "var(--ezy-text-muted)" }}
-            onClick={onClose}
+            onClick={requestClose}
           >
             <path
               d="M4 4L12 12M12 4L4 12"
