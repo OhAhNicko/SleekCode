@@ -367,6 +367,11 @@ function DevServerRow({ server }: { server: DevServer }) {
       >
         <StatusDot status={server.status} />
         <span
+          // The row shows only the project NAME, and the name is ambiguous
+          // across two checkouts of the same repo — the path is the thing that
+          // tells them apart. TooltipHost suppresses tooltips that merely echo
+          // unclipped visible text, so this one only ever adds information.
+          data-tooltip={server.workingDir}
           style={{
             fontSize: 12,
             fontWeight: 500,

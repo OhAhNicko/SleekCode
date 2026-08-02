@@ -5,6 +5,27 @@ import { getDefaultBackend, getPlatform } from "./platform";
 import type { TerminalBackend } from "../types";
 
 /**
+ * `is_tauri_project` is three filesystem stats — it answers in microseconds or
+ * it is never going to. Racing it against a deadline is what separates
+ * "auto-detect failed, use the global backend" from a dev server that never
+ * spawns at all: this function's result is the ONLY thing that sets
+ * `DevServer.backend`, and until that is set the pane is not rendered, no PTY
+ * exists, no command is sent, and the sidebar row sits on "detecting..."
+ * forever with nothing to explain it.
+ */
+const TAURI_DETECT_TIMEOUT_MS = 3000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    p.finally(() => clearTimeout(timer)),
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
+/**
  * Decide which shell a dev server's PTY should spawn in.
  *
  *  - SSH/remote (serverId) → backend is irrelevant (the SSH spawn path takes
@@ -35,10 +56,20 @@ export async function resolveDevServerBackend(
   if (override === false) return "wsl";
 
   try {
-    const isTauri = await invoke<boolean>("is_tauri_project", { directory: workingDir });
+    const isTauri = await withTimeout(
+      invoke<boolean>("is_tauri_project", { directory: workingDir }),
+      TAURI_DETECT_TIMEOUT_MS,
+      "is_tauri_project",
+    );
     if (isTauri) return "windows";
-  } catch {
-    // Detection failed (command missing, unreadable dir) — fall back to global.
+  } catch (e) {
+    // Detection failed (command missing, unreadable dir, IPC never answered) —
+    // fall back to global. Logged rather than swallowed: a silent failure here
+    // used to be indistinguishable from a correct "not a Tauri project".
+    console.warn(
+      `[DevServer] Tauri detection failed for ${workingDir} — using "${globalBackend}"`,
+      e,
+    );
   }
   return globalBackend;
 }

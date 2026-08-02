@@ -46,6 +46,10 @@ async function stopSshForward(handleId: number): Promise<void> {
   }
 }
 
+/** Comfortably past `resolveDevServerBackend`'s own 3s internal deadline, so
+ *  this only ever fires for a resolve that broke its contract entirely. */
+const BACKEND_RESOLVE_WATCHDOG_MS = 5000;
+
 // Regex to detect common dev server port patterns in terminal output
 const PORT_REGEX = /(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{2,5})/;
 // Find every http(s) URL with a port — used to harvest "Network: http://192.168.x.x:port" lines etc.
@@ -199,12 +203,33 @@ export default function DevServerTerminalHost() {
     for (const ds of devServers) {
       if (ds.backend !== undefined || backendResolveRef.current.has(ds.id)) continue;
       backendResolveRef.current.add(ds.id);
+
+      // …and a watchdog under the backstop, because the backstop only helps if
+      // the promise it starts actually settles. Both branches above set a
+      // backend, so the one remaining way to land in the blank state is a
+      // resolve that never finishes — and the id is latched in
+      // `backendResolveRef` by then, so nothing retries it. That is exactly
+      // what a dev server reported stuck on "detecting..." looked like: an
+      // expand panel with no terminal and no shell toggle (the toggle only
+      // renders once `backend` is set), so the UI could not even say which
+      // shell it was waiting for.
+      const watchdog = setTimeout(() => {
+        const current = useAppStore.getState().devServers.find((d) => d.id === ds.id);
+        if (!current || current.backend !== undefined) return;
+        const fallback = useAppStore.getState().terminalBackend ?? getDefaultBackend();
+        console.warn(
+          `[DevServer] backend resolve never settled for ${ds.workingDir} — forcing "${fallback}"`,
+        );
+        setDevServerBackend(ds.id, fallback);
+      }, BACKEND_RESOLVE_WATCHDOG_MS);
+
       resolveDevServerBackend(ds.workingDir, ds.serverId)
         .then((backend) => setDevServerBackend(ds.id, backend))
         .catch(() => {
           const fallback = useAppStore.getState().terminalBackend ?? getDefaultBackend();
           setDevServerBackend(ds.id, fallback);
-        });
+        })
+        .finally(() => clearTimeout(watchdog));
     }
   }, [devServers, setDevServerBackend]);
 
