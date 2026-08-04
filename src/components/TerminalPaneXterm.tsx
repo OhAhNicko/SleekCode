@@ -1528,19 +1528,62 @@ export default function TerminalPane({
     // Mirrored in win32.rs (WM_MOUSEWHEEL) — change them together.
     const ACCEL_GROWTH = 1.75;
     const ACCEL_MAX = 34;
+    // Gentler curve for a mouse-tracking TUI, where the wheel belongs to the
+    // program and Claude runs a ramp of its own — see the long note in
+    // win32.rs. Mirrored there; change together.
+    const TUI_ACCEL_GROWTH = 1.4;
+    const TUI_ACCEL_MAX = 12;
     let wheelStreak = 1;
     let lastWheelAt = 0;
+    // Re-entrancy guard: the TUI ramp works by re-dispatching the wheel event
+    // so xterm.js emits its own mouse report for each one. Without this, each
+    // synthetic event would be re-accelerated and the first flick would never
+    // terminate.
+    let repeatingWheel = false;
 
     function handleWheel(e: WheelEvent) {
       if (!e.ctrlKey) {
         const term = terminalRef.current;
         if (!term || !useAppStore.getState().wheelAcceleration) return;
-        // Only MADE's own scrollback. In the alternate screen there is nothing
-        // to scroll, and when the program is mouse-tracking the wheel belongs
-        // to it — accelerating either would fight the application.
-        if (term.buffer.active.type === "alternate") return;
-        if (term.modes.mouseTrackingMode !== "none") return;
+        if (repeatingWheel) return;
         if (e.shiftKey || e.deltaY === 0) return;
+
+        // Mouse-tracking TUI: the wheel is the program's, so MADE cannot scroll
+        // anything itself — it can only send MORE of what the user already did.
+        // xterm.js owns the mouse-report encoding, so the multiplier is applied
+        // by re-dispatching the same event rather than by hand-encoding SGR.
+        if (term.buffer.active.type === "alternate" || term.modes.mouseTrackingMode !== "none") {
+          const now = e.timeStamp;
+          const fast = lastWheelAt > 0 && now - lastWheelAt < ACCEL_WINDOW_MS;
+          lastWheelAt = now;
+          wheelStreak = fast ? Math.min(wheelStreak * TUI_ACCEL_GROWTH, TUI_ACCEL_MAX) : 1;
+          const extra = Math.round(wheelStreak) - 1;
+          if (extra <= 0) return; // let the original event through untouched
+          // MUST target xterm's own element, not our container. xterm.js binds
+          // its mouse handling to `term.element`, a CHILD of `el` — and a DOM
+          // event dispatched on an ancestor never reaches a descendant's
+          // listener, so dispatching on `el` would have been a silent no-op.
+          const target = term.element ?? el;
+          repeatingWheel = true;
+          try {
+            for (let i = 0; i < extra; i++) {
+              target.dispatchEvent(
+                new WheelEvent("wheel", {
+                  deltaY: e.deltaY,
+                  deltaX: e.deltaX,
+                  deltaMode: e.deltaMode,
+                  clientX: e.clientX,
+                  clientY: e.clientY,
+                  bubbles: true,
+                  cancelable: true,
+                }),
+              );
+            }
+          } finally {
+            repeatingWheel = false;
+          }
+          return; // the original event already reached xterm.js as notch #1
+        }
 
         const now = e.timeStamp;
         const fast = lastWheelAt > 0 && now - lastWheelAt < ACCEL_WINDOW_MS;

@@ -2418,7 +2418,46 @@ unsafe extern "system" fn wnd_proc(
             let alt = (GetKeyState(VK_MENU_RAW as i32) as u16 & 0x8000) != 0;
             let modes = read_mouse_modes(&*state_ptr);
             if modes.clicks_enabled && !shift {
-                let notches = (delta_raw / WHEEL_DELTA).abs();
+                // Velocity ramp for a TUI that owns the wheel. Previously this
+                // path forwarded one event per physical notch, so a fullscreen
+                // pane — Claude's alt mode, Codex, Gemini — crawled while
+                // MADE's own scrollback flew. The ramp was skipped here to
+                // avoid stacking with Claude's `wheelScrollAcceleration`.
+                //
+                // GENTLER constants than the scrollback curve for exactly that
+                // reason (user decision 2026-08-03): where Claude also ramps,
+                // the product of the two still has to land somewhere usable,
+                // and Codex/Gemini — which ramp not at all — get a real speed-up
+                // regardless. Slow scrolling is untouched: one notch after a
+                // pause forwards exactly one notch.
+                //
+                // Shares `wheel_streak`/`last_wheel_at` with the scrollback ramp
+                // below. A pane is never in both branches at once, and a 120ms
+                // pause resets the streak, so the only overlap is a flick that
+                // crosses an alt-screen transition — harmless.
+                //
+                // NOTE: mirrored in TerminalPaneXterm.tsx — change together.
+                const TUI_ACCEL_GROWTH: f32 = 1.4;
+                const TUI_ACCEL_MAX: f32 = 12.0;
+                let raw_notches = (delta_raw / WHEEL_DELTA).abs();
+                let accel = if (*state_ptr).wheel_accel && raw_notches > 0 {
+                    const ACCEL_WINDOW_MS: u128 = 120;
+                    let now = std::time::Instant::now();
+                    let fast = (*state_ptr)
+                        .last_wheel_at
+                        .map(|t| now.duration_since(t).as_millis() < ACCEL_WINDOW_MS)
+                        .unwrap_or(false);
+                    (*state_ptr).last_wheel_at = Some(now);
+                    (*state_ptr).wheel_streak = if fast {
+                        ((*state_ptr).wheel_streak * TUI_ACCEL_GROWTH).min(TUI_ACCEL_MAX)
+                    } else {
+                        1.0
+                    };
+                    (*state_ptr).wheel_streak
+                } else {
+                    1.0
+                };
+                let notches = ((raw_notches as f32) * accel).round() as i32;
                 if notches > 0 {
                     let btn = if delta_raw > 0 { 64 } else { 65 };
                     // Convert screen → client for cell coords.
