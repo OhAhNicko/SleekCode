@@ -32,9 +32,24 @@
  *    acceleration (`wheelScrollAccelerationEnabled`) responds to a fast drag
  *    the same way it responds to a fast flick of the real wheel.
  *
- * Jump-to-bottom sends Ctrl+End, Claude's own `scroll:bottom` binding. That is
- * ABSOLUTE, so it cannot drift the way undoing our own notch count would — and
- * it re-zeroes the estimate as a side effect.
+ * Jump-to-bottom sends Ctrl+End for Claude — its own `scroll:bottom` binding,
+ * ABSOLUTE, so it cannot drift the way undoing our own notch count would, and it
+ * re-zeroes the estimate as a side effect.
+ *
+ * CODEX AND GEMINI (2026-08-03) have none of Claude's affordances: no
+ * `scroll:bottom` binding, no "Jump to bottom" marker, no sticky prompt row —
+ * confirmed from screenshots of both scrolled up. They are still worth a bar,
+ * because the two things that matter most are CLI-agnostic:
+ *
+ *   - driving the scroller is just wheel bytes, which any mouse-reporting TUI
+ *     honours; and
+ *   - BOTH ends of travel can be PROVEN without reading any affordance. The top
+ *     anchor already worked this way (scroll up, screen byte-identical → that is
+ *     the top). The bottom is the same trick downward.
+ *
+ * So the thumb is exact at both ends and interpolated between them, rather than
+ * exact everywhere as it is for Claude. What each CLI can do lives in
+ * `tuiScrollProfile` (tui-scroll-model.ts), not in branches here.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -53,8 +68,8 @@ import { readSessionPrompts } from "../lib/sessions-index";
 import { useAppStore } from "../store";
 import {
   ANCHOR_SETTLE_MS,
-  AT_BOTTOM_MARKER,
-  CTRL_END,
+  JUMP_BOTTOM_MAX_ROUNDS,
+  JUMP_BOTTOM_NOTCHES,
   JUMP_MAX_STEPS,
   JUMP_MAX_STEPS_NO_MARKER,
   JUMP_SETTLE_MS,
@@ -63,22 +78,13 @@ import {
   PAGE_DOWN,
   PAGE_UP,
   computeSpan,
+  isAtBottom,
   matchPromptIndex,
+  tuiScrollProfile,
 } from "./tui-scroll-model";
 import type { TerminalBackend, TerminalType } from "../types";
 import { useOverlayPopupAnchor } from "./useOverlayPopupAnchor";
 import { findPromptLines } from "../lib/prompt-lines";
-
-/**
- * The SCROLLBAR is Claude Code only (user decision 2026-07-25). Everything it
- * draws is built on Claude's fullscreen conversation view: its wheel handling,
- * its Ctrl+End `scroll:bottom`, its "Jump to bottom" affordance, its sticky
- * prompt. Codex, Gemini and shell TUIs (vim, htop) also use the alternate
- * screen but have none of that, so the bar would be inert or wrong there.
- */
-function scrollbarEnabledFor(type: TerminalType): boolean {
-  return type === "claude";
-}
 
 /**
  * PROMPT NAVIGATION is wider than the scrollbar: any CLI that renders user
@@ -98,7 +104,8 @@ interface TuiScrollbarProps {
   workingDir?: string;
   backend?: TerminalBackend;
   paneRef: React.RefObject<HTMLDivElement | null>;
-  /** Pane's PTY writer — Ctrl+End and the page-key fallback. */
+  /** Pane's PTY writer — the absolute jump-to-bottom binding (Claude's
+   *  Ctrl+End) and the page-key fallback for a TUI without mouse reporting. */
   write: (data: string) => void;
   /** Bumped by the pane whenever a prompt is submitted — lands at the bottom. */
   submitNonce?: number;
@@ -137,7 +144,11 @@ export default function TuiScrollbar({
   onScrollbackPrompt,
   jumpRef,
 }: TuiScrollbarProps) {
-  const enabled = scrollbarEnabledFor(terminalType);
+  // What this CLI can tell us about its own scroll position. Claude's entry
+  // reproduces the constants this component used to reference directly, so
+  // enabling the bar for Codex/Gemini cannot change Claude's behaviour.
+  const profile = tuiScrollProfile(terminalType);
+  const enabled = profile.scrollbar;
   const promptJump = promptJumpEnabledFor(terminalType);
   // The overlay is a SEPARATE webview with no store access, so this rides
   // along in the popup payload.
@@ -183,7 +194,10 @@ export default function TuiScrollbar({
   const promptsRef = useRef<string[]>([]);
 
   useEffect(() => {
-    if (!sessionId || !workingDir || !altScreen) {
+    // `read_session_prompts_*` reads a CLAUDE transcript, and only Claude has a
+    // sticky row to match the result against — for the others this would be a
+    // 20-second IPC round trip that can only ever return [].
+    if (profile.position !== "sticky-prompt" || !sessionId || !workingDir || !altScreen) {
       promptsRef.current = [];
       return;
     }
@@ -199,7 +213,7 @@ export default function TuiScrollbar({
       cancelled = true;
       clearInterval(id);
     };
-  }, [sessionId, workingDir, backend, altScreen]);
+  }, [profile.position, sessionId, workingDir, backend, altScreen]);
 
   // ── Ground-truth anchors ────────────────────────────────────────────────
   // Dead reckoning counts notches SENT, not lines actually scrolled, so it
@@ -212,6 +226,10 @@ export default function TuiScrollbar({
   const lastScreenRef = useRef<string | null>(null);
   const sampleTimerRef = useRef(0);
   const lastDirRef = useRef(0);
+  // Read inside sampleAnchors/jumpToBottom through a ref so their useCallback
+  // deps stay [termId] — the profile is constant per pane type anyway.
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
 
   const sampleAnchors = useCallback(async () => {
     if (termId == null) return;
@@ -219,9 +237,16 @@ export default function TuiScrollbar({
       const vp = await nativeTermGetViewportState(termId);
       const lines = await nativeTermGetBufferLines(termId, 0, Math.max(1, vp.rows));
       const screen = lines.join("\n");
-      const atBottomNow = !screen.toLowerCase().includes(AT_BOTTOM_MARKER);
       const unchanged = lastScreenRef.current === screen;
       lastScreenRef.current = screen;
+      // Claude proves the bottom with a marker; Codex/Gemini prove it by having
+      // been scrolled DOWN with nothing moving — see isAtBottom.
+      const atBottomNow = isAtBottom({
+        marker: profileRef.current.atBottomMarker,
+        screen,
+        unchanged,
+        lastDir: lastDirRef.current,
+      });
 
       if (atBottomNow) {
         // Exact: nothing above us to jump back down to.
@@ -231,7 +256,12 @@ export default function TuiScrollbar({
       }
       // EXACT position from the conversation, when the sticky prompt is
       // recognisable. Calibrates the notch estimate instead of replacing it.
-      const stickyIdx = matchPromptIndex(lines[0] ?? "", promptsRef.current);
+      // Only Claude renders such a row; for the others promptsRef is empty
+      // anyway, but skipping the call keeps the intent explicit.
+      const stickyIdx =
+        profileRef.current.position === "sticky-prompt"
+          ? matchPromptIndex(lines[0] ?? "", promptsRef.current)
+          : -1;
       const total = promptsRef.current.length;
       if (stickyIdx >= 0 && total > 1) {
         // stickyIdx 0 = oldest message = top of the scrollback.
@@ -383,6 +413,46 @@ export default function TuiScrollbar({
     }
   }, [termId, terminalType]);
 
+  /**
+   * Return to the live bottom.
+   *
+   * Claude has an ABSOLUTE binding (Ctrl+End = its own `scroll:bottom`), which
+   * cannot drift the way undoing our own notch count would. Codex and Gemini
+   * have no such command, so the bottom is reached the only way that is proven
+   * to move them at all: the same wheel bytes the bar already scrolls with,
+   * repeated until the screen stops changing.
+   *
+   * The wheel path, NOT PAGE_DOWN. `nativeTermTuiScroll` is what the drag and
+   * the message-jump already use, so it is known to work for these CLIs; a page
+   * key assumes a binding neither of them has been observed to honour.
+   *
+   * Bounded by JUMP_BOTTOM_MAX_ROUNDS: a pane repainting on its own (mid
+   * response) never reports "unchanged", and without a cap that would spin.
+   */
+  const jumpToBottom = useCallback(async () => {
+    const absolute = profileRef.current.toBottom;
+    if (absolute) {
+      writeRef.current(absolute);
+      setPosition(0);
+      return;
+    }
+    if (termId == null) return;
+    try {
+      for (let i = 0; i < JUMP_BOTTOM_MAX_ROUNDS; i++) {
+        const before = await nativeTermGetBufferLines(termId, 0, 40).then((l) => l.join("\n"));
+        const sent = await nativeTermTuiScroll(termId, -JUMP_BOTTOM_NOTCHES);
+        if (!sent) break; // no mouse reporting — nothing to drive
+        await new Promise((r) => setTimeout(r, ANCHOR_SETTLE_MS));
+        const after = await nativeTermGetBufferLines(termId, 0, 40).then((l) => l.join("\n"));
+        if (after === before) break; // stopped moving = bottom
+      }
+    } catch {
+      // Pane torn down mid-jump. Fall through and re-zero anyway: the user
+      // asked to be at the bottom, and the estimate must not stay stale.
+    }
+    setPosition(0);
+  }, [termId, setPosition]);
+
   const jumpingRef = useRef(false);
 
   /**
@@ -496,9 +566,7 @@ export default function TuiScrollbar({
     onAction: (action, data) => {
       switch (action) {
         case "toBottom":
-          // Claude's own scroll:bottom — absolute, so no drift.
-          writeRef.current(CTRL_END);
-          setPosition(0);
+          void jumpToBottom();
           break;
         case "scrollBy": {
           const n = (data as { notches?: number } | undefined)?.notches;
