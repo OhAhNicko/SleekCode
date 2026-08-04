@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../../../store";
 import { hasSurfaceAction, runSurfaceAction, type SurfaceRole } from "../../surface-actions";
 import { promptForInput, confirmAction } from "../../prompt-modal";
+import { openUnlockKeychain } from "../../unlock-keychain-modal";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getPtyWrite } from "../../../store/terminalSlice";
 import { PROJECT_COLOR_PRESETS } from "../../../store/recentProjectsSlice";
@@ -224,6 +225,10 @@ function serverRow(ctx: RowCtx): MenuGroup[] {
   const host = ctx.data.ctxHost ?? "";
   const user = ctx.data.ctxUser ?? "";
   const hasKey = ctx.data.ctxHasKey === "1";
+  const server = useAppStore.getState().servers.find((s) => s.id === ctx.id);
+  // Token-auth servers bypass the Keychain entirely, so unlocking it is not a
+  // thing that can apply to them — hidden, not disabled.
+  const usesKeychain = (server?.claudeAuth ?? "keychain") === "keychain";
   return [
     {
       id: "target",
@@ -233,6 +238,22 @@ function serverRow(ctx: RowCtx): MenuGroup[] {
           label: "Test connection",
           iconId: "restart",
         }),
+        ...(usesKeychain
+          ? [
+              {
+                id: "row.server.unlockKeychain",
+                label: "Unlock keychain…",
+                iconId: "key",
+                // Verification runs over `ssh -o BatchMode=yes`, which cannot
+                // answer a password prompt — so it can only work with a key.
+                unavailable:
+                  server?.authMethod === "password"
+                    ? { reason: "Requires SSH key auth" }
+                    : undefined,
+                run: () => openUnlockKeychain(ctx.id),
+              } satisfies MenuItemSpec,
+            ]
+          : []),
         actionItem("server", "edit", ctx.id, {
           id: "row.server.edit",
           label: "Edit server…",

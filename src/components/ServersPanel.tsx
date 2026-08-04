@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import ClaudeTokenWizardModal from "./ClaudeTokenWizardModal";
 import SshKeySetupWizardModal from "./SshKeySetupWizardModal";
 import { detectRemoteCliShells } from "../lib/remote-cli-shells";
+import { openUnlockKeychain } from "../lib/unlock-keychain-modal";
 
 /* ── Types ── */
 
@@ -1168,8 +1169,31 @@ export default function ServersPanel({
                     >
                       <HiMiniSignal size={11} color="var(--ezy-text-muted)" />
                     </div>
+                    {/* Manual keychain unlock — the way back in after cancelling
+                        the automatic prompt. Rendered only where it can work: a
+                        token-auth server has no keychain to unlock, and
+                        verification needs key auth (BatchMode ssh cannot answer
+                        a password prompt). An icon cannot explain a disabled
+                        state, so what can never apply is left out; the row's
+                        context menu carries the reason instead. */}
+                    {(server.claudeAuth ?? "keychain") === "keychain" && server.authMethod === "ssh-key" && (
+                      <div
+                        data-tooltip="Unlock keychain"
+                        onClick={() => openUnlockKeychain(server.id)}
+                        style={{
+                          width: 20, height: 20,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", cursor: "pointer",
+                          transition: "background-color 120ms ease",
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                      >
+                        <FaKey size={9} color="var(--ezy-text-muted)" />
+                      </div>
+                    )}
                     <div
-                     
+
                       onClick={() => handleEdit(server)}
                       style={{
                         width: 20, height: 20,

@@ -13,8 +13,10 @@
  * after asking once via a masked dialog. Passwords live ONLY in this module's
  * memory for the app run — they are never persisted and must never be logged.
  */
+import { invoke } from "@tauri-apps/api/core";
 import { promptWithOptions } from "./prompt-modal";
 import { cleanOutput } from "./pty-text";
+import type { RemoteServer } from "../types";
 
 const READY = "[MADE] keychain-unlock ready";
 const OK = "[MADE] keychain unlocked";
@@ -32,6 +34,41 @@ const inflight = new Map<string, Promise<string | null>>();
 
 export function clearKeychainPassword(serverId: string): void {
   passwords.delete(serverId);
+}
+
+/** Seed the session cache from outside the spawn-time watcher — the manual
+ *  "Unlock keychain" dialog uses this after the server confirms the password. */
+export function setKeychainPassword(serverId: string, password: string): void {
+  passwords.set(serverId, password);
+}
+
+export type KeychainVerdict = "ok" | "bad" | "nomac";
+
+/**
+ * Ask the server whether this password really unlocks its login keychain, and
+ * cache it only if it does.
+ *
+ * The unlock does not survive the round-trip (each ssh login gets its own
+ * security session — see the module header), so this is a verification, not a
+ * fix. It exists because the cached password is answered blindly into the next
+ * pane's `read`: a typo there costs three silent failures and a Claude login
+ * screen, while here it costs one red line.
+ *
+ * Rejects when ssh itself fails; the caller shows that message as-is.
+ */
+export async function verifyKeychainPassword(
+  server: RemoteServer,
+  password: string,
+): Promise<KeychainVerdict> {
+  const verdict = await invoke<string>("ssh_unlock_keychain", {
+    host: server.host,
+    username: server.username,
+    identityFile:
+      server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null,
+    password,
+  });
+  if (verdict === "ok") setKeychainPassword(server.id, password);
+  return verdict === "ok" || verdict === "bad" || verdict === "nomac" ? verdict : "bad";
 }
 
 /**

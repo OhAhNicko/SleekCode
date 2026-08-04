@@ -52,6 +52,7 @@ import GlobalContextMenu from "./components/GlobalContextMenu";
 import { matchCommand, probeKeybinding, MIGRATED } from "./lib/keybindings";
 import { runCommand } from "./lib/commands";
 import PromptModal from "./components/PromptModal";
+import UnlockKeychainModal from "./components/UnlockKeychainModal";
 import NewJiraTicketModal from "./components/NewJiraTicketModal";
 import TooltipHost from "./components/TooltipHost";
 import WslHealthCheck from "./components/WslHealthCheck";
@@ -1346,6 +1347,7 @@ export default function App() {
       {VOICE_ENABLED && <VoiceController />}
       <GlobalContextMenu />
       <PromptModal />
+      <UnlockKeychainModal />
       <NewJiraTicketModal />
       <TooltipHost />
       <WslHealthCheck />
