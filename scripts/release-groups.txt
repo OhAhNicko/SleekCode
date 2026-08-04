@@ -13,81 +13,39 @@
 #     slightly stale manifest still works.
 #   - Order here is the order the commits are made in.
 #
-# The subjects below were written by reading each workstream's diff (mostly the
-# comments the author left), NOT guessed from path names. Two of them are
-# first-hand; the rest are an outside reading of someone else's WIP, so check
-# they match what you actually did before releasing — they become the changelog
-# verbatim.
+# The subjects below were written by reading each workstream's diff, NOT guessed
+# from path names — they become the changelog verbatim.
 #
-# Deliberately left OUT, so they land in the sweep commit: App.tsx, index.css,
-# GlobalContextMenu.tsx, src-tauri/src/lib.rs, tauri.conf.json and AGENTS.md.
-# Each spans several of the workstreams below and I could not honestly assign
-# it to one. Give them their own group if you want them in the changelog.
+# ONE KNOWN IMPURITY: src-tauri/src/lib.rs carries BOTH Rust workstreams — the
+# new `ssh_unlock_keychain` command backing the keychain dialog, and the Codex
+# session-lookup fixes. A path can live in only one group, so it sits with the
+# Codex fix. Both subjects still reach the changelog, which is what the release
+# notes are built from.
 
-feat(git): read-only git for projects on an SSH server
-  src/lib/git-invoke.ts
-  src/components/CodeReviewPane.tsx
-  src/components/CodeReviewDiffView.tsx
-  src/components/GitStatusBar.tsx
-  src/lib/git-branch-cache.ts
-  src/lib/menu/providers/terminal.ts
-
-feat(dev-server): run several dev servers per project and choose which one the globe icons open
-  src/lib/spawn-dev-server.ts
-  src/lib/dev-server-lookup.ts
-  src/components/DevServerTab.tsx
-  src/components/DevServerTerminalHost.tsx
+feat(keychain): unlock a remote Mac's login keychain by hand after cancelling the automatic prompt
+  src/components/UnlockKeychainModal.tsx
+  src/lib/unlock-keychain-modal.ts
+  src/lib/keychain.ts
   src/components/ServersPanel.tsx
-  src/components/BrowserPreview.tsx
-  src/components/TabBar.tsx
-  src/components/VerticalTabBar.tsx
   src/lib/menu/providers/rows.ts
-  src/store/recentProjectsSlice.ts
+  src/lib/menu-icons.tsx
+  src/index.css
+  src/App.tsx
 
-feat(session): cap CLI-supplied session titles and confirm removal in the session picker
-  src/lib/session-title.ts
-  src/lib/session-exists.ts
-  src/lib/sessions-index.ts
-  src/lib/context-parser.ts
-  src/hooks/useSessionContext.ts
-  src/components/TerminalHeader.tsx
-  src/overlay/OverlayRoot.tsx
-
-feat(terminal): share one prompt-line detector between both pane backends
-  src/lib/prompt-lines.ts
-  src/components/TerminalPaneNative.tsx
-  src/components/TerminalPaneXterm.tsx
+feat(terminal): draw the TUI scrollbar for Codex and Gemini panes, not just Claude
   src/native-term/TuiScrollbar.tsx
   src/native-term/tui-scroll-model.ts
-  src/lib/native-term-bridge.ts
-  src-tauri/src/native_term/events.rs
-  src-tauri/src/native_term/mod.rs
-  src-tauri/src/native_term/window/mod.rs
+
+feat(terminal): accelerate a fast wheel flick inside mouse-tracking TUIs, so a fullscreen CLI no longer crawls
   src-tauri/src/native_term/window/win32.rs
+  src/components/TerminalPaneXterm.tsx
 
-feat(theme): give diff counts semantic colors that survive a red-accent theme
-  src/lib/themes.ts
+fix(context): take the context percentage from the CLI's own statusline, so a pane can no longer report a confident wrong 100%
+  src/lib/cli-statusline.ts
+  src/hooks/useSessionContext.ts
+  src/components/TerminalPaneNative.tsx
 
-fix(modals): center dialogs on an optical 38% line instead of a fixed top offset
-  src/lib/modal-layout.ts
-  src/components/PromptModal.tsx
-  src/components/NewJiraTicketModal.tsx
-  src/components/JiraProjectModal.tsx
-  src/components/ChangelogModal.tsx
-  src/components/ClaudeTokenWizardModal.tsx
-  src/components/ClearDataModal.tsx
-  src/components/CommandPalette.tsx
-  src/components/ConnectToGitHubModal.tsx
-  src/components/CreateProjectModal.tsx
-  src/components/CreatePullRequestModal.tsx
-  src/components/ImagePreviewModal.tsx
-  src/components/KeyboardShortcutsModal.tsx
-  src/components/ReleaseModal.tsx
-  src/components/SshKeySetupWizardModal.tsx
-  src/components/TemplatePicker.tsx
-  src/components/WelcomeModal.tsx
-
-chore(release): hand the release skill off to scripts/release.sh outside WSL
-  .claude/skills/release/SKILL.md
-  scripts/release-groups.txt
-  .gitignore
+fix(codex): match session cwd case-insensitively and stop reporting older rollouts as deleted
+  src-tauri/src/lib.rs
+  scripts/made-codex-diag.sh
+  scripts/made-codex-diag2.sh
