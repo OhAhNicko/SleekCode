@@ -1064,6 +1064,99 @@ async fn ssh_test_connection(
     Ok(output.status.success())
 }
 
+/// Verify a macOS server's login-keychain password, unlocking the keychain for
+/// THIS ssh session as a side effect.
+///
+/// The unlock itself is throwaway: every ssh login gets its own security
+/// session, which is exactly why `getKeychainUnlockPreamble()` (src/lib/keychain.ts)
+/// has to re-unlock inside each spawning pane. What this call buys is a VERDICT
+/// — the frontend can prove a password before caching it, instead of finding out
+/// it was wrong three failed tries later inside a pane that has already given up.
+///
+/// The password crosses on ssh's stdin, never in argv, so it never appears in the
+/// remote `ps` output — the same guarantee the PTY preamble makes. It must never
+/// be logged here either.
+///
+/// Returns "ok" (unlocked), "bad" (wrong password) or "nomac" (no `security`
+/// binary, i.e. not a macOS server). `Err` means ssh itself failed.
+#[tauri::command]
+async fn ssh_unlock_keychain(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    password: String,
+) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let user_host = format!("{}@{}", username, host);
+
+    let mut cmd = ssh_background_command();
+    cmd.args([
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ConnectTimeout=10",
+        "-o", "BatchMode=yes",
+    ]);
+    if let Some(ref key) = identity_file {
+        if !key.is_empty() {
+            cmd.args(["-i", &expand_home(key)?]);
+        }
+    }
+    cmd.arg(&user_host);
+    // `read` takes the password off stdin; only sentinels ever reach stdout.
+    // Same keychain path the PTY preamble unlocks.
+    //
+    // Wrapped in `sh -c` because ssh runs this through the user's LOGIN shell,
+    // and `IFS= read -r` is not fish syntax — an unwrapped script would fail
+    // parsing on a fish server and report an ssh error for a correct password.
+    // Safe to single-quote: the script itself contains no single quotes.
+    cmd.arg(concat!(
+        "sh -c '",
+        "if ! command -v security >/dev/null 2>&1; then echo NOMAC; exit 0; fi; ",
+        "IFS= read -r MADE_PW; ",
+        "if security unlock-keychain -p \"$MADE_PW\" ~/Library/Keychains/login.keychain-db >/dev/null 2>&1; ",
+        "then echo OK; else echo BAD; fi",
+        "'"
+    ));
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ssh: {}", e))?;
+
+    {
+        // Scoped so the handle drops here and the remote `read` sees EOF.
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "ssh stdin unavailable".to_string())?;
+        stdin
+            .write_all(format!("{}\n", password).as_bytes())
+            .map_err(|e| format!("Failed to send password to ssh: {}", e))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("Failed to wait for ssh: {}", e))?;
+
+    match String::from_utf8_lossy(&output.stdout).trim() {
+        "OK" => Ok("ok".to_string()),
+        "BAD" => Ok("bad".to_string()),
+        "NOMAC" => Ok("nomac".to_string()),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = stderr.trim();
+            Err(if stderr.is_empty() {
+                format!("Could not reach {} over SSH", host)
+            } else {
+                stderr.to_string()
+            })
+        }
+    }
+}
+
 #[derive(Serialize)]
 struct SshEnsureKeyResult {
     /// Absolute path to the private key (matches `ssh_list_keys` entries).
@@ -4474,6 +4567,17 @@ fn scan_claude_sessions_dir(
 /// becomes the pane title, and it is written into the project-session registry
 /// permanently (nothing prunes Codex rows).
 ///
+/// Matched with `lower(cwd)=lower(?)` at every call site, never `cwd=?`.
+/// Codex STORES the cwd lowercased — a WSL pane in
+/// `/mnt/c/Users/nikla/Documents/projects/CS 16` is filed under
+/// `/mnt/c/users/nikla/documents/projects/cs 16` — and SQLite's `=` on TEXT is
+/// case-sensitive, so the exact form matches nothing for any project whose path
+/// contains a capital. There used to be a case-insensitive rescan guarded on
+/// `path.startswith('/mnt/')`, which covered the WSL case by accident and left
+/// macOS and Linux projects with capitals broken. Codex has already discarded
+/// the original casing, so matching case-insensitively is the only thing that
+/// can work.
+///
 /// Four independent markers, because Codex has not committed to one:
 ///   - `thread_spawn_edges.child_thread_id` — anything spawned BY another thread
 ///   - `agent_role` — non-null only on agent threads
@@ -4511,9 +4615,7 @@ def rows_for(where,args):
     sql='SELECT id,cwd FROM threads WHERE '+where+' %s ORDER BY updated_at DESC LIMIT 50'
     try: return c.execute(sql%F,args).fetchall()
     except sqlite3.Error: return c.execute(sql%'',args).fetchall()
-rows=rows_for('cwd=?',(path,))
-if not rows and path.startswith('/mnt/'):
-    rows=[r for r in rows_for('1=1',()) if r[1].lower()==path.lower()]
+rows=rows_for('lower(cwd)=lower(?)',(path,))
 for r in rows:
     if r[0] not in exclude:
         print(r[0]); break
@@ -4549,14 +4651,7 @@ def rows_for(where,args):
         try: return q(cols,filt,where,args)
         except sqlite3.Error: continue
     return []
-rows=rows_for('cwd=?',(path,))
-if not rows and path.startswith('/mnt/'):
-    try:
-        allr=c.execute('SELECT id,cwd FROM threads ORDER BY updated_at DESC LIMIT 200').fetchall()
-        want=set(r[0] for r in allr if (r[1] or '').lower()==path.lower())
-        rows=[r for r in rows_for('1=1',()) if r[0] in want][:30]
-    except sqlite3.Error:
-        rows=[]
+rows=rows_for('lower(cwd)=lower(?)',(path,))
 def iso(s):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(s)) if s else ''
 print(json.dumps([{{
@@ -7514,21 +7609,42 @@ async fn read_cli_sessions_index(
     }
 }
 
-/// Python body: print `1` if `argv[1]` is a known Codex thread, nothing
-/// otherwise. Deliberately unfiltered — an agent thread still EXISTS, and this
-/// question is only ever "will `codex resume <id>` find something".
-fn codex_thread_exists_py(db_expr: &str) -> String {
+/// Python body: print `1` if `argv[1]` is a resumable Codex session, `0` if it
+/// is definitely gone, and NOTHING if the question could not be answered.
+///
+/// Two sources, and a hit in EITHER counts. The threads table is authoritative
+/// for Codex ≥0.113, but a rollout written by an older version has no row there
+/// while `codex resume` still finds it by file — answering from SQLite alone
+/// reports a live session as deleted, and the caller's response to "deleted" is
+/// to discard the id and start fresh. That is real work lost, so the file check
+/// is not optional.
+///
+/// Deliberately unfiltered: an agent thread still EXISTS. This asks only "will
+/// `codex resume <id>` find something", never "should MADE have adopted it".
+fn codex_session_exists_py(db_expr: &str, sessions_expr: &str) -> String {
     format!(
         r#"import sqlite3,os,sys
+sid=sys.argv[1]
 db={db_expr}
-if not os.path.exists(db): sys.exit(0)
-try:
-    r=sqlite3.connect(db).execute('SELECT 1 FROM threads WHERE id=?',(sys.argv[1],)).fetchone()
-except sqlite3.Error:
-    sys.exit(0)
-print(1 if r else 0)
+sessions={sessions_expr}
+looked=False
+if os.path.exists(db):
+    try:
+        if sqlite3.connect(db).execute('SELECT 1 FROM threads WHERE id=?',(sid,)).fetchone():
+            print(1); sys.exit(0)
+        looked=True
+    except sqlite3.Error:
+        pass
+if os.path.isdir(sessions):
+    for root,_dirs,files in os.walk(sessions):
+        for n in files:
+            if sid in n and n.endswith('.jsonl'):
+                print(1); sys.exit(0)
+    looked=True
+print(0 if looked else '')
 "#,
         db_expr = db_expr,
+        sessions_expr = sessions_expr,
     )
 }
 
@@ -7571,7 +7687,10 @@ async fn cli_session_exists(
             let script = format!(
                 "python3 - '{}' <<'MADE_CODEX_PY'\n{}MADE_CODEX_PY\n",
                 session_id.replace('\'', "'\\''"),
-                codex_thread_exists_py("os.path.expanduser('~/.codex/state_5.sqlite')"),
+                codex_session_exists_py(
+                    "os.path.expanduser('~/.codex/state_5.sqlite')",
+                    "os.path.expanduser('~/.codex/sessions')",
+                ),
             );
             let out = wsl_command_in(distro.as_deref())
                 .args(["--", "bash", "-lic", &script])
@@ -7613,7 +7732,10 @@ fn cli_session_exists_local(
             let codex_dir = std::path::Path::new(home).join(".codex");
             let db = codex_dir.join("state_5.sqlite");
             if db.exists() {
-                let py = codex_thread_exists_py(&format!("r'{}'", db.display()));
+                let py = codex_session_exists_py(
+                    &format!("r'{}'", db.display()),
+                    &format!("r'{}'", codex_dir.join("sessions").display()),
+                );
                 let out = Command::new("python3").args(["-c", &py, session_id]).output();
                 let out = if try_python_alias {
                     out.or_else(|_| Command::new("python").args(["-c", &py, session_id]).output())
@@ -7624,12 +7746,9 @@ fn cli_session_exists_local(
                     let text = String::from_utf8_lossy(&o.stdout);
                     match text.lines().map(|l| l.trim()).find(|l| *l == "0" || *l == "1") {
                         Some("1") => return SessionFileCheck { exists: true, checked: true },
-                        Some("0") => {
-                            // Absent from the DB is not yet proof: a rollout
-                            // written by an older Codex has no threads row.
-                            let rollout = codex_rollout_exists(&codex_dir, session_id);
-                            return SessionFileCheck { exists: rollout, checked: true };
-                        }
+                        // The python consulted BOTH the threads table and the
+                        // rollout files before answering, so 0 is final here.
+                        Some("0") => return SessionFileCheck { exists: false, checked: true },
                         _ => {}
                     }
                 }
@@ -8593,7 +8712,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_unlock_keychain, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
         .setup(|app| {
             // A3: build the shared wgpu Instance+Adapter on a background thread
             // NOW, so the one-time driver/DXGI enumeration (~534ms measured on
