@@ -299,6 +299,10 @@ export default function TerminalPaneNative({
   // Bumped on prompt submit; re-zeroes TuiScrollbar's scroll estimate.
   const [submitNonce, setSubmitNonce] = useState(0);
   const [termId, setTermId] = useState<NativeTermId | null>(null);
+  // Stable mirror for callbacks handed to long-lived effects (the context
+  // hook's poll), so they never restart just because the id arrived.
+  const termIdRef = useRef<NativeTermId | null>(null);
+  termIdRef.current = termId;
   const [cols, setCols] = useState(80);
   const [rows, setRows] = useState(24);
   const [cellMetrics, setCellMetrics] = useState<{ w: number; h: number } | null>(null);
@@ -461,6 +465,22 @@ export default function TerminalPaneNative({
   // which is why native headers showed nothing but the CLI name + path.
   // Ambiguity of the "__latest__" fallback is handled inside the hook by
   // otherResumablePaneSharesDir — do not re-add a renderer-local gate.
+  /**
+   * The pane's currently rendered rows — signed space [0, rows) is the live
+   * screen, so this excludes scrollback by construction.
+   *
+   * Feeds the context hook's statusline read: the CLIs print their own
+   * "Context NN% left" on the bottom line, and that number cannot disagree with
+   * the CLI the way a transcript-derived one can. termIdRef, not termId, so the
+   * callback identity is stable and the hook's poll effect never restarts.
+   */
+  const readScreenLines = useCallback(async (): Promise<string[]> => {
+    const id = termIdRef.current;
+    if (id == null) return [];
+    const vp = await nativeTermGetViewportState(id);
+    return await nativeTermGetBufferLines(id, 0, vp.rows);
+  }, []);
+
   const { contextInfo, setContextInfo, refreshContext } = useSessionContext({
     terminalId,
     terminalType,
@@ -473,6 +493,7 @@ export default function TerminalPaneNative({
     sessionResumeIdPropRef,
     onSessionResumeIdRef,
     setSessionTrusted,
+    readScreenLines,
   });
 
   // ── Overlay state (parity with TerminalPaneXterm) ────────────────────

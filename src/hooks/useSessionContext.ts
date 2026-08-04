@@ -17,13 +17,14 @@
  *   • session drift detection every 6th poll (~30s), e.g. after CLI /resume
  *   • project-session registry insert + auto-naming from the CLI's own title
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import type { TerminalType, TerminalBackend } from "../types";
 import { readSessionContext, type ContextInfo } from "../lib/context-parser";
 import { supportsSessionResume } from "../lib/session-resume";
 import { truncateSessionTitle } from "../lib/session-title";
+import { findStatuslineContext } from "../lib/cli-statusline";
 import { toWslPath } from "../lib/terminal-config";
 import { getCachedDistro } from "../lib/wsl-cache";
 import {
@@ -51,6 +52,14 @@ interface UseSessionContextArgs {
   sessionResumeIdPropRef: React.MutableRefObject<string | undefined>;
   onSessionResumeIdRef: React.MutableRefObject<((id: string) => void) | undefined>;
   setSessionTrusted: (trusted: boolean) => void;
+  /**
+   * Read the pane's currently RENDERED rows, bottom row last.
+   *
+   * Optional, and only the native renderer supplies it today. When present, a
+   * context percentage found in the CLI's own statusline overrides the one
+   * derived from the transcript — see the note in the poll.
+   */
+  readScreenLines?: () => Promise<string[]>;
 }
 
 export interface UseSessionContextResult {
@@ -92,8 +101,36 @@ export function useSessionContext({
   sessionResumeIdPropRef,
   onSessionResumeIdRef,
   setSessionTrusted,
+  readScreenLines,
 }: UseSessionContextArgs): UseSessionContextResult {
   const [contextInfo, setContextInfo] = useState<ContextInfo | null>(null);
+  const readScreenLinesRef = useRef(readScreenLines);
+  readScreenLinesRef.current = readScreenLines;
+
+  /**
+   * Overlay the CLI's OWN context reading on top of the transcript-derived one.
+   *
+   * The transcript route has to find the right session, find its last
+   * token-usage event and divide; each step can fail quietly, and when it does
+   * the `__latest__` fallback reports zero tokens used — a confident, wrong
+   * "100% left" while Codex's own statusline said 32%. The statusline cannot
+   * disagree with the CLI because it IS the CLI's answer.
+   *
+   * Only the percentage is taken. Model, cost, rate limits and session name
+   * have no statusline equivalent and still come from the transcript.
+   */
+  const applyStatusline = useCallback(async (info: ContextInfo): Promise<ContextInfo> => {
+    const read = readScreenLinesRef.current;
+    if (!read) return info;
+    try {
+      const hit = findStatuslineContext(await read());
+      if (!hit) return info;
+      const percent = Math.max(0, Math.min(100, hit.percentLeft));
+      return { ...info, percent, remaining: Math.round((percent / 100) * info.window) };
+    } catch {
+      return info; // pane torn down mid-read, or no buffer yet
+    }
+  }, []);
 
   // Periodically read context percentage from CLI session JSONL files.
   // Starts immediately — backend searches all recent sessions when no
@@ -109,7 +146,8 @@ export function useSessionContext({
       const backend = isSsh
         ? "ssh"
         : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
-      const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, contextProjectPath(backend, workingDirRef.current));
+      const raw = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, contextProjectPath(backend, workingDirRef.current));
+      const info = raw === null ? null : await applyStatusline(raw);
       if (info !== null) {
         // When this pane hasn't locked its own session, `info` came from the
         // "__latest__" fallback. That's only safe to display if no sibling
@@ -310,7 +348,8 @@ export function useSessionContext({
     const backend = isSsh
       ? "ssh"
       : (backendRef.current ?? useAppStore.getState().terminalBackend ?? "wsl");
-    const info = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, contextProjectPath(backend, workingDirRef.current));
+    const raw = await readSessionContext(terminalType, sessionResumeId || undefined, backend, serverIdRef.current, contextProjectPath(backend, workingDirRef.current));
+    const info = raw === null ? null : await applyStatusline(raw);
     if (info !== null) {
       // Don't display an ambiguous "__latest__" result that may belong to a
       // sibling pane in the same dir (see the poll for the full rationale).
