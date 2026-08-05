@@ -664,10 +664,13 @@ export default function TabBar() {
               width: 40,
               flexShrink: 0,
               cursor: "pointer",
-              backgroundColor: sidebarOpen ? "var(--ezy-surface)" : "transparent",
+              backgroundColor: sidebarOpen ? "var(--ezy-tab-active)" : "transparent",
             }}
             onClick={() => { closeAllMenus(); if (!sidebarOpen) useAppStore.getState().setSettingsPanelOpen(false); toggleSidebar(); }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-surface)"}
+            // Guarded like the dev-server and settings toggles below: hover is a
+            // step BELOW active, so painting it unconditionally would darken the
+            // open toggle under the pointer.
+            onMouseEnter={(e) => { if (!sidebarOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)"; }}
             onMouseLeave={(e) => {
               if (!sidebarOpen) e.currentTarget.style.backgroundColor = "transparent";
             }}
@@ -690,7 +693,7 @@ export default function TabBar() {
                 width: 36,
                 flexShrink: 0,
                 cursor: "pointer",
-                backgroundColor: isDevActive ? "var(--ezy-surface)" : "transparent",
+                backgroundColor: isDevActive ? "var(--ezy-tab-active)" : "transparent",
                 position: "relative",
                 borderRight: isDevActive ? "1px solid var(--ezy-border)" : "1px solid var(--ezy-border-subtle)",
               }}
@@ -710,7 +713,7 @@ export default function TabBar() {
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   backgroundColor: "var(--ezy-accent)",
                   border: "1px solid var(--ezy-bg)",
-                  fontSize: 7,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 7px)",
                   fontWeight: 700,
                   color: "#fff",
                   display: "flex",
@@ -736,7 +739,7 @@ export default function TabBar() {
             width: 36,
             flexShrink: 0,
             cursor: "pointer",
-            backgroundColor: settingsPanelOpen ? "var(--ezy-surface)" : "transparent",
+            backgroundColor: settingsPanelOpen ? "var(--ezy-tab-active)" : "transparent",
             borderRight: settingsPanelOpen ? "1px solid var(--ezy-border)" : "1px solid var(--ezy-border-subtle)",
           }}
           onClick={() => { closeAllMenus(); if (!settingsPanelOpen) { useAppStore.setState({ sidebarOpen: false, devServerPanelOpen: false }); } useAppStore.getState().toggleSettingsPanel(); }}
@@ -845,13 +848,13 @@ export default function TabBar() {
                     gap: 6,
                     padding: "0 12px",
                     position: "relative",
-                    backgroundColor: isActive ? "var(--ezy-surface)" : "transparent",
+                    backgroundColor: isActive ? "var(--ezy-tab-active)" : "transparent",
                     backgroundImage: isUserPinned
                       ? "repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(255,255,255,0.05) 4px, rgba(255,255,255,0.05) 8px)"
                       : undefined,
                     border: "none",
                     cursor: isSystemTab ? "pointer" : "grab",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontWeight: isActive ? 500 : 400,
                     color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                     fontFamily: "inherit",
@@ -926,7 +929,7 @@ export default function TabBar() {
                               }}
                               onClick={(e) => e.stopPropagation()}
                               style={{
-                                fontSize: 12,
+                                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                                 fontFamily: "inherit",
                                 backgroundColor: "var(--ezy-bg)",
                                 border: "1px solid var(--ezy-accent)",
@@ -975,7 +978,7 @@ export default function TabBar() {
                           {cliCount > 1 && !tab.isHibernated && (
                             <span
                               style={{
-                                fontSize: 9,
+                                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                                 fontWeight: 600,
                                 lineHeight: 1,
                                 padding: "1px 4px",
@@ -998,7 +1001,7 @@ export default function TabBar() {
                                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                                   backgroundColor: "var(--ezy-accent)",
                                   border: "1px solid var(--ezy-bg)",
-                                  fontSize: 7,
+                                  fontSize: "calc(var(--ezy-font-scale, 1) * 7px)",
                                   fontWeight: 700,
                                   color: "#fff",
                                   display: "flex",
@@ -1013,7 +1016,7 @@ export default function TabBar() {
                             </span>
                           )}
                           {showTabPath && !isSystemTab && tab.workingDir && (
-                            <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", opacity: 0.5, whiteSpace: "nowrap" }}>
+                            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", opacity: 0.5, whiteSpace: "nowrap" }}>
                               {truncateTabPath(tab.workingDir, 2)}
                             </span>
                           )}
@@ -1194,11 +1197,11 @@ export default function TabBar() {
                 padding: "0 12px",
                 height: 38,
                 width: dragState.tabWidth,
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 fontWeight: gIsActive ? 500 : 400,
                 color: gIsActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                 fontFamily: "inherit",
-                backgroundColor: gIsActive ? "var(--ezy-surface)" : "var(--ezy-bg)",
+                backgroundColor: gIsActive ? "var(--ezy-tab-active)" : "var(--ezy-bg)",
                 backgroundImage: gIsUserPinned
                   ? "repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(255,255,255,0.05) 4px, rgba(255,255,255,0.05) 8px)"
                   : undefined,
@@ -1215,7 +1218,7 @@ export default function TabBar() {
                 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 4 }}>
                   <span>{ghostTab.name}</span>
                   {gCliCount > 1 && (
-                    <span style={{ fontSize: 9, fontWeight: 600, lineHeight: 1, padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)", position: "relative" as const, top: 1, backgroundColor: "var(--ezy-surface-raised)", border: "1px solid var(--ezy-border)", color: "var(--ezy-text-secondary)" }}>
+                    <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 9px)", fontWeight: 600, lineHeight: 1, padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)", position: "relative" as const, top: 1, backgroundColor: "var(--ezy-surface-raised)", border: "1px solid var(--ezy-border)", color: "var(--ezy-text-secondary)" }}>
                       {gCliCount}
                     </span>
                   )}
@@ -1649,10 +1652,10 @@ export default function TabBar() {
               gap: 12,
             }}
           >
-            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 15px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               Quit MADE?
             </div>
-            <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)", lineHeight: 1.5 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)", lineHeight: 1.5 }}>
               All running terminals will be closed.
             </div>
             {/* Don't show again */}
@@ -1678,7 +1681,7 @@ export default function TabBar() {
                   <FaCheck size={9} color="#fff" />
                 )}
               </div>
-              <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>Do not show again</span>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Do not show again</span>
             </div>
             {/* Buttons */}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
@@ -1686,7 +1689,7 @@ export default function TabBar() {
                 onClick={() => setShowQuitConfirm(false)}
                 style={{
                   padding: "6px 16px",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 500,
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   cursor: "pointer",
@@ -1708,7 +1711,7 @@ export default function TabBar() {
                 }}
                 style={{
                   padding: "6px 16px",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 500,
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   cursor: "pointer",

@@ -320,9 +320,9 @@ export default function VerticalTabBar() {
               height: 36,
               padding: compact ? "0 6px" : "0 12px",
               cursor: "pointer",
-              backgroundColor: sidebarOpen ? "var(--ezy-surface)" : "transparent",
+              backgroundColor: sidebarOpen ? "var(--ezy-tab-active)" : "transparent",
               color: sidebarOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               transition: "background-color 120ms ease, color 120ms ease",
             }}
             onClick={handleSidebarClick}
@@ -355,10 +355,10 @@ export default function VerticalTabBar() {
               height: 36,
               padding: compact ? "0 6px" : "0 12px",
               cursor: activeIsProject ? "pointer" : "not-allowed",
-              backgroundColor: activeHasBrowser ? "var(--ezy-surface)" : "transparent",
+              backgroundColor: activeHasBrowser ? "var(--ezy-tab-active)" : "transparent",
               color: activeHasBrowser ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
               opacity: activeIsProject ? 1 : 0.4,
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               transition: "background-color 120ms ease, color 120ms ease",
             }}
             onMouseEnter={(e) => {
@@ -390,9 +390,9 @@ export default function VerticalTabBar() {
               padding: compact ? "0 6px" : "0 12px",
               cursor: "pointer",
               position: "relative",
-              backgroundColor: devServerPanelOpen ? "var(--ezy-surface)" : "transparent",
+              backgroundColor: devServerPanelOpen ? "var(--ezy-tab-active)" : "transparent",
               color: devServerPanelOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               borderBottom: "1px solid var(--ezy-border-subtle)",
               transition: "background-color 120ms ease, color 120ms ease",
             }}
@@ -415,7 +415,7 @@ export default function VerticalTabBar() {
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 7px)",
                   backgroundColor: "var(--ezy-accent)",
                   border: "1px solid var(--ezy-bg)",
-                  fontSize: 9,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                   fontWeight: 700,
                   color: "#fff",
                   display: "flex",
@@ -472,7 +472,7 @@ export default function VerticalTabBar() {
                   padding: compact ? "0 6px" : "0 10px 0 12px",
                   height: TAB_ROW_HEIGHT,
                   position: "relative",
-                  backgroundColor: isActive ? "var(--ezy-surface)" : "transparent",
+                  backgroundColor: isActive ? "var(--ezy-tab-active)" : "transparent",
                   backgroundImage: isUserPinned
                     ? "repeating-linear-gradient(135deg, transparent, transparent 4px, rgba(255,255,255,0.05) 4px, rgba(255,255,255,0.05) 8px)"
                     : undefined,
@@ -480,7 +480,7 @@ export default function VerticalTabBar() {
                   borderRight: tabColor ? `2px solid ${tabColor}` : "2px solid transparent",
                   borderBottom: "1px solid var(--ezy-border-subtle)",
                   cursor: "pointer",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: isActive ? 500 : 400,
                   color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                   fontFamily: "inherit",
@@ -512,7 +512,7 @@ export default function VerticalTabBar() {
                       width: 26,
                       height: 22,
                       borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
-                      fontSize: 10,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                       fontWeight: 700,
                       letterSpacing: "0.02em",
                       backgroundColor: tabColor ?? "var(--ezy-surface-raised)",
@@ -574,7 +574,7 @@ export default function VerticalTabBar() {
                 {!compact && cliCount > 1 && !tab.isHibernated && (
                   <span
                     style={{
-                      fontSize: 9,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                       fontWeight: 600,
                       lineHeight: 1,
                       padding: "1px 4px",
@@ -598,7 +598,7 @@ export default function VerticalTabBar() {
                           borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                           backgroundColor: "var(--ezy-accent)",
                           border: "1px solid var(--ezy-bg)",
-                          fontSize: 7,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 7px)",
                           fontWeight: 700,
                           color: "#fff",
                           display: "flex",
@@ -863,7 +863,7 @@ export default function VerticalTabBar() {
               cursor: "pointer",
               backgroundColor: settingsPanelOpen ? "var(--ezy-surface)" : "transparent",
               color: settingsPanelOpen ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               transition: "background-color 120ms ease, color 120ms ease",
             }}
             onClick={handleSettingsClick}
