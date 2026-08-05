@@ -49,6 +49,23 @@ export type OverlayMenuItem = {
    */
   disabledReason?: string;
   /**
+   * Hover tooltip for an ENABLED row — the full text behind a label the row can
+   * only show ellipsized (a prompt-history entry, a long path).
+   *
+   * Rendered through the overlay's own tip host (TipChip), never `title=`.
+   * Suppressed automatically when the row already shows the whole thing on
+   * screen, so a short label never pops a chip repeating itself — the same rule
+   * TooltipHost applies in the main webview.
+   *
+   * Unlike `sublabel` this costs no row height: the chip is drawn outside the
+   * menu, so the menu cannot resize under the user's pointer.
+   */
+  tooltip?: string;
+  /** Second tooltip line under a rule — the instruction half ("Click to scroll
+   *  to this prompt"), kept off the text line so it can never reflow into the
+   *  middle of a wrapped label. Ignored without `tooltip`. */
+  tooltipHint?: string;
+  /**
    * Nesting depth for inline expanders. 0/undefined = flush with the section.
    *
    * The overlay has no flyout submenus — its popup registry is flat and each

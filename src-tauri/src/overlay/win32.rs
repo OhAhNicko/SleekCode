@@ -9,6 +9,14 @@
 //! click falls through to the pane. The region is a 1-BIT mask (no partial
 //! alpha), which is why popups are flat — crisp rounded corners, but no soft
 //! drop shadow (a shadow is partial-alpha pixels the mask cannot represent).
+//!
+//! WM_PAINT IS SWALLOWED, AND THAT IS LOAD-BEARING (2026-08-04). See
+//! `install_nc_guard`. In short: tauri-runtime-wry gives every window built
+//! `transparent(true)` on Windows a softbuffer surface and repaints the whole
+//! client area PURE BLACK on every `RedrawRequested`, which is what tao emits
+//! for WM_PAINT. Transparent DOM pixels have nothing to repaint over that blit,
+//! so they stay black until something else recomposites the window — the
+//! intermittent black TUI-scrollbar bar and the black wedges on menu corners.
 
 #[cfg(target_os = "windows")]
 pub fn apply_ex_styles(hwnd: isize) {
@@ -214,6 +222,49 @@ const FOCUS_RELEASE_DELAY_MS: u32 = 60;
 static RELEASE_MAIN_HWND: std::sync::atomic::AtomicIsize =
     std::sync::atomic::AtomicIsize::new(0);
 
+/// Escape hatch for the WM_PAINT swallow below: `MADE_OVERLAY_PAINT_PASSTHROUGH=1`
+/// lets WM_PAINT reach tao again, i.e. restores the black-blit behaviour. Exists
+/// so the bug can be demonstrated on demand next to the fix rather than argued
+/// about — pair it with `MADE_OVERLAY_PAINT_PROBE` (see `paint_probe_ms`).
+#[cfg(target_os = "windows")]
+fn paint_passthrough() -> bool {
+    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let on = std::env::var("MADE_OVERLAY_PAINT_PASSTHROUGH")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if on {
+            crate::debug_log::dlog(
+                "[overlay.paint] PASSTHROUGH ON — WM_PAINT reaches tao, transparent overlay pixels will blit BLACK",
+            );
+        }
+        on
+    })
+}
+
+/// Deterministic repro for a bug that is otherwise "sometimes". Interval in ms
+/// from `MADE_OVERLAY_PAINT_PROBE` (clamped to >= 250ms); unset/0 => off. When
+/// armed, the NC-guard forces a real WM_PAINT on that cadence, so the black blit
+/// either happens every tick (passthrough on) or never (fix on). Without this
+/// you cannot tell a fix from a quiet afternoon: WM_PAINT arrives when Windows
+/// decides the window needs repainting, which is exactly why this bug reads as
+/// random.
+#[cfg(target_os = "windows")]
+fn paint_probe_ms() -> u32 {
+    static CACHE: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let ms = std::env::var("MADE_OVERLAY_PAINT_PROBE")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        if ms == 0 {
+            0
+        } else {
+            ms.max(250)
+        }
+    })
+}
+
 /// STRUCTURAL non-client kill for the overlay, same philosophy as the main
 /// window's accent-border subclass: styles are a losing battle (tao rewrites
 /// GWL_STYLE from its cached WindowFlags on show()/focus/etc., which is why the
@@ -238,9 +289,11 @@ pub fn install_nc_guard(hwnd: isize) {
     const WM_CONTEXTMENU: u32 = 0x007B;
     const WM_NCDESTROY: u32 = 0x0082;
     const WM_ERASEBKGND: u32 = 0x0014;
+    const WM_PAINT: u32 = 0x000F;
     const WM_MOUSEACTIVATE: u32 = 0x0021;
     const MA_NOACTIVATE: isize = 3;
     const WM_TIMER: u32 = 0x0113;
+    const PAINT_PROBE_TIMER: usize = 0x5050; // "PP" — Paint Probe
     const SWP_FRAMECHANGED: u32 = 0x0020;
     const SWP_NOSIZE: u32 = 0x0001;
     const SWP_NOMOVE: u32 = 0x0002;
@@ -305,6 +358,52 @@ pub fn install_nc_guard(hwnd: isize) {
             // bug. Claim "erased" and let the transparent webview own every
             // pixel.
             WM_ERASEBKGND => 1,
+            // NEVER let WM_PAINT reach tao. Same principle as WM_ERASEBKGND
+            // one line up, but the damage is worse and it is NOT ours:
+            //
+            //   tao's WM_PAINT emits `Event::RedrawRequested`
+            //   (tao-0.34.6 event_loop.rs:1086-1096), and tauri-runtime-wry
+            //   answers that, for any window built `transparent(true)` on
+            //   Windows, by filling a softbuffer over the WHOLE client area
+            //   with `background_color.unwrap_or(0)` — i.e. pure #000000 — and
+            //   BitBlt-ing it to the window DC (tauri-runtime-wry-2.10.1
+            //   lib.rs:4050-4064 + src/window/windows.rs:46-67, softbuffer-0.4.8
+            //   backends/win32.rs:189). tao sets no WS_CLIPCHILDREN, so that
+            //   blit is not clipped away from the WebView2 child's area.
+            //
+            // Opaque DOM survives it (Chromium's next present repaints those
+            // pixels). TRANSPARENT DOM does not — there is nothing to repaint
+            // with, so the black stays until the window is recomposited by
+            // something else. That is the intermittent full-height black bar
+            // where the fullscreen-TUI scrollbar's transparent track should be,
+            // and the black wedges on menu / tooltip corners. It reads as random
+            // only because WM_PAINT arrives when Windows feels like it; "spawn
+            // another pane and the old one clears" is the layout churn's
+            // hide/show recompositing the overlay.
+            //
+            // The overlay has no GDI content of its own to lose: every visible
+            // pixel comes from the WebView2 child, which paints itself. So the
+            // update region is simply validated (NEVER return 0 without that —
+            // an unvalidated WM_PAINT is re-posted forever at 100% CPU).
+            //
+            // Escape hatch: MADE_OVERLAY_PAINT_PASSTHROUGH=1 restores the old
+            // behaviour so the bug can be shown on demand.
+            WM_PAINT if !paint_passthrough() => {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::Graphics::Gdi::ValidateRect;
+                let _ = ValidateRect(HWND(hwnd as *mut _), None);
+                0
+            }
+            // Deterministic repro driver (MADE_OVERLAY_PAINT_PROBE=<ms>): force
+            // the real WM_PAINT this guard is about, on a fixed cadence.
+            WM_TIMER if wparam == PAINT_PROBE_TIMER => {
+                use windows::Win32::Foundation::{BOOL, HWND};
+                use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow};
+                let h = HWND(hwnd as *mut _);
+                let _ = InvalidateRect(h, None, BOOL(0));
+                let _ = UpdateWindow(h);
+                0
+            }
             // Clicking a popup must NEVER move activation to the overlay:
             // WS_EX_NOACTIVATE alone doesn't stop the WebView2 CHILD from
             // stealing it, and the resulting deactivate/reactivate pair on
@@ -382,6 +481,16 @@ pub fn install_nc_guard(hwnd: isize) {
                 0,
                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
             );
+            let probe_ms = paint_probe_ms();
+            if probe_ms > 0 {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::SetTimer;
+                crate::debug_log::dlog(&format!(
+                    "[overlay.paint] probe armed: forcing WM_PAINT every {probe_ms}ms (passthrough={})",
+                    paint_passthrough()
+                ));
+                SetTimer(HWND(hwnd as *mut _), PAINT_PROBE_TIMER, probe_ms, None);
+            }
         }
     }
 }

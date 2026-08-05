@@ -29,6 +29,10 @@ import {
   JUMP_BTN_GAP_PX,
   JUMP_BTN_IDLE_MS,
 } from "../native-term/tui-scroll-model";
+import {
+  clipOutOfResizeFrame,
+  WINDOW_RESIZE_EDGE_PX,
+} from "../lib/window-resize-frame";
 
 type PopupRect = {
   x: number;
@@ -366,7 +370,38 @@ export function OverlayRoot() {
           }
         }
 
-        rects.push({ x, y, width: w, height: h, radius });
+        // The window's resize frame is NOT ours to claim.
+        //
+        // Those handles are 6px DOM divs in the MAIN webview
+        // (components/WindowResizeHandles.tsx). This overlay is a separate
+        // always-on-top OS window sized to main's whole client area, and every
+        // pixel inside this region belongs to it — the main webview never sees
+        // the pointer there. So a popup that reaches a window edge takes window
+        // resizing away from the user for its entire span, silently, with no
+        // visual tell.
+        //
+        // That is exactly what the far-right pane's TUI scrollbar did: its
+        // hit-strip is pinned to the pane's right edge, the rightmost pane is
+        // flush with the window, and the strip is 16px wide (44 while scrolled
+        // up) — so it covered the 6px East handle for the pane's full height
+        // and the window could not be resized from the right at all
+        // (user-reported 2026-08-04). The 2026-07-26 fix for the same symptom
+        // did not help: it trims the PANE's HWND, and this is a different
+        // window.
+        //
+        // Clipped HERE, at the one place rects become the region, rather than
+        // in each popup: any popup that ever reaches an edge — a toast, a menu
+        // opened against the frame, something not written yet — is covered by
+        // construction. Popups are still responsible for LOOKING right (see
+        // TuiScrollbar, which insets itself so this clip never bites it); this
+        // is the floor, not the plan.
+        const safe = clipOutOfResizeFrame(
+          { x, y, width: w, height: h },
+          window.innerWidth,
+          window.innerHeight,
+        );
+        if (!safe) continue;
+        rects.push({ ...safe, radius });
       }
 
       const sig = JSON.stringify(rects);
@@ -549,7 +584,7 @@ function ExitBanner({
     boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
     color: "var(--ezy-text-muted, rgba(230,237,243,0.65))",
     fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
-    fontSize: 12,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
     lineHeight: 1.4,
     letterSpacing: 0.2,
     userSelect: "none",
@@ -620,7 +655,7 @@ function Toast({
             gap: 12,
           }}
         >
-          <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: "-0.01em" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600, letterSpacing: "-0.01em" }}>
             {p.title}
           </span>
           {p.dismissable && (
@@ -641,7 +676,7 @@ function Toast({
         {p.detail && (
           <span
             style={{
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               opacity: 0.95,
               lineHeight: 1.45,
               fontVariantNumeric: "tabular-nums",
@@ -696,7 +731,7 @@ function Toast({
         <div style={{ minWidth: 0, maxWidth: 240 }}>
           <div
             style={{
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 500,
               color: "var(--ezy-text, #e6edf3)",
               whiteSpace: "nowrap",
@@ -708,7 +743,7 @@ function Toast({
             <div
               title={p.detailTooltip ?? undefined}
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 marginTop: 2,
                 color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                 overflow: "hidden",
@@ -723,7 +758,7 @@ function Toast({
       ) : (
         <span
           style={{
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
             maxWidth: 260,
             overflow: "hidden",
@@ -742,7 +777,7 @@ function Toast({
             act(p.button!.action);
           }}
           style={{
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             fontWeight: 500,
             padding: "4px 10px",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
@@ -761,7 +796,7 @@ function Toast({
       {p.shortcutHint && (
         <span
           style={{
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
             flexShrink: 0,
           }}
@@ -999,7 +1034,7 @@ function NotifStack({
             <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
               <span
                 style={{
-                  fontSize: 10,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                   fontWeight: 600,
                   lineHeight: "16px",
                   padding: "0 6px",
@@ -1015,7 +1050,7 @@ function NotifStack({
               </span>
               <span
                 style={{
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 600,
                   color: "var(--ezy-text, #e6edf3)",
                   overflow: "hidden",
@@ -1029,7 +1064,7 @@ function NotifStack({
               </span>
               <span
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                   fontVariantNumeric: "tabular-nums",
                   flexShrink: 0,
@@ -1065,7 +1100,7 @@ function NotifStack({
             {card.paneLabel && (
               <div
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
@@ -1077,7 +1112,7 @@ function NotifStack({
             )}
             <div
               style={{
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 lineHeight: 1.45,
                 color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
                 display: "-webkit-box",
@@ -1165,7 +1200,7 @@ function FileLinkTip({
       >
         <span
           style={{
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
           }}
         >
@@ -1173,7 +1208,7 @@ function FileLinkTip({
         </span>
         <kbd
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             padding: "1px 5px",
             background: "var(--ezy-surface, #161b22)",
             border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
@@ -1327,6 +1362,22 @@ function TuiScrollbar({
   // decision happens above it.
   const STRIP_W = dragPos !== null || !atBottom ? 44 : 16;
 
+  // Right edge of the bar, held one resize-frame width inside the pane.
+  //
+  // The rightmost pane is flush with the window, so without this the strip
+  // covers the window's East resize handle for the pane's whole height and the
+  // window cannot be resized from the right (user-reported 2026-08-04). The
+  // region clip in the popup-region loop already refuses to hand those pixels
+  // to the overlay — but a clip alone would only shave the outer 2px off this
+  // bar's 6px thumb, leaving it visibly narrower and lop-sidedly rounded on
+  // that one pane.
+  //
+  // Applied in EVERY pane, not just the flush one, so every bar sits the same
+  // distance inside its own pane and none of them looks like the odd one out.
+  // Costs the inner panes 6px of inward shift over content the bar already
+  // floats above.
+  const stripRight = rect.x + rect.width - WINDOW_RESIZE_EDGE_PX;
+
   // While dragging, the thumb follows the optimistic count (and therefore
   // outruns the pointer when acceleration kicks in — that is the point).
   const shownPos = dragPos ?? pos;
@@ -1356,7 +1407,7 @@ function TuiScrollbar({
       }}
       style={{
         position: "fixed",
-        left: rect.x + rect.width - STRIP_W,
+        left: stripRight - STRIP_W,
         top: rect.y,
         width: STRIP_W,
         height: rect.height,
@@ -1502,7 +1553,7 @@ function ImeComposition({
         color: "#ffffff",
         border: "1px solid rgba(255,255,255,0.15)",
         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
-        fontSize: 14,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
         lineHeight: 1.2,
         whiteSpace: "nowrap",
         maxWidth: Math.max(80, rect.width - 32),
@@ -1612,7 +1663,15 @@ function AnchoredMenu({
   // Menu items render their own tooltips — the overlay cannot publish a popup
   // to itself, so `title=` here would be the OS tooltip the rest of the app no
   // longer uses (this is why "Split Down" still looked like Windows chrome).
-  const tip = useOverlayTip();
+  //
+  // Registered as its own region element: a chip for the FIRST row is drawn
+  // above the panel, well outside the shadow-pad slack, and anything outside a
+  // registered rect is clipped away by the window region and never painted.
+  const registerTip = useCallback(
+    (el: HTMLDivElement | null) => registerEl(`${msg.id}::tip`, el),
+    [registerEl, msg.id],
+  );
+  const tip = useOverlayTip(registerTip);
   const [menuSize, setMenuSize] = useState<{ w: number; h: number }>({
     w: 0,
     h: 0,
@@ -1636,6 +1695,7 @@ function AnchoredMenu({
   );
 
   const dismiss = () => {
+    tip.hide();
     closeLocal(msg.id);
     emitOverlayAction({ id: msg.id, action: "__dismiss__" });
   };
@@ -1652,6 +1712,9 @@ function AnchoredMenu({
     e?: { ctrlKey: boolean; metaKey: boolean },
     sticky?: boolean,
   ) => {
+    // Deliberate interaction — the label has done its job and is now in the way
+    // (a sticky row keeps the menu open, so a stale chip would just sit there).
+    tip.hide();
     if (!sticky) closeLocal(msg.id);
     emitOverlayAction({
       id: msg.id,
@@ -1768,6 +1831,9 @@ function AnchoredMenu({
         }}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
+        // A scrolling list (prompt history) drags rows out from under an open
+        // chip, which would then describe whatever row slid into its place.
+        onScroll={() => tip.hide()}
         // Hover-to-open mode: report pointer presence so the main side keeps
         // the menu open only while the pointer is inside button or menu.
         onMouseEnter={
@@ -1796,7 +1862,7 @@ function AnchoredMenu({
               <div
                 style={{
                   padding: "4px 12px 2px",
-                  fontSize: 10,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                   fontWeight: 600,
                   letterSpacing: 0.4,
                   textTransform: "uppercase",
@@ -1821,7 +1887,7 @@ function AnchoredMenu({
                   gap: 8,
                   padding: "6px 12px",
                   paddingLeft: 12 + (item.indent ?? 0) * 14,
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   cursor: item.disabled ? "default" : "pointer",
                   // Disabled rows stay legible rather than ghosting out: the
                   // point of showing them is to say "this belongs here, just
@@ -1836,14 +1902,23 @@ function AnchoredMenu({
                   if (!item.disabled)
                     e.currentTarget.style.background =
                       "var(--ezy-surface, rgba(255,255,255,0.06))";
-                  // Disabled rows still receive mouse events, which is what
-                  // makes the explanation reachable at all.
-                  if (item.disabledReason)
-                    tip.showAfterDelay(e.currentTarget, item.disabledReason);
+                  // Two tooltips share one code path. A disabled row explains
+                  // ITSELF (and still receives mouse events, which is what makes
+                  // the explanation reachable at all); an enabled row shows the
+                  // full text behind an ellipsized label. Never both — a reason
+                  // beats a label the row is not offering anyway.
+                  const text = item.disabledReason ?? item.tooltip;
+                  if (text && !echoesRowText(e.currentTarget, text)) {
+                    tip.showAfterDelay(
+                      e.currentTarget,
+                      text,
+                      item.disabledReason ? undefined : item.tooltipHint,
+                    );
+                  }
                 }}
                 onMouseLeave={(e) => {
                   e.currentTarget.style.background = "transparent";
-                  if (item.disabledReason) tip.hide();
+                  tip.hide();
                 }}
               >
                 {item.swatch && (
@@ -1884,7 +1959,7 @@ function AnchoredMenu({
                     <span
                       style={{
                         display: "block",
-                        fontSize: 10,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                         marginTop: 1,
                         color: "var(--ezy-text-muted, rgba(230,237,243,0.45))",
                         overflow: "hidden",
@@ -1914,7 +1989,7 @@ function AnchoredMenu({
                   <span
                     style={{
                       color: "var(--ezy-text-muted, rgba(230,237,243,0.45))",
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       flexShrink: 0,
                     }}
                   >
@@ -1926,7 +2001,7 @@ function AnchoredMenu({
                     style={{
                       background: "var(--ezy-red, #f85149)",
                       color: "#fff",
-                      fontSize: 9,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                       fontWeight: 700,
                       letterSpacing: 0.4,
                       padding: "1px 5px",
@@ -2006,7 +2081,7 @@ function AnchoredMenu({
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      fontSize: 10,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                       color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                     }}
                   >
@@ -2054,7 +2129,7 @@ function VoiceHudCard({
   const active = p.state !== "idle" && !isError;
 
   const smallBtn: CSSProperties = {
-    fontSize: 11,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
     color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
     background: "transparent",
     boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.15))",
@@ -2085,7 +2160,7 @@ function VoiceHudCard({
         borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
         padding: "10px 12px",
         color: "var(--ezy-text, #e6edf3)",
-        fontSize: 12,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
         display: "flex",
         flexDirection: "column",
         gap: 6,
@@ -2112,7 +2187,7 @@ function VoiceHudCard({
           <span
             style={{
               marginLeft: "auto",
-              fontSize: 10,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
               color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
             }}
           >
@@ -2134,7 +2209,7 @@ function VoiceHudCard({
         <div
           style={{
             color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           }}
         >
           {p.tool}
@@ -2144,7 +2219,7 @@ function VoiceHudCard({
         <div
           style={{
             color: "var(--ezy-red, #f85149)",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             lineHeight: 1.4,
           }}
         >
@@ -2192,7 +2267,7 @@ function VoiceHudCard({
             <button
               onClick={() => act("confirm-run")}
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 fontWeight: 600,
                 color: "#fff",
                 background: "var(--ezy-red, #f85149)",
@@ -2398,7 +2473,7 @@ function TipChip({
           // Rectangular by design; 2px only takes the bite off the corners.
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
           padding: "5px 9px",
-          fontSize: 11.5,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11.5px)",
           fontWeight: 500,
           lineHeight: 1.35,
           letterSpacing: "0.01em",
@@ -2425,7 +2500,7 @@ function TipChip({
               border: "1px solid var(--ezy-border-light, #484f58)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)",
               padding: "0 4px",
-              fontSize: 10.5,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 10.5px)",
               fontWeight: 600,
               fontVariantNumeric: "tabular-nums",
             }}
@@ -2439,7 +2514,7 @@ function TipChip({
             style={{
               borderTop: "1px solid var(--ezy-border, #30363d)",
               paddingTop: 4,
-              fontSize: 10.5,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 10.5px)",
               fontWeight: 500,
               color: "var(--ezy-text-muted, #8b949e)",
             }}
@@ -2487,6 +2562,33 @@ function TipChip({
 }
 
 /**
+ * True when a row already shows the whole tooltip on screen, so the chip would
+ * only repeat it back.
+ *
+ * The main webview drops those in TooltipHost (`repeatsVisibleText`); overlay
+ * rows need the same rule or the two tooltip surfaces disagree about what is
+ * worth saying. A prompt-history row is the case that matters: the label is
+ * `#12  <prompt>` clipped at 320px, so the full prompt is genuinely unreadable
+ * — until the prompt is short, and then a chip saying exactly what the row says
+ * is pure noise.
+ *
+ * `includes`, not equality: the visible text carries extras the tooltip does
+ * not (the `#12` index, the right-aligned timestamp, a session's relative
+ * time). Clipping is measured on the descendants too — the ellipsized node is
+ * a child span, never the row itself.
+ */
+function echoesRowText(row: HTMLElement, text: string): boolean {
+  const visible = (row.textContent ?? "").replace(/\s+/g, " ").trim();
+  const tip = text.replace(/\s+/g, " ").trim();
+  if (!visible || !tip || !visible.includes(tip)) return false;
+  if (row.scrollWidth > row.clientWidth + 1) return false;
+  for (const child of row.querySelectorAll<HTMLElement>("*")) {
+    if (child.scrollWidth > child.clientWidth + 1) return false;
+  }
+  return true;
+}
+
+/**
  * Hover tooltip for the overlay's OWN elements (menu rows, trailing buttons).
  *
  * The main webview drives its tooltips through TooltipHost -> kind "tooltip".
@@ -2519,6 +2621,16 @@ function useOverlayTip(register?: (el: HTMLDivElement | null) => void) {
   const showAfterDelay = useCallback(
     (el: HTMLElement, text: string, hint?: string) => {
       if (timer.current) clearTimeout(timer.current);
+      // Settings > General > Behavior > "Hover tooltips". The overlay has no
+      // store, so the flag rides the theme-var channel (App.tsx) — read live
+      // rather than cached, since a toggle re-emits the vars mid-session.
+      if (
+        getComputedStyle(document.documentElement)
+          .getPropertyValue("--ezy-hover-tips")
+          .trim() === "0"
+      ) {
+        return;
+      }
       timer.current = setTimeout(() => {
         timer.current = null;
         if (!el.isConnected) return;
@@ -2643,7 +2755,7 @@ function SwatchMenu({
       >
         <div
           style={{
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
             marginBottom: 6,
             fontWeight: 500,
@@ -2669,7 +2781,7 @@ function SwatchMenu({
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              fontSize: 10,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
               color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
             }}
           >
@@ -2801,7 +2913,7 @@ function SoundPickerMenu({
         gap: 8,
         padding: "6px 12px",
         cursor: "pointer",
-        fontSize: 12,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
         minWidth: 0,
       }}
     >
@@ -2858,7 +2970,7 @@ function SoundPickerMenu({
             />
             <span
               style={{
-                fontSize: 10.5,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 10.5px)",
                 color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                 maxWidth: 72,
                 overflow: "hidden",
@@ -2873,7 +2985,7 @@ function SoundPickerMenu({
         {(opts.overflow ?? 0) > 0 && (
           <span
             style={{
-              fontSize: 10.5,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 10.5px)",
               color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
               flexShrink: 0,
             }}
@@ -2946,7 +3058,7 @@ function SoundPickerMenu({
         <div
           style={{
             padding: "6px 12px",
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             fontWeight: 600,
             letterSpacing: "0.08em",
             textTransform: "uppercase",
@@ -3030,7 +3142,7 @@ function RecentMenu({
 
   const headerStyle: CSSProperties = {
     padding: "6px 12px",
-    fontSize: 10,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
     fontWeight: 600,
     letterSpacing: "0.08em",
     textTransform: "uppercase",
@@ -3045,7 +3157,7 @@ function RecentMenu({
     borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
     background: "transparent",
     color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-    fontSize: 10,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
     fontWeight: 600,
     cursor: "pointer",
     lineHeight: 1,
@@ -3113,7 +3225,7 @@ function RecentMenu({
               gap: 8,
               padding: "7px 12px",
               cursor: project.disabled ? "not-allowed" : "pointer",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               opacity: project.disabled ? 0.5 : 1,
               order: 31,
             }}
@@ -3153,7 +3265,7 @@ function RecentMenu({
                       display: "inline-flex",
                       alignItems: "center",
                       gap: 3,
-                      fontSize: 9,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                       fontWeight: 700,
                       padding: "1px 6px",
                       borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
@@ -3182,7 +3294,7 @@ function RecentMenu({
                   <span
                     style={{
                       flexShrink: 0,
-                      fontSize: 9,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                       fontWeight: 600,
                       padding: "1px 6px",
                       borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
@@ -3205,7 +3317,7 @@ function RecentMenu({
               </div>
               <div
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
@@ -3349,7 +3461,7 @@ function RecentMenu({
             gap: 8,
             padding: "8px 12px",
             cursor: p.canCreate ? "pointer" : "not-allowed",
-            fontSize: 13,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
             color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
             opacity: p.canCreate ? 1 : 0.45,
           }}
@@ -3384,7 +3496,7 @@ function RecentMenu({
             gap: 8,
             padding: "8px 12px",
             cursor: "pointer",
-            fontSize: 13,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
             color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
           }}
         >
@@ -3428,7 +3540,7 @@ function RecentMenu({
             gap: 8,
             padding: "8px 12px",
             cursor: "pointer",
-            fontSize: 13,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
             color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
           }}
         >
@@ -3461,7 +3573,7 @@ function RecentMenu({
                   gap: 8,
                   padding: "8px 12px",
                   cursor: "pointer",
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
                 }}
               >
@@ -3605,7 +3717,7 @@ function PaneSearch({
         borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
         padding: "3px 4px",
         fontFamily: "var(--ezy-font-ui, system-ui, -apple-system, sans-serif)",
-        fontSize: 12,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
         pointerEvents: "auto",
       }}
     >
@@ -3671,7 +3783,7 @@ function PaneSearch({
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           padding: "0 6px",
           color: "var(--ezy-text, #e6edf3)",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           outline: "none",
           caretColor: "var(--ezy-accent, #10a37f)",
           transition: "border-color 120ms ease",
@@ -3680,7 +3792,7 @@ function PaneSearch({
       {matchDisplay && (
         <span
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             color: noResults
               ? "var(--ezy-red, #f85149)"
               : "var(--ezy-text-muted, rgba(230,237,243,0.5))",
@@ -3818,7 +3930,7 @@ function OvToggleButton({
         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         padding: "0 4px",
         cursor: "pointer",
-        fontSize: 11,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
         fontWeight: 600,
         letterSpacing: "0.01em",
         backgroundColor: active
@@ -3944,7 +4056,7 @@ function GitBranchMenu({
     border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
     borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
     padding: "5px 8px",
-    fontSize: 12,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
     color: "var(--ezy-text, #e6edf3)",
     outline: "none",
     fontFamily: "inherit",
@@ -4030,7 +4142,7 @@ function GitBranchMenu({
               </svg>
               <span
                 style={{
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
                 }}
               >
@@ -4116,7 +4228,7 @@ function GitBranchMenu({
                   </div>
                   <span
                     style={{
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                     }}
                   >
@@ -4133,7 +4245,7 @@ function GitBranchMenu({
                     border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
                     background: "transparent",
                     color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     cursor: p.creatingBusy ? "not-allowed" : "pointer",
                     fontFamily: "inherit",
                   }}
@@ -4153,7 +4265,7 @@ function GitBranchMenu({
                     border: "none",
                     background: "var(--ezy-accent, #10a37f)",
                     color: "#0d1117",
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     fontWeight: 600,
                     cursor: createDisabled ? "not-allowed" : "pointer",
                     opacity: createDisabled ? 0.5 : 1,
@@ -4166,7 +4278,7 @@ function GitBranchMenu({
               {(p.createError || nameErr) && (
                 <div
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-red, #f85149)",
                     wordBreak: "break-word",
                   }}
@@ -4182,7 +4294,7 @@ function GitBranchMenu({
             <div
               style={{
                 padding: "8px 12px",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
               }}
             >
@@ -4234,7 +4346,7 @@ function GitBranchMenu({
                 </svg>
                 <span
                   style={{
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     color: isCurrent
                       ? "white"
                       : "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
@@ -4255,7 +4367,7 @@ function GitBranchMenu({
           <div
             style={{
               padding: "6px 12px",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               color: "var(--ezy-red, #f85149)",
               borderTop: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
               whiteSpace: "pre-wrap",
@@ -4301,6 +4413,15 @@ function SessionPickerMenu({
     (el: HTMLElement | null) => registerEl(msg.id, el),
     [registerEl, msg.id],
   );
+  // Branded hover tooltips (TipChip — the same chip TooltipHost shows in the
+  // main webview; never `title=`, which draws the unthemed OS tooltip this app
+  // dropped everywhere else). Registered as its own region element: the top
+  // row's chip is drawn above the panel, outside the panel's own rect.
+  const registerTip = useCallback(
+    (el: HTMLDivElement | null) => registerEl(`${msg.id}::tip`, el),
+    [registerEl, msg.id],
+  );
+  const tip = useOverlayTip(registerTip);
   const inputRef = useRef<HTMLInputElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
@@ -4312,8 +4433,10 @@ function SessionPickerMenu({
   const editingIdRef = useRef<string | null>(null);
   editingIdRef.current = editingId;
 
-  const act = (action: string, data?: unknown) =>
+  const act = (action: string, data?: unknown) => {
+    tip.hide(); // deliberate interaction — the label has served its purpose
     emitOverlayAction({ id: msg.id, action, data });
+  };
   const dismiss = () => {
     closeLocal(msg.id);
     act("__dismiss__");
@@ -4404,12 +4527,17 @@ function SessionPickerMenu({
           fontFamily: "var(--ezy-font-ui, system-ui, -apple-system, sans-serif)",
         }}
       >
-        <div style={{ overflowY: "auto", maxHeight: 296 }}>
+        <div
+          style={{ overflowY: "auto", maxHeight: 296 }}
+          // Rows scrolling under an open chip would leave it labelling the row
+          // that slid into its place.
+          onScroll={() => tip.hide()}
+        >
           {sessions.length === 0 && (
             <div
               style={{
                 padding: "8px 10px",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                 opacity: 0.6,
               }}
@@ -4453,13 +4581,23 @@ function SessionPickerMenu({
                     <span
                       style={{
                         flex: 1,
-                        fontSize: 11,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                         color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
                       }}
-                      title={session.name}
+                      // The prompt replaces the row, so the name it is asking
+                      // about is no longer on screen — the chip is the only way
+                      // to check you are about to forget the right one.
+                      onMouseEnter={(e) =>
+                        tip.showAfterDelay(
+                          e.currentTarget,
+                          session.name,
+                          "Removes it from this list only — the CLI's own transcript stays on disk",
+                        )
+                      }
+                      onMouseLeave={() => tip.hide()}
                     >
                       Remove from list?
                     </span>
@@ -4470,7 +4608,7 @@ function SessionPickerMenu({
                         setConfirmRemoveId(null);
                       }}
                       style={{
-                        fontSize: 11,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                         fontWeight: 600,
                         color: "#fff",
                         background: "var(--ezy-red, #f85149)",
@@ -4490,7 +4628,7 @@ function SessionPickerMenu({
                         setConfirmRemoveId(null);
                       }}
                       style={{
-                        fontSize: 11,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                         color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                         background: "transparent",
                         boxShadow:
@@ -4524,7 +4662,7 @@ function SessionPickerMenu({
                     style={{
                       flex: 1,
                       padding: "5px 10px",
-                      fontSize: 12,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                       fontFamily: "inherit",
                       backgroundColor: "var(--ezy-bg, #0d1117)",
                       border: "1px solid var(--ezy-accent, #10a37f)",
@@ -4546,7 +4684,7 @@ function SessionPickerMenu({
                         backgroundColor: "transparent",
                         border: "none",
                         cursor: "pointer",
-                        fontSize: 12,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                         textAlign: "left",
                         fontWeight: session.isCurrent ? 600 : 400,
                         color: session.isCurrent
@@ -4562,13 +4700,25 @@ function SessionPickerMenu({
                         if (!session.isCurrent) act("pick", { id: session.id });
                         else act("__dismiss__");
                       }}
+                      // Whole row, not the name span: the dot and the time are
+                      // part of the same target, and a 5px dot with its own
+                      // tooltip is a thing nobody can hit on purpose. What the
+                      // dot MEANT now rides in the hint line instead.
+                      onMouseEnter={(e) => {
+                        if (echoesRowText(e.currentTarget, session.name)) return;
+                        tip.showAfterDelay(
+                          e.currentTarget,
+                          session.name,
+                          session.isCurrent
+                            ? "Current session"
+                            : session.isFromStore
+                              ? "Saved session — click to switch"
+                              : "Historical session — click to resume",
+                        );
+                      }}
+                      onMouseLeave={() => tip.hide()}
                     >
                       <span
-                        title={
-                          session.isFromStore
-                            ? "Session saved"
-                            : "Historical session"
-                        }
                         style={{
                           width: 5,
                           height: 5,
@@ -4587,14 +4737,13 @@ function SessionPickerMenu({
                           whiteSpace: "nowrap",
                           flex: 1,
                         }}
-                        title={session.name}
                       >
                         {session.name}
                       </span>
                       {session.timeLabel && (
                         <span
                           style={{
-                            fontSize: 10,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                             color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
                             opacity: 0.6,
                             flexShrink: 0,
@@ -4619,7 +4768,7 @@ function SessionPickerMenu({
                     {session.isFromStore && rowHover && (
                       <div
                         role="button"
-                        title="Rename session"
+                        aria-label="Rename session"
                         style={{
                           cursor: "pointer",
                           padding: 4,
@@ -4628,13 +4777,15 @@ function SessionPickerMenu({
                           display: "flex",
                           alignItems: "center",
                         }}
-                        onMouseEnter={(e) =>
-                          (e.currentTarget.style.backgroundColor =
-                            "var(--ezy-border, rgba(255,255,255,0.15))")
-                        }
-                        onMouseLeave={(e) =>
-                          (e.currentTarget.style.backgroundColor = "transparent")
-                        }
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.backgroundColor =
+                            "var(--ezy-border, rgba(255,255,255,0.15))";
+                          tip.showAfterDelay(e.currentTarget, "Rename session");
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = "transparent";
+                          tip.hide();
+                        }}
                         onClick={(e) => {
                           e.stopPropagation();
                           setEditingId(session.id);
@@ -4660,11 +4811,7 @@ function SessionPickerMenu({
                       <div
                         role="button"
                         aria-disabled={session.isCurrent || undefined}
-                        title={
-                          session.isCurrent
-                            ? "This pane is using the session — start or pick another one first"
-                            : "Remove from list"
-                        }
+                        aria-label="Remove from list"
                         style={{
                           cursor: session.isCurrent ? "default" : "pointer",
                           opacity: session.isCurrent ? 0.35 : 1,
@@ -4674,14 +4821,25 @@ function SessionPickerMenu({
                           display: "flex",
                           alignItems: "center",
                         }}
+                        // Dimmed-and-disabled needs its reason MORE than the
+                        // live control does — the label says what the button is
+                        // for, the hint says why it is not offering it here.
                         onMouseEnter={(e) => {
-                          if (session.isCurrent) return;
-                          e.currentTarget.style.backgroundColor =
-                            "var(--ezy-border, rgba(255,255,255,0.15))";
+                          if (!session.isCurrent)
+                            e.currentTarget.style.backgroundColor =
+                              "var(--ezy-border, rgba(255,255,255,0.15))";
+                          tip.showAfterDelay(
+                            e.currentTarget,
+                            "Remove from list",
+                            session.isCurrent
+                              ? "This pane is using the session — start or pick another one first"
+                              : undefined,
+                          );
                         }}
-                        onMouseLeave={(e) =>
-                          (e.currentTarget.style.backgroundColor = "transparent")
-                        }
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = "transparent";
+                          tip.hide();
+                        }}
                         onClick={(e) => {
                           e.stopPropagation();
                           if (session.isCurrent) return;
@@ -4719,7 +4877,7 @@ function SessionPickerMenu({
               backgroundColor: "transparent",
               border: "none",
               cursor: "pointer",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               textAlign: "left",
               color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
               fontFamily: "inherit",
@@ -4748,6 +4906,7 @@ function SessionPickerMenu({
           </button>
         </div>
       </div>
+      {tip.node}
     </div>
   );
 }

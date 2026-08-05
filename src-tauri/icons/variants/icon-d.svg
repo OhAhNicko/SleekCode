@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!--
+    MADE app icon, variant D: "Monogram".
+    The prompt mark alone, as big as it can be: the chevron's upper leg in
+    mint, lower leg in periwinkle (mint's round cap covers the joint), and a
+    coral cursor block beside it. Colour rationed to three; no panel, no tiles.
+  -->
+  <rect x="6" y="6" width="500" height="500" rx="112" fill="#131313"/>
+  <path d="M 330 262 L 150 396" fill="none" stroke="#92bcff" stroke-width="76" stroke-linecap="round"/>
+  <path d="M 150 128 L 330 262" fill="none" stroke="#80e2ad" stroke-width="76" stroke-linecap="round"/>
+  <rect x="368" y="320" width="76" height="112" rx="26" fill="#fd8183"/>
+</svg>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!--
+    MADE app icon, variant C: "Stacked panes" — the picker default.
+    Four pillowy cards stacked in depth: coral, pink, periwinkle receding
+    behind the mint pane that carries the prompt mark. Panes on panes,
+    which is what MADE is.
+  -->
+  <rect x="6" y="6" width="500" height="500" rx="112" fill="#131313"/>
+  <rect x="158" y="76" width="300" height="300" rx="66" fill="#fd8183"/>
+  <rect x="124" y="110" width="300" height="300" rx="66" fill="#f4b4d1"/>
+  <rect x="90" y="144" width="300" height="300" rx="66" fill="#92bcff"/>
+  <rect x="56" y="178" width="300" height="300" rx="66" fill="#80e2ad"/>
+  <path d="M 168 269 L 243 328 L 168 387"
+        fill="none" stroke="#131313" stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -381,6 +381,18 @@ export interface RecentProjectsSlice {
    *  the latest release). `null` = no flag, Claude Code's own default. */
   jiraClaudeModel: string | null;
   setJiraClaudeModel: (value: string | null) => void;
+  /** Which CLI a new ticket pane runs. Remembered from the new-ticket dialog. */
+  jiraCli: "claude" | "codex" | "gemini";
+  setJiraCli: (value: "claude" | "codex" | "gemini") => void;
+  /** Remembered model pick for a Codex ticket pane, as a literal `-m` slug
+   *  ("gpt-5.6-sol", …). Codex has NO tier aliases — the slugs are versioned
+   *  and its config even ships a migration table for retired ones — so this is
+   *  free text, not a fixed list that would rot. `null` = no flag. */
+  jiraCodexModel: string | null;
+  setJiraCodexModel: (value: string | null) => void;
+  /** Same for Gemini ("gemini-3.1-pro-preview", …). Also alias-free. */
+  jiraGeminiModel: string | null;
+  setJiraGeminiModel: (value: string | null) => void;
   /** Jira mode (on by default): declutter the tab bars while a Jira project
    *  tab is active — the dev server and file-sidebar buttons hide there.
    *  Ordinary project tabs are unaffected. */
@@ -399,6 +411,39 @@ export interface RecentProjectsSlice {
   /** Paint the whole ticket row in its color (text adapts for contrast). */
   jiraRowFullColor: boolean;
   setJiraRowFullColor: (value: boolean) => void;
+  /** How a ticket's sub-tickets share its canvas. "default" shows ONE instance
+   *  at a time — the rail swaps between them. "stacked" shows every instance of
+   *  the selected ticket at once, stacked vertically beside the shared browser,
+   *  each collapsible to its header. Applied at DISPLAY time, so flipping it
+   *  reorients every open ticket at once (same rule as `jiraClaudeSide`). */
+  jiraSubticketMode: "default" | "stacked";
+  setJiraSubticketMode: (value: "default" | "stacked") => void;
+  /** Stacked mode: which instance panes are collapsed to their header, keyed
+   *  `<tabId>:<instanceKey>`. A sparse set — absent means expanded. */
+  jiraStackCollapsed: Record<string, true>;
+  toggleJiraStackCollapsed: (tabId: string, instKey: string) => void;
+  /** Stacked mode: dragged divider positions for a ticket's stack, keyed
+   *  `<tabId>:<ticket>`. Absent = equal share. Percentages, one per EXPANDED
+   *  pane in stack order — the collapsed ones are pinned and take no share. */
+  jiraStackSizes: Record<string, number[]>;
+  setJiraStackSizes: (tabId: string, ticket: string, sizes: number[]) => void;
+  /** Pasting a ticket URL (or typing a bare key) into a Jira ticket browser's
+   *  address bar opens that ticket as its own ticket instead of navigating this
+   *  ticket's browser away. Address bar ONLY — clicking a ticket link inside
+   *  the page still just navigates, or browsing a linked-issues list would
+   *  spawn a paid investigation per click. Off restores plain navigation. */
+  jiraDetectPastedTickets: boolean;
+  setJiraDetectPastedTickets: (value: boolean) => void;
+  /** Whether a detected ticket takes the canvas ("auto") or opens in the
+   *  background behind a toast with a Switch button ("manual"). */
+  jiraAutoSwitchToDetected: "auto" | "manual";
+  setJiraAutoSwitchToDetected: (value: "auto" | "manual") => void;
+  /** What a detected ticket does when its only rows are ARCHIVED: unarchive and
+   *  resume the conversation, or leave the archive alone and start a fresh one.
+   *  Either way the toast says so — an unarchive undoes a deliberate act and
+   *  must never be silent. */
+  jiraArchivedTicketAction: "resume" | "new";
+  setJiraArchivedTicketAction: (value: "resume" | "new") => void;
   projectsDir: string;
   defaultClaudeMdPath: string;
   defaultAgentsMdPath: string;
@@ -582,6 +627,12 @@ export const createRecentProjectsSlice: StateCreator<
   setJiraClaudeSide: (value) => set({ jiraClaudeSide: value }),
   jiraClaudeModel: null,
   setJiraClaudeModel: (value) => set({ jiraClaudeModel: value }),
+  jiraCli: "claude",
+  setJiraCli: (value) => set({ jiraCli: value }),
+  jiraCodexModel: null,
+  setJiraCodexModel: (value) => set({ jiraCodexModel: value }),
+  jiraGeminiModel: null,
+  setJiraGeminiModel: (value) => set({ jiraGeminiModel: value }),
   jiraMode: true,
   setJiraMode: (value) => set({ jiraMode: value }),
   jiraTicketColors: {},
@@ -594,6 +645,28 @@ export const createRecentProjectsSlice: StateCreator<
     }),
   jiraRowFullColor: false,
   setJiraRowFullColor: (value) => set({ jiraRowFullColor: value }),
+  jiraSubticketMode: "default",
+  setJiraSubticketMode: (value) => set({ jiraSubticketMode: value }),
+  jiraStackCollapsed: {},
+  toggleJiraStackCollapsed: (tabId, instKey) =>
+    set((state) => {
+      const key = `${tabId}:${instKey}`;
+      const next = { ...(state.jiraStackCollapsed ?? {}) };
+      if (next[key]) delete next[key];
+      else next[key] = true;
+      return { jiraStackCollapsed: next };
+    }),
+  jiraStackSizes: {},
+  setJiraStackSizes: (tabId, ticket, sizes) =>
+    set((state) => ({
+      jiraStackSizes: { ...(state.jiraStackSizes ?? {}), [`${tabId}:${ticket}`]: sizes },
+    })),
+  jiraDetectPastedTickets: true,
+  setJiraDetectPastedTickets: (value) => set({ jiraDetectPastedTickets: value }),
+  jiraAutoSwitchToDetected: "auto",
+  setJiraAutoSwitchToDetected: (value) => set({ jiraAutoSwitchToDetected: value }),
+  jiraArchivedTicketAction: "resume",
+  setJiraArchivedTicketAction: (value) => set({ jiraArchivedTicketAction: value }),
   jiraAcronyms: [],
   jiraAcronymCounts: {},
   addJiraAcronym: (acronym) =>

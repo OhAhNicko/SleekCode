@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { TerminalType, TerminalBackend } from "../types";
 import { sessionStillExists } from "../lib/session-exists";
-import { claudeSessionIdArgs, getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
+import { claudeSessionIdArgs, firstPromptArgs, getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
 import { shellPsModeFor } from "../lib/shell-mode";
 import { notePtyChunk } from "../lib/pty-flood-stats";
 import { wslReady } from "../lib/wsl-cache";
@@ -13,7 +13,7 @@ import { takePendingPrompt } from "../store/terminalSlice";
 import { nameTicketSession, peekTicketForTerminal, parkedTicketName } from "../lib/jira-session";
 import { getShellIntegrationCommand } from "../lib/shell-integration";
 import { installStatuslineWrapper } from "../lib/statusline-setup";
-import { createKeychainUnlockWatcher } from "../lib/keychain";
+import { createKeychainUnlockWatcher, needsKeychainUnlock } from "../lib/keychain";
 import { ensureRemoteCliShells, pickExecShell } from "../lib/remote-cli-shells";
 import type { NativeTermId } from "../lib/native-term-bridge";
 
@@ -163,7 +163,17 @@ export function usePtyNative({
       // launch (`--name`), so the resume picker and terminal title show
       // SUPPORT-24920 instead of the investigation prompt. Peek, not take —
       // nameTicketSession still consumes the entry at session-id mint time.
-      const parkedTicket = terminalType === "claude" ? peekTicketForTerminal(termId) : undefined;
+      //
+      // Codex and Gemini ticket panes park too, but claim far less of this:
+      // `--name`, `--session-id`, `--permission-mode` and `--fork-session` are
+      // Claude flags with no equivalent, so they take only `-m` plus their
+      // first prompt (see firstPromptArgs — Gemini needs `-i` there, not a
+      // positional), and their rail row is named once the pane detects its
+      // session id (see Workspace's onSessionResumeId).
+      const parkedTicket =
+        terminalType === "claude" || terminalType === "codex" || terminalType === "gemini"
+          ? peekTicketForTerminal(termId)
+          : undefined;
 
       if (currentServerId) {
         const server = useAppStore.getState().servers.find((s) => s.id === currentServerId);
@@ -192,7 +202,10 @@ export function usePtyNative({
         // parked first prompt as the positional LAST argument. Without these
         // a remote ticket pane spawned silently promptless and railless.
         const remoteClaudeArgs: string[] = [];
-        if (parkedTicket) {
+        if (parkedTicket && terminalType !== "claude") {
+          // Codex/Gemini: `-m <slug>` is the only launch flag they share here.
+          if (parkedTicket.model) remoteClaudeArgs.push("-m", parkedTicket.model);
+        } else if (parkedTicket) {
           remoteClaudeArgs.push("--name", parkedTicketName(parkedTicket));
           // Jira ticket panes start in auto permission mode — the whole point
           // of a ticket pane is unattended investigation.
@@ -235,7 +248,7 @@ export function usePtyNative({
         // Must stay LAST — getRemoteExecCommand emits `<resume> <extraArgs>`,
         // so a positional placed earlier would swallow the next flag's value.
         const remotePendingPrompt = takePendingPrompt(termId);
-        if (remotePendingPrompt) remoteClaudeArgs.push(remotePendingPrompt);
+        if (remotePendingPrompt) remoteClaudeArgs.push(...firstPromptArgs(terminalType, remotePendingPrompt));
         const ssh = getSshCommand(
           server,
           terminalType,
@@ -247,7 +260,7 @@ export function usePtyNative({
         command = ssh.command;
         args = ssh.args;
         cwd = undefined;
-        if ((server.claudeAuth ?? "keychain") === "keychain") {
+        if (needsKeychainUnlock(server, terminalType)) {
           kcWatcher = createKeychainUnlockWatcher(server, (data) => {
             const id = ptyIdRef.current;
             if (id !== null) {
@@ -267,7 +280,10 @@ export function usePtyNative({
         if (yoloFlag && (forceYoloRef.current || useAppStore.getState().cliYolo[terminalType])) {
           extraArgs.push(yoloFlag);
         }
-        if (parkedTicket) {
+        if (parkedTicket && terminalType !== "claude") {
+          // Codex/Gemini — see the twin in the SSH branch above.
+          if (parkedTicket.model) extraArgs.push("-m", parkedTicket.model);
+        } else if (parkedTicket) {
           extraArgs.push("--name", parkedTicketName(parkedTicket));
           // Jira ticket panes start in auto permission mode — the whole point
           // of a ticket pane is unattended investigation.
@@ -331,7 +347,7 @@ export function usePtyNative({
         // stay LAST in extraArgs: getTerminalConfig emits `<extraArgs> <resume>`,
         // so a positional placed earlier would swallow `--session-id`'s uuid.
         const pendingPrompt = takePendingPrompt(termId);
-        if (pendingPrompt) extraArgs.push(pendingPrompt);
+        if (pendingPrompt) extraArgs.push(...firstPromptArgs(terminalType, pendingPrompt));
         cwd = currentWorkingDir || undefined;
 
         if (backend === "native") {

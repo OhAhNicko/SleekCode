@@ -13,6 +13,55 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 struct PtySession {
     writer: Box<dyn IoWrite + Send>,
     master: Box<dyn portable_pty::MasterPty + Send>,
+    /// The child is an `ssh` client, so everything written here crosses a
+    /// network before any program reads it. Gates `is_bare_motion_report`.
+    is_ssh: bool,
+}
+
+/// True when `data` is EXACTLY one SGR mouse report for pointer motion with no
+/// button held: `\e[<{btn};{col};{row}M` where bit 32 (motion) is set, the low
+/// two bits are 3 (no button) and bit 64 (wheel) is clear — i.e. 35, 39, 43,
+/// 47, 51, 55, 59, 63 once modifier bits are counted.
+///
+/// Any-motion mode (DECSET 1003) emits one of these per cell the pointer
+/// crosses, which makes them by far the highest-rate thing MADE writes to a
+/// PTY. Locally that is harmless — the reader drains them immediately. Over
+/// SSH they share reads with the user's actual keystrokes on the far side, and
+/// the CLIs we drive (all Ink-based) parse keypresses per read rather than
+/// keeping parser state across them, so a chord that lands in the same read as
+/// a motion report gets mangled and its tail is inserted into the composer as
+/// literal text. Clicks, wheel and button-held drag reports are NOT dropped —
+/// they are low-rate and programs act on them.
+///
+/// Exact-match only, deliberately: a paste whose text happens to contain these
+/// bytes is left alone, and so is any chunk carrying a report plus real input.
+fn is_bare_motion_report(data: &[u8]) -> bool {
+    let Some(rest) = data.strip_prefix(b"\x1b[<") else {
+        return false;
+    };
+    let Some(rest) = rest.strip_suffix(b"M") else {
+        return false;
+    };
+    let mut parts = rest.split(|b| *b == b';');
+    let (Some(btn), Some(col), Some(row), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    if col.is_empty()
+        || row.is_empty()
+        || !col.iter().all(u8::is_ascii_digit)
+        || !row.iter().all(u8::is_ascii_digit)
+    {
+        return false;
+    }
+    match std::str::from_utf8(btn)
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+    {
+        Some(n) => n & 32 != 0 && n & 3 == 3 && n < 64,
+        None => false,
+    }
 }
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
@@ -204,11 +253,18 @@ pub async fn pty_spawn(
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
+    // Matches `ssh` and `ssh.exe`, bare or fully qualified — getSshCommand
+    // (terminal-config.ts) is the only thing that spawns either.
+    let is_ssh = std::path::Path::new(&command)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("ssh"));
+
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     sessions()
         .lock()
         .unwrap()
-        .insert(id, PtySession { writer, master: pair.master });
+        .insert(id, PtySession { writer, master: pair.master, is_ssh });
 
     start_reader_thread(id, reader, child, on_data, on_exit);
 
@@ -292,6 +348,8 @@ pub async fn pty_spawn_pooled(
         PtySession {
             writer: pooled.writer,
             master: pooled.master,
+            // The pool is local WSL bash only — never ssh.
+            is_ssh: false,
         },
     );
 
@@ -317,6 +375,9 @@ pub async fn pty_spawn_pooled(
 pub async fn pty_write(pty_id: u32, data: String) -> Result<(), String> {
     let mut map = sessions().lock().unwrap();
     let session = map.get_mut(&pty_id).ok_or("PTY not found")?;
+    if session.is_ssh && is_bare_motion_report(data.as_bytes()) {
+        return Ok(());
+    }
     session
         .writer
         .write_all(data.as_bytes())
@@ -333,6 +394,8 @@ pub fn write_to_pty_sync(pty_id: u32, data: &[u8]) -> bool {
         Err(_) => return false,
     };
     match map.get_mut(&pty_id) {
+        // Dropped on purpose — report success so the caller doesn't retry.
+        Some(s) if s.is_ssh && is_bare_motion_report(data) => true,
         Some(s) => s.writer.write_all(data).is_ok(),
         None => false,
     }
@@ -381,4 +444,54 @@ pub async fn pty_resize(pty_id: u32, cols: u16, rows: u16) -> Result<(), String>
 pub async fn pty_kill(pty_id: u32) -> Result<(), String> {
     sessions().lock().unwrap().remove(&pty_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_bare_motion_report;
+
+    #[test]
+    fn drops_button_less_motion_including_modifiers() {
+        // 35 = motion, no button. +4 shift, +8 meta, +16 ctrl and combinations.
+        for btn in [35, 39, 43, 47, 51, 55, 59, 63] {
+            let s = format!("\x1b[<{btn};71;35M");
+            assert!(is_bare_motion_report(s.as_bytes()), "should drop {btn}");
+        }
+    }
+
+    #[test]
+    fn keeps_clicks_drags_and_wheel() {
+        for seq in [
+            "\x1b[<0;71;35M",  // left press
+            "\x1b[<0;71;35m",  // left release (final byte 'm', not 'M')
+            "\x1b[<2;71;35M",  // right press
+            "\x1b[<32;71;35M", // motion WITH left held (drag) — programs act on it
+            "\x1b[<34;71;35M", // motion with right held
+            "\x1b[<64;71;35M", // wheel up
+            "\x1b[<65;71;35M", // wheel down
+            "\x1b[<67;71;35M", // wheel byte with low bits 3 — bit 64 set, keep
+        ] {
+            assert!(!is_bare_motion_report(seq.as_bytes()), "should keep {seq:?}");
+        }
+    }
+
+    #[test]
+    fn only_an_exact_whole_report_matches() {
+        for seq in [
+            "",
+            "\x1b[<35;71;35",             // unterminated
+            "\x1b[<35;71;35M\x1b[1;5A",   // report + a real chord
+            "\x1b[<35;71;35Mx",           // report + a keystroke
+            "x\x1b[<35;71;35M",           // keystroke + report
+            "\x1b[<35;71;35;9M",          // four params
+            "\x1b[<35;71M",               // two params
+            "\x1b[<35;;35M",              // empty param
+            "\x1b[<;71;35M",              // empty button
+            "\x1b[<35;7a;35M",            // non-digit coordinate
+            "\x1b[<999999999999;71;35M",  // button overflows u32
+            "\x1b[M\x03\x47\x23",         // legacy X10 encoding, not SGR
+        ] {
+            assert!(!is_bare_motion_report(seq.as_bytes()), "should keep {seq:?}");
+        }
+    }
 }

@@ -1,0 +1,8 @@
+# MEMORY
+
+Gotchas worth never rediscovering. One line each, newest last. Full write-ups
+live in `docs/learnings/`.
+
+- **Overlay popups: transparent pixels inside the `SetWindowRgn` clip composite to BLACK on Windows** — anything regioned must paint an opaque background, or not be regioned at all. Cause of the black TUI scrollbar and the black corners on context menus. See [2026-08-04-overlay-region-transparency-black-scrollbar.md](docs/learnings/2026-08-04-overlay-region-transparency-black-scrollbar.md).
+- **Nothing may claim the window's 6px resize frame — and TWO windows can** — the pane HWNDs and the overlay popup window both sit above the webview, so a pixel either one takes at a window edge kills window resizing there (2026-07-26 pane; 2026-08-04 the far-right pane's TUI scrollbar, which lives in the OVERLAY, not the pane). One constant, `WINDOW_RESIZE_EDGE_PX` in `src/lib/window-resize-frame.ts`. See [2026-08-04-overlay-window-swallowed-the-resize-edge.md](docs/learnings/2026-08-04-overlay-window-swallowed-the-resize-edge.md).
+- **A dev server's "restart" is typed text — useless once its PTY dies** — `wsl --shutdown` (or WSL falling over) reaps the pty (`pty.rs` drops it from the session map) while the pane keeps painting its last frame, so `pty_write` rejects with "PTY not found" into an unhandled promise and the row is set to "starting" anyway: grey "detecting…" forever. Start/Restart must ask `getPaneState(id).exited` and respawn via `getTerminalActions(id).restart()`. Corollary: never set a progress status next to an `if (write)`-guarded side effect. See [2026-08-05-devserver-restart-dead-pty.md](docs/learnings/2026-08-05-devserver-restart-dead-pty.md).

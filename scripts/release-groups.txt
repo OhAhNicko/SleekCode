@@ -12,40 +12,140 @@
 #   - Paths that are missing, clean, or gitignored are skipped silently, so a
 #     slightly stale manifest still works.
 #   - Order here is the order the commits are made in.
-#
-# The subjects below were written by reading each workstream's diff, NOT guessed
-# from path names — they become the changelog verbatim.
-#
-# ONE KNOWN IMPURITY: src-tauri/src/lib.rs carries BOTH Rust workstreams — the
-# new `ssh_unlock_keychain` command backing the keychain dialog, and the Codex
-# session-lookup fixes. A path can live in only one group, so it sits with the
-# Codex fix. Both subjects still reach the changelog, which is what the release
-# notes are built from.
 
-feat(keychain): unlock a remote Mac's login keychain by hand after cancelling the automatic prompt
-  src/components/UnlockKeychainModal.tsx
-  src/lib/unlock-keychain-modal.ts
-  src/lib/keychain.ts
-  src/components/ServersPanel.tsx
-  src/lib/menu/providers/rows.ts
-  src/lib/menu-icons.tsx
+fix(notifications): report focus-out to pane CLIs on minimize so Claude notifies while the window is minimized
+  src-tauri/src/native_term/window/mod.rs
+  src-tauri/src/native_term/window/win32.rs
+  src-tauri/src/native_term/registry.rs
+  src-tauri/src/native_term/mod.rs
+
+fix(notifications): register MADE's toast identity (AUMID) so Windows system notifications display on shortcut-less installs
+  src-tauri/src/lib.rs
+
+feat(notifications): auto-dismiss a pane's notification card once its pane is back on screen
+  src/components/PaneNotificationStack.tsx
+
+fix(window): typing works immediately after restoring the window via Win+D
+  docs/architecture.md
+  tasks/todo.md
+  docs/session-prompts.txt
+
+feat(theme): terminal color presets — override core, ANSI and chrome colors per preset
+  src/lib/color-overrides.ts
+  src/components/ColorSwatchPicker.tsx
+  src/store/themeSlice.ts
+  src/lib/themes.ts
+  src/hooks/usePaneSearch.ts
+  src/components/TerminalColorsPreview.tsx
+  src-tauri/src/native_term/renderer/grid.rs
+  src-tauri/src/native_term/renderer/pipeline.rs
+
+feat(settings): appearance batch — render options (bold-bright, min contrast, dim, cursor opacity, line height), terminal fonts, scrollback and accent presets with preview + import/export
+  src/components/SettingsPane.tsx
+  src-tauri/src/native_term/renderer/mod.rs
+  src-tauri/src/native_term/renderer/glyph_atlas.rs
+  src/lib/terminal-fonts.ts
+  src/lib/settings-section.ts
+  src-tauri/icons/variants/
+  src/lib/app-icon.ts
+  src/components/AppIconPreview.tsx
+  src/components/TerminalPaneNative.tsx
+  src/components/TerminalPaneXterm.tsx
+  src/components/TerminalPane.tsx
+  src/components/TerminalHeader.tsx
+  src/lib/terminal-config.ts
+  src/lib/native-term-bridge.ts
+  src/store/index.ts
+
+fix(ui): theme-branded checkboxes app-wide with contrast-picked ticks
   src/index.css
   src/App.tsx
 
-feat(terminal): draw the TUI scrollbar for Codex and Gemini panes, not just Claude
-  src/native-term/TuiScrollbar.tsx
-  src/native-term/tui-scroll-model.ts
+feat(ui): UI font scale setting applied app-wide
+  src/lib/ui-fonts.ts
+  src/components/GamePane.tsx
+  src/components/games/
+  src/components/CommandPalette.tsx
+  src/components/KanbanBoard.tsx
+  src/components/DevServerTab.tsx
+  src/components/DevServerTerminalHost.tsx
+  src/lib/dev-server-actions.ts
+  src/components/CommandHistory.tsx
+  src/components/CommitPopover.tsx
+  src/components/CommandBlockOverlay.tsx
+  src/components/ChangelogModal.tsx
+  src/components/ClaudeTokenWizardModal.tsx
+  src/components/ClearDataModal.tsx
+  src/components/ClipboardImageStrip.tsx
+  src/components/CodeReviewDiffView.tsx
+  src/components/ConnectToGitHubModal.tsx
+  src/components/CreateProjectModal.tsx
+  src/components/CreatePullRequestModal.tsx
+  src/components/EmptyTabLauncher.tsx
+  src/components/FileExplorer.tsx
+  src/components/GitStatusBar.tsx
+  src/components/GlobalSearch.tsx
+  src/components/KeyboardShortcutsModal.tsx
+  src/components/MarkdownPreview.tsx
+  src/components/PromptComposer.tsx
+  src/components/PromptHistorySearch.tsx
+  src/components/PromptModal.tsx
+  src/components/ReleaseModal.tsx
+  src/components/ScreenshotAnnotationToolbar.tsx
+  src/components/ScreenshotsOverlay.tsx
+  src/components/Sidebar.tsx
+  src/components/SnippetEditor.tsx
+  src/components/SnippetPanel.tsx
+  src/components/TaskCard.tsx
+  src/components/TemplatePicker.tsx
+  src/components/ToolSelector.tsx
+  src/components/UpdateBanner.tsx
+  src/components/WelcomeModal.tsx
+  src/components/Workspace.tsx
+  src/components/XtermTuiScrollbar.tsx
+  src/components/EditorPane.tsx
+  src/components/FileViewerPane.tsx
+  src/components/PaneGrid.tsx
+  src/components/PaneSearchBar.tsx
+  src/components/PaneSlotHost.tsx
+  src/components/ServersPanel.tsx
+  src/components/AppErrorBoundary.tsx
+  src/components/BrowserPreview.tsx
 
-feat(terminal): accelerate a fast wheel flick inside mouse-tracking TUIs, so a fullscreen CLI no longer crawls
-  src-tauri/src/native_term/window/win32.rs
-  src/components/TerminalPaneXterm.tsx
+feat(jira): CLI-agnostic Jira setup and a send-ticket-prompt row action
+  src/components/JiraDetectedTicketToast.tsx
+  src/components/JiraMcpStartupCheck.tsx
+  src/components/JiraProjectModal.tsx
+  src/components/JiraStackedPair.tsx
+  src/components/JiraTicketRail.tsx
+  src/components/NewJiraTicketModal.tsx
+  src/lib/jira-mcp.ts
+  src/lib/jira-omnibox.ts
+  src/lib/jira-project.ts
+  src/lib/jira-session.ts
+  src/lib/jira-layout.ts
+  src/store/jiraTicketToastStore.ts
+  src/lib/menu/providers/rows.ts
 
-fix(context): take the context percentage from the CLI's own statusline, so a pane can no longer report a confident wrong 100%
-  src/lib/cli-statusline.ts
-  src/hooks/useSessionContext.ts
-  src/components/TerminalPaneNative.tsx
+feat(ssh): remote keychain unlock flow (masked prompt, PTY sentinel, session cache)
+  src/lib/keychain.ts
+  src/components/UnlockKeychainModal.tsx
+  src/lib/unlock-keychain-modal.ts
+  src/lib/ssh-reachability.ts
+  src/components/RemoteFileBrowser.tsx
+  src/components/RemoteFileExplorer.tsx
+  src/components/SshKeySetupWizardModal.tsx
+  src/lib/session-exists.ts
 
-fix(codex): match session cwd case-insensitively and stop reporting older rollouts as deleted
-  src-tauri/src/lib.rs
-  scripts/made-codex-diag.sh
-  scripts/made-codex-diag2.sh
+feat(cli): missing-CLI detection with guided install
+  src-tauri/src/cli_install.rs
+  src/components/CliInstallModal.tsx
+  src/components/CliMissingCard.tsx
+  src/lib/cli-availability.ts
+  src/lib/cli-install.ts
+  src/lib/cli-install-modal.ts
+  src/hooks/useCliPreflight.ts
+
+fix(tabs): hover no longer darkens the active sidebar and dev-server toggles
+  src/components/TabBar.tsx
+  src/components/VerticalTabBar.tsx

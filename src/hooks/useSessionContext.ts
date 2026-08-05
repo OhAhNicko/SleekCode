@@ -266,32 +266,44 @@ export function useSessionContext({
         }
 
         // Session drift detection: every 6th poll (~30s), check if the CLI
-        // switched sessions via /resume. For Claude, only consider session
-        // files started AFTER this pane's PTY spawn — prevents stealing
-        // another pane's session.
+        // switched sessions via /resume. Both Claude and Codex are anchored to
+        // this pane's PTY spawn — Claude by the session file's start time,
+        // Codex by an `updated_at` floor — which is what stops a pane adopting
+        // another pane's session, or one started outside MADE entirely.
         pollCount++;
         if (sessionResumeId && supportsSessionResume(terminalType) && pollCount % 6 === 0) {
           try {
             const type = terminalType;
             const excludeIds = [...claimedSessionIds].filter((id) => id !== sessionResumeId);
             let newId: string | null = null;
+            // Codex drift is anchored to THIS pane, exactly as Claude's is.
+            // Unanchored, the query answers "newest Codex thread in this cwd",
+            // which happily adopts a session the user ran OUTSIDE MADE in the
+            // same project — and the adopted id is written to the layout leaf,
+            // so the next launch resumed a conversation nobody opened here.
+            // A thread untouched since before this pane spawned cannot be the
+            // one this pane is driving. No spawn time means no safe anchor, so
+            // the lookup is skipped rather than run wide open.
+            const codexAnchor = ptySpawnTimeRef.current > 0
+              ? { minUpdatedAtMs: ptySpawnTimeRef.current, nowMs: Date.now() }
+              : null;
             if (type === "claude" && ptySpawnTimeRef.current > 0) {
               // Precise spawn-based drift check
               newId = await lookupClaudeBySpawn(backend, workingDir, ptySpawnTimeRef.current, excludeIds, "drift");
             } else {
-              // Codex/Gemini keep the mtime-based approach for drift
+              // Gemini keeps the mtime-based approach for drift
               if (backend === "native") {
                 const cwd = workingDir;
-                if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds });
+                if (type === "codex") { if (codexAnchor) newId = await invoke<string | null>("get_codex_session_id_native", { projectPath: cwd, excludeIds, ...codexAnchor }); }
                 else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_native", { projectPath: cwd, excludeIds });
               } else if (backend === "windows") {
                 const cwd = workingDir;
-                if (type === "codex") newId = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds });
+                if (type === "codex") { if (codexAnchor) newId = await invoke<string | null>("get_codex_session_id_windows", { projectPath: cwd, excludeIds, ...codexAnchor }); }
                 else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id_windows", { projectPath: cwd, excludeIds });
               } else {
                 const wslCwd = toWslPath(workingDir);
                 if (wslCwd) {
-                  if (type === "codex") newId = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
+                  if (type === "codex") { if (codexAnchor) newId = await invoke<string | null>("get_codex_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro(), ...codexAnchor }); }
                   else if (type === "gemini") newId = await invoke<string | null>("get_gemini_session_id", { projectPath: wslCwd, excludeIds, distro: getCachedDistro() });
                 }
               }

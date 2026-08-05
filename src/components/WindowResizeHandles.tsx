@@ -1,7 +1,11 @@
 import type { CSSProperties } from "react";
 import { startCustomWindowResize, type CustomResizeDirection } from "../lib/window-chrome";
+import { WINDOW_RESIZE_EDGE_PX } from "../lib/window-resize-frame";
 
-const HANDLE = 6; // px — invisible resize border thickness
+// px — invisible resize border thickness. Shared, because every surface that
+// can cover these handles (native panes, overlay popups) has to subtract the
+// same number to stay off them; see lib/window-resize-frame.ts.
+const HANDLE = WINDOW_RESIZE_EDGE_PX;
 
 const directions: ReadonlyArray<{
   dir: CustomResizeDirection;
