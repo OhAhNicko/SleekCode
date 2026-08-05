@@ -11,19 +11,25 @@ import { getTerminalActions } from "../lib/terminal-actions";
 import type { TerminalInstance } from "../types";
 
 /**
- * Manual "Unlock Keychain" dialog for a remote server.
+ * The "Unlock Keychain" dialog for a remote server — BOTH entry points:
  *
- * The spawn-time dialog (lib/keychain.ts) only appears while a pane is waiting
- * at the preamble's `read`. Cancel it by mistake and the pane burns its three
- * tries and falls through to a Claude login screen, with nothing cached — this
- * is the way back in.
+ * Manual (key icon / context menu): verify the password over an ssh
+ * round-trip, then offer to restart the server's Claude panes so they re-run
+ * the preamble with the cached password (session ids survive; see
+ * handleRestart in TerminalPaneXterm/Native).
  *
- * Unlike the spawn-time dialog it can VERIFY: no remote `read` is waiting on
- * the answer, so it can spend an ssh round-trip proving the password before
- * caching it. On success it does not just close — it becomes the next action,
- * offering to restart the server's CLI panes so they re-run the preamble with
- * the cached password (their session ids survive; see handleRestart in
- * TerminalPaneXterm/Native).
+ * Spawn (`requestSpawnUnlock`): a just-spawned pane is waiting at the
+ * preamble's `read`. On key-auth servers the password is STILL verified
+ * before it is resolved back — a typo shows "Wrong password" inline while the
+ * dialog stays open, instead of burning one of the pane's three tries. On
+ * password-auth servers verification is impossible (BatchMode ssh), so the
+ * value resolves unverified and the pane's own FAIL sentinel re-opens this
+ * dialog with the error note. Success resolves and closes — the pane proceeds
+ * the moment its `read` is answered; there is nothing to restart.
+ *
+ * The spawn resolver must fire EXACTLY ONCE on every exit path (cancel,
+ * Escape, backdrop, server deleted, displaced by a newer request): an
+ * orphaned resolver leaves the pane hanging at `read` forever.
  *
  * Mounted once in App, like PromptModal, and for the same two reasons: the
  * dialog needs real keyboard focus (impossible in the WS_EX_NOACTIVATE overlay
@@ -31,7 +37,10 @@ import type { TerminalInstance } from "../types";
  * they are child HWNDs that would otherwise paint straight over it.
  */
 
-const CLI_TYPES = new Set<TerminalInstance["type"]>(["claude", "codex", "gemini"]);
+// Claude only: the keychain item is Claude Code's login credential, and since
+// the preamble is claude-pane-only (needsKeychainUnlock), restarting a
+// codex/gemini pane would re-run no preamble and sign nothing in.
+const CLI_TYPES = new Set<TerminalInstance["type"]>(["claude"]);
 
 type Phase = "input" | "verifying" | "verified";
 type Note = { kind: "error" | "info"; text: string };
@@ -49,14 +58,13 @@ function basename(dir: string): string {
 }
 
 /**
- * CLI panes on this server that can restart right now.
+ * Claude panes on this server that can restart right now.
  *
- * Shell and dev-server panes are deliberately excluded: the preamble runs in
- * them too, but restarting kills a live shell or the dev server for no sign-in
- * benefit. The `getTerminalActions` check keeps the count honest — an
- * unregistered pane cannot restart, so it must not be counted as one that will.
- * Panes in background tabs are fine; App renders inactive tabs with
- * `display:none` rather than unmounting them.
+ * Only Claude panes carry the unlock preamble (needsKeychainUnlock), so only
+ * they gain anything from a restart. The `getTerminalActions` check keeps the
+ * count honest — an unregistered pane cannot restart, so it must not be
+ * counted as one that will. Panes in background tabs are fine; App renders
+ * inactive tabs with `display:none` rather than unmounting them.
  */
 function restartCandidates(serverId: string): Candidate[] {
   return Object.values(useAppStore.getState().terminals)
@@ -72,6 +80,11 @@ export default function UnlockKeychainModal() {
   // Frozen when verification succeeds, so the count cannot shift under the
   // pointer between reading the button and pressing it.
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  // Spawn mode: a pane is parked at the preamble's `read`, waiting on the
+  // resolver in spawnRef. State (for rendering) and ref (for the resolver)
+  // are set together in the event handler.
+  const [spawnMode, setSpawnMode] = useState(false);
+  const spawnRef = useRef<NonNullable<UnlockKeychainRequest["spawn"]> | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   // Bumped on every close; a verification that resolves after the dialog is
   // gone (or reopened) must not write into it.
@@ -81,19 +94,34 @@ export default function UnlockKeychainModal() {
 
   useModalWhen("unlock-keychain-modal", !!serverId);
 
+  // Fires the pending spawn resolver exactly once; the null-out makes every
+  // later call a no-op, so close paths can call it unconditionally.
+  const resolveSpawn = useCallback((pw: string | null) => {
+    const s = spawnRef.current;
+    spawnRef.current = null;
+    s?.resolve(pw);
+  }, []);
+
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<UnlockKeychainRequest>).detail;
+      // A displaced spawn request must not be orphaned — its pane is waiting.
+      // Resolve-null just burns one of that pane's tries.
+      resolveSpawn(null);
       runRef.current++;
+      spawnRef.current = detail.spawn ?? null;
+      setSpawnMode(!!detail.spawn);
       setPhase("input");
       setValue("");
-      setNote(null);
+      setNote(
+        detail.spawn?.isRetry ? { kind: "error", text: "Wrong password — try again." } : null,
+      );
       setCandidates([]);
       setServerId(detail.serverId);
     };
     window.addEventListener(UNLOCK_KEYCHAIN_EVENT, handler);
     return () => window.removeEventListener(UNLOCK_KEYCHAIN_EVENT, handler);
-  }, []);
+  }, [resolveSpawn]);
 
   useEffect(() => {
     if (!serverId || phase !== "input") return;
@@ -107,16 +135,27 @@ export default function UnlockKeychainModal() {
   }, [serverId, phase, note]);
 
   const close = useCallback(() => {
+    resolveSpawn(null);
     runRef.current++;
     setServerId(null);
     setValue("");
     setNote(null);
     setPhase("input");
     setCandidates([]);
-  }, []);
+    setSpawnMode(false);
+  }, [resolveSpawn]);
 
   const verify = useCallback(async () => {
     if (!server || !value) return;
+    const canOob = server.authMethod === "ssh-key" && !!server.sshKeyPath;
+    if (spawnMode && !canOob) {
+      // Password-auth server: BatchMode ssh cannot verify out-of-band. The
+      // pane's own unlock loop is the validator — a FAIL sentinel re-opens
+      // this dialog with the error note, and nothing is cached before OK.
+      resolveSpawn(value);
+      close();
+      return;
+    }
     const run = runRef.current;
     setPhase("verifying");
     setNote(null);
@@ -124,9 +163,25 @@ export default function UnlockKeychainModal() {
       const verdict = await verifyKeychainPassword(server, value);
       if (run !== runRef.current) return;
       if (verdict === "ok") {
+        if (spawnMode) {
+          // verifyKeychainPassword cached it (a confirmed unlock). The pane is
+          // waiting at `read` — resolve and get out of its way; nothing to
+          // restart, so the manual mode's verified phase is skipped.
+          resolveSpawn(value);
+          close();
+          return;
+        }
         setCandidates(restartCandidates(server.id));
         setValue("");
         setPhase("verified");
+        return;
+      }
+      if (spawnMode && verdict === "nomac") {
+        // Can't verify against a machine without a keychain; hand the value to
+        // the in-band loop, which is about to be skipped by `command -v
+        // security` anyway. Never cached from here (cache-on-OK only).
+        resolveSpawn(value);
+        close();
         return;
       }
       setPhase("input");
@@ -137,10 +192,18 @@ export default function UnlockKeychainModal() {
       );
     } catch (e) {
       if (run !== runRef.current) return;
+      if (spawnMode) {
+        // ssh itself failed (network blip, host key change…). Fall back to the
+        // in-band FAIL loop as validator rather than blocking the pane on a
+        // side channel; the unverified value is never cached from here.
+        resolveSpawn(value);
+        close();
+        return;
+      }
       setPhase("input");
       setNote({ kind: "error", text: String(e) });
     }
-  }, [server, value]);
+  }, [server, value, spawnMode, resolveSpawn, close]);
 
   const restart = useCallback(() => {
     for (const c of candidates) getTerminalActions(c.id)?.restart();
@@ -155,6 +218,9 @@ export default function UnlockKeychainModal() {
   if (!serverId || !server) return null;
 
   const canVerify = phase === "input" && value.length > 0;
+  // Password-auth spawn requests skip the verify round-trip, so the primary
+  // button must not promise one.
+  const verifies = !spawnMode || (server.authMethod === "ssh-key" && !!server.sshKeyPath);
   const muted = "var(--ezy-text-muted, rgba(230,237,243,0.6))";
 
   return (
@@ -194,11 +260,13 @@ export default function UnlockKeychainModal() {
         <div style={{ padding: "16px 18px 12px" }}>
           {phase !== "verified" ? (
             <>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>Unlock Keychain</div>
-              <div style={{ fontSize: 12, marginTop: 6, lineHeight: 1.45, color: muted }}>
-                Keeps Claude signed in on {server.name}. Never stored.
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600 }}>Unlock Keychain</div>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", marginTop: 6, lineHeight: 1.45, color: muted }}>
+                {spawnMode
+                  ? `A Claude pane on ${server.name} is waiting for the keychain. Never stored.`
+                  : `Keeps Claude signed in on ${server.name}. Never stored.`}
               </div>
-              <div style={{ fontSize: 11, marginTop: 14, marginBottom: 5, color: muted }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", marginTop: 14, marginBottom: 5, color: muted }}>
                 Password for {server.username}
               </div>
               <input
@@ -213,7 +281,7 @@ export default function UnlockKeychainModal() {
                   width: "100%",
                   boxSizing: "border-box",
                   padding: "7px 10px",
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   outline: "none",
                   background: "var(--ezy-surface, #161b22)",
@@ -225,7 +293,7 @@ export default function UnlockKeychainModal() {
               {note && (
                 <div
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     marginTop: 6,
                     lineHeight: 1.4,
                     color: note.kind === "error" ? "#e5534b" : muted,
@@ -261,15 +329,15 @@ export default function UnlockKeychainModal() {
                   />
                 </svg>
                 <div>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>Password verified</div>
-                  <div style={{ fontSize: 12, marginTop: 2, lineHeight: 1.45, color: muted }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600 }}>Password verified</div>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", marginTop: 2, lineHeight: 1.45, color: muted }}>
                     Saved for {server.name} until MADE closes.
                   </div>
                 </div>
               </div>
               {candidates.length > 0 ? (
                 <>
-                  <div style={{ fontSize: 11, marginTop: 14, marginBottom: 6, color: muted }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", marginTop: 14, marginBottom: 6, color: muted }}>
                     Restart these panes to sign in — they resume the same sessions.
                   </div>
                   <div
@@ -288,7 +356,7 @@ export default function UnlockKeychainModal() {
                     {candidates.map((c) => (
                       <div
                         key={c.id}
-                        style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}
+                        style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "calc(var(--ezy-font-scale, 1) * 12px)" }}
                       >
                         <span style={{ minWidth: 46, color: "var(--ezy-text, #e6edf3)" }}>
                           {c.type}
@@ -308,7 +376,7 @@ export default function UnlockKeychainModal() {
                   </div>
                 </>
               ) : (
-                <div style={{ fontSize: 12, marginTop: 14, lineHeight: 1.45, color: muted }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", marginTop: 14, lineHeight: 1.45, color: muted }}>
                   Your next remote pane on {server.name} unlocks without asking.
                 </div>
               )}
@@ -327,7 +395,7 @@ export default function UnlockKeychainModal() {
             onClick={close}
             style={{
               padding: "6px 14px",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: "pointer",
               border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
@@ -345,7 +413,7 @@ export default function UnlockKeychainModal() {
               onClick={phase === "verified" ? restart : () => void verify()}
               style={{
                 padding: "6px 14px",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 fontWeight: 600,
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 border: "none",
@@ -359,7 +427,9 @@ export default function UnlockKeychainModal() {
                 ? `Restart ${candidates.length} ${candidates.length === 1 ? "pane" : "panes"}`
                 : phase === "verifying"
                   ? "Verifying…"
-                  : "Verify & Unlock"}
+                  : verifies
+                    ? "Verify & Unlock"
+                    : "Unlock"}
             </button>
           )}
         </div>

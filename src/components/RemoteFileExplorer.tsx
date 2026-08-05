@@ -76,7 +76,7 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
             padding: "3px 8px",
             paddingLeft: 8 + depth * 16,
             cursor: "pointer",
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             color: "var(--ezy-text-secondary)",
             transition: "background-color 100ms ease",
           }}
@@ -123,7 +123,7 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
         {entry.isDirectory && isExpanded && (
           <div>
             {isLoading && !cache[entry.path] ? (
-              <div style={{ padding: "3px 8px", paddingLeft: 8 + (depth + 1) * 16, fontSize: 11, color: "var(--ezy-text-muted)" }}>
+              <div style={{ padding: "3px 8px", paddingLeft: 8 + (depth + 1) * 16, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
                 Loading…
               </div>
             ) : (
@@ -145,7 +145,7 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
 
   if (!rootDir) {
     return (
-      <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>
+      <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>
         No remote project active
       </div>
     );
@@ -156,7 +156,7 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
       <div
         style={{
           padding: "6px 10px",
-          fontSize: 10,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
           fontWeight: 600,
           letterSpacing: "0.06em",
           textTransform: "uppercase",
@@ -174,7 +174,7 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             backgroundColor: "var(--ezy-neutral-700, #404040)",
             color: "#ffffff",
-            fontSize: 9,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
           }}
         >
           {server.name}
@@ -184,12 +184,12 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
         </span>
       </div>
       {error && (
-        <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--ezy-red)" }}>{error}</div>
+        <div style={{ padding: "8px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-red)" }}>{error}</div>
       )}
       {cache[rootDir] ? (
         cache[rootDir].map((entry) => renderEntry(entry, 0))
       ) : (
-        <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>Loading…</div>
+        <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Loading…</div>
       )}
     </div>
   );

@@ -189,10 +189,10 @@ export default function RemoteFileBrowser({
                 <circle cx="5" cy="4" r="1" fill="var(--ezy-cyan)" stroke="none" />
                 <circle cx="5" cy="12" r="1" fill="var(--ezy-cyan)" stroke="none" />
               </svg>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
                 {server.name}
               </span>
-              <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>
                 — Select project directory
               </span>
             </div>
@@ -210,7 +210,7 @@ export default function RemoteFileBrowser({
                   border: "1px solid var(--ezy-border)",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                   color: creatingFolder || loading ? "var(--ezy-text-muted)" : "var(--ezy-text)",
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   fontWeight: 600,
                   cursor: creatingFolder || loading ? "default" : "pointer",
                   fontFamily: "inherit",
@@ -242,7 +242,7 @@ export default function RemoteFileBrowser({
           </div>
 
           {/* Breadcrumb */}
-          <div className="flex items-center gap-1" style={{ fontSize: 12 }}>
+          <div className="flex items-center gap-1" style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)" }}>
             {breadcrumbs.map((crumb, i) => (
               <span key={crumb.path} className="flex items-center gap-1">
                 {i > 0 && <span style={{ color: "var(--ezy-border-light)" }}>/</span>}
@@ -304,7 +304,7 @@ export default function RemoteFileBrowser({
                   border: `1px solid ${createError ? "var(--ezy-red)" : "var(--ezy-border)"}`,
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   color: "var(--ezy-text)",
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   fontFamily: "inherit",
                   outline: "none",
                 }}
@@ -318,7 +318,7 @@ export default function RemoteFileBrowser({
                   border: "none",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   color: "#ffffff",
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   fontWeight: 600,
                   cursor: creating || !newFolderName.trim() ? "default" : "pointer",
                   opacity: creating || !newFolderName.trim() ? 0.5 : 1,
@@ -336,7 +336,7 @@ export default function RemoteFileBrowser({
                   border: "1px solid var(--ezy-border)",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   color: "var(--ezy-text-muted)",
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   fontWeight: 600,
                   cursor: creating ? "default" : "pointer",
                   fontFamily: "inherit",
@@ -350,7 +350,7 @@ export default function RemoteFileBrowser({
             <div
               style={{
                 padding: "6px 16px",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 color: "var(--ezy-red)",
                 borderBottom: "1px solid var(--ezy-border-subtle)",
                 backgroundColor: "var(--ezy-surface)",
@@ -362,14 +362,14 @@ export default function RemoteFileBrowser({
           {loading ? (
             <div
               className="flex items-center justify-center"
-              style={{ padding: 32, color: "var(--ezy-text-muted)", fontSize: 13 }}
+              style={{ padding: 32, color: "var(--ezy-text-muted)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}
             >
               Loading...
             </div>
           ) : error ? (
             <div
               className="flex items-center justify-center"
-              style={{ padding: 32, color: "var(--ezy-red)", fontSize: 13 }}
+              style={{ padding: 32, color: "var(--ezy-red)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}
             >
               {error}
             </div>
@@ -387,7 +387,7 @@ export default function RemoteFileBrowser({
                     gap: 8,
                     padding: "6px 16px",
                     cursor: isDir ? "pointer" : "default",
-                    fontSize: 13,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                     color: isDir ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                     borderBottom: "1px solid var(--ezy-border-subtle)",
                   }}
@@ -437,7 +437,7 @@ export default function RemoteFileBrowser({
               border: "1px solid var(--ezy-border)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               color: "var(--ezy-text-muted)",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 600,
               cursor: "pointer",
               fontFamily: "inherit",
@@ -453,7 +453,7 @@ export default function RemoteFileBrowser({
               border: "none",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               color: "#ffffff",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 600,
               cursor: "pointer",
               fontFamily: "inherit",

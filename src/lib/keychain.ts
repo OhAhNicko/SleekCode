@@ -5,22 +5,52 @@
  * non-GUI SSH sessions — and each SSH session gets its own security session,
  * so the unlock must happen inside every login, right before `exec claude`.
  *
- * Mechanism: `getKeychainUnlockPreamble()` is prepended to the remote command.
- * It prints a READY sentinel and `read`s the password from the PTY (stdin over
- * the encrypted SSH channel — never in argv, never echoed thanks to
- * `stty -echo`). `createKeychainUnlockWatcher()` watches the pane's output for
- * the sentinels and writes the password: from the in-memory session cache, or
- * after asking once via a masked dialog. Passwords live ONLY in this module's
- * memory for the app run — they are never persisted and must never be logged.
+ * Mechanism: `getKeychainUnlockPreamble()` is prepended to the remote command
+ * of Claude panes (see `needsKeychainUnlock`). When — and only when — the
+ * keychain is locked, it prints a READY sentinel and `read`s the password from
+ * the PTY (stdin over the encrypted SSH channel — never in argv, never echoed
+ * thanks to `stty -echo`); otherwise it prints SKIP and the watcher goes
+ * dormant. `createKeychainUnlockWatcher()` watches the pane's output for the
+ * sentinels and writes the password: from the in-memory session cache, or via
+ * `UnlockKeychainModal` (the same dialog the server row's key icon opens),
+ * which on key-auth servers verifies the password over an ssh round-trip
+ * before resolving — a typo shows "Wrong password" inline instead of burning
+ * the pane's tries.
+ *
+ * Cache invariant: nothing enters `passwords` except through a CONFIRMED
+ * unlock — verifyKeychainPassword's "ok", or an OK sentinel in the pane
+ * stream. Passwords live ONLY in this module's memory for the app run — they
+ * are never persisted and must never be logged.
  */
 import { invoke } from "@tauri-apps/api/core";
-import { promptWithOptions } from "./prompt-modal";
+import { requestSpawnUnlock } from "./unlock-keychain-modal";
 import { cleanOutput } from "./pty-text";
-import type { RemoteServer } from "../types";
+import type { RemoteServer, TerminalType } from "../types";
 
 const READY = "[MADE] keychain-unlock ready";
 const OK = "[MADE] keychain unlocked";
 const FAIL = "[MADE] keychain unlock failed";
+const SKIP = "[MADE] keychain-unlock skipped";
+
+/**
+ * Single source of truth for "does this pane get the unlock preamble AND its
+ * watcher". Both sides MUST use it: a preamble without a watcher parks the pane
+ * at the remote `read` with nothing to answer it (this was reachable — a
+ * "token" server with no stored token got the preamble but no watcher).
+ *
+ * Claude panes only: the keychain item being unlocked is Claude Code's login
+ * credential. Codex and gemini keep theirs in plain files (~/.codex/auth.json,
+ * ~/.gemini/oauth_creds.json) that read fine over SSH, and shell/dev-server
+ * panes don't sign in to anything — prompting there is pure noise. The cost is
+ * one edge case: `claude` typed manually into a remote shell pane no longer
+ * gets a pre-unlocked keychain (the key icon on the server row still covers it).
+ */
+export function needsKeychainUnlock(
+  server: { claudeAuth?: string },
+  terminalType: TerminalType,
+): boolean {
+  return terminalType === "claude" && (server.claudeAuth ?? "keychain") === "keychain";
+}
 
 /** Give up watching if this much output passes without a READY sentinel
  *  (non-macOS server: the `command -v security` guard skips the preamble). */
@@ -73,12 +103,21 @@ export async function verifyKeychainPassword(
 
 /**
  * Shell preamble that unlocks the login keychain before the real command —
- * but ONLY when actually needed: when the server has an active GUI login the
- * keychain is already unlocked and Claude's credential reads fine over SSH,
- * so prompting would be pure noise. The probe reads the credential's secret
- * (discarded to /dev/null — never displayed); it fails on a locked keychain
- * in a non-UI session, which is exactly the case unlocking fixes. Only then
- * does the READY sentinel print and the password dialog appear.
+ * but ONLY when unlocking would actually change anything. The password loop
+ * runs solely when the keychain is LOCKED; every other reason the credential
+ * probe can fail is skipped, because `unlock-keychain` cannot fix it and the
+ * prompt would fire on every connect forever:
+ *
+ *   1. `~/.claude/.credentials.json` exists — Claude signed in via its file
+ *      fallback, so the keychain is irrelevant. (This was the phantom prompt:
+ *      it asked on every start, yet Cancel left Claude working.)
+ *   2. The secret reads fine — keychain unlocked and accessible, nothing to do.
+ *   3. `show-keychain-info` succeeds — the keychain is UNLOCKED, so the probe
+ *      in 2 failed for a reason unlocking can't cure: the item doesn't exist,
+ *      or its ACL denies /usr/bin/security.
+ *
+ * Only when all three miss (= locked) does READY print and the dialog open;
+ * otherwise a self-erasing SKIP sentinel tells the watcher to go dormant.
  *
  * Single line, POSIX-sh/bash/zsh safe; a no-op on servers without `security`.
  * `stty -echo` runs BEFORE the READY sentinel, so the password MADE writes is
@@ -97,9 +136,16 @@ export function getKeychainUnlockPreamble(): string {
   // the entire time the password dialog was open — the pane's first paint was
   // "[MADE] keychain-unlock ready" for as long as the user took to type. The
   // bytes still reach the watcher either way; only the rendering changes.
+  //
+  // Guard order = cheapest first; `||` short-circuits, so the two `security`
+  // calls never run when the creds file exists.
   return (
-    "if command -v security >/dev/null 2>&1 && " +
-    "! security find-generic-password -s 'Claude Code-credentials' -w >/dev/null 2>&1; then " +
+    "if command -v security >/dev/null 2>&1; then " +
+    "if [ -f ~/.claude/.credentials.json ] || " +
+    "security find-generic-password -s 'Claude Code-credentials' -w >/dev/null 2>&1 || " +
+    "security show-keychain-info ~/Library/Keychains/login.keychain-db >/dev/null 2>&1; then " +
+    `printf '${SKIP}\\r\\033[2K'; ` +
+    "else " +
     "stty -echo 2>/dev/null; __kt=0; " +
     `while [ $__kt -lt ${MAX_TRIES} ]; do ` +
     `printf '${READY}\\r\\033[2K'; ` +
@@ -107,7 +153,7 @@ export function getKeychainUnlockPreamble(): string {
     'if security unlock-keychain -p "$MADE_PW" ~/Library/Keychains/login.keychain-db 2>/dev/null; then ' +
     `printf '\\r\\033[2K${OK}'; break; fi; ` +
     `printf '\\r\\033[2K${FAIL}'; __kt=$((__kt+1)); done; ` +
-    "printf '\\r\\033[2K'; stty echo 2>/dev/null; unset MADE_PW __kt; fi;"
+    "printf '\\r\\033[2K'; stty echo 2>/dev/null; unset MADE_PW __kt; fi; fi;"
   );
 }
 
@@ -118,17 +164,14 @@ async function requestPassword(
   const existing = inflight.get(server.id);
   if (existing) return existing;
 
-  const p = promptWithOptions({
-    title: "Unlock Keychain",
-    detail: `Keeps Claude signed in on ${server.name}. Never stored.`,
-    label: isRetry ? "Wrong password — try again" : `Password for ${server.username}`,
-    masked: true,
-    confirmLabel: "Unlock",
-  }).then((r) => {
+  // Deliberately does NOT cache the answer. Nothing enters `passwords` except
+  // through a confirmed unlock: verifyKeychainPassword's "ok" (the dialog
+  // verifies before resolving on key-auth servers), or the OK sentinel the
+  // watcher sees in the pane stream. Caching at dialog-resolution let a typo
+  // survive the whole app run whenever the FAIL sentinel went unseen.
+  const p = requestSpawnUnlock(server.id, isRetry).then((pw) => {
     inflight.delete(server.id);
-    if (r === null || !r.value) return null;
-    passwords.set(server.id, r.value);
-    return r.value;
+    return pw ? pw : null;
   });
   inflight.set(server.id, p);
   return p;
@@ -152,6 +195,10 @@ export function createKeychainUnlockWatcher(
   let cancelled = false;
   let fails = 0;
   let done = false;
+  // The password most recently written into the remote `read`, cached ONLY
+  // when the OK sentinel proves the unlock succeeded. Null while nothing is
+  // outstanding (cancel writes a bare \r; FAIL disproves the last write).
+  let lastWritten: string | null = null;
   // Only ONE remote `read` is ever outstanding, so each write must answer the
   // LATEST READY exactly once. Without this, a FAIL/READY cycle overlapping an
   // open dialog would double-write — and the stray line lands in the remote
@@ -165,12 +212,14 @@ export function createKeychainUnlockWatcher(
       // Burn the remote loop's remaining tries so the pane still reaches its
       // real command instead of hanging on `read`.
       answeredGen = gen;
+      lastWritten = null;
       write("\r");
       return;
     }
     const cached = passwords.get(server.id);
     if (cached !== undefined && !wrongPassword) {
       answeredGen = gen;
+      lastWritten = cached;
       write(cached + "\r");
       return;
     }
@@ -182,9 +231,11 @@ export function createKeychainUnlockWatcher(
     answeredGen = target;
     if (pw === null) {
       cancelled = true;
+      lastWritten = null;
       write("\r");
       return;
     }
+    lastWritten = pw;
     write(pw + "\r");
   };
 
@@ -196,6 +247,7 @@ export function createKeychainUnlockWatcher(
     for (;;) {
       // Earliest sentinel first — a FAIL is always followed by the next READY.
       const hits = [
+        { i: pending.indexOf(SKIP), s: SKIP },
         { i: pending.indexOf(FAIL), s: FAIL },
         { i: pending.indexOf(OK), s: OK },
         { i: pending.indexOf(READY), s: READY },
@@ -206,12 +258,22 @@ export function createKeychainUnlockWatcher(
       if (!hit) break;
       pending = pending.slice(hit.i + hit.s.length);
 
+      if (hit.s === SKIP) {
+        // Preamble decided unlocking can't help (creds file, already unlocked,
+        // missing item, ACL). Dormant immediately — no 64KB of chunk scanning.
+        done = true;
+        return;
+      }
       if (hit.s === OK) {
+        // The pane just PROVED the last written password unlocks the keychain
+        // — the only confirmation the in-band (password-auth) path ever gets.
+        if (lastWritten !== null) passwords.set(server.id, lastWritten);
         done = true;
         return;
       }
       if (hit.s === FAIL) {
         clearKeychainPassword(server.id);
+        lastWritten = null;
         wrongPassword = true;
         fails++;
         if (fails >= MAX_TRIES) {

@@ -48,6 +48,13 @@ export async function sessionStillExists(
   // `codex resume <id>` for a thread that had been deleted and the pane came up
   // on the CLI's "no such session" error. Same fail-open contract: only a
   // definite "we looked and it is not there" drops the id.
+  //
+  // For Codex the backend also answers "and is it a USER thread for THIS
+  // project" when given a cwd. Nothing prunes Codex rows, so an id adopted by
+  // the old unanchored drift check — a sub-agent thread, or another project's —
+  // stayed in the layout and was resumed on every launch. Failing that test is
+  // treated as "gone" so the pane starts fresh, which is how already-poisoned
+  // layouts heal themselves.
   if (terminalType === "codex" || terminalType === "gemini") {
     try {
       let check: SessionFileCheck;
@@ -55,11 +62,13 @@ export async function sessionStillExists(
         check = await invoke<SessionFileCheck>("cli_session_exists_native", {
           terminalType,
           sessionId,
+          projectPath: projectPath || null,
         });
       } else if (backend === "windows") {
         check = await invoke<SessionFileCheck>("cli_session_exists_windows", {
           terminalType,
           sessionId,
+          projectPath: projectPath || null,
         });
       } else {
         const distro = getCachedDistro();
@@ -67,6 +76,10 @@ export async function sessionStillExists(
           terminalType,
           sessionId,
           distro: distro || null,
+          // Codex records the cwd in WSL form; the callers hand us a Windows
+          // path on this backend, so convert or the cwd check compares two
+          // different spellings of the same directory and drops a live session.
+          projectPath: (projectPath && toWslPath(projectPath)) || null,
         });
       }
       if (!check?.checked) return true;

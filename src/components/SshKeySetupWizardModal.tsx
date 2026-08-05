@@ -345,7 +345,7 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
             justifyContent: "space-between",
           }}
         >
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
             Set up SSH key — {server.name}
           </span>
           <svg
@@ -406,7 +406,7 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
                   </span>
                   <span
                     style={{
-                      fontSize: 12,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                       color: isCurrent ? "var(--ezy-text)" : isDone ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
                       fontWeight: isCurrent ? 600 : 400,
                     }}
@@ -438,15 +438,15 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
 
           {phase === "password" && (
             <>
-              <div style={{ fontSize: 13, color: "var(--ezy-text)", marginBottom: 6, fontWeight: 500 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)", marginBottom: 6, fontWeight: 500 }}>
                 Server password required
               </div>
-              <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>
                 Enter the password for <strong>{server.username}</strong> on <strong>{server.name}</strong> to authorize
                 installing the key. It is typed straight into the encrypted SSH session and never stored.
               </div>
               {passwordNote && (
-                <div style={{ fontSize: 12, color: "var(--ezy-red, #e55)", marginBottom: 8 }}>{passwordNote}</div>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-red, #e55)", marginBottom: 8 }}>{passwordNote}</div>
               )}
               <input
                 type="password"
@@ -484,7 +484,7 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M20 6L9 17l-5-5" />
               </svg>
-              <span style={{ fontSize: 13, color: "var(--ezy-text)" }}>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)" }}>
                 SSH key set up and verified. This server now logs in without a password.
               </span>
             </div>
@@ -495,7 +495,7 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
               <div style={errorTextStyle}>
                 The server refused the connection — SSH remote login is probably not enabled on it.
               </div>
-              <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginBottom: 8 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)", marginBottom: 8 }}>
                 Which system does <strong>{server.name}</strong> run?
               </div>
               <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -512,7 +512,7 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
                     style={{
                       ...buttonStyle(refusedOs === os, false),
                       padding: "6px 12px",
-                      fontSize: 12,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     }}
                   >
                     {label}
@@ -545,7 +545,7 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
                 />
               )}
               {refusedOs && (
-                <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginBottom: 12 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)", marginBottom: 12 }}>
                   When that's done, retry below.
                 </div>
               )}
@@ -604,7 +604,7 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
               <button
                 onClick={() => setShowOutput((v) => !v)}
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   color: "var(--ezy-text-muted)",
                   background: "none",
                   border: "none",
@@ -620,7 +620,7 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
                   style={{
                     marginTop: 8,
                     padding: 10,
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     lineHeight: 1.5,
                     color: "var(--ezy-text-secondary)",
                     backgroundColor: "var(--ezy-bg)",
@@ -648,7 +648,7 @@ function GuideBlock({ steps }: { steps: React.ReactNode[] }) {
   return (
     <ol style={{ margin: "0 0 12px", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
       {steps.map((s, i) => (
-        <li key={i} style={{ fontSize: 12, color: "var(--ezy-text-secondary)", lineHeight: 1.5 }}>
+        <li key={i} style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)", lineHeight: 1.5 }}>
           {s}
         </li>
       ))}
@@ -670,14 +670,14 @@ function RetryRow({ onRetry, onClose }: { onRetry: () => void; onClose: () => vo
 }
 
 const mutedTextStyle: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
   color: "var(--ezy-text-muted)",
   padding: "4px 0",
   lineHeight: 1.5,
 };
 
 const errorTextStyle: React.CSSProperties = {
-  fontSize: 13,
+  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
   color: "var(--ezy-red, #e55)",
   marginBottom: 12,
   lineHeight: 1.5,
@@ -695,7 +695,7 @@ const inlineCodeStyle: React.CSSProperties = {
 const inputStyle: React.CSSProperties = {
   width: "100%",
   padding: "8px 10px",
-  fontSize: 13,
+  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
   color: "var(--ezy-text)",
   backgroundColor: "var(--ezy-surface)",
   border: "1px solid var(--ezy-border)",
@@ -708,7 +708,7 @@ const inputStyle: React.CSSProperties = {
 function buttonStyle(primary: boolean, disabled: boolean): React.CSSProperties {
   return {
     padding: "8px 14px",
-    fontSize: 13,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
     fontWeight: 600,
     color: primary ? (disabled ? "var(--ezy-text-muted)" : "#fff") : "var(--ezy-text)",
     backgroundColor: primary ? (disabled ? "var(--ezy-surface)" : "var(--ezy-accent)") : "var(--ezy-surface-raised)",
