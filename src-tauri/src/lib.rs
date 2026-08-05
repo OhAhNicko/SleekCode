@@ -1,4 +1,5 @@
 mod browser_view;
+mod cli_install;
 mod debug_log;
 mod preview_proxy;
 mod pty;
@@ -211,6 +212,7 @@ mod win32_border {
         fn GetWindowRect(hwnd: *mut c_void, rect: *mut RECT) -> i32;
         fn IsZoomed(hwnd: *mut c_void) -> i32;
         fn IsIconic(hwnd: *mut c_void) -> i32;
+        fn GetForegroundWindow() -> *mut c_void;
         fn MonitorFromRect(rect: *const RECT, flags: u32) -> *mut c_void;
         fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MONITORINFO) -> i32;
         fn GetDpiForWindow(hwnd: *mut c_void) -> u32;
@@ -322,6 +324,15 @@ mod win32_border {
     const NC_RETRY_TIMER_2: usize = 0x4E32; // 'N2'
     const NC_RETRY_1_MS: u32 = 450;
     const NC_RETRY_2_MS: u32 = 900;
+    /// One-shot after a minimize→restore transition: Win+D ("show desktop"
+    /// toggle) restores the window to the FOREGROUND without ever delivering
+    /// keyboard focus to it — no WM_SETFOCUS reaches the webview, so the JS
+    /// focus chain (GotFocus → appWindowFocused → pane focus routing) never
+    /// starts and typing is dead until an Alt-Tab. The timer (not an inline
+    /// call) lets the restore burst finish first; the handler re-checks
+    /// foreground so a background restore can never steal focus.
+    const FOCUS_KICK_TIMER: usize = 0x4643; // 'FC'
+    const FOCUS_KICK_MS: u32 = 60;
 
     /// Queue a deferred non-client recomposite. Posted (not synchronous) so it
     /// runs AFTER the current transition's message burst settles — re-applying
@@ -620,6 +631,20 @@ mod win32_border {
                 return 0;
             }
 
+            if msg == WM_TIMER && wparam == FOCUS_KICK_TIMER {
+                KillTimer(hwnd, wparam);
+                // Foreground re-check: a restore that did NOT end with us in
+                // the foreground (programmatic restore behind another app)
+                // must not steal focus.
+                if IsIconic(hwnd) == 0 && GetForegroundWindow() == hwnd {
+                    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC;
+                    let _ = state
+                        .controller
+                        .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+                }
+                return 0;
+            }
+
             if msg == WM_MOVE || msg == WM_MOVING {
                 let _ = state.controller.NotifyParentWindowPositionChanged();
             }
@@ -652,12 +677,22 @@ mod win32_border {
                     if !state.was_minimized {
                         use tauri::Emitter;
                         let _ = state.app.emit("made:window-minimized", true);
+                        // Pane fan-out, Rust-to-Rust (no JS hop — the webview
+                        // may already be throttled): minimize retains
+                        // per-thread focus, so the focused pane's CLI never
+                        // hears focus-out and a DECSET-1004 CLI (Claude)
+                        // skips its notification escape while minimized.
+                        crate::native_term::main_window_minimized();
                     }
                     state.was_minimized = true;
                 } else {
                     if state.was_minimized {
                         use tauri::Emitter;
                         let _ = state.app.emit("made:window-minimized", false);
+                        // See FOCUS_KICK_TIMER — Win+D restores foreground
+                        // without keyboard focus; kick it into the webview
+                        // once the restore burst settles.
+                        SetTimer(hwnd, FOCUS_KICK_TIMER, FOCUS_KICK_MS, std::ptr::null());
                     }
                     state.was_minimized = false;
                     queue_webview_bounds_sync(hwnd, state);
@@ -816,6 +851,47 @@ fn minimize_from_maximized() {
     // No-op on non-Windows — custom minimize only needed for Windows frameless windows
 }
 
+/// Register this app's AppUserModelID under HKCU so WinRT toast notifications
+/// are deliverable (see the setup() call site for the full why). Idempotent —
+/// `reg add /f` overwrites; runs off-thread so setup never waits on reg.exe.
+/// The icon is embedded and re-written each launch: toasts resolve IconUri
+/// lazily from disk, and app-local-data survives updates.
+#[cfg(target_os = "windows")]
+fn register_toast_aumid(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let identifier = app.config().identifier.clone();
+    let display_name = app
+        .config()
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "MADE".into());
+    let icon_path = app
+        .path()
+        .app_local_data_dir()
+        .ok()
+        .map(|d| d.join("notif-icon.png"));
+    std::thread::spawn(move || {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let key = format!(r"HKCU\Software\Classes\AppUserModelId\{identifier}");
+        let reg_add = |value: &str, data: &str| {
+            let _ = std::process::Command::new("reg")
+                .args(["add", &key, "/v", value, "/t", "REG_SZ", "/d", data, "/f"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        };
+        reg_add("DisplayName", &display_name);
+        if let Some(p) = icon_path {
+            if let Some(dir) = p.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if std::fs::write(&p, include_bytes!("../icons/128x128.png")).is_ok() {
+                reg_add("IconUri", &p.to_string_lossy());
+            }
+        }
+    });
+}
+
 #[tauri::command]
 async fn ssh_ls(
     host: String,
@@ -911,7 +987,7 @@ fn pick_local_port(preferred: u16) -> Result<u16, String> {
 
 /// Build a console-tool command that runs headlessly in the background.
 /// On Windows we suppress the console window the same way `wsl_command` does.
-fn hidden_command(program: &str) -> Command {
+pub(crate) fn hidden_command(program: &str) -> Command {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -927,7 +1003,7 @@ fn hidden_command(program: &str) -> Command {
 }
 
 /// Build an `ssh` command suitable for running headlessly in the background.
-fn ssh_background_command() -> Command {
+pub(crate) fn ssh_background_command() -> Command {
     #[cfg(target_os = "windows")]
     {
         hidden_command("ssh.exe")
@@ -941,7 +1017,7 @@ fn ssh_background_command() -> Command {
 /// Expand a leading `~` to the user's home directory. The frontend hands us
 /// `~/.ssh/...` paths, but `Command`/`std::fs` never go through a shell, so a
 /// literal `~` would create a `~` folder relative to the process cwd.
-fn expand_home(path: &str) -> Result<String, String> {
+pub(crate) fn expand_home(path: &str) -> Result<String, String> {
     if path == "~" || path.starts_with("~/") || path.starts_with("~\\") {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
@@ -1062,6 +1138,22 @@ async fn ssh_test_connection(
         .map_err(|e| format!("Failed to run ssh: {}", e))?;
 
     Ok(output.status.success())
+}
+
+/// Is anything listening on 127.0.0.1:<port>? The truthful "is this local dev
+/// server still up" signal — the output-based stopped-detection watches for a
+/// shell prompt at the end of the pane's buffer, and loses the race when the
+/// dying server prints stragglers after the prompt. Async + spawn_blocking:
+/// a sync command body runs inline on the WebView2 UI thread, and a connect
+/// timeout there would freeze every command for its duration.
+#[tauri::command]
+async fn port_check(port: u16) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(600)).is_ok()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Verify a macOS server's login-keychain password, unlocking the keychain for
@@ -4597,6 +4689,30 @@ const CODEX_USER_THREAD_FILTER: &str = "AND COALESCE(archived,0)=0 \
 /// Python body shared by all three backends: print the newest non-excluded
 /// USER thread for `argv[2]`, one id per line.
 ///
+/// `argv[3]` is an optional `updated_at` FLOOR in host epoch ms and `argv[4]`
+/// the host's clock when it was taken; `0` in either means "no floor" and is
+/// what every caller but drift detection passes.
+///
+/// The floor exists because drift detection used to ask only "what is the
+/// newest Codex thread in this cwd?". Claude's equivalent is anchored to the
+/// pane's PTY spawn; Codex had no anchor at all, so a thread the user ran
+/// OUTSIDE MADE in the same project — or a closed pane's thread touched more
+/// recently — was adopted, written to the layout leaf, and resumed on the next
+/// launch. A thread untouched since before this pane spawned cannot be the one
+/// this pane is driving, which is exactly what the floor encodes.
+///
+/// It is spliced into `where`, never into the `%s` filter slot: `rows_for`
+/// degrades on `sqlite3.Error` by re-running with the filter stripped, and the
+/// floor has to survive that. `updated_at` (seconds) is used rather than the
+/// newer `updated_at_ms` for the same reason — naming a column an older schema
+/// lacks would trip that fallback and silently drop the user filter too.
+///
+/// The floor is translated into the CLOCK THAT WROTE `updated_at` before it is
+/// compared. Codex writes it inside WSL, whose clock drifts from Windows (worst
+/// after sleep), so comparing raw host ms would filter out the genuine session
+/// — the same skew that broke `get_claude_session_id_by_spawn`. 5s of slack
+/// absorbs the round trip.
+///
 /// `db_expr` is a Python expression evaluating to the `state_5.sqlite` path —
 /// the WSL backend resolves `~` inside the guest, the other two are handed an
 /// absolute host path. Keeping one body means the filter cannot drift between
@@ -4604,18 +4720,25 @@ const CODEX_USER_THREAD_FILTER: &str = "AND COALESCE(archived,0)=0 \
 /// before.
 fn codex_thread_query_py(db_expr: &str) -> String {
     format!(
-        r#"import sqlite3,os,sys
+        r#"import sqlite3,os,sys,time
 db={db_expr}
 if not os.path.exists(db): sys.exit(0)
 c=sqlite3.connect(db)
 exclude=set(sys.argv[1].split(',')) if sys.argv[1] else set()
 path=sys.argv[2]
+def _int(i):
+    try: return int(sys.argv[i]) if len(sys.argv)>i else 0
+    except ValueError: return 0
+min_ms=_int(3); now_ms=_int(4)
+floor=0
+if min_ms>0:
+    floor=min_ms+((int(time.time()*1000)-now_ms) if now_ms>0 else 0)-5000
 F="{filter}"
 def rows_for(where,args):
     sql='SELECT id,cwd FROM threads WHERE '+where+' %s ORDER BY updated_at DESC LIMIT 50'
     try: return c.execute(sql%F,args).fetchall()
     except sqlite3.Error: return c.execute(sql%'',args).fetchall()
-rows=rows_for('lower(cwd)=lower(?)',(path,))
+rows=rows_for('lower(cwd)=lower(?) AND COALESCE(updated_at,0)*1000 >= ?',(path,floor))
 for r in rows:
     if r[0] not in exclude:
         print(r[0]); break
@@ -4679,13 +4802,11 @@ fn find_codex_rollout_for_cwd(
     let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
     walk_jsonl(sessions_dir, &mut files);
     files.sort_by(|a, b| b.1.cmp(&a.1));
-    let exact = format!("\"cwd\":\"{}\"", project_path);
-    let spaced = format!("\"cwd\": \"{}\"", project_path);
     for (path, _) in files.iter().take(60) {
         use std::io::BufRead;
         let Ok(file) = std::fs::File::open(path) else { continue };
         let Some(Ok(first)) = std::io::BufReader::new(file).lines().next() else { continue };
-        if first.contains(&exact) || first.contains(&spaced) {
+        if rollout_line_has_cwd(&first, project_path) && rollout_line_is_user_thread(&first) {
             return Some(path.clone());
         }
     }
@@ -4706,6 +4827,37 @@ fn walk_jsonl(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, std::tim
             }
         }
     }
+}
+
+/// Is this rollout's `session_meta` line a thread the USER started?
+///
+/// The SQLite path excludes Codex's own work — the auto-approval reviewer and
+/// spawned sub-agents — via `CODEX_USER_THREAD_FILTER`. Every JSONL scanner
+/// lacked the equivalent, so whenever SQLite yielded nothing they returned a
+/// sub-agent id and the pane resumed a conversation nobody opened. The rollout
+/// carries the same marker on its own first line:
+///
+///     "thread_source":"subagent","source":{"subagent":{"other":"guardian"}}
+///
+/// An ABSENT marker means a Codex old enough to have had no sub-agents to hide,
+/// which is a user thread by construction — so absence must read as "user", not
+/// as "unknown", or every pre-0.113 rollout becomes unresumable.
+fn rollout_line_is_user_thread(first_line: &str) -> bool {
+    !first_line.contains("\"thread_source\":\"subagent\"")
+        && !first_line.contains("\"thread_source\": \"subagent\"")
+}
+
+/// Does this rollout's `session_meta` line name `project_path` as its cwd?
+///
+/// Case-insensitive on purpose. Codex lowercases the cwd it records for some
+/// rollouts — a pane in `/mnt/c/Users/nikla/Documents/projects/CS 16` is filed
+/// under `/mnt/c/users/nikla/documents/projects/cs 16` — so an exact compare
+/// silently misses them. `aa73e00` fixed this for the SQLite queries and left
+/// the file scanners behind.
+fn rollout_line_has_cwd(first_line: &str, project_path: &str) -> bool {
+    let line = first_line.to_ascii_lowercase();
+    let p = project_path.to_ascii_lowercase();
+    line.contains(&format!("\"cwd\":\"{}\"", p)) || line.contains(&format!("\"cwd\": \"{}\"", p))
 }
 
 // ── Gemini session files ──────────────────────────────────────────────────
@@ -4861,15 +5013,21 @@ fn gemini_sessions_list(home: &str, project_path: &str) -> Result<String, String
 /// Codex ≥0.113 stores sessions in ~/.codex/state_5.sqlite `threads` table.
 /// Falls back to JSONL file scanning for older versions.
 #[tauri::command]
-async fn get_codex_session_id(project_path: String, exclude_ids: Vec<String>, distro: Option<String>) -> Result<Option<String>, String> {
+async fn get_codex_session_id(
+    project_path: String,
+    exclude_ids: Vec<String>,
+    distro: Option<String>,
+    min_updated_at_ms: Option<u64>,
+    now_ms: Option<u64>,
+) -> Result<Option<String>, String> {
     let is_valid_uuid = |s: &str| -> bool {
         s.len() == 36
             && s.split('-').count() == 5
             && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
     };
 
-    // Primary: query SQLite threads table (Codex ≥0.113).
-    // Try both the exact path and case-insensitive match for /mnt/c paths.
+    // Primary: query SQLite threads table (Codex ≥0.113), matched with
+    // `lower(cwd)=lower(?)` — see CODEX_USER_THREAD_FILTER for why.
     //
     // The body arrives over a QUOTED heredoc (`<<'PY'`), not inside a
     // double-quoted `python3 -c "…"` as it used to: the shared query uses both
@@ -4878,9 +5036,11 @@ async fn get_codex_session_id(project_path: String, exclude_ids: Vec<String>, di
     // expansion, so nothing in the script needs escaping.
     let exclude_csv = exclude_ids.join(",");
     let script = format!(
-        "python3 - '{}' '{}' <<'MADE_CODEX_PY'\n{}MADE_CODEX_PY\n",
+        "python3 - '{}' '{}' '{}' '{}' <<'MADE_CODEX_PY'\n{}MADE_CODEX_PY\n",
         exclude_csv.replace('\'', "'\\''"),
         project_path.replace('\'', "'\\''"),
+        min_updated_at_ms.unwrap_or(0),
+        now_ms.unwrap_or(0),
         codex_thread_query_py("os.path.expanduser('~/.codex/state_5.sqlite')"),
     );
 
@@ -4899,9 +5059,19 @@ async fn get_codex_session_id(project_path: String, exclude_ids: Vec<String>, di
         }
     }
 
-    // Fallback: scan JSONL files (Codex <0.113)
+    // A floor was requested and SQLite did not answer above it. The JSONL
+    // fallback ranks by file mtime and cannot honour the floor, so running it
+    // here would hand back exactly the unanchored "newest thread in this cwd"
+    // the floor exists to reject. No answer is the correct answer.
+    if min_updated_at_ms.unwrap_or(0) > 0 {
+        return Ok(None);
+    }
+
+    // Fallback: scan JSONL files (Codex <0.113). `grep -v` drops Codex's own
+    // sub-agent rollouts, which the SQLite path excludes via
+    // CODEX_USER_THREAD_FILTER and this pipeline used to return happily.
     let fallback_script = format!(
-        "find ~/.codex/sessions -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -20 | xargs -I{{}} head -1 {{}} 2>/dev/null | grep -i '\"cwd\":\"{}\"' | grep -oE '\"id\":\"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}\"' | sed 's/\"id\":\"//;s/\"//'",
+        "find ~/.codex/sessions -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -20 | xargs -I{{}} head -1 {{}} 2>/dev/null | grep -i '\"cwd\":\"{}\"' | grep -v '\"thread_source\":\"subagent\"' | grep -oE '\"id\":\"[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}\"' | sed 's/\"id\":\"//;s/\"//'",
         project_path.replace('\'', "'\\''")
     );
 
@@ -5057,7 +5227,12 @@ async fn get_claude_session_id_windows(project_path: String, exclude_ids: Vec<St
 /// Codex ≥0.113 stores sessions in %USERPROFILE%\.codex\state_5.sqlite `threads` table.
 /// Falls back to JSONL file scanning for older versions.
 #[tauri::command]
-async fn get_codex_session_id_windows(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+async fn get_codex_session_id_windows(
+    project_path: String,
+    exclude_ids: Vec<String>,
+    min_updated_at_ms: Option<u64>,
+    now_ms: Option<u64>,
+) -> Result<Option<String>, String> {
     let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
     let codex_dir = std::path::Path::new(&home).join(".codex");
 
@@ -5072,12 +5247,14 @@ async fn get_codex_session_id_windows(project_path: String, exclude_ids: Vec<Str
     if db_path.exists() {
         let exclude_csv = exclude_ids.join(",");
         let py_script = codex_thread_query_py(&format!("r'{}'", db_path.display()));
+        let floor = min_updated_at_ms.unwrap_or(0).to_string();
+        let now = now_ms.unwrap_or(0).to_string();
         // Try python3 first, then python (Windows often has "python" not "python3")
         let output = Command::new("python3")
-            .args(["-c", &py_script, &exclude_csv, &project_path])
+            .args(["-c", &py_script, &exclude_csv, &project_path, &floor, &now])
             .output()
             .or_else(|_| Command::new("python")
-                .args(["-c", &py_script, &exclude_csv, &project_path])
+                .args(["-c", &py_script, &exclude_csv, &project_path, &floor, &now])
                 .output()
             );
         if let Ok(o) = output {
@@ -5089,6 +5266,12 @@ async fn get_codex_session_id_windows(project_path: String, exclude_ids: Vec<Str
                 }
             }
         }
+    }
+
+    // The mtime-ranked fallback cannot honour an updated_at floor — see the WSL
+    // twin. With a floor requested, no answer beats an unanchored one.
+    if min_updated_at_ms.unwrap_or(0) > 0 {
+        return Ok(None);
     }
 
     // Fallback: scan JSONL files (Codex <0.113)
@@ -5125,6 +5308,10 @@ async fn get_codex_session_id_windows(project_path: String, exclude_ids: Vec<Str
                 let cwd_match = format!("\"cwd\":\"{}\"", project_path);
                 let cwd_match_spaced = format!("\"cwd\": \"{}\"", project_path);
                 if !first_line.contains(&cwd_match) && !first_line.contains(&cwd_match_spaced) {
+                    continue;
+                }
+                // Codex's own sub-agent rollouts carry the pane's cwd too.
+                if !rollout_line_is_user_thread(&first_line) {
                     continue;
                 }
                 if let Some(id_start) = first_line.find("\"id\":\"").or_else(|| first_line.find("\"id\": \"")) {
@@ -5636,6 +5823,171 @@ async fn read_session_context_windows(
     }
 }
 
+/// HICON plumbing for the runtime app-icon picker.
+///
+/// tao's `set_window_icon` forwards ONE fixed-size icon (as ICON_SMALL only),
+/// and Windows shell surfaces (taskbar, Alt-Tab) CROP a WM_SETICON icon whose
+/// pixel size doesn't match the slot instead of scaling it — a 512px master
+/// showed up as a zoomed-in centre crop. The compiled .ico never hits this
+/// because it carries real 16/24/32/48 entries. So: downscale the master to
+/// the exact system-metric sizes and set ICON_SMALL and ICON_BIG ourselves.
+#[cfg(target_os = "windows")]
+mod app_icon_win {
+    use std::sync::atomic::{AtomicIsize, Ordering};
+
+    // Previous icons WE created, destroyed on replacement. The handle a
+    // WM_SETICON returns on the first call belongs to tao (it destroys its
+    // WindowIcon itself) and must NOT be destroyed here.
+    static PREV_SMALL: AtomicIsize = AtomicIsize::new(0);
+    static PREV_BIG: AtomicIsize = AtomicIsize::new(0);
+
+    /// Area-average `src` (sw×sh RGBA) down to dw×dh. Colour is alpha-weighted
+    /// so fully transparent source pixels never darken edge colours.
+    fn downscale_rgba(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
+        let mut out = vec![0u8; dw * dh * 4];
+        for dy in 0..dh {
+            let y0 = dy * sh / dh;
+            let y1 = ((dy + 1) * sh).div_ceil(dh);
+            for dx in 0..dw {
+                let x0 = dx * sw / dw;
+                let x1 = ((dx + 1) * sw).div_ceil(dw);
+                let (mut r, mut g, mut b, mut a, mut n) = (0u64, 0u64, 0u64, 0u64, 0u64);
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let i = (y * sw + x) * 4;
+                        let al = src[i + 3] as u64;
+                        r += src[i] as u64 * al;
+                        g += src[i + 1] as u64 * al;
+                        b += src[i + 2] as u64 * al;
+                        a += al;
+                        n += 1;
+                    }
+                }
+                let o = (dy * dw + dx) * 4;
+                if a > 0 {
+                    out[o] = (r / a) as u8;
+                    out[o + 1] = (g / a) as u8;
+                    out[o + 2] = (b / a) as u8;
+                }
+                out[o + 3] = (a / n.max(1)) as u8;
+            }
+        }
+        out
+    }
+
+    /// Build a size×size 32bpp HICON (straight alpha) from RGBA pixels.
+    fn create_icon(rgba: &[u8], size: usize) -> Result<isize, String> {
+        use windows::Win32::Foundation::{HANDLE, HWND};
+        use windows::Win32::Graphics::Gdi::{
+            CreateBitmap, CreateDIBSection, DeleteObject, GetDC, ReleaseDC, BITMAPINFO,
+            BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, ICONINFO};
+        unsafe {
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: size as i32,
+                    biHeight: -(size as i32), // top-down
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let screen_dc = GetDC(HWND(std::ptr::null_mut()));
+            let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+            let color = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE::default(), 0);
+            ReleaseDC(HWND(std::ptr::null_mut()), screen_dc);
+            let color = color.map_err(|e| format!("CreateDIBSection: {e}"))?;
+            if bits.is_null() {
+                let _ = DeleteObject(color);
+                return Err("CreateDIBSection returned null bits".into());
+            }
+            let dst = std::slice::from_raw_parts_mut(bits as *mut u8, size * size * 4);
+            for (d, s) in dst.chunks_exact_mut(4).zip(rgba.chunks_exact(4)) {
+                d[0] = s[2]; // RGBA -> BGRA
+                d[1] = s[1];
+                d[2] = s[0];
+                d[3] = s[3];
+            }
+            let mask = CreateBitmap(size as i32, size as i32, 1, 1, None);
+            let info = ICONINFO {
+                fIcon: true.into(),
+                xHotspot: 0,
+                yHotspot: 0,
+                hbmMask: mask,
+                hbmColor: color,
+            };
+            let hicon = CreateIconIndirect(&info);
+            let _ = DeleteObject(color);
+            let _ = DeleteObject(mask);
+            let hicon = hicon.map_err(|e| format!("CreateIconIndirect: {e}"))?;
+            Ok(hicon.0 as isize)
+        }
+    }
+
+    /// Downscale + WM_SETICON for both slots. `rgba` is the square master.
+    pub fn apply(hwnd: isize, rgba: &[u8], master: usize) -> Result<(), String> {
+        use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            DestroyIcon, GetSystemMetrics, SendMessageW, HICON, ICON_BIG, ICON_SMALL,
+            SM_CXICON, SM_CXSMICON, WM_SETICON,
+        };
+        let small = unsafe { GetSystemMetrics(SM_CXSMICON) }.clamp(16, 256) as usize;
+        let big = unsafe { GetSystemMetrics(SM_CXICON) }.clamp(24, 256) as usize;
+        for (size, slot, prev) in [
+            (small, ICON_SMALL as usize, &PREV_SMALL),
+            (big, ICON_BIG as usize, &PREV_BIG),
+        ] {
+            let scaled = downscale_rgba(rgba, master, master, size, size);
+            let hicon = create_icon(&scaled, size)?;
+            unsafe {
+                SendMessageW(HWND(hwnd as *mut _), WM_SETICON, WPARAM(slot), LPARAM(hicon));
+            }
+            let old = prev.swap(hicon, Ordering::SeqCst);
+            if old != 0 {
+                unsafe {
+                    let _ = DestroyIcon(HICON(old as *mut _));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Apply one of the bundled app-icon variants (Settings > Appearance >
+/// App icon) to the OS window — title bar, taskbar and Alt-Tab. Runtime-only:
+/// the exe/installer/shortcut icon stays whatever icons/icon.ico was at build
+/// time. `async` so the PNG decode + downscale never run inline on the
+/// WebView2 UI thread. The win32 NC guard already redraw-locks WM_SETICON,
+/// so no border flash.
+#[tauri::command]
+async fn set_app_icon_variant(window: tauri::WebviewWindow, variant: String) -> Result<(), String> {
+    let bytes: &[u8] = match variant.as_str() {
+        "a" => include_bytes!("../icons/variants/icon-a.png"),
+        "b" => include_bytes!("../icons/variants/icon-b.png"),
+        "c" => include_bytes!("../icons/variants/icon-c.png"),
+        "d" => include_bytes!("../icons/variants/icon-d.png"),
+        _ => return Err(format!("unknown app icon variant: {variant}")),
+    };
+    let icon = tauri::image::Image::from_bytes(bytes).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    {
+        let master = icon.width() as usize;
+        if icon.height() as usize != master {
+            return Err("app icon master must be square".into());
+        }
+        let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+        return app_icon_win::apply(hwnd.0 as isize, icon.rgba(), master);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        window.set_icon(icon).map_err(|e| e.to_string())
+    }
+}
+
 #[tauri::command]
 fn set_window_corners(window: tauri::WebviewWindow, rounded: bool) -> Result<(), String> {
     let _ = (&window, rounded);
@@ -6038,8 +6390,14 @@ if [ "$SID" = "__latest__" ]; then
   # recorded in each rollout's session_meta first line; taking the newest file
   # outright showed another project's context in a pane that had just opened.
   f=""
+  # -i because Codex lowercases the cwd it records for some rollouts, and skip
+  # its own sub-agent rollouts — they carry the pane's cwd too, so an unfiltered
+  # match shows the header a conversation nobody opened.
   for rf in $(find ~/.codex/sessions/ -name '*.jsonl' -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -60); do
-    head -1 "$rf" 2>/dev/null | grep -qF "\"cwd\":\"$PROJDIR\"" && f="$rf" && break
+    _l=$(head -1 "$rf" 2>/dev/null)
+    printf '%s' "$_l" | grep -qiF "\"cwd\":\"$PROJDIR\"" || continue
+    printf '%s' "$_l" | grep -qF '"thread_source":"subagent"' && continue
+    f="$rf" && break
   done
 else
   CACHE="/tmp/made-sessionpath-$SID"
@@ -6398,7 +6756,12 @@ fn find_newest_uuid_jsonl(dir: &std::path::Path, exclude_ids: &[String], max_age
 
 /// Find the most recent Codex session ID on macOS/Linux (native filesystem).
 #[tauri::command]
-async fn get_codex_session_id_native(project_path: String, exclude_ids: Vec<String>) -> Result<Option<String>, String> {
+async fn get_codex_session_id_native(
+    project_path: String,
+    exclude_ids: Vec<String>,
+    min_updated_at_ms: Option<u64>,
+    now_ms: Option<u64>,
+) -> Result<Option<String>, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
     let codex_dir = std::path::Path::new(&home).join(".codex");
 
@@ -6413,8 +6776,10 @@ async fn get_codex_session_id_native(project_path: String, exclude_ids: Vec<Stri
     if db_path.exists() {
         let exclude_csv = exclude_ids.join(",");
         let py_script = codex_thread_query_py(&format!("r'{}'", db_path.display()));
+        let floor = min_updated_at_ms.unwrap_or(0).to_string();
+        let now = now_ms.unwrap_or(0).to_string();
         let output = Command::new("python3")
-            .args(["-c", &py_script, &exclude_csv, &project_path])
+            .args(["-c", &py_script, &exclude_csv, &project_path, &floor, &now])
             .output();
         if let Ok(o) = output {
             let stdout = String::from_utf8_lossy(&o.stdout).trim().to_string();
@@ -6425,6 +6790,12 @@ async fn get_codex_session_id_native(project_path: String, exclude_ids: Vec<Stri
                 }
             }
         }
+    }
+
+    // The mtime-ranked fallback cannot honour an updated_at floor — see the WSL
+    // twin. With a floor requested, no answer beats an unanchored one.
+    if min_updated_at_ms.unwrap_or(0) > 0 {
+        return Ok(None);
     }
 
     // Fallback: scan JSONL files
@@ -6458,6 +6829,10 @@ async fn get_codex_session_id_native(project_path: String, exclude_ids: Vec<Stri
                 let cwd_match = format!("\"cwd\":\"{}\"", project_path);
                 let cwd_match_spaced = format!("\"cwd\": \"{}\"", project_path);
                 if !first_line.contains(&cwd_match) && !first_line.contains(&cwd_match_spaced) {
+                    continue;
+                }
+                // Codex's own sub-agent rollouts carry the pane's cwd too.
+                if !rollout_line_is_user_thread(&first_line) {
                     continue;
                 }
                 // Extract UUID from "id":"<uuid>" in the line
@@ -7619,18 +7994,42 @@ async fn read_cli_sessions_index(
 /// to discard the id and start fresh. That is real work lost, so the file check
 /// is not optional.
 ///
-/// Deliberately unfiltered: an agent thread still EXISTS. This asks only "will
-/// `codex resume <id>` find something", never "should MADE have adopted it".
+/// `argv[2]` is the cwd the caller EXPECTS this session to belong to, or empty
+/// to skip that half of the question.
+///
+/// This used to be deliberately unfiltered, on the reasoning that an agent
+/// thread still exists and the question was only "will `codex resume <id>` find
+/// something". That let ids adopted by the old unanchored drift check survive
+/// forever: nothing prunes Codex rows, so a pane pointed at a sub-agent thread
+/// — or at another project's — resumed it on every launch. A positively
+/// identified sub-agent, or a thread whose recorded cwd is a different project,
+/// is now answered `0` so the caller drops it and starts fresh.
+///
+/// Everything else keeps the fail-open contract intact. A rollout that exists
+/// on disk with NO threads row still answers `1` (an older Codex wrote it and
+/// `codex resume` still finds it by file), and "could not look" still prints
+/// nothing so it can never collapse into "definitely absent".
 fn codex_session_exists_py(db_expr: &str, sessions_expr: &str) -> String {
     format!(
         r#"import sqlite3,os,sys
 sid=sys.argv[1]
+def _norm(p): return (p or '').replace('\\','/').rstrip('/').lower()
+want=_norm(sys.argv[2] if len(sys.argv)>2 else '')
 db={db_expr}
 sessions={sessions_expr}
 looked=False
 if os.path.exists(db):
     try:
-        if sqlite3.connect(db).execute('SELECT 1 FROM threads WHERE id=?',(sid,)).fetchone():
+        c=sqlite3.connect(db)
+        try:
+            row=c.execute('SELECT cwd,thread_source,agent_role FROM threads WHERE id=?',(sid,)).fetchone()
+        except sqlite3.Error:
+            row=c.execute('SELECT NULL,NULL,NULL FROM threads WHERE id=?',(sid,)).fetchone()
+        if row:
+            if (row[1] is not None and row[1]!='user') or row[2] is not None:
+                print(0); sys.exit(0)
+            if want and _norm(row[0]) and _norm(row[0])!=want:
+                print(0); sys.exit(0)
             print(1); sys.exit(0)
         looked=True
     except sqlite3.Error:
@@ -7639,7 +8038,12 @@ if os.path.isdir(sessions):
     for root,_dirs,files in os.walk(sessions):
         for n in files:
             if sid in n and n.endswith('.jsonl'):
-                print(1); sys.exit(0)
+                try:
+                    with open(os.path.join(root,n),encoding='utf-8',errors='replace') as fh:
+                        first=fh.readline()
+                except OSError:
+                    first=''
+                print(0 if '"thread_source":"subagent"' in first else 1); sys.exit(0)
     looked=True
 print(0 if looked else '')
 "#,
@@ -7659,9 +8063,10 @@ print(0 if looked else '')
 async fn cli_session_exists_native(
     terminal_type: String,
     session_id: String,
+    project_path: Option<String>,
 ) -> Result<SessionFileCheck, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    Ok(cli_session_exists_local(&home, &terminal_type, &session_id, false))
+    Ok(cli_session_exists_local(&home, &terminal_type, &session_id, project_path.as_deref().unwrap_or(""), false))
 }
 
 /// Windows-native variant of cli_session_exists_native.
@@ -7669,9 +8074,10 @@ async fn cli_session_exists_native(
 async fn cli_session_exists_windows(
     terminal_type: String,
     session_id: String,
+    project_path: Option<String>,
 ) -> Result<SessionFileCheck, String> {
     let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
-    Ok(cli_session_exists_local(&home, &terminal_type, &session_id, true))
+    Ok(cli_session_exists_local(&home, &terminal_type, &session_id, project_path.as_deref().unwrap_or(""), true))
 }
 
 /// WSL variant. Codex asks inside the guest (SQLite over SMB is not worth the
@@ -7681,12 +8087,14 @@ async fn cli_session_exists(
     terminal_type: String,
     session_id: String,
     distro: Option<String>,
+    project_path: Option<String>,
 ) -> Result<SessionFileCheck, String> {
     match terminal_type.as_str() {
         "codex" => {
             let script = format!(
-                "python3 - '{}' <<'MADE_CODEX_PY'\n{}MADE_CODEX_PY\n",
+                "python3 - '{}' '{}' <<'MADE_CODEX_PY'\n{}MADE_CODEX_PY\n",
                 session_id.replace('\'', "'\\''"),
+                project_path.unwrap_or_default().replace('\'', "'\\''"),
                 codex_session_exists_py(
                     "os.path.expanduser('~/.codex/state_5.sqlite')",
                     "os.path.expanduser('~/.codex/sessions')",
@@ -7725,6 +8133,7 @@ fn cli_session_exists_local(
     home: &str,
     terminal_type: &str,
     session_id: &str,
+    expected_cwd: &str,
     try_python_alias: bool,
 ) -> SessionFileCheck {
     match terminal_type {
@@ -7736,9 +8145,9 @@ fn cli_session_exists_local(
                     &format!("r'{}'", db.display()),
                     &format!("r'{}'", codex_dir.join("sessions").display()),
                 );
-                let out = Command::new("python3").args(["-c", &py, session_id]).output();
+                let out = Command::new("python3").args(["-c", &py, session_id, expected_cwd]).output();
                 let out = if try_python_alias {
-                    out.or_else(|_| Command::new("python").args(["-c", &py, session_id]).output())
+                    out.or_else(|_| Command::new("python").args(["-c", &py, session_id, expected_cwd]).output())
                 } else {
                     out
                 };
@@ -7947,6 +8356,36 @@ fn claude_json_at(home: &std::path::Path) -> std::path::PathBuf {
     home.join(".claude.json")
 }
 
+/// Which CLI's MCP configuration a Jira request concerns. All three speak MCP
+/// and all three can reach the same Atlassian endpoint — they just keep their
+/// config in different places, in different formats.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum JiraCli {
+    Claude,
+    Codex,
+    Gemini,
+}
+
+impl JiraCli {
+    /// Unknown/absent means Claude: that is what every caller meant before the
+    /// parameter existed, so an old caller keeps its old behaviour.
+    fn parse(raw: Option<&str>) -> Self {
+        match raw.unwrap_or("claude").trim().to_ascii_lowercase().as_str() {
+            "codex" => JiraCli::Codex,
+            "gemini" => JiraCli::Gemini,
+            _ => JiraCli::Claude,
+        }
+    }
+
+    fn binary(self) -> &'static str {
+        match self {
+            JiraCli::Claude => "claude",
+            JiraCli::Codex => "codex",
+            JiraCli::Gemini => "gemini",
+        }
+    }
+}
+
 /// Does this server entry point at Atlassian? Matches on the name OR the URL, so
 /// a server the user called something else is still recognised.
 fn is_atlassian_entry(name: &str, value: &serde_json::Value) -> bool {
@@ -7992,11 +8431,10 @@ fn find_atlassian_in_claude_json(
     None
 }
 
-/// `.mcp.json` committed in the project itself (scope "project").
-fn find_atlassian_in_project_file(project_path: Option<&str>) -> Option<String> {
-    let dir = project_path?;
-    let raw = std::fs::read_to_string(std::path::Path::new(dir).join(".mcp.json")).ok()?;
-    let doc: serde_json::Value = serde_json::from_str(&raw).ok()?;
+/// An Atlassian entry in a doc's TOP-LEVEL `mcpServers` (the `.mcp.json`
+/// shape). Split out so the local and SSH paths share one notion of a match —
+/// two implementations of "is this Atlassian" would eventually disagree.
+fn find_atlassian_in_mcp_servers(doc: &serde_json::Value) -> Option<String> {
     let servers = doc.get("mcpServers").and_then(|v| v.as_object())?;
     servers
         .iter()
@@ -8004,7 +8442,75 @@ fn find_atlassian_in_project_file(project_path: Option<&str>) -> Option<String> 
         .map(|(name, _)| name.clone())
 }
 
+/// `.mcp.json` committed in the project itself (scope "project").
+fn find_atlassian_in_project_file(project_path: Option<&str>) -> Option<String> {
+    let dir = project_path?;
+    let raw = std::fs::read_to_string(std::path::Path::new(dir).join(".mcp.json")).ok()?;
+    find_atlassian_in_mcp_servers(&serde_json::from_str(&raw).ok()?)
+}
+
+/// Server name of a `[mcp_servers.<name>]` TOML header, or None for any other
+/// section. Sub-tables (`[mcp_servers.<name>.env]`) report the same server, and
+/// a quoted name (`[mcp_servers."my server"]`) is unquoted.
+fn codex_mcp_section_name(header: &str) -> Option<String> {
+    let inner = header.trim().strip_prefix('[')?.strip_suffix(']')?.trim();
+    let rest = inner.strip_prefix("mcp_servers.")?;
+    let seg = match rest.strip_prefix('"') {
+        Some(quoted) => quoted.split('"').next()?.to_string(),
+        None => rest.split('.').next()?.trim().to_string(),
+    };
+    if seg.is_empty() { None } else { Some(seg) }
+}
+
+/// Scan Codex's `~/.codex/config.toml` for an Atlassian MCP server.
+///
+/// Deliberately a line scanner rather than a TOML parse: pulling in a TOML
+/// dependency to answer one yes/no question is not worth it, and the question
+/// is loose anyway — `is_atlassian_entry` matches on the server name OR any
+/// atlassian.com URL in its body, which survives whatever else the table holds.
+fn find_atlassian_in_codex_toml(raw: &str) -> Option<String> {
+    let mut current: Option<String> = None;
+    let mut body = String::new();
+    let matches = |name: &Option<String>, body: &str| -> Option<String> {
+        let name = name.as_ref()?;
+        is_atlassian_entry(name, &serde_json::Value::String(body.to_string()))
+            .then(|| name.clone())
+    };
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if let Some(found) = matches(&current, &body) {
+                return Some(found);
+            }
+            body.clear();
+            current = codex_mcp_section_name(trimmed);
+        } else if current.is_some() {
+            body.push_str(trimmed);
+            body.push('\n');
+        }
+    }
+    matches(&current, &body)
+}
+
+/// Find an Atlassian entry under ANY `mcpServers` object in a Gemini settings
+/// document. Gemini has reshuffled its settings schema more than once (0.49
+/// nests `security`/`general`/`model`); `mcpServers` is top-level today, and
+/// walking the tree means a future move reports the truth instead of silently
+/// claiming "not set up".
+fn find_atlassian_in_gemini_settings(doc: &serde_json::Value) -> Option<String> {
+    let map = doc.as_object()?;
+    if let Some(servers) = map.get("mcpServers").and_then(|v| v.as_object()) {
+        for (name, value) in servers {
+            if is_atlassian_entry(name, value) {
+                return Some(name.clone());
+            }
+        }
+    }
+    map.values().find_map(find_atlassian_in_gemini_settings)
+}
+
 fn jira_mcp_status_for_home(
+    cli: JiraCli,
     home: Option<std::path::PathBuf>,
     project_path: Option<String>,
 ) -> JiraMcpStatus {
@@ -8014,18 +8520,272 @@ fn jira_mcp_status_for_home(
         name: String::new(),
         checked: false,
     };
+    let found = |name: String, scope: &str| JiraMcpStatus {
+        configured: true,
+        scope: scope.to_string(),
+        name,
+        checked: true,
+    };
+    let absent = JiraMcpStatus {
+        configured: false,
+        scope: String::new(),
+        name: String::new(),
+        checked: true,
+    };
 
-    // A `.mcp.json` in the project counts regardless of where home is.
-    if let Some(name) = find_atlassian_in_project_file(project_path.as_deref()) {
-        return JiraMcpStatus { configured: true, scope: "project".into(), name, checked: true };
+    match cli {
+        JiraCli::Claude => {
+            // A `.mcp.json` in the project counts regardless of where home is.
+            if let Some(name) = find_atlassian_in_project_file(project_path.as_deref()) {
+                return found(name, "project");
+            }
+            let Some(home) = home else { return not_checked };
+            let Ok(raw) = std::fs::read_to_string(claude_json_at(&home)) else { return not_checked };
+            let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else { return not_checked };
+            match find_atlassian_in_claude_json(&doc, project_path.as_deref()) {
+                Some((name, scope)) => found(name, &scope),
+                None => absent,
+            }
+        }
+        JiraCli::Codex => {
+            // Codex keeps one global config — no project or local scope exists.
+            let Some(home) = home else { return not_checked };
+            let path = home.join(".codex").join("config.toml");
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                // No config file at all is a real answer for Codex: it writes
+                // one on first `mcp add`, so "missing" means "none configured".
+                return if home.join(".codex").is_dir() { absent } else { not_checked };
+            };
+            match find_atlassian_in_codex_toml(&raw) {
+                Some(name) => found(name, "user"),
+                None => absent,
+            }
+        }
+        JiraCli::Gemini => {
+            // Project scope first — `gemini mcp add -s project` writes here and
+            // it wins for panes opened in that folder.
+            if let Some(dir) = project_path.as_deref() {
+                let path = std::path::Path::new(dir).join(".gemini").join("settings.json");
+                if let Ok(raw) = std::fs::read_to_string(&path) {
+                    if let Some(name) = serde_json::from_str::<serde_json::Value>(&raw)
+                        .ok()
+                        .as_ref()
+                        .and_then(find_atlassian_in_gemini_settings)
+                    {
+                        return found(name, "project");
+                    }
+                }
+            }
+            let Some(home) = home else { return not_checked };
+            let path = home.join(".gemini").join("settings.json");
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                return if home.join(".gemini").is_dir() { absent } else { not_checked };
+            };
+            let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else { return not_checked };
+            match find_atlassian_in_gemini_settings(&doc) {
+                Some(name) => found(name, "user"),
+                None => absent,
+            }
+        }
+    }
+}
+
+/// WSL home directory for a given CLI, reached over the `\\wsl.localhost` share.
+///
+/// The marker directory is the CLI's OWN config dir, tried first: keying every
+/// lookup off `.claude/` (as this did while Claude was the only CLI) reports
+/// "unknown" forever for someone who runs Codex in WSL and Claude nowhere. The
+/// other CLIs' markers are the fallback, so a distro with exactly one user
+/// still resolves whichever CLI is asked about.
+fn resolve_wsl_home_for(cli: JiraCli, distro: Option<&str>) -> Option<std::path::PathBuf> {
+    let own = match cli {
+        JiraCli::Claude => ".claude",
+        JiraCli::Codex => ".codex",
+        JiraCli::Gemini => ".gemini",
+    };
+    let markers: [&str; 3] = match cli {
+        JiraCli::Claude => [own, ".codex", ".gemini"],
+        JiraCli::Codex => [own, ".claude", ".gemini"],
+        JiraCli::Gemini => [own, ".claude", ".codex"],
+    };
+
+    let mut distros: Vec<&str> = Vec::new();
+    if let Some(d) = distro.map(str::trim).filter(|d| !d.is_empty()) {
+        distros.push(d);
+    }
+    distros.extend(["Ubuntu-24.04", "Ubuntu-22.04", "Ubuntu", "Debian"]);
+
+    for d in distros {
+        for prefix in ["\\\\wsl.localhost", "\\\\wsl$"] {
+            let base = std::path::PathBuf::from(format!("{}\\{}\\home", prefix, d));
+            let Ok(entries) = std::fs::read_dir(&base) else { continue };
+            let users: Vec<std::path::PathBuf> =
+                entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()).collect();
+            if users.is_empty() {
+                continue;
+            }
+            for marker in markers {
+                if let Some(hit) = users.iter().find(|u| u.join(marker).is_dir()) {
+                    return Some(hit.clone());
+                }
+            }
+            // A reachable distro whose single user has none of the three: still
+            // the right home, and the caller reports "not set up" from there.
+            if users.len() == 1 {
+                return Some(users[0].clone());
+            }
+        }
     }
 
-    let Some(home) = home else { return not_checked };
-    let path = claude_json_at(&home);
-    let Ok(raw) = std::fs::read_to_string(&path) else { return not_checked };
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&raw) else { return not_checked };
+    // Non-Windows dev builds have no WSL share; the real home is the answer.
+    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from)?;
+    home.join(own).is_dir().then_some(home)
+}
 
-    match find_atlassian_in_claude_json(&doc, project_path.as_deref()) {
+/* --- SSH: the same question, asked of a remote host ------------------- */
+
+/// Sentinels framing the probe's sections. Chosen to be impossible in a config
+/// file, and matched on whole lines so a value containing one cannot spoof a
+/// section boundary.
+const SSH_PROBE_EXISTS: &str = "@@MADE-JIRA-EXISTS@@";
+const SSH_PROBE_USER: &str = "@@MADE-JIRA-USER@@";
+const SSH_PROBE_PROJECT: &str = "@@MADE-JIRA-PROJECT@@";
+
+/// Where a CLI keeps its config on a POSIX host: (user file, the path whose
+/// existence proves the CLI has ever run here).
+fn jira_cli_remote_paths(cli: JiraCli) -> (&'static str, &'static str) {
+    match cli {
+        JiraCli::Claude => ("$HOME/.claude.json", "$HOME/.claude.json"),
+        JiraCli::Codex => ("$HOME/.codex/config.toml", "$HOME/.codex"),
+        JiraCli::Gemini => ("$HOME/.gemini/settings.json", "$HOME/.gemini"),
+    }
+}
+
+/// One round trip that returns everything the local parsers need. Always exits
+/// 0: a missing file is an answer, not a failure, and `ssh_exec_internal`
+/// treats a non-zero exit as a transport error.
+fn jira_mcp_probe_script(cli: JiraCli, project_path: Option<&str>) -> String {
+    let (user_file, marker) = jira_cli_remote_paths(cli);
+    // Codex has no project scope at all; the others each have their own file.
+    let project_file = project_path
+        .map(|p| p.trim_end_matches('/'))
+        .filter(|p| !p.is_empty())
+        .and_then(|p| match cli {
+            JiraCli::Claude => Some(format!("{p}/.mcp.json")),
+            JiraCli::Gemini => Some(format!("{p}/.gemini/settings.json")),
+            JiraCli::Codex => None,
+        });
+    let mut script = format!(
+        "echo {SSH_PROBE_EXISTS}; [ -e \"{marker}\" ] && echo 1 || echo 0; \
+         echo {SSH_PROBE_USER}; cat \"{user_file}\" 2>/dev/null; echo; \
+         echo {SSH_PROBE_PROJECT}; "
+    );
+    if let Some(p) = project_file {
+        // The only caller-supplied value in the whole script.
+        script.push_str(&format!("cat {} 2>/dev/null; ", shell_escape(&p)));
+    }
+    script.push_str("exit 0");
+    script
+}
+
+/// Split probe output into (marker exists, user blob, project blob).
+fn split_jira_probe(out: &str) -> (bool, String, String) {
+    let mut section = 0;
+    let (mut exists, mut user, mut project) = (false, String::new(), String::new());
+    for line in out.lines() {
+        match line.trim_end() {
+            SSH_PROBE_EXISTS => section = 1,
+            SSH_PROBE_USER => section = 2,
+            SSH_PROBE_PROJECT => section = 3,
+            _ => match section {
+                1 => exists = line.trim() == "1",
+                2 => {
+                    user.push_str(line);
+                    user.push('\n');
+                }
+                3 => {
+                    project.push_str(line);
+                    project.push('\n');
+                }
+                _ => {}
+            },
+        }
+    }
+    (exists, user, project)
+}
+
+/// Is the Atlassian MCP server configured? — a remote host over SSH.
+///
+/// A Jira project can live on a server (`tab.serverId`), and then the ticket
+/// pane runs the CLI THERE, so the only config that matters is the remote one.
+/// Reporting the local machine's answer for a remote project would be a
+/// confidently wrong "Connected".
+///
+/// The remote blobs are parsed by the SAME functions as the local paths — only
+/// the transport differs.
+#[tauri::command]
+async fn jira_mcp_status_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    project_path: Option<String>,
+    cli: Option<String>,
+) -> Result<JiraMcpStatus, String> {
+    let kind = JiraCli::parse(cli.as_deref());
+    let not_checked = JiraMcpStatus {
+        configured: false,
+        scope: String::new(),
+        name: String::new(),
+        checked: false,
+    };
+    let script = jira_mcp_probe_script(kind, project_path.as_deref());
+    // Unreachable host, refused key, password-only auth → "unknown", never
+    // "not set up". Same contract as every other path.
+    let Ok(out) = ssh_exec_internal(&host, &username, identity_file.as_deref(), &script).await
+    else {
+        return Ok(not_checked);
+    };
+    let (exists, user_blob, project_blob) = split_jira_probe(&out);
+
+    // Project scope first — it wins for panes opened in that folder.
+    if !project_blob.trim().is_empty() {
+        if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&project_blob) {
+            let hit = match kind {
+                JiraCli::Gemini => find_atlassian_in_gemini_settings(&doc),
+                _ => find_atlassian_in_mcp_servers(&doc),
+            };
+            if let Some(name) = hit {
+                return Ok(JiraMcpStatus {
+                    configured: true,
+                    scope: "project".into(),
+                    name,
+                    checked: true,
+                });
+            }
+        }
+    }
+
+    if user_blob.trim().is_empty() {
+        // No config to read: only claim "not set up" when the CLI has clearly
+        // run here (its dir/file exists) — otherwise it may not be installed.
+        return Ok(if exists {
+            JiraMcpStatus { configured: false, scope: String::new(), name: String::new(), checked: true }
+        } else {
+            not_checked
+        });
+    }
+
+    let found = match kind {
+        JiraCli::Claude => serde_json::from_str::<serde_json::Value>(&user_blob)
+            .ok()
+            .and_then(|doc| find_atlassian_in_claude_json(&doc, project_path.as_deref())),
+        JiraCli::Codex => find_atlassian_in_codex_toml(&user_blob).map(|n| (n, "user".to_string())),
+        JiraCli::Gemini => serde_json::from_str::<serde_json::Value>(&user_blob)
+            .ok()
+            .and_then(|doc| find_atlassian_in_gemini_settings(&doc))
+            .map(|n| (n, "user".to_string())),
+    };
+    Ok(match found {
         Some((name, scope)) => JiraMcpStatus { configured: true, scope, name, checked: true },
         None => JiraMcpStatus {
             configured: false,
@@ -8033,53 +8793,243 @@ fn jira_mcp_status_for_home(
             name: String::new(),
             checked: true,
         },
-    }
+    })
 }
 
-/// WSL home directory (the one Claude actually runs in on this backend).
-fn resolve_wsl_home(distro: Option<&str>) -> Option<std::path::PathBuf> {
-    resolve_wsl_claude_settings(distro).and_then(|settings| {
-        // .../home/<user>/.claude/settings.json -> .../home/<user>
-        settings.parent()?.parent().map(|p| p.to_path_buf())
-    })
+/// Only a shell NAME or absolute path, never an argument list — this value
+/// reaches a remote command line. Anything else falls back to bash.
+fn safe_remote_shell(shell: Option<&str>) -> String {
+    let ok = shell
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || "/_-.".contains(c)));
+    ok.unwrap_or("bash").to_string()
+}
+
+/// Register the Atlassian MCP server on a remote host.
+///
+/// Bounded from THIS side rather than with a remote `timeout`: macOS ships no
+/// such binary (it is `gtimeout` from coreutils), and a Mac is exactly the kind
+/// of box these servers are. Killing the local ssh client closes the channel,
+/// and sshd hangs up the remote command with it.
+///
+/// The CLI is invoked through the shell that was probed to resolve it
+/// (`pickExecShell`): `ssh host "claude …"` runs a NON-interactive login shell,
+/// where PATH additions from .zshrc are absent and the bare name often fails.
+#[tauri::command]
+async fn jira_mcp_install_ssh(
+    host: String,
+    username: String,
+    identity_file: Option<String>,
+    cli: Option<String>,
+    shell: Option<String>,
+) -> Result<String, String> {
+    let kind = JiraCli::parse(cli.as_deref());
+    let Some(key) = identity_file.filter(|k| !k.trim().is_empty()) else {
+        return Err("SSH-key auth required to configure a remote host.".to_string());
+    };
+    let key = expand_home(&key)?;
+    let remote = format!(
+        "{} -lic {} 2>&1",
+        safe_remote_shell(shell.as_deref()),
+        shell_escape(&jira_mcp_add_call(kind)),
+    );
+    let child = ssh_background_command()
+        .args([
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=10",
+            "-i", &key,
+            &format!("{username}@{host}"),
+            &remote,
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ssh: {e}"))?;
+
+    let deadline = std::time::Duration::from_secs(mcp_add_deadline_secs(kind));
+    let Some(out) = wait_for_mcp_add(child, deadline)? else {
+        return if kind == JiraCli::Codex {
+            // Codex starts its OAuth flow here too, and over SSH it cannot
+            // finish at all — see CODEX_MCP_SSH_AUTH.
+            Ok(CODEX_MCP_ADD_PENDING_AUTH.to_string())
+        } else {
+            Err(mcp_add_timeout_error(kind))
+        };
+    };
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if out.status.success() {
+        Ok(if text.is_empty() { err } else { text })
+    } else {
+        Err(if text.is_empty() && err.is_empty() {
+            format!("{} mcp add failed on {host}", kind.binary())
+        } else if err.is_empty() {
+            text
+        } else {
+            err
+        })
+    }
 }
 
 /// Is the Atlassian MCP server configured? — WSL.
 #[tauri::command]
-async fn jira_mcp_status(project_path: Option<String>, distro: Option<String>) -> Result<JiraMcpStatus, String> {
-    Ok(jira_mcp_status_for_home(resolve_wsl_home(distro.as_deref()), project_path))
+async fn jira_mcp_status(
+    project_path: Option<String>,
+    distro: Option<String>,
+    cli: Option<String>,
+) -> Result<JiraMcpStatus, String> {
+    let cli = JiraCli::parse(cli.as_deref());
+    Ok(jira_mcp_status_for_home(cli, resolve_wsl_home_for(cli, distro.as_deref()), project_path))
 }
 
 /// Is the Atlassian MCP server configured? — Windows native.
 #[tauri::command]
-async fn jira_mcp_status_windows(project_path: Option<String>) -> Result<JiraMcpStatus, String> {
+async fn jira_mcp_status_windows(
+    project_path: Option<String>,
+    cli: Option<String>,
+) -> Result<JiraMcpStatus, String> {
     let home = std::env::var("USERPROFILE").ok().map(std::path::PathBuf::from);
-    Ok(jira_mcp_status_for_home(home, project_path))
+    Ok(jira_mcp_status_for_home(JiraCli::parse(cli.as_deref()), home, project_path))
 }
 
 /// Is the Atlassian MCP server configured? — macOS/Linux native.
 #[tauri::command]
-async fn jira_mcp_status_native(project_path: Option<String>) -> Result<JiraMcpStatus, String> {
+async fn jira_mcp_status_native(
+    project_path: Option<String>,
+    cli: Option<String>,
+) -> Result<JiraMcpStatus, String> {
     let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
-    Ok(jira_mcp_status_for_home(home, project_path))
+    Ok(jira_mcp_status_for_home(JiraCli::parse(cli.as_deref()), home, project_path))
 }
 
-/// Register the Atlassian MCP server with Claude Code — WSL.
+/// The `mcp add` invocation that registers Atlassian with a given CLI.
 ///
-/// Runs the CLI rather than editing `~/.claude.json` directly: the config shape
-/// is Claude's to own, and `claude mcp add` is the documented, version-correct
-/// way to write it. Scope is `user` so every project gets the server — a support
-/// ticket can concern any repo.
+/// Every CLI writes its own config rather than MADE editing the file: the shape
+/// is theirs to own, and each ships the documented, version-correct writer.
+/// Scope is `user`/global everywhere it exists, because a support ticket can
+/// concern any repo — note Gemini defaults to PROJECT scope, so `-s user` is
+/// load-bearing, and Codex has no scope flag at all (one global config.toml).
+///
+/// Returns argv, joined for the WSL shell path and split for the direct path.
+fn jira_mcp_add_args(cli: JiraCli) -> Vec<String> {
+    let owned = |parts: &[&str]| parts.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    match cli {
+        JiraCli::Claude => owned(&[
+            "mcp", "add", "--transport", "http",
+            ATLASSIAN_MCP_NAME, ATLASSIAN_MCP_URL, "--scope", "user",
+        ]),
+        JiraCli::Codex => owned(&["mcp", "add", ATLASSIAN_MCP_NAME, "--url", ATLASSIAN_MCP_URL]),
+        JiraCli::Gemini => owned(&[
+            "mcp", "add", "--transport", "http", "--scope", "user",
+            ATLASSIAN_MCP_NAME, ATLASSIAN_MCP_URL,
+        ]),
+    }
+}
+
+/// How long an `mcp add` may run before it is killed.
+///
+/// EVERY CLI gets a deadline, not just the one that misbehaves. The button
+/// behind this has exactly one failure mode a user cannot recover from — a
+/// spinner that never stops — and any of these calls can block for reasons that
+/// have nothing to do with the CLI: a wedged WSL VM, a `bash -lic` login script
+/// that waits on input, a network stall. A wrong answer in 45 seconds can be
+/// read and acted on; "Setting up…" forever cannot.
+///
+/// Codex's is short and expected (see `jira_mcp_add_command`); the other two
+/// are generous — Gemini's add measures ~2s — so hitting them means something
+/// is genuinely stuck, and that is reported as the error it is.
+const fn mcp_add_deadline_secs(cli: JiraCli) -> u64 {
+    match cli {
+        JiraCli::Codex => 8,
+        _ => 45,
+    }
+}
+
+/// What a killed Codex add reports. NOT an error: the entry is already written.
+const CODEX_MCP_ADD_PENDING_AUTH: &str =
+    "Added. Run `codex mcp login atlassian` in a Codex pane to sign in.";
+
+/// What a killed Claude/Gemini add reports. Their adds do not block on purpose,
+/// so this IS an error — and it names the usual culprit rather than the CLI,
+/// because a stuck `wsl.exe` is far likelier than a stuck `mcp add`.
+fn mcp_add_timeout_error(cli: JiraCli) -> String {
+    format!(
+        "{} mcp add did not finish in {}s — is WSL responding? Nothing was changed.",
+        cli.binary(),
+        mcp_add_deadline_secs(cli),
+    )
+}
+
+/// Same call as a shell command line, for the WSL `bash -lic` path.
+///
+/// Codex needs a deadline. Alone among the three, it ties OAuth INTO `mcp add`:
+/// it writes the config entry, prints "Added global MCP server 'atlassian'",
+/// and then starts a browser OAuth flow that blocks on a localhost callback
+/// which can never arrive from a headless spawn — so `.output()` waits forever
+/// and the Settings button spins for the rest of the session. There is no flag
+/// to skip it (`codex mcp add --help` offers only --oauth-client-id and
+/// --oauth-resource). Claude and Gemini both write and exit.
+///
+/// Killing it loses nothing, because the write happens BEFORE the flow starts,
+/// and signing in stays what it always was: a deliberate, visible step in a
+/// pane where a browser can actually open.
+///
+/// The bound is applied INSIDE the distro rather than by killing the wsl.exe
+/// relay from the Windows side, which would not reliably reap the `codex`
+/// process it started.
+fn jira_mcp_add_call(cli: JiraCli) -> String {
+    // Every argument here is a compile-time constant (binary name, flags, the
+    // Atlassian URL) — nothing user-supplied reaches this string.
+    format!("{} {}", cli.binary(), jira_mcp_add_args(cli).join(" "))
+}
+
+fn jira_mcp_add_command(cli: JiraCli) -> String {
+    format!("timeout {} {}", mcp_add_deadline_secs(cli), jira_mcp_add_call(cli))
+}
+
+/// Poll `try_wait` until exit or deadline, killing at the deadline. `Ok(None)`
+/// means the deadline fired. Mirrors `wsl_health::wait_with_deadline`; kept
+/// separate because there a timeout is a failure, and here it is the expected
+/// outcome of a command that deliberately never returns.
+///
+/// Output is a few hundred bytes (a "server added" line and an OAuth URL), far
+/// below the pipe buffer, so polling without draining stdout cannot deadlock.
+fn wait_for_mcp_add(
+    mut child: Child,
+    deadline: std::time::Duration,
+) -> Result<Option<std::process::Output>, String> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child.wait_with_output().map(Some).map_err(|e| e.to_string());
+            }
+            Ok(None) => {
+                if start.elapsed() > deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(None);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// Register the Atlassian MCP server with a CLI — WSL.
 ///
 /// This does NOT authenticate. The OAuth handoff is interactive (it opens a
-/// browser), so it stays where the user can see it: `/mcp` in a Claude pane.
+/// browser), so it stays where the user can see it: `/mcp` in a Claude or
+/// Gemini pane, `codex mcp login atlassian` for Codex.
 #[cfg(target_os = "windows")]
 #[tauri::command]
-async fn jira_mcp_install(distro: Option<String>) -> Result<String, String> {
-    let script = format!(
-        "claude mcp add --transport http {} {} --scope user 2>&1",
-        ATLASSIAN_MCP_NAME, ATLASSIAN_MCP_URL
-    );
+async fn jira_mcp_install(distro: Option<String>, cli: Option<String>) -> Result<String, String> {
+    let kind = JiraCli::parse(cli.as_deref());
+    let script = format!("{} 2>&1", jira_mcp_add_command(kind));
     let mut cmd = wsl_command();
     if let Some(d) = distro.as_deref().filter(|d| !d.trim().is_empty()) {
         cmd.arg("-d").arg(d);
@@ -8094,36 +9044,65 @@ async fn jira_mcp_install(distro: Option<String>) -> Result<String, String> {
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if out.status.success() {
         Ok(text)
+    } else if out.status.code() == Some(124) {
+        // 124 is `timeout`'s "I killed it". For Codex that is the OAuth wait,
+        // which only starts AFTER the entry is written (see
+        // jira_mcp_add_command) — success. For the others it means stuck.
+        if kind == JiraCli::Codex {
+            Ok(CODEX_MCP_ADD_PENDING_AUTH.to_string())
+        } else {
+            Err(mcp_add_timeout_error(kind))
+        }
     } else {
-        Err(if text.is_empty() { "claude mcp add failed".to_string() } else { text })
+        // The CLI's own words when it has any — "command not found" and
+        // "unknown flag" are both far more useful than anything invented here.
+        Err(if text.is_empty() { format!("{} mcp add failed", kind.binary()) } else { text })
     }
 }
 
 #[cfg(not(target_os = "windows"))]
 #[tauri::command]
-async fn jira_mcp_install(_distro: Option<String>) -> Result<String, String> {
+async fn jira_mcp_install(_distro: Option<String>, _cli: Option<String>) -> Result<String, String> {
     Err("WSL is only available on Windows".to_string())
 }
 
 /// Register the Atlassian MCP server — Windows native / macOS / Linux, where
-/// the `claude` binary runs directly rather than through WSL.
+/// the CLI binary runs directly rather than through WSL.
 #[tauri::command]
-async fn jira_mcp_install_direct(cli_path: Option<String>) -> Result<String, String> {
-    let program = cli_path.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| "claude".to_string());
-    let out = Command::new(&program)
-        .args([
-            "mcp", "add", "--transport", "http",
-            ATLASSIAN_MCP_NAME, ATLASSIAN_MCP_URL,
-            "--scope", "user",
-        ])
-        .output()
+async fn jira_mcp_install_direct(
+    cli_path: Option<String>,
+    cli: Option<String>,
+) -> Result<String, String> {
+    let kind = JiraCli::parse(cli.as_deref());
+    let program = cli_path
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| kind.binary().to_string());
+    // Deadline for ALL three, not just the one that blocks on purpose: there is
+    // no `timeout` binary to lean on here (this path also runs on Windows), so
+    // the bound is applied to the child directly. See mcp_add_deadline_secs.
+    let child = Command::new(&program)
+        .args(jira_mcp_add_args(kind))
+        // Null stdin, so a CLI that decides to prompt gets EOF and exits rather
+        // than waiting forever on a terminal that does not exist here.
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("could not run {program}: {e}"))?;
+    let deadline = std::time::Duration::from_secs(mcp_add_deadline_secs(kind));
+    let Some(out) = wait_for_mcp_add(child, deadline)? else {
+        return if kind == JiraCli::Codex {
+            Ok(CODEX_MCP_ADD_PENDING_AUTH.to_string())
+        } else {
+            Err(mcp_add_timeout_error(kind))
+        };
+    };
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
     if out.status.success() {
         Ok(if text.is_empty() { err } else { text })
     } else {
-        Err(if err.is_empty() { "claude mcp add failed".to_string() } else { err })
+        Err(if err.is_empty() { format!("{program} mcp add failed") } else { err })
     }
 }
 
@@ -8320,12 +9299,20 @@ async fn ssh_detect_cli_shells(
     ssh_exec_internal(&host, &username, identity_file.as_deref(), script).await
 }
 
-/// Encode a remote project path the way Claude/Codex/Gemini do, e.g.
-/// `/home/user/foo` → `home-user-foo`. Always uses `/` as separator since
-/// remote hosts are Unix.
+/// Encode a remote project path the way Claude names its transcript
+/// directory under `~/.claude/projects/`: EVERY non-alphanumeric character
+/// becomes `-`, including the leading `/` — `/home/user/foo` →
+/// `-home-user-foo` (leading dash and all; spaces, dots and parens become
+/// dashes too). Verified against real `~/.claude/projects` layouts.
+///
+/// The previous version trimmed the leading dash and kept spaces/dots, so
+/// every `_ssh` session reader scanned a directory Claude never writes —
+/// remote id detection, session context and first-prompt reads all came back
+/// empty on servers where the sessions plainly existed.
 fn encode_remote_project_key(path: &str) -> String {
-    let s = path.replace('\\', "-").replace('/', "-");
-    s.trim_start_matches('-').to_string()
+    path.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 /// Allowlist for values interpolated into the shell command body sent to
@@ -8563,6 +9550,12 @@ async fn get_codex_session_id_ssh(
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(json_line) {
             let session_cwd = v.pointer("/payload/cwd").and_then(|v| v.as_str()).unwrap_or("");
             if session_cwd != cwd { continue; }
+            // Codex's own sub-agent rollouts carry the pane's cwd too — the
+            // SQLite path drops them via CODEX_USER_THREAD_FILTER, and there is
+            // no SQLite over SSH, so this is the only place it can happen here.
+            if v.pointer("/payload/thread_source").and_then(|v| v.as_str()) == Some("subagent") {
+                continue;
+            }
             if let Some(id) = v.get("id").and_then(|v| v.as_str()) {
                 if exclude_ids.iter().any(|e| e == id) { continue; }
                 return Ok(Some(id.to_string()));
@@ -8712,7 +9705,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_unlock_keychain, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_install, jira_mcp_install_direct, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_unlock_keychain, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, cli_install::cli_probe, cli_install::cli_install_start, cli_install::cli_install_cancel, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, set_app_icon_variant, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_status_ssh, jira_mcp_install, jira_mcp_install_direct, jira_mcp_install_ssh, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, port_check, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_render_opts, native_term::native_term_list_mono_fonts, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
         .setup(|app| {
             // A3: build the shared wgpu Instance+Adapter on a background thread
             // NOW, so the one-time driver/DXGI enumeration (~534ms measured on
@@ -8720,6 +9713,16 @@ pub fn run() {
             // the first pane the user opens. Non-fatal if it fails — pane
             // creation just builds them on demand as before.
             native_term::renderer::gpu::prewarm();
+
+            // Windows drops WinRT toasts whose AppUserModelID nobody
+            // registered, and the notification plugin posts installed-app
+            // toasts under AUMID = the config identifier. The NSIS Start-Menu
+            // shortcut is the usual carrier of that registration; this
+            // machine-independent HKCU registration covers shortcut-less
+            // installs too (without it, every toast vanished silently and
+            // MADE never appeared under Windows notification settings).
+            #[cfg(target_os = "windows")]
+            register_toast_aumid(app.handle());
 
             // Registry of active `ssh -N -L` port-forward processes for remote
             // dev servers (commands: ssh_forward_port_start / _stop).
@@ -8853,6 +9856,49 @@ pub fn run() {
                             overlay::win32::install_nc_guard(overlay_hwnd);
                             overlay::win32::sync_geometry(hwnd_raw, overlay_hwnd);
                         }
+                        // DefaultBackgroundColor: READ-ONLY on purpose.
+                        //
+                        // The 2026-08-04 black-scrollbar learnings doc proposed
+                        // SETTING this to 0x00000000 here as the root-cause fix.
+                        // It is already set, twice, before we could: our
+                        // `.transparent(true)` reaches wry as
+                        // `WebViewAttributes::transparent`, which makes it pass
+                        // `Some((0,0,0,0))` into `create_controller`
+                        // (wry-0.54.2 webview2/mod.rs:126-130 ->
+                        // ICoreWebView2ControllerOptions3 at :390-400) AND call
+                        // `set_background_color(controller, (0,0,0,0))` again
+                        // after creation (:448-451). Re-setting it would be a
+                        // no-op that reads like a fix — the exact cargo-cult a
+                        // 2026-07-21 note already warned against ("wry already
+                        // sets SetDefaultBackgroundColor(A:0); don't re-add it").
+                        //
+                        // The black came from GDI, not from WebView2: see the
+                        // WM_PAINT arm in overlay::win32::install_nc_guard. This
+                        // probe stays as one startup line of evidence so the
+                        // next session can rule the controller out in seconds
+                        // instead of re-deriving it from three crates' sources.
+                        {
+                            use webview2_com::Microsoft::Web::WebView2::Win32::{
+                                COREWEBVIEW2_COLOR, ICoreWebView2Controller2,
+                            };
+                            use windows_webview2::core::Interface;
+                            let _ = overlay.with_webview(|webview| unsafe {
+                                match webview.controller().cast::<ICoreWebView2Controller2>() {
+                                    Ok(c2) => {
+                                        let mut c = COREWEBVIEW2_COLOR::default();
+                                        let read = c2.DefaultBackgroundColor(&mut c);
+                                        debug_log::dlog(&format!(
+                                            "[overlay.bgcolor] read={} A={} R={} G={} B={} (expect A=0: wry set it)",
+                                            read.is_ok(), c.A, c.R, c.G, c.B
+                                        ));
+                                    }
+                                    Err(e) => debug_log::dlog(&format!(
+                                        "[overlay.bgcolor] ICoreWebView2Controller2 cast failed: {e}"
+                                    )),
+                                }
+                            });
+                        }
+
                         let _ = overlay.show();
 
                         // Keep the overlay covering main's CLIENT area on every
@@ -8904,4 +9950,137 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod jira_mcp_tests {
+    use super::*;
+
+    /// The real shape `codex mcp add` writes, alongside an unrelated stdio
+    /// server with a sub-table — the sub-table is what a naive "scan until the
+    /// next header" parser gets wrong.
+    const CODEX_CONFIG: &str = r#"
+[projects."/home/u/p"]
+trust_level = "trusted"
+
+[mcp_servers.blender]
+command = "uvx"
+args = ["blender-mcp"]
+
+[mcp_servers.blender.env]
+BLENDER_HOST = "127.0.0.1"
+
+[mcp_servers.atlassian]
+url = "https://mcp.atlassian.com/v1/mcp/authv2"
+"#;
+
+    #[test]
+    fn codex_finds_atlassian_by_name() {
+        assert_eq!(find_atlassian_in_codex_toml(CODEX_CONFIG).as_deref(), Some("atlassian"));
+    }
+
+    #[test]
+    fn codex_finds_a_renamed_server_by_url() {
+        let renamed = "[mcp_servers.support]\nurl = \"https://mcp.atlassian.com/v1/mcp/authv2\"\n";
+        assert_eq!(find_atlassian_in_codex_toml(renamed).as_deref(), Some("support"));
+    }
+
+    #[test]
+    fn codex_reports_none_without_it() {
+        let only_blender = "[mcp_servers.blender]\ncommand = \"uvx\"\n";
+        assert!(find_atlassian_in_codex_toml(only_blender).is_none());
+        assert!(find_atlassian_in_codex_toml("").is_none());
+        // A `projects` table naming an atlassian PATH is not an MCP server.
+        assert!(find_atlassian_in_codex_toml("[projects.\"/home/u/atlassian\"]\n").is_none());
+    }
+
+    #[test]
+    fn codex_section_names_ignore_sub_tables_and_quotes() {
+        assert_eq!(codex_mcp_section_name("[mcp_servers.a.env]").as_deref(), Some("a"));
+        assert_eq!(codex_mcp_section_name("[mcp_servers.\"my server\"]").as_deref(), Some("my server"));
+        assert_eq!(codex_mcp_section_name("[tui]"), None);
+    }
+
+    #[test]
+    fn gemini_finds_atlassian_at_any_depth() {
+        // Today's shape: top-level `mcpServers`.
+        let top: serde_json::Value = serde_json::from_str(
+            r#"{"model":{"name":"x"},"mcpServers":{"atlassian":{"url":"https://mcp.atlassian.com/v1/mcp/authv2","type":"http"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(find_atlassian_in_gemini_settings(&top).as_deref(), Some("atlassian"));
+
+        // Nested, in case the settings schema moves again — the whole reason
+        // this walks the tree instead of reading one fixed key.
+        let nested: serde_json::Value =
+            serde_json::from_str(r#"{"mcp":{"mcpServers":{"jira-things":{"httpUrl":"https://example.test"}}}}"#)
+                .unwrap();
+        assert_eq!(find_atlassian_in_gemini_settings(&nested).as_deref(), Some("jira-things"));
+
+        let empty: serde_json::Value = serde_json::from_str(r#"{"mcpServers":{}}"#).unwrap();
+        assert!(find_atlassian_in_gemini_settings(&empty).is_none());
+    }
+
+    /// EVERY add is wrapped in a deadline — an unbounded one leaves the
+    /// Settings button spinning with no way back. Codex's is the short,
+    /// expected one; Gemini's `--scope user` must survive edits, because its
+    /// own default is project scope.
+    #[test]
+    fn every_add_command_is_bounded_and_shaped_per_cli() {
+        assert_eq!(
+            jira_mcp_add_command(JiraCli::Codex),
+            format!("timeout 8 codex mcp add atlassian --url {ATLASSIAN_MCP_URL}"),
+        );
+        assert_eq!(
+            jira_mcp_add_command(JiraCli::Gemini),
+            format!("timeout 45 gemini mcp add --transport http --scope user atlassian {ATLASSIAN_MCP_URL}"),
+        );
+        for cli in [JiraCli::Claude, JiraCli::Codex, JiraCli::Gemini] {
+            assert!(jira_mcp_add_command(cli).starts_with("timeout "), "{} unbounded", cli.binary());
+        }
+        assert!(jira_mcp_add_command(JiraCli::Claude).contains("--scope user"));
+    }
+
+    /// The remote shell reaches an ssh command line, so anything that is not a
+    /// plain shell name or path must be dropped rather than passed through.
+    #[test]
+    fn remote_shell_is_sanitised() {
+        assert_eq!(safe_remote_shell(Some("/bin/zsh")), "/bin/zsh");
+        assert_eq!(safe_remote_shell(Some("fish")), "fish");
+        assert_eq!(safe_remote_shell(None), "bash");
+        assert_eq!(safe_remote_shell(Some("   ")), "bash");
+        for hostile in ["bash; rm -rf ~", "bash && curl evil", "bash $(id)", "bash|tee x", "b'a"] {
+            assert_eq!(safe_remote_shell(Some(hostile)), "bash", "let through: {hostile}");
+        }
+    }
+
+    /// The one caller-supplied value in the probe is the project path.
+    #[test]
+    fn probe_script_quotes_the_project_path() {
+        let nasty = "/srv/it's here; rm -rf ~";
+        let script = jira_mcp_probe_script(JiraCli::Claude, Some(nasty));
+        assert!(script.contains(r#"'/srv/it'\''s here; rm -rf ~/.mcp.json'"#), "{script}");
+        // Codex has no project scope, so it never cats a project file at all.
+        assert!(!jira_mcp_probe_script(JiraCli::Codex, Some(nasty)).contains("rm -rf"));
+        assert!(jira_mcp_probe_script(JiraCli::Gemini, Some("/p")).contains("/p/.gemini/settings.json"));
+        // No project → no second cat, and still a well-formed script.
+        assert!(jira_mcp_probe_script(JiraCli::Claude, None).ends_with("exit 0"));
+    }
+
+    #[test]
+    fn probe_output_splits_into_sections() {
+        let out = format!(
+            "{SSH_PROBE_EXISTS}\n1\n{SSH_PROBE_USER}\n{{\"a\":1}}\n\n{SSH_PROBE_PROJECT}\n{{\"b\":2}}\n"
+        );
+        let (exists, user, project) = split_jira_probe(&out);
+        assert!(exists);
+        assert_eq!(user.trim(), "{\"a\":1}");
+        assert_eq!(project.trim(), "{\"b\":2}");
+
+        // Missing config: marker says the CLI has run here, user blob empty.
+        let bare = format!("{SSH_PROBE_EXISTS}\n0\n{SSH_PROBE_USER}\n\n{SSH_PROBE_PROJECT}\n");
+        let (exists, user, project) = split_jira_probe(&bare);
+        assert!(!exists);
+        assert!(user.trim().is_empty() && project.trim().is_empty());
+    }
 }
