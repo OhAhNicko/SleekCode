@@ -1,16 +1,22 @@
 /**
  * Ticket ⇄ terminal handoff for freshly-spawned Jira panes.
  *
- * A fresh pane's Claude session id is minted inside the PTY hooks (via
+ * A fresh Claude pane's session id is minted inside the PTY hooks (via
  * `--session-id`), which is after the Jira flow has already handed off. So the
  * launch details are parked against the terminal id here, and the spawn picks
  * them up to build the claude args and name the session.
+ *
+ * Codex and Gemini panes park the same record but claim it later: neither CLI
+ * accepts an id at launch, so their session is DETECTED by the pane and named
+ * from `Workspace`'s `onSessionResumeId`. Either way the entry is consumed
+ * exactly once, by whichever path learns the id first.
  *
  * Deliberately separate from `jira-project.ts`: the PTY hooks call in here, and
  * they must not end up importing that module's dialog/orchestration graph.
  */
 
 import { useAppStore } from "../store";
+import type { JiraCli } from "./jira-mcp";
 
 export interface ParkedTicket {
   /** Base ticket key ("SUPPORT-24920") — never carries an instance suffix. */
@@ -22,7 +28,12 @@ export interface ParkedTicket {
    *  this is how a MADE-side rename reaches the CLI (`--name`) on the pane's
    *  next launch. */
   name?: string;
-  /** Claude Code `--model` alias for the pane, from the new-ticket dialog. */
+  /** Which CLI the pane runs. Absent = Claude (every ticket parked before the
+   *  picker existed). Decides both the session's registry type and which
+   *  launch flags the spawn is allowed to build. */
+  cli?: JiraCli;
+  /** Model for the pane, from the new-ticket dialog: a Claude `--model` alias,
+   *  or a literal `-m` slug for Codex/Gemini. */
   model?: string;
   /** Duplicate-as-fork: spawn with `--resume <source> --fork-session
    *  --session-id <new>` so the pane starts as an exact copy of the source
@@ -86,7 +97,7 @@ export function nameTicketSession(
   useAppStore.getState().registerProjectSession(workingDir, {
     id: sessionId,
     name: parkedTicketName(parked),
-    type: "claude",
+    type: parked.cli ?? "claude",
     createdAt: Date.now(),
     isRenamed: true,
     ticket: parked.ticket,

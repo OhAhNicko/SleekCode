@@ -98,7 +98,7 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   const labelStyle: React.CSSProperties = {
-    fontSize: 11,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
     color: "var(--ezy-text-muted)",
     marginBottom: 6,
     fontWeight: 500,
@@ -138,7 +138,7 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
               justifyContent: "space-between",
             }}
           >
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               New Jira Project
             </span>
             <svg
@@ -171,7 +171,7 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
                         onClick={() => pickLocation(loc.id)}
                         style={{
                           padding: "5px 12px",
-                          fontSize: 12,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                           fontWeight: 600,
                           borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                           cursor: "pointer",
@@ -188,7 +188,7 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
                   )}
                 </div>
                 {remoteServer && !remoteServerHasKey && (
-                  <div style={{ fontSize: 11, color: "#e55", marginTop: 6 }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 6 }}>
                     This server needs a working SSH key first — set one up in the Servers panel.
                   </div>
                 )}
@@ -206,7 +206,7 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
                     flex: 1,
                     minWidth: 0,
                     padding: "8px 10px",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     color: folder ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                     fontStyle: folder ? "normal" : "italic",
                     backgroundColor: "var(--ezy-surface)",
@@ -225,7 +225,7 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
                   disabled={!!remoteServer && !remoteServerHasKey}
                   style={{
                     padding: "3px 12px",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontWeight: 500,
                     color: "var(--ezy-text-secondary)",
                     backgroundColor: "var(--ezy-surface-raised)",
@@ -266,10 +266,10 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
                   style={{ marginTop: 2 }}
                 />
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, color: "var(--ezy-text)" }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text)" }}>
                     Add CLAUDE.md from the Jira template
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
                     {hasExistingClaudeMd
                       ? "This folder already has a CLAUDE.md — it stays untouched."
                       : "Copied into the source folder so Jira panes get Jira-specific guidelines."}
@@ -277,13 +277,13 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
                 </div>
               </label>
             ) : (
-              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
                 Tip: set a "Default Jira CLAUDE.md" in Settings → Jira to seed Jira projects with
                 their own guidelines.
               </div>
             )}
 
-            {error && <div style={{ fontSize: 11, color: "#e55", marginTop: 10 }}>{error}</div>}
+            {error && <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 10 }}>{error}</div>}
 
             <button
               disabled={!canCreate}
@@ -292,7 +292,7 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
                 marginTop: 16,
                 width: "100%",
                 padding: "8px 0",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: canCreate ? "#fff" : "var(--ezy-text-muted)",
                 backgroundColor: canCreate ? "var(--ezy-accent)" : "var(--ezy-surface)",

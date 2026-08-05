@@ -12,7 +12,10 @@ import type { PaneLayout, PaneLeaf, PaneSplit } from "../types";
 
 export const jiraPairId = (ticket: string) => `pane-jira-pair-${ticket}`;
 export const jiraTermPaneId = (instKey: string) => `pane-jira-term-${instKey}`;
-export const jiraBrowserPaneId = (ticket: string) => `pane-jira-browser-${ticket}`;
+/** Exported because the pasted-ticket detector reads a browser pane's ticket
+ *  back OUT of its id — the pane is all a BrowserPreview knows about itself. */
+export const JIRA_BROWSER_PANE_PREFIX = "pane-jira-browser-";
+export const jiraBrowserPaneId = (ticket: string) => `${JIRA_BROWSER_PANE_PREFIX}${ticket}`;
 
 const CONTAINER_ID_PREFIX = "pane-jira-root-";
 const TERM_GROUP_PREFIX = "pane-jira-terms-";
@@ -27,6 +30,12 @@ const TERM_GROUP_PREFIX = "pane-jira-terms-";
 export const jiraInstanceKey = (ticket: string, instance?: number) =>
   instance && instance > 1 ? `${ticket}#${instance}` : ticket;
 
+/** Instance key back out of a term pane's id, or null for any other pane. */
+export function jiraInstKeyOfTermPaneId(paneId: string): string | null {
+  const prefix = jiraTermPaneId("");
+  return paneId.startsWith(prefix) ? paneId.slice(prefix.length) : null;
+}
+
 /** Base ticket of an instance key ("SUPPORT-24920#2" → "SUPPORT-24920"). */
 export const jiraBaseTicket = (instKey: string) => instKey.replace(/#\d+$/, "");
 
@@ -34,12 +43,15 @@ export function buildJiraTermLeaf(
   instKey: string,
   terminalId: string,
   sessionResumeId?: string,
+  /** Which CLI carries this ticket. Persisted in the layout, so a restored
+   *  session respawns the same CLI rather than silently reverting to Claude. */
+  terminalType: "claude" | "codex" | "gemini" = "claude",
 ): PaneLeaf {
   return {
     type: "terminal",
     id: jiraTermPaneId(instKey),
     terminalId,
-    terminalType: "claude",
+    terminalType,
     sessionResumeId,
   };
 }
@@ -64,6 +76,35 @@ export function buildJiraPair(
  *  With duplicates open it is a nested split of instance terminals. */
 function termSideIndex(pair: PaneSplit): 0 | 1 {
   return pair.children[0].type === "browser" ? 1 : 0;
+}
+
+/**
+ * A pair split into the two things the stacked renderer draws: the browser
+ * leaf, and every instance terminal on the other side IN STACK ORDER.
+ *
+ * Order is the nesting order `addJiraTermToPair` builds (each new instance
+ * wraps the previous group), which is also the order the instances were
+ * opened — so the base ticket stays on top and sub-tickets append below.
+ */
+export function jiraPairParts(pair: PaneSplit): {
+  browser: PaneLayout;
+  terms: PaneLeaf[];
+  /** Which STORED child holds the terminals. The stacked renderer draws the
+   *  sides per the `jiraClaudeSide` setting, so it needs this to map its own
+   *  divider position back onto the stored `sizes` pair. */
+  termIndex: 0 | 1;
+} {
+  const ti = termSideIndex(pair);
+  const collect = (node: PaneLayout): PaneLeaf[] => {
+    if (node.type === "terminal") return [node];
+    if (node.type !== "split") return [];
+    return [...collect(node.children[0]), ...collect(node.children[1])];
+  };
+  return {
+    browser: pair.children[ti === 0 ? 1 : 0],
+    terms: collect(pair.children[ti]),
+    termIndex: ti,
+  };
 }
 
 /** Find one instance's terminal leaf anywhere in the layout. */
@@ -153,9 +194,17 @@ export function listJiraInstanceKeys(layout: PaneLayout | null): string[] {
  * browser leaf is the same node either way — switching instances never
  * remounts it.
  */
-export function displayJiraPairFor(layout: PaneLayout | null, instKey: string): PaneSplit | null {
+export function displayJiraPairFor(
+  layout: PaneLayout | null,
+  instKey: string,
+  /** "stacked" shows EVERY instance of the ticket at once (the stacked
+   *  renderer lays the term side out itself, so the stored sub-tree is handed
+   *  back untouched). "default" narrows to the selected instance. */
+  mode: "default" | "stacked" = "default",
+): PaneSplit | null {
   const pair = findJiraPair(layout, jiraBaseTicket(instKey));
   if (!pair) return null;
+  if (mode === "stacked") return pair;
   const ti = termSideIndex(pair);
   const termSide = pair.children[ti];
   const term =

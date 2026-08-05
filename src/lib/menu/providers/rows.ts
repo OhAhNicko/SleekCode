@@ -757,6 +757,15 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
     label: "Create sub-ticket…",
     iconId: "duplicate",
   });
+  // Hands the pane the investigation prompt it may never have been given — an
+  // empty sub-ticket, a fork, or a resumed conversation all start without one.
+  // Pasted, not submitted, so it can be edited (and so a mis-click cannot fire
+  // a prompt into a pane that is mid-answer).
+  const sendPrompt = actionItem("jira-ticket", "sendPrompt", id, {
+    id: "row.jira.sendPrompt",
+    label: "Insert investigation prompt",
+    unavailable: isOpen ? undefined : { reason: "Pane is not open" },
+  });
   const closePane = actionItem("jira-ticket", "closePane", id, {
     id: "row.jira.closePane",
     label: "Close pane",
@@ -775,7 +784,7 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
     return [
       { id: "edit", items: [rename] },
       { id: "target", items: [openInJira, subTicket] },
-      { id: "pane", items: [closePane, archiveItem] },
+      { id: "pane", items: [sendPrompt, closePane, archiveItem] },
     ];
   }
 
@@ -848,6 +857,7 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
     {
       id: "pane",
       items: [
+        sendPrompt,
         closePane,
         archiveItem,
         // ONE destructive row. "Remove from list" used to sit beside this

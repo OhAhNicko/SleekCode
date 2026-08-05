@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { isTicketKey, normalizeTicketKey, normalizeJiraBaseUrl } from "../lib/jira";
+import type { JiraCli } from "../lib/jira-mcp";
 import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 /**
@@ -17,8 +18,11 @@ export interface JiraTicketResult {
   ticket: string;
   swedish: boolean;
   english: boolean;
-  /** Claude Code `--model` alias for the ticket pane, or null for the CLI's
-   *  own default. Aliases resolve to the latest release of each tier. */
+  /** Which CLI the ticket pane runs. */
+  cli: JiraCli;
+  /** Model for the ticket pane, or null for the CLI's own default. Claude takes
+   *  a tier alias (resolved to that tier's latest release); Codex and Gemini
+   *  have no aliases, so theirs is a literal slug. */
   model: string | null;
 }
 
@@ -38,8 +42,11 @@ export function requestJiraTicket(): Promise<JiraTicketResult | null> {
 
 const ACRONYM_RE = /^[A-Z][A-Z0-9_]*$/;
 
-/** `--model` aliases — the CLI maps each to the latest model of that tier,
- *  so these never go stale on a release. null = don't pass the flag. */
+/** Claude `--model` aliases — the CLI maps each to the latest model of that
+ *  tier, so these never go stale on a release. null = don't pass the flag.
+ *  Codex and Gemini have no equivalent (their `-m` takes versioned slugs like
+ *  `gpt-5.6-sol` / `gemini-3.1-pro-preview`), which is why only Claude gets
+ *  tiles and the other two get a text field. */
 const MODEL_OPTIONS: { label: string; value: string | null }[] = [
   { label: "Default", value: null },
   { label: "Fable", value: "fable" },
@@ -48,13 +55,35 @@ const MODEL_OPTIONS: { label: string; value: string | null }[] = [
   { label: "Haiku", value: "haiku" },
 ];
 
+const CLI_OPTIONS: { label: string; value: JiraCli }[] = [
+  { label: "Claude", value: "claude" },
+  { label: "Codex", value: "codex" },
+  { label: "Gemini", value: "gemini" },
+];
+
+/** One height for every control in the CLI/model rows — see `tileStyle`. */
+const MODEL_ROW_HEIGHT = 28;
+
+const MODEL_PLACEHOLDER: Record<JiraCli, string> = {
+  claude: "",
+  codex: "gpt-5.6-sol — blank for Codex's default",
+  gemini: "gemini-3.1-pro-preview — blank for Gemini's default",
+};
+
 export default function NewJiraTicketModal() {
   const [req, setReq] = useState<JiraTicketRequest | null>(null);
   const [acronym, setAcronym] = useState("");
   const [number, setNumber] = useState("");
   const [swedish, setSwedish] = useState(false);
   const [english, setEnglish] = useState(false);
-  const [model, setModel] = useState<string | null>(null);
+  const [cli, setCli] = useState<JiraCli>("claude");
+  // One entry per CLI, so switching back restores what that CLI last ran on
+  // instead of carrying a Claude alias into `codex -m`.
+  const [modelByCli, setModelByCli] = useState<Record<JiraCli, string | null>>({
+    claude: null,
+    codex: null,
+    gemini: null,
+  });
   const [baseUrlValue, setBaseUrlValue] = useState("");
   const [acronymOpen, setAcronymOpen] = useState(false);
   const numberRef = useRef<HTMLInputElement>(null);
@@ -94,7 +123,12 @@ export default function NewJiraTicketModal() {
       setNumber("");
       setSwedish(store.jiraReplyInSwedish ?? false);
       setEnglish(store.jiraReplyInEnglish ?? false);
-      setModel(store.jiraClaudeModel ?? null);
+      setCli(store.jiraCli ?? "claude");
+      setModelByCli({
+        claude: store.jiraClaudeModel ?? null,
+        codex: store.jiraCodexModel ?? null,
+        gemini: store.jiraGeminiModel ?? null,
+      });
       setBaseUrlValue("");
       setAcronymOpen(false);
       setReq(detail);
@@ -135,8 +169,11 @@ export default function NewJiraTicketModal() {
       if (needsBaseUrl && baseUrlValue.trim()) {
         store.setJiraBaseUrl(normalizeJiraBaseUrl(baseUrlValue));
       }
-      if (model !== store.jiraClaudeModel) store.setJiraClaudeModel(model);
-      req.resolve({ ticket, swedish, english, model });
+      if (cli !== store.jiraCli) store.setJiraCli(cli);
+      if (modelByCli.claude !== store.jiraClaudeModel) store.setJiraClaudeModel(modelByCli.claude);
+      if (modelByCli.codex !== store.jiraCodexModel) store.setJiraCodexModel(modelByCli.codex);
+      if (modelByCli.gemini !== store.jiraGeminiModel) store.setJiraGeminiModel(modelByCli.gemini);
+      req.resolve({ ticket, swedish, english, cli, model: modelByCli[cli] });
     } else {
       req.resolve(null);
     }
@@ -146,7 +183,7 @@ export default function NewJiraTicketModal() {
   const inputStyle: React.CSSProperties = {
     boxSizing: "border-box",
     padding: "7px 10px",
-    fontSize: 13,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
     borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
     outline: "none",
     background: "var(--ezy-surface, #161b22)",
@@ -155,15 +192,45 @@ export default function NewJiraTicketModal() {
     fontFamily: "inherit",
   };
   const labelStyle: React.CSSProperties = {
-    fontSize: 11,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
     marginBottom: 5,
     color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
   };
+  /**
+   * Shared look of the CLI and Claude-model tiles.
+   *
+   * The height is EXPLICIT and shared with the free-text model field, because
+   * the model row swaps between the two depending on the CLI: left to their
+   * natural sizes, a 10px-font tile row and a 12px-font input differ by a few
+   * pixels, and the whole dialog grew and shrank as you clicked between
+   * Claude and Codex. Fixed height + border-box means padding and font can
+   * never feed back into the dialog's size again.
+   */
+  const tileStyle = (selected: boolean): React.CSSProperties => ({
+    boxSizing: "border-box",
+    height: MODEL_ROW_HEIGHT,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "0 2px",
+    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+    fontWeight: 600,
+    textAlign: "center",
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+    cursor: "pointer",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    color: selected ? "#fff" : "var(--ezy-text-muted)",
+    backgroundColor: selected ? "var(--ezy-accent-dim)" : "var(--ezy-surface, #161b22)",
+    border: `1px solid ${selected ? "var(--ezy-accent-dim)" : "var(--ezy-border, rgba(255,255,255,0.12))"}`,
+    transition: "all 120ms ease",
+  });
   const checkboxLabelStyle: React.CSSProperties = {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    fontSize: 12,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
     cursor: "pointer",
     userSelect: "none",
   };
@@ -206,7 +273,7 @@ export default function NewJiraTicketModal() {
         }}
       >
         <div style={{ padding: "16px 18px 12px" }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>NEW TICKET</div>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600 }}>NEW TICKET</div>
 
           {/* Acronym + number, side by side. */}
           <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
@@ -292,7 +359,7 @@ export default function NewJiraTicketModal() {
                       }}
                       style={{
                         padding: "6px 10px",
-                        fontSize: 12,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                         cursor: "pointer",
                         color: a === acronymTrimmed ? "var(--ezy-text)" : "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
                         background: a === acronymTrimmed ? "var(--ezy-accent-glow, rgba(16,185,129,0.12))" : "transparent",
@@ -329,7 +396,7 @@ export default function NewJiraTicketModal() {
                       data-tooltip={a}
                       style={{
                         padding: "4px 2px",
-                        fontSize: 10,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                         fontWeight: 600,
                         textAlign: "center",
                         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
@@ -373,50 +440,78 @@ export default function NewJiraTicketModal() {
             </div>
           </div>
 
-          {/* Claude model for the ticket pane — same tile language as the
-              acronym quick picks. "Default" = no --model flag; the aliases
-              resolve to the latest release of each tier. */}
+          {/* CLI for the ticket pane, then that CLI's model — same tile
+              language as the acronym quick picks. */}
           <div style={{ marginTop: 14 }}>
-            <div style={labelStyle}>Claude model</div>
+            <div style={labelStyle}>CLI</div>
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: `repeat(${MODEL_OPTIONS.length}, 1fr)`,
+                gridTemplateColumns: `repeat(${CLI_OPTIONS.length}, 1fr)`,
                 gap: 4,
               }}
             >
-              {MODEL_OPTIONS.map((opt) => {
-                const selected = opt.value === model;
-                return (
-                  <div
-                    key={opt.label}
-                    onClick={() => setModel(opt.value)}
-                    style={{
-                      padding: "5px 2px",
-                      fontSize: 10,
-                      fontWeight: 600,
-                      textAlign: "center",
-                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
-                      cursor: "pointer",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                      color: selected ? "#fff" : "var(--ezy-text-muted)",
-                      backgroundColor: selected
-                        ? "var(--ezy-accent-dim)"
-                        : "var(--ezy-surface, #161b22)",
-                      border: `1px solid ${
-                        selected
-                          ? "var(--ezy-accent-dim)"
-                          : "var(--ezy-border, rgba(255,255,255,0.12))"
-                      }`,
-                      transition: "all 120ms ease",
-                    }}
-                  >
-                    {opt.label}
-                  </div>
-                );
-              })}
+              {CLI_OPTIONS.map((opt) => (
+                <div key={opt.value} onClick={() => setCli(opt.value)} style={tileStyle(opt.value === cli)}>
+                  {opt.label}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <div style={labelStyle}>Model</div>
+            {/* Fixed height: this slot holds a different control per CLI, and
+                the dialog must not resize under the pointer when you switch.
+                tileStyle and the input below each pin themselves to the same
+                height; this pins the slot, so a future third control cannot
+                reintroduce the jump. */}
+            <div style={{ height: MODEL_ROW_HEIGHT }}>
+              {cli === "claude" ? (
+                // Aliases only Claude has: "Default" = no --model flag, and each
+                // alias resolves to the latest release of its tier.
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${MODEL_OPTIONS.length}, 1fr)`,
+                    gap: 4,
+                  }}
+                >
+                  {MODEL_OPTIONS.map((opt) => (
+                    <div
+                      key={opt.label}
+                      onClick={() => setModelByCli((m) => ({ ...m, claude: opt.value }))}
+                      style={tileStyle(opt.value === modelByCli.claude)}
+                    >
+                      {opt.label}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                // Codex and Gemini take versioned slugs with no alias layer, so a
+                // fixed tile list would rot on every vendor release. Blank = no
+                // flag at all, which leaves the CLI on its own default.
+                <input
+                  value={modelByCli[cli] ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setModelByCli((m) => ({ ...m, [cli]: v.trim() ? v : null }));
+                  }}
+                  placeholder={MODEL_PLACEHOLDER[cli]}
+                  spellCheck={false}
+                  autoComplete="off"
+                  style={{
+                    ...inputStyle,
+                    width: "100%",
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                    // Same row height as the tiles it replaces; the vertical
+                    // padding goes with it, or border-box would just shrink the
+                    // text box inside a correctly-sized frame.
+                    height: MODEL_ROW_HEIGHT,
+                    padding: "0 10px",
+                  }}
+                />
+              )}
             </div>
           </div>
 
@@ -469,7 +564,7 @@ export default function NewJiraTicketModal() {
             onClick={() => finish(false)}
             style={{
               padding: "6px 14px",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: "pointer",
               border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
@@ -484,7 +579,7 @@ export default function NewJiraTicketModal() {
             onClick={() => finish(true)}
             style={{
               padding: "6px 14px",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 600,
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               border: "none",

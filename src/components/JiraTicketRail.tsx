@@ -12,8 +12,11 @@ import {
   type JiraDuplicateMode,
 } from "../lib/jira-project";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
+import { pasteTextToTerminal } from "../lib/terminal-paste";
+import { buildJiraPrompt, DEFAULT_JIRA_PROMPT } from "../lib/jira";
 import { chooseOption, confirmAction, promptForInput } from "../lib/prompt-modal";
 import { clearTicketForTerminal, parkedTicketName } from "../lib/jira-session";
+import { jiraCliOfSession, JIRA_CLI_LABEL } from "../lib/jira-mcp";
 import { resolveTicketColor, contrastTextFor } from "../lib/jira-colors";
 import { readSessionsIndex } from "../lib/sessions-index";
 import {
@@ -213,22 +216,25 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
   // file is definitively gone — better a failed resume than hiding live work.
   useEffect(() => {
     let cancelled = false;
-    const closed = rows.filter((r) => !r.terminalId).map((r) => r.session.id);
+    const closed = rows.filter((r) => !r.terminalId).map((r) => r.session);
     if (closed.length === 0) {
       setMissing((prev) => (prev.size ? new Set() : prev));
       return;
     }
     void (async () => {
       const gone = new Set<string>();
-      for (const id of closed) {
+      for (const session of closed) {
         const ok = await sessionStillExists(
-          "claude",
-          id,
+          // Per row, NOT a hardcoded "claude": a Codex thread id has no
+          // ~/.claude transcript, so checking it as Claude would definitively
+          // report it gone and leave the row permanently unclickable.
+          jiraCliOfSession(session.type),
+          session.id,
           tab.workingDir,
           tab.backend ?? "wsl",
           tab.serverId,
         );
-        if (!ok) gone.add(id);
+        if (!ok) gone.add(session.id);
       }
       if (!cancelled) setMissing(gone);
     })();
@@ -333,6 +339,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     if (missing.has(row.session.id)) return;
     openJiraTicket(tab.id, {
       ticket,
+      // Reopen on the CLI the conversation belongs to — resuming a Codex
+      // thread with Claude would resume nothing at all.
+      cli: jiraCliOfSession(row.session.type),
       resumeId: row.session.id,
       instance: row.session.ticketInstance,
     });
@@ -365,6 +374,25 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
       closePane: (id) => {
         const row = find(id);
         if (row?.terminalId) closeTicketPair(row);
+      },
+      // The investigation prompt a fresh ticket is opened WITH. Panes that
+      // never got one — an empty sub-ticket, a fork, a resumed conversation —
+      // can ask for it here. Pasted, never submitted: a menu click must not
+      // fire a prompt into a pane that is mid-answer, and this way the wording
+      // can still be edited before it goes.
+      sendPrompt: (id) => {
+        const row = find(id);
+        if (!row?.terminalId || !row.session.ticket) return;
+        const store = useAppStore.getState();
+        pasteTextToTerminal(
+          row.terminalId,
+          buildJiraPrompt(
+            store.jiraPromptTemplate || DEFAULT_JIRA_PROMPT,
+            row.session.ticket,
+            store.jiraReplyInSwedish ? "sv" : store.jiraReplyInEnglish ? "en" : undefined,
+          ),
+        );
+        onFocusTerminal(row.terminalId);
       },
       rename: (id) => {
         const row = find(id);
@@ -401,18 +429,26 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         // Forking replays the source transcript, so it needs the file to
         // still exist; an open pane always has one.
         const gone = !row.terminalId && missingRef.current.has(row.session.id);
+        // `--fork-session` is a Claude flag; Codex and Gemini have nothing
+        // equivalent, so the option is HIDDEN on their rows rather than shown
+        // greyed — it can never apply there, it isn't merely unavailable now.
+        const cli = jiraCliOfSession(row.session.type);
         void chooseOption({
           title: "Create sub-ticket",
-          detail: `${ticket}: a second, independent Claude session on the same ticket. Both share the ticket's browser pane.`,
+          detail: `${ticket}: a second, independent ${JIRA_CLI_LABEL[cli]} session on the same ticket. Both share the ticket's browser pane.`,
           choices: [
-            {
-              id: "fork",
-              label: "Fork conversation",
-              detail: "Starts from a copy of this conversation so far.",
-              unavailable: gone
-                ? { reason: "This conversation's transcript is gone" }
-                : undefined,
-            },
+            ...(cli === "claude"
+              ? [
+                  {
+                    id: "fork",
+                    label: "Fork conversation",
+                    detail: "Starts from a copy of this conversation so far.",
+                    unavailable: gone
+                      ? { reason: "This conversation's transcript is gone" }
+                      : undefined,
+                  },
+                ]
+              : []),
             {
               id: "prompt",
               label: "Fresh investigation",
@@ -492,6 +528,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     if (!answer) return;
     openJiraTicket(tab.id, {
       ticket: answer.ticket,
+      cli: answer.cli,
       swedish: answer.swedish,
       english: answer.english,
       model: answer.model,
@@ -526,7 +563,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
       >
         <span
           style={{
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             letterSpacing: "0.08em",
             textTransform: "uppercase",
             color: "var(--ezy-text-muted)",
@@ -612,7 +649,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
               outline: "none",
               padding: 0,
               fontFamily: "inherit",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               color: "var(--ezy-text)",
             }}
           />
@@ -625,7 +662,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           <div
             style={{
               padding: "8px 10px",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               lineHeight: 1.5,
               color: "var(--ezy-text-muted)",
             }}
@@ -775,7 +812,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         </svg>
         <span
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             fontVariantNumeric: "tabular-nums",
             overflow: "hidden",
@@ -879,7 +916,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           style={{
             flex: 1,
             minWidth: 0,
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             fontWeight: isOpen ? 600 : 400,
             fontVariantNumeric: "tabular-nums",
             overflow: "hidden",
@@ -962,7 +999,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
 
 const sectionHeadingStyle: React.CSSProperties = {
   padding: "10px 10px 4px",
-  fontSize: 10,
+  fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
   letterSpacing: "0.08em",
   textTransform: "uppercase",
   color: "var(--ezy-text-muted)",
