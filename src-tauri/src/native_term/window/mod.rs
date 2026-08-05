@@ -13,6 +13,14 @@ pub struct Rect {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Search-highlight rects ONLY: this rect is the CURRENTLY SELECTED match,
+    /// so the renderer paints it in `searchMatchActive` instead of the ordinary
+    /// match color. `serde(default)` (false) everywhere else — the same struct
+    /// carries create/resize geometry and hole regions, which never set it, and
+    /// `native_term_search` emits rects the JS side flips one of before sending
+    /// them back through `native_term_set_search_highlights`.
+    #[serde(default)]
+    pub active: bool,
 }
 
 /// `CreateOpts` payload from `native_term_create`. Mirrors the JS-side
@@ -37,6 +45,39 @@ pub struct CreateOpts {
     /// existing panes keep the device they were built with.
     #[serde(default)]
     pub shared_gpu: bool,
+    /// Rendering tunables, applied at create through the SAME mutator the
+    /// `native_term_set_render_opts` hot-swap uses (see the create comment) so
+    /// the two can never drift. All-`None` = the pre-settings defaults.
+    #[serde(default)]
+    pub render_opts: RenderOpts,
+}
+
+/// User-tunable rendering knobs. EVERY field is `Option` and every `None`
+/// means "exactly what the renderer did before this struct existed", so a
+/// caller that omits the whole object (or any single key) gets the historical
+/// behaviour. Resolved + clamped into `renderer::RenderTuning` before it
+/// reaches the renderer — see `RenderTuning::resolve`.
+#[derive(Deserialize, Debug, Clone, Copy, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RenderOpts {
+    /// Bold text on an ANSI 0..=7 foreground draws in the matching bright
+    /// slot (i + 8), xterm's `boldIsBright`. The bold FONT WEIGHT is applied
+    /// either way — this is the color half only.
+    pub bold_uses_bright: Option<bool>,
+    /// Minimum WCAG contrast ratio between resolved fg and bg. `<= 1.0` (or
+    /// `None`) disables the pass entirely.
+    pub min_contrast: Option<f32>,
+    /// How far SGR 2 (dim) fades the foreground toward the background.
+    /// `None` = 0.5, the historical fixed halfway blend.
+    pub dim_strength: Option<f32>,
+    /// Alpha of the focused block cursor. `None` = 0.30, the historical
+    /// translucent overlay. `>= 0.999` switches to a true inverse block (see
+    /// the cursor pass in `renderer/pipeline.rs`).
+    pub cursor_block_alpha: Option<f32>,
+    /// Multiplier on the font-derived line height. `None` = 1.0. Changing it
+    /// re-derives the cell metrics and reflows the grid exactly like a font
+    /// size change — rows/cols move, so the PTY resize chain must run.
+    pub line_height_scale: Option<f32>,
 }
 
 /// xterm.js-compatible theme. 16 ANSI + cursor/selection/bg/fg colors.
@@ -72,6 +113,21 @@ pub struct TerminalTheme {
     /// to the canvas; `None` keeps the standard xterm cube.
     #[serde(default, rename = "extendedAnsi")]
     pub extended_ansi: Option<Vec<String>>,
+    /// User color-preset extras (all optional — `None` keeps each renderer
+    /// behavior exactly as before the preset feature existed).
+    /// Repaints selected text; without it selection recolors only the cell bg.
+    #[serde(default, rename = "selectionForeground")]
+    pub selection_foreground: Option<String>,
+    /// Recolors detected/OSC 8 link text + underline.
+    #[serde(default)]
+    pub link: Option<String>,
+    /// Search-match highlight quad; `None` = the built-in translucent white.
+    #[serde(default, rename = "searchMatch")]
+    pub search_match: Option<String>,
+    /// Highlight quad for the CURRENTLY SELECTED match (the rects flagged
+    /// `active`); `None` = the built-in green.
+    #[serde(default, rename = "searchMatchActive")]
+    pub search_match_active: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -167,6 +223,16 @@ pub trait NativeTermWindow: Send {
     fn set_font(&mut self, family: &str, size_px: f32) -> Result<(), String>;
     fn set_cursor_style(&mut self, style: &str, blink: bool) -> Result<(), String>;
 
+    /// Hot-swap the rendering tunables (bold-is-bright, dim strength, minimum
+    /// contrast, block-cursor alpha, line-height scale). Implementations must
+    /// treat a line-height change like a font-size change — re-derive the cell
+    /// metrics, then run the propose/commit/PTY-resize chain, because the row
+    /// and column counts move. Default no-op keeps the macOS/Linux stubs
+    /// compiling.
+    fn set_render_opts(&mut self, _opts: RenderOpts) -> Result<(), String> {
+        Ok(())
+    }
+
     /// P2a focus flag: only the focused pane blinks its cursor (respecting
     /// the cursor_blink setting); unfocused panes render a static hollow
     /// outline cursor. Default no-op keeps the macOS/Linux stubs compiling —
@@ -209,6 +275,18 @@ pub trait NativeTermWindow: Send {
     /// HWND's owning thread — a direct call from a command context is
     /// unreliable). Default no-op keeps the macOS/Linux stubs compiling.
     fn focus_keyboard(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Main OS window minimized: if this pane holds real keyboard focus and
+    /// its CLI enabled DECSET 1004, deliver `\e[O`. Minimize RETAINS per-thread
+    /// focus — no WM_KILLFOCUS ever reaches the focused child — so without an
+    /// explicit report the CLI keeps believing the terminal is focused and
+    /// (Claude Code) skips its finish/permission notification escape entirely.
+    /// No restore twin: the border subclass kicks focus through the webview on
+    /// restore, and the real KILLFOCUS/SETFOCUS pair replays the 1004 state.
+    /// Default no-op keeps the macOS/Linux stubs compiling.
+    fn main_window_minimized(&mut self) -> Result<(), String> {
         Ok(())
     }
 

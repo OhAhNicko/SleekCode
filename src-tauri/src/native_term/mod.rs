@@ -19,7 +19,9 @@ pub mod renderer;
 pub mod window;
 
 use serde::{Deserialize, Serialize};
-use window::{CreateOpts, DebugStats, NativeTermWindow, PlatformWindow, Rect, TerminalTheme};
+use window::{
+    CreateOpts, DebugStats, NativeTermWindow, PlatformWindow, Rect, RenderOpts, TerminalTheme,
+};
 
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
@@ -63,6 +65,11 @@ pub fn native_term_create(app: tauri::AppHandle, opts: CreateOpts) -> Result<u32
     if let Err(e) = win.set_font(&opts.font.family, opts.font.size_px) {
         eprintln!("[native_term] create: set_font failed: {e}");
     }
+    // AFTER set_font: a line-height scale re-derives the cell metrics from the
+    // font that is already in place.
+    if let Err(e) = win.set_render_opts(opts.render_opts) {
+        eprintln!("[native_term] create: set_render_opts failed: {e}");
+    }
     if let Err(e) = win.set_cursor_style(&opts.cursor_style, opts.cursor_blink) {
         eprintln!("[native_term] create: set_cursor_style failed: {e}");
     }
@@ -99,6 +106,19 @@ pub fn native_term_destroy(id: u32) -> Result<(), String> {
         Some(w) => w.destroy(),
         None => Err(format!("native_term: id {id} not found")),
     }
+}
+
+/// Main-window minimize fan-out — called from the win32_border subclass on the
+/// SIZE_MINIMIZED transition (NOT a Tauri command; there is no JS hop, the
+/// whole path must work while the webview is throttled). Windows retains
+/// per-thread keyboard focus across a minimize, so the focused pane never gets
+/// WM_KILLFOCUS and a DECSET-1004 CLI (Claude Code) keeps believing the
+/// terminal is focused — and skips the notification escape MADE's toasts and
+/// sounds are built on. Each pane re-checks focus + 1004 on its own thread.
+pub fn main_window_minimized() {
+    registry::for_each(|w| {
+        let _ = w.main_window_minimized();
+    });
 }
 
 /// Destroy every native term in the registry. Returns how many were reaped.
@@ -337,6 +357,68 @@ pub fn native_term_set_font(
     size_px: f32,
 ) -> Result<(), String> {
     registry::with_window(id, |w| w.set_font(&family, size_px))
+}
+
+/// Hot-swap the rendering tunables (bold-is-bright, minimum contrast, dim
+/// strength, block-cursor alpha, line-height scale). Every omitted field means
+/// "leave this at the built-in default", which is the pre-settings behavior —
+/// see `window::RenderOpts`. A line-height change reflows the pane, so this
+/// runs the same propose/commit/PTY-resize chain as a font-size change.
+#[tauri::command]
+pub fn native_term_set_render_opts(id: u32, opts: RenderOpts) -> Result<(), String> {
+    registry::with_window(id, |w| w.set_render_opts(opts))
+}
+
+/// Monospaced families the renderer can actually shape with, for the font
+/// picker. Read straight out of the SHARED FontSystem's fontdb (building
+/// another would cost the 60-76ms system-font parse that `renderer/fonts.rs`
+/// exists to avoid) — so the list is exactly what `set_font` will resolve.
+/// "Hack" is pinned first as the bundled default, "Geist Mono" second when the
+/// machine has it, and the rest sort alphabetically.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub fn native_term_list_mono_fonts() -> Vec<String> {
+    // BTreeSet gives distinct + alphabetical in one pass.
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    {
+        let fonts = renderer::fonts::shared();
+        let fs = fonts.lock().expect("fonts: shared FontSystem poisoned");
+        for face in fs.db().faces() {
+            if !face.monospaced {
+                continue;
+            }
+            // `families` is (name, language) pairs for the same face; the
+            // first is the one fontdb matches `Family::Name` against.
+            if let Some((name, _)) = face.families.first() {
+                if !name.trim().is_empty() {
+                    names.insert(name.clone());
+                }
+            }
+        }
+    }
+    // Hack is embedded, so it is always present — insert defensively anyway so
+    // the picker can never come back without the default.
+    names.insert("Hack".to_string());
+    let pinned = ["Hack", "Geist Mono"];
+    let mut out: Vec<String> = pinned
+        .iter()
+        .filter(|p| names.contains(**p))
+        .map(|p| p.to_string())
+        .collect();
+    out.extend(
+        names
+            .into_iter()
+            .filter(|n| !pinned.contains(&n.as_str())),
+    );
+    out
+}
+
+/// Non-Windows stub — no native panes exist there yet, so there is no font
+/// list to offer.
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub fn native_term_list_mono_fonts() -> Vec<String> {
+    Vec::new()
 }
 
 #[tauri::command]
@@ -840,7 +922,10 @@ pub fn native_term_search(
                     .flags
                     .contains(CellFlags::WIDE_CHAR_SPACER);
             let w = (match_chars + usize::from(wide_tail)) as f32 * cell_w;
-            rects.push(Rect { x, y, width: w, height: cell_h });
+            // `active` is resolved by the CALLER: this command reports every
+            // match plus `active_index`, and JS flips that one rect before
+            // handing the list to `native_term_set_search_highlights`.
+            rects.push(Rect { x, y, width: w, height: cell_h, active: false });
             match_lines.push(line_i as i64);
         }
     }

@@ -79,10 +79,10 @@ use super::super::events::{
 };
 use super::super::parser_bridge::{ParserBridge, RenderWake, TermDims, TermListener};
 use super::super::renderer::pipeline::RenderOutcome;
-use super::super::renderer::ThemeColors;
+use super::super::renderer::{RenderTuning, ThemeColors};
 use super::super::pty_route;
 use super::super::region;
-use super::{DebugStats, NativeTermWindow, Rect, TerminalTheme};
+use super::{DebugStats, NativeTermWindow, Rect, RenderOpts, TerminalTheme};
 
 /// CF_UNICODETEXT clipboard format id. Hardcoded because the windows-rs
 /// constant lives behind a different feature gate; this is a stable Win32 value.
@@ -162,6 +162,10 @@ const WM_APP_FOCUS: u32 = WM_APP + 2;
 /// PTY access run on the HWND's owning thread, same rationale as WM_APP_FOCUS.
 const WM_APP_COPY: u32 = WM_APP + 3;
 const WM_APP_PASTE: u32 = WM_APP + 4;
+/// Main-window minimize fan-out (`native_term::main_window_minimized`): the
+/// DECSET-1004 check needs the Term lock and the `\e[O` write needs PTY
+/// access, both owned by the HWND's thread — same rationale as WM_APP_FOCUS.
+const WM_APP_MAIN_MINIMIZED: u32 = WM_APP + 5;
 
 /// P1b resize-settle timer id. Armed (re-armed) on every WM_SIZE; because
 /// SetTimer with the same id RESETS the countdown, the timer only fires once
@@ -300,6 +304,10 @@ struct ChildState {
     last_theme: Option<super::super::renderer::ThemeColors>,
     last_font: Option<(String, f32)>,
     last_cursor: Option<(String, bool)>,
+    /// Resolved rendering tunables, same replay rationale as the three above —
+    /// a rebuilt renderer must come back with the user's line height and
+    /// contrast settings, not the defaults.
+    last_render: Option<super::super::renderer::RenderTuning>,
     /// Whether this pane opted into the shared GPU device, so a rebuild lands
     /// in the same mode it was created in.
     shared_gpu: bool,
@@ -463,6 +471,7 @@ impl PlatformWindow {
                 last_theme: None,
                 last_font: None,
                 last_cursor: None,
+                last_render: None,
                 shared_gpu,
                 rebuild_attempts: 0,
                 focused: false,
@@ -1235,6 +1244,35 @@ impl NativeTermWindow for PlatformWindow {
         Ok(())
     }
 
+    fn set_render_opts(&mut self, opts: RenderOpts) -> Result<(), String> {
+        // Resolve + clamp the wire options, then follow the SAME sequence as
+        // `set_font`: hand them to the renderer, re-mirror the freshly-derived
+        // cell metrics into ChildState and the parser bridge's logical pair,
+        // then re-propose the grid. A line-height change moves the row count
+        // for an unchanged client rect, so nothing short of the full
+        // commit_dims chain (Term::resize → resize_grid → PTY ioctl →
+        // `resized` emit) leaves the pane consistent. The other knobs are
+        // color-only and land on commit_dims' no-op path for free.
+        let tuning = RenderTuning::resolve(&opts);
+        unsafe {
+            let state = self.state.as_mut();
+            state.last_render = Some(tuning);
+            if let Some(r) = state.renderer.as_mut() {
+                r.set_render_opts(tuning);
+                let (cw, ch) = r.cell_metrics();
+                state.cell_w_px = cw.max(0.001);
+                state.cell_h_px = ch.max(0.001);
+                let dpr = self.last_dpr.max(0.0001);
+                if let Ok(mut m) = self.cursor_metrics.lock() {
+                    *m = (state.cell_w_px / dpr, state.cell_h_px / dpr);
+                }
+            }
+            commit_dims(state, self.hwnd);
+            let _ = InvalidateRect(self.hwnd, None, BOOL(0));
+        }
+        Ok(())
+    }
+
     fn set_cursor_style(&mut self, style: &str, blink: bool) -> Result<(), String> {
         // Phase 3: forward to the renderer's cursor pass + force a repaint
         // so the new style appears on the next WM_PAINT rather than waiting
@@ -1308,6 +1346,13 @@ impl NativeTermWindow for PlatformWindow {
         unsafe {
             PostMessageW(self.hwnd, WM_APP_FOCUS, WPARAM(0), LPARAM(0))
                 .map_err(|e| format!("PostMessageW(WM_APP_FOCUS): {e}"))
+        }
+    }
+
+    fn main_window_minimized(&mut self) -> Result<(), String> {
+        unsafe {
+            PostMessageW(self.hwnd, WM_APP_MAIN_MINIMIZED, WPARAM(0), LPARAM(0))
+                .map_err(|e| format!("PostMessageW(WM_APP_MAIN_MINIMIZED): {e}"))
         }
     }
 
@@ -1572,6 +1617,11 @@ unsafe fn rebuild_renderer(state: &mut ChildState, hwnd: HWND) -> Result<(), Str
     }
     if let Some((family, size)) = state.last_font.clone() {
         renderer.set_font(family, size);
+    }
+    // AFTER the font: a line-height scale is applied by re-deriving the
+    // metrics from the current family/size, so the font must already be in.
+    if let Some(tuning) = state.last_render {
+        renderer.set_render_opts(tuning);
     }
     if let Some((style, blink)) = state.last_cursor.clone() {
         renderer.set_cursor_style(&style, blink);
@@ -1988,6 +2038,26 @@ unsafe extern "system" fn wnd_proc(
             // Context-menu Paste routed through native_term_paste_clipboard.
             let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
             let _ = do_clipboard_paste(state_ptr, hwnd);
+            LRESULT(0)
+        }
+        WM_APP_MAIN_MINIMIZED => {
+            // Main window minimized: minimize retains per-thread keyboard
+            // focus, so the focused pane gets NO WM_KILLFOCUS and its CLI
+            // never hears focus-out — deliver `\e[O` here instead. Only the
+            // pane that actually holds focus reports (others already said
+            // `\e[O` when they lost it), and only when the TUI enabled 1004.
+            // win32_focus is left untrue-to-life on purpose: the restore
+            // path's focus kick replays a real KILLFOCUS/SETFOCUS pair,
+            // which re-syncs both the flag and the CLI's 1004 state.
+            let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut ChildState;
+            if !state_ptr.is_null() {
+                let state = &*state_ptr;
+                if state.win32_focus && is_focus_reporting_enabled(state) {
+                    if let Some(pid) = state.pty_id {
+                        let _ = crate::pty::write_to_pty_sync(pid, b"\x1b[O");
+                    }
+                }
+            }
             LRESULT(0)
         }
         WM_TIMER => {
@@ -3309,6 +3379,9 @@ unsafe extern "system" fn wnd_proc(
                                     y: row_visible.max(0) as f32 * line_h_logical,
                                     width: cell_w_logical,
                                     height: line_h_logical,
+                                    // Search-highlight flag only; irrelevant
+                                    // to a hover rect.
+                                    active: false,
                                 };
                                 emit_link_hover(app, tid, LinkHover { uri, rect });
                             }
@@ -4263,6 +4336,10 @@ fn parse_theme(theme: &TerminalTheme) -> Result<ThemeColors, String> {
         }
         _ => None,
     };
+    // Preset extras: absent = None = pre-preset renderer behavior.
+    let opt = |v: &Option<String>, field: &str| -> Result<Option<[u8; 4]>, String> {
+        v.as_ref().map(|s| parse_hex_color(s, field)).transpose()
+    };
     Ok(ThemeColors {
         ansi,
         foreground: parse_hex_color(&theme.foreground, "foreground")?,
@@ -4271,5 +4348,9 @@ fn parse_theme(theme: &TerminalTheme) -> Result<ThemeColors, String> {
         cursor_accent: parse_hex_color(&theme.cursor_accent, "cursorAccent")?,
         selection: parse_hex_color(&theme.selection, "selection")?,
         extended,
+        selection_foreground: opt(&theme.selection_foreground, "selectionForeground")?,
+        link: opt(&theme.link, "link")?,
+        search_match: opt(&theme.search_match, "searchMatch")?,
+        search_match_active: opt(&theme.search_match_active, "searchMatchActive")?,
     })
 }

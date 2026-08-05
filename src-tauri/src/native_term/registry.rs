@@ -44,6 +44,19 @@ where
     f(win)
 }
 
+/// Apply a closure to EVERY registered window. The registry lock is held for
+/// the whole sweep, so the closure must stay non-blocking (PostMessage-cheap)
+/// and must never re-enter the registry.
+pub fn for_each<F>(mut f: F)
+where
+    F: FnMut(&mut Box<dyn NativeTermWindow>),
+{
+    let mut guard = registry().lock().expect("registry poisoned");
+    for win in guard.values_mut() {
+        f(win);
+    }
+}
+
 /// Remove and return ownership of the window so its `destroy(self: Box<Self>)`
 /// can consume it.
 pub fn take(id: u32) -> Option<Box<dyn NativeTermWindow>> {
