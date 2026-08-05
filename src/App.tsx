@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useAppStore } from "./store";
-import { getTheme, SEMANTIC_DIFF_ADD, SEMANTIC_DIFF_REMOVE } from "./lib/themes";
-import { uiFontStack } from "./lib/ui-fonts";
+import { getTheme, SEMANTIC_DIFF_ADD, SEMANTIC_DIFF_REMOVE, accentTone, deriveAccentShades, ON_ACCENT_DARK, ON_ACCENT_LIGHT } from "./lib/themes";
+import { uiFontStack, UI_FONT_SIZE_DEFAULT } from "./lib/ui-fonts";
 import { fetchReleaseNotes } from "./lib/release-notes";
 import TabBar from "./components/TabBar";
 import VerticalTabBar from "./components/VerticalTabBar";
@@ -25,6 +25,7 @@ import WindowResizeHandles from "./components/WindowResizeHandles";
 import { NativePaneVisibilityCoordinator } from "./native-term/NativePaneVisibilityCoordinator";
 import { OverlayDismissOwner } from "./native-term/OverlayDismissOwner";
 import { ensureFreshSession } from "./lib/native-term-bridge";
+import { applyAppIcon } from "./lib/app-icon";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
@@ -39,6 +40,7 @@ import ImageInsertUndoToast from "./components/ImageInsertUndoToast";
 import UploadErrorToast from "./components/UploadErrorToast";
 import UndoCloseToast from "./components/UndoCloseToast";
 import UndoClearToast from "./components/UndoClearToast";
+import JiraDetectedTicketToast from "./components/JiraDetectedTicketToast";
 import KeyboardShortcutsModal from "./components/KeyboardShortcutsModal";
 import PromptHistorySearch from "./components/PromptHistorySearch";
 import DevServerTerminalHost from "./components/DevServerTerminalHost";
@@ -47,12 +49,14 @@ import PaneNotificationStack from "./components/PaneNotificationStack";
 import SoundPickerHost from "./components/SoundPickerHost";
 import { installAudioUnlock } from "./lib/notification-sounds";
 import SettingsPane from "./components/SettingsPane";
+import JiraMcpStartupCheck from "./components/JiraMcpStartupCheck";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
 import { matchCommand, probeKeybinding, MIGRATED } from "./lib/keybindings";
 import { runCommand } from "./lib/commands";
 import PromptModal from "./components/PromptModal";
 import UnlockKeychainModal from "./components/UnlockKeychainModal";
+import CliInstallModal from "./components/CliInstallModal";
 import NewJiraTicketModal from "./components/NewJiraTicketModal";
 import TooltipHost from "./components/TooltipHost";
 import WslHealthCheck from "./components/WslHealthCheck";
@@ -76,6 +80,19 @@ export default function App() {
   const activeTabId = useAppStore((s) => s.activeTabId);
   const themeId = useAppStore((s) => s.themeId);
   const uiFont = useAppStore((s) => s.uiFont);
+  const uiFontSize = useAppStore((s) => s.uiFontSize);
+  const radiusScaleOverride = useAppStore((s) => s.radiusScaleOverride);
+  // Settings > General > Behavior > "Hover tooltips". TooltipHost reads it from
+  // the store directly; the overlay cannot, so it rides the theme-var channel
+  // below — otherwise a menu row would keep popping chips after the user turned
+  // every other tooltip in the app off.
+  const hoverTooltips = useAppStore((s) => s.hoverTooltips);
+  // Active user color preset — feeds the chrome vars below (diff badges +
+  // DOM selection); pane canvases read it through getEffectiveTerminalTheme.
+  const activeColorPreset = useAppStore(
+    (s) => s.colorPresets.find((p) => p.id === s.activeColorPresetId) ?? null,
+  );
+  const colorOverrides = activeColorPreset?.overrides ?? null;
   const [showPalette, setShowPalette] = useState(false);
   const settingsOpen = useAppStore((s) => s.settingsPanelOpen);
   const launchConfigs = useAppStore((s) => s.launchConfigs);
@@ -140,6 +157,14 @@ export default function App() {
   // Whoever gets there first wins; the other awaits the same promise.
   useEffect(() => {
     void ensureFreshSession();
+  }, []);
+
+  // Apply the persisted app-icon variant to the OS window (title bar +
+  // taskbar) on boot. The compiled .ico only covers the exe / shortcuts, so
+  // without this every launch would show the build-time icon regardless of
+  // the Appearance > App icon choice.
+  useEffect(() => {
+    void applyAppIcon(useAppStore.getState().appIconVariant);
   }, []);
 
   // Settings panel and sidebars are mutually exclusive
@@ -684,6 +709,18 @@ export default function App() {
   const themeVarsRef = useRef<Record<string, string> | null>(null);
   useEffect(() => {
     const s = theme.surface;
+    // Which mark reads on top of a solid accent fill. Decided once per theme,
+    // by contrast — MADE's accents run from #dc2626 to #a6e22e, so "white on
+    // accent" is right for some themes and invisible on others.
+    // A user-picked accent replaces the theme's, and with it the three
+    // companion tokens — hover/dim/glow are separate vars all over the chrome,
+    // so leaving them theme-authored makes a hover state snap back to the old
+    // color. Derived here rather than asking the user for four colors.
+    const accent = colorOverrides?.accent ?? s.accent;
+    const accentShades = colorOverrides?.accent
+      ? deriveAccentShades(colorOverrides.accent)
+      : { hover: s.accentHover, dim: s.accentDim, glow: s.accentGlow };
+    const tone = accentTone(accent);
     const vars: Record<string, string> = {
       "--ezy-bg": s.bg,
       "--ezy-surface": s.surface,
@@ -694,23 +731,39 @@ export default function App() {
       "--ezy-text": s.text,
       "--ezy-text-secondary": s.textSecondary,
       "--ezy-text-muted": s.textMuted,
-      "--ezy-accent": s.accent,
-      "--ezy-accent-hover": s.accentHover,
-      "--ezy-accent-dim": s.accentDim,
-      "--ezy-accent-glow": s.accentGlow,
+      "--ezy-accent": accent,
+      "--ezy-accent-hover": accentShades.hover,
+      "--ezy-accent-dim": accentShades.dim,
+      "--ezy-accent-glow": accentShades.glow,
+      // For anything drawn ON the accent — checkbox ticks today, and the place
+      // to reach for instead of hardcoding "#fff" the next time something sits
+      // on an accent fill. Rides to the overlay with the rest.
+      "--ezy-on-accent": tone === "dark" ? ON_ACCENT_DARK : ON_ACCENT_LIGHT,
       "--ezy-red": s.red,
       "--ezy-cyan": s.cyan,
-      "--ezy-diff-add": s.diffAdd ?? SEMANTIC_DIFF_ADD,
-      "--ezy-diff-remove": s.diffRemove ?? SEMANTIC_DIFF_REMOVE,
+      "--ezy-diff-add": colorOverrides?.diffAdd ?? s.diffAdd ?? SEMANTIC_DIFF_ADD,
+      "--ezy-diff-remove": colorOverrides?.diffRemove ?? s.diffRemove ?? SEMANTIC_DIFF_REMOVE,
+      // Active tab / active tab-strip toggle. Falls back to `surface` so only
+      // a theme whose bg→surface step is too shallow to find the selected tab
+      // has to opt in — see `tabActive` in lib/themes.ts.
+      "--ezy-tab-active": s.tabActive ?? s.surface,
       // DOM text selection, taken from the TERMINAL palette on purpose: xterm,
       // the native renderer and CodeMirror all already draw selection from
       // these two, so chrome text highlights the same color as terminal output
       // instead of falling back to the browser's blue.
-      "--ezy-selection": theme.terminal.selectionBackground ?? s.surfaceRaised,
-      "--ezy-selection-text": theme.terminal.selectionForeground ?? s.text,
+      "--ezy-selection": colorOverrides?.selectionBackground ?? theme.terminal.selectionBackground ?? s.surfaceRaised,
+      "--ezy-selection-text": colorOverrides?.selectionForeground ?? theme.terminal.selectionForeground ?? s.text,
       // Unitless multiplier consumed by every corner-radius calc() in the
-      // app (and mirrored to the overlay like the color vars).
-      "--ezy-radius-scale": String(theme.radiusScale ?? 1),
+      // app (and mirrored to the overlay like the color vars). The user's
+      // global override wins when set; `null` (the default) defers to the
+      // theme, so a theme that means to be round stays round and one that
+      // means to be square stays square until someone decides otherwise.
+      "--ezy-radius-scale": String(radiusScaleOverride ?? theme.radiusScale ?? 1),
+      // Same idea for type: a ratio, not a size, because the chrome is
+      // authored at 17 different sizes and they all have to move together.
+      // Divided by the anchor so `uiFontSize === UI_FONT_SIZE_DEFAULT` yields
+      // exactly 1 and the app renders as authored.
+      "--ezy-font-scale": String(uiFontSize / UI_FONT_SIZE_DEFAULT),
       // The selectable sans face. Rides along with the theme vars precisely so
       // it reaches the overlay too — the overlay has no other channel, and
       // context menus rendering in a different font than the app is the exact
@@ -719,14 +772,25 @@ export default function App() {
       // persisted id outlives the font list, and an unknown one must fall back
       // to the default instead of writing "undefined" into the var.
       "--ezy-font-ui": uiFontStack(uiFont),
+      // Not a style — a setting, carried on the only channel that reaches the
+      // overlay. Its own tooltips (menu rows, session picker) read it at hover
+      // time, so "Hover tooltips: off" means off everywhere, not everywhere
+      // except inside a dropdown.
+      "--ezy-hover-tips": hoverTooltips ? "1" : "0",
     };
     const root = document.documentElement;
+    // The checkbox tick in index.css is an SVG data-URI, and a data-URI is
+    // rendered in an isolated context — it cannot read `--ezy-on-accent` (or
+    // inherit `currentColor`). So the stylesheet carries BOTH marks and this
+    // attribute picks one. Set alongside the vars so the tick can never
+    // disagree with the token.
+    root.dataset.accentTone = tone;
     for (const [name, value] of Object.entries(vars)) {
       root.style.setProperty(name, value);
     }
     themeVarsRef.current = vars;
     emitOverlayTheme(vars);
-  }, [theme, uiFont]);
+  }, [theme, uiFont, uiFontSize, radiusScaleOverride, colorOverrides, hoverTooltips]);
 
   // The overlay may finish loading after the first theme emit — re-emit when
   // it announces itself ready (also covers overlay reloads in dev).
@@ -1239,7 +1303,7 @@ export default function App() {
                   ))}
                 </h1>
                 <p className="made-splash-sub" style={{
-                  margin: "20px 0 0", fontSize: 12.5, fontWeight: 300,
+                  margin: "20px 0 0", fontSize: "calc(var(--ezy-font-scale, 1) * 12.5px)", fontWeight: 300,
                   color: "var(--ezy-text-muted)", textTransform: "lowercase",
                   letterSpacing: "0.24em", paddingLeft: "0.24em",
                   fontFamily: '"Sora Variable", system-ui, sans-serif',
@@ -1250,7 +1314,7 @@ export default function App() {
               {recentProjects.length > 0 && (
                 <div className="made-splash-rise" style={{ width: "100%", maxWidth: 480, position: "relative" }}>
                   <div style={{
-                    fontSize: 11, fontWeight: 600, color: "var(--ezy-text-muted)",
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "var(--ezy-text-muted)",
                     textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8,
                   }}>Recent Projects</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -1270,10 +1334,10 @@ export default function App() {
                           <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/>
                         </svg>
                         <div style={{ minWidth: 0, flex: 1 }}>
-                          <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ezy-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 500, color: "var(--ezy-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {project.name}
                           </div>
-                          <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {project.path}
                           </div>
                         </div>
@@ -1289,7 +1353,7 @@ export default function App() {
                   padding: "9px 22px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)", position: "relative",
                   border: "1px solid var(--ezy-border)",
                   background: "var(--ezy-surface-raised)", color: "var(--ezy-text)",
-                  fontSize: 13, fontWeight: 500, cursor: "pointer",
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 500, cursor: "pointer",
                   letterSpacing: "0.02em",
                   fontFamily: '"Sora Variable", system-ui, sans-serif',
                 }}
@@ -1343,13 +1407,16 @@ export default function App() {
       <UploadErrorToast />
       <UndoCloseToast />
       <UndoClearToast />
+      <JiraDetectedTicketToast />
       {VOICE_ENABLED && <VoiceHud />}
       {VOICE_ENABLED && <VoiceController />}
       <GlobalContextMenu />
       <PromptModal />
       <UnlockKeychainModal />
+      <CliInstallModal />
       <NewJiraTicketModal />
       <TooltipHost />
+      <JiraMcpStartupCheck />
       <WslHealthCheck />
       <HibernationEngine />
       <DevServerTerminalHost />

@@ -45,7 +45,7 @@
 
 /* These are the frame-zero values: they paint from the moment the stylesheet
    parses until App.tsx's theme effect writes the real theme onto :root. They
-   are a verbatim copy of `headsTheme.surface` in lib/themes.ts, because Heads
+   are a verbatim copy of `headsTheme.surface` in lib/themes.ts, because Sorbet
    is DEFAULT_THEME_ID — a fresh install must not flash one palette and then
    swap to another. If you change the default theme, change these too. */
 :root {
@@ -62,11 +62,18 @@
   --ezy-accent-hover: #a0e9c2;
   --ezy-accent-dim: #57b585;
   --ezy-accent-glow: rgba(255, 255, 255, 0.06);
+  /* What reads ON the accent fill (checkbox ticks). Sorbet's #80e2ad is light,
+     so its mark is dark — same value App.tsx computes via accentTone(); this
+     copy only covers the pre-hydration frame, like the colors above. */
+  --ezy-on-accent: #131313;
   --ezy-red: #fd8183;
   --ezy-cyan: #92bcff;
+  /* Sorbet overrides this one (most themes inherit `surface`), so the copy has
+     to include it or the first frame paints a flat tab strip. */
+  --ezy-tab-active: #272727;
   /* Diff counts (+N / −N). Semantic, so a theme only overrides them via
      `diffAdd`/`diffRemove`; everything else inherits #4ade80 / #f87171 from
-     App.tsx. These are Heads' pastels for the same frame-zero reason as the
+     App.tsx. These are Sorbet's pastels for the same frame-zero reason as the
      colors above. */
   --ezy-diff-add: #80e2ad;
   --ezy-diff-remove: #f4b4d1;
@@ -75,10 +82,14 @@
   /* Per-theme corner-radius multiplier (themes.ts `radiusScale`, injected by
      App.tsx). Every radius in the app is authored as
      calc(var(--ezy-radius-scale, 1) * Npx) so one theme can round the whole
-     chrome at once; 1 reproduces the standard MADE radii exactly. Heads is 2,
+     chrome at once; 1 reproduces the standard MADE radii exactly. Sorbet is 2,
      so this starts at 2 — otherwise first paint is square-cornered and pops
      round on hydration. */
   --ezy-radius-scale: 2;
+  /* Ratio every authored font size is multiplied by (Settings → Appearance →
+     Font size, anchored on 13px). 1 = the sizes as authored, which is the
+     default, so unlike the radius above this needs no per-theme value. */
+  --ezy-font-scale: 1;
 }
 
 /* Text selection in the DOM chrome — settings, labels, markdown, inputs. The
@@ -88,6 +99,75 @@
 ::selection {
   background-color: var(--ezy-selection);
   color: var(--ezy-selection-text);
+}
+
+/* Checkboxes, app-wide.
+   ---------------------------------------------------------------------------
+   Same reasoning as ::selection above: unstyled, these fall back to the
+   browser's own control — a pale grey box when off and the UA/system accent
+   when on, which matched no theme and rendered the dev-server "Reachable from
+   other devices" tick in a red that appears nowhere in the palette. Nine
+   components ship checkboxes; six were bare like that and three set only
+   `accent-color`, which themes the fill but leaves the pale UA box when off.
+
+   One rule instead of nine, so the next checkbox anyone adds is branded by
+   default rather than by remembering to be. Component-level sizing still wins
+   (see `.ezy-md` further down) because these selectors carry no class.
+
+   Solid opaque fill when checked — never a tinted wash. */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  /* Chromium's UA margin (3px 3px 3px 4px) fights the `gap` every one of these
+     labels already sets, so zero it and let the parent own the spacing. Call
+     sites that nudge (`marginTop: 2`) still win — this is a base, not a lock. */
+  margin: 0;
+  flex-shrink: 0;
+  border: 1px solid var(--ezy-text-muted);
+  /* Scaled like every other radius, but CAPPED — and the cap is the whole
+     point. On a 13px box the uncapped calc reaches 6px at Sorbet's
+     `--ezy-radius-scale: 2`, which is half the width: the control renders as a
+     circle and therefore reads as a RADIO BUTTON, i.e. "pick one of these"
+     rather than "this toggles independently". 4px keeps a 5px straight edge on
+     every side at any scale, so it still rounds with the theme without ever
+     changing which control the user thinks they are looking at. */
+  border-radius: min(calc(var(--ezy-radius-scale, 1) * 3px), 4px);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+input[type="checkbox"]:hover:not(:disabled):not(:checked) {
+  border-color: var(--ezy-text);
+}
+input[type="checkbox"]:disabled {
+  cursor: default;
+}
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--ezy-accent);
+  outline-offset: 2px;
+}
+input[type="checkbox"]:checked {
+  background-color: var(--ezy-accent);
+  border-color: var(--ezy-accent);
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 13px 13px;
+  /* The tick is #131313 here and #fff in the override below — the two values
+     of --ezy-on-accent (lib/themes.ts). It cannot simply READ that var: a
+     data-URI renders in an isolated context, so neither custom properties nor
+     `currentColor` reach inside it. App.tsx stamps [data-accent-tone] in the
+     same effect that writes the token, so the two cannot drift.
+
+     Dark is the unprefixed default because 15 of 18 shipping themes resolve to
+     it, INCLUDING Sorbet — this file's :root block is the pre-hydration frame,
+     and a white tick here would flash on first paint before the attribute
+     lands. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.2 2.2 4.8-4.8' fill='none' stroke='%23131313' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+:root[data-accent-tone="light"] input[type="checkbox"]:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.2 2.2 4.8-4.8' fill='none' stroke='%23ffffff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 /* Tailwind 4 inlines the bare `rounded` utility (border-radius: .25rem), so
@@ -403,30 +483,15 @@ body,
 .ezy-md li > ul,
 .ezy-md li > ol { margin: 0.25em 0 0; }
 
-/* GFM task lists. Solid opaque fill when checked — never a tinted wash. */
+/* GFM task lists. The look itself is the app-wide checkbox rule near the top of
+   this file; only the list-specific metrics live here. */
 .ezy-md ul:has(> li > input[type="checkbox"]) { padding-left: 0.2em; }
 .ezy-md li:has(> input[type="checkbox"]) { list-style: none; }
 .ezy-md input[type="checkbox"] {
-  appearance: none;
-  -webkit-appearance: none;
   width: 12px;
   height: 12px;
   margin: 0 8px 0 0;
   vertical-align: -1px;
-  border: 1px solid var(--ezy-text-muted);
-  border-radius: calc(var(--ezy-radius-scale, 1) * 3px);
-  background: transparent;
-  flex-shrink: 0;
-}
-.ezy-md input[type="checkbox"]:checked {
-  background-color: var(--ezy-accent);
-  border-color: var(--ezy-accent);
-  /* Checkmark drawn as a mask so it always reads white on the accent fill,
-     whatever the active theme sets --ezy-accent to. */
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2l2.2 2.2 4.8-4.8' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-size: 12px 12px;
-  background-repeat: no-repeat;
-  background-position: center;
 }
 .ezy-md li:has(> input[type="checkbox"]:checked) { color: var(--ezy-text-muted); }
 
