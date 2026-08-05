@@ -73,7 +73,7 @@ function StatusIndicator({ status }: { status: "idle" | "testing" | "ok" | "erro
         gap: 4,
         padding: "2px 8px",
         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
-        fontSize: 11,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
         fontWeight: 600,
         letterSpacing: "0.03em",
         backgroundColor: c.bg,
@@ -267,7 +267,7 @@ function KeyDropdown({
                   <span style={{ color: "var(--ezy-text-muted)", fontSize: fs - 2, flexShrink: 0 }}>({k.key_type})</span>
                 ) : (
                   <span style={{
-                    fontSize: 10,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                     fontWeight: 600,
                     padding: "1px 5px",
                     borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
@@ -280,7 +280,7 @@ function KeyDropdown({
                 )
               )}
               {!compact && k.comment && (
-                <span style={{ color: "var(--ezy-text-muted)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span style={{ color: "var(--ezy-text-muted)", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {k.comment}
                 </span>
               )}
@@ -342,7 +342,7 @@ function InfoDot({ tip, size = 11 }: { tip: string; size?: number }) {
 }
 
 const SECURITY_TOKEN_TIP =
-  "Unlocks the server's macOS login keychain when a pane connects (security unlock-keychain), so Claude stays signed in. Asks for the account password ONLY when the keychain is actually locked (usually only after a server reboot) — nothing is stored.";
+  "Unlocks the server's macOS login keychain when a Claude pane connects (security unlock-keychain), so Claude stays signed in. Asks for the account password ONLY when the keychain is actually locked AND Claude's credential lives in it — the password is verified before use, and nothing is stored.";
 const CLAUDE_TOKEN_TIP =
   "Exports a long-lived login token (from: claude setup-token) into every SSH session, bypassing the keychain. Paste one or capture it automatically.";
 
@@ -654,7 +654,7 @@ export default function ServersPanel({
     const cInputStyle: React.CSSProperties = {
       width: "100%",
       padding: "5px 8px",
-      fontSize: 11,
+      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
       color: "var(--ezy-text)",
       backgroundColor: "var(--ezy-bg)",
       border: "1px solid var(--ezy-border-light)",
@@ -665,7 +665,7 @@ export default function ServersPanel({
       transition: "border-color 120ms ease",
     };
     const cLabelStyle: React.CSSProperties = {
-      fontSize: 9,
+      fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
       fontWeight: 600,
       letterSpacing: "0.05em",
       textTransform: "uppercase",
@@ -750,11 +750,11 @@ export default function ServersPanel({
                 }}
               />
             )}
-            <span style={{ fontSize: 10, fontWeight: 600, color: "var(--ezy-text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", fontWeight: 600, color: "var(--ezy-text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" }}>
               Remote
             </span>
             {servers.length > 0 && (
-              <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", opacity: 0.6 }}>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", opacity: 0.6 }}>
                 {servers.length}
               </span>
             )}
@@ -825,7 +825,7 @@ export default function ServersPanel({
                 <span
                   style={{
                     flex: 1,
-                    fontSize: 10,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                     fontWeight: 700,
                     letterSpacing: "0.08em",
                     textTransform: "uppercase",
@@ -907,7 +907,7 @@ export default function ServersPanel({
                       style={{
                         flex: 1,
                         padding: "4px 0",
-                        fontSize: 10,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                         fontWeight: 600,
                         textAlign: "center",
                         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
@@ -957,7 +957,7 @@ export default function ServersPanel({
                   </div>
                 </div>
               ) : (
-                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontStyle: "italic", paddingTop: 1 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", fontStyle: "italic", paddingTop: 1 }}>
                   Password prompted on connect
                 </div>
               )}
@@ -984,7 +984,7 @@ export default function ServersPanel({
                       style={{
                         flex: 1,
                         padding: "4px 0",
-                        fontSize: 10,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                         fontWeight: 600,
                         textAlign: "center",
                         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
@@ -1037,7 +1037,7 @@ export default function ServersPanel({
                       style={{
                         marginTop: 6,
                         padding: "4px 0",
-                        fontSize: 11,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                         fontWeight: 600,
                         textAlign: "center",
                         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
@@ -1062,7 +1062,7 @@ export default function ServersPanel({
                   style={{
                     flex: 1,
                     padding: "5px 0",
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     fontWeight: 600,
                     color: isFormValid ? "#fff" : "var(--ezy-text-muted)",
                     backgroundColor: isFormValid ? "var(--ezy-accent)" : "var(--ezy-border)",
@@ -1086,7 +1086,7 @@ export default function ServersPanel({
                       gap: 4,
                       flex: 1,
                       padding: "5px 0",
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       fontWeight: 600,
                       color: isFormValid ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                       backgroundColor: "transparent",
@@ -1112,8 +1112,8 @@ export default function ServersPanel({
         {/* Compact server list */}
         {!collapsed && (servers.length === 0 && !showForm ? (
           <div style={{ padding: "12px 10px", textAlign: "center", color: "var(--ezy-text-muted)" }}>
-            <p style={{ fontSize: 11, margin: 0 }}>No remote servers</p>
-            <p style={{ fontSize: 10, margin: "2px 0 0", color: "var(--ezy-border-light)" }}>
+            <p style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", margin: 0 }}>No remote servers</p>
+            <p style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", margin: "2px 0 0", color: "var(--ezy-border-light)" }}>
               Click + to add one
             </p>
           </div>
@@ -1141,7 +1141,7 @@ export default function ServersPanel({
                   <StatusDot status={status} />
                   <span
                     style={{
-                      fontSize: 12,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                       fontWeight: 500,
                       color: "var(--ezy-text)",
                       flex: 1,
@@ -1227,7 +1227,7 @@ export default function ServersPanel({
                     right. A configured key is a property of the connection, not
                     news of its own — giving it a third row made every keyed
                     server taller for no added information. */}
-                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 10px ${showKeySetup ? 2 : 5}px 22px`, fontSize: 11, color: "var(--ezy-text-muted)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, padding: `0 10px ${showKeySetup ? 2 : 5}px 22px`, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
                   <div style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     <span style={{ fontVariantNumeric: "tabular-nums" }}>{server.host}</span>
                     <span style={{ margin: "0 5px", opacity: 0.3 }}>/</span>
@@ -1241,7 +1241,7 @@ export default function ServersPanel({
                           display: "flex",
                           alignItems: "center",
                           gap: 3,
-                          fontSize: 10,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                           fontWeight: 600,
                           letterSpacing: "0.04em",
                           color: "var(--ezy-accent)",
@@ -1310,13 +1310,13 @@ export default function ServersPanel({
     border: "1px solid var(--ezy-border)",
     borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
     color: "var(--ezy-text)",
-    fontSize: 13,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
     fontFamily: "inherit",
     outline: "none",
   };
 
   const labelStyle: React.CSSProperties = {
-    fontSize: 11,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
     fontWeight: 600,
     color: "var(--ezy-text-muted)",
     letterSpacing: "0.04em",
@@ -1357,7 +1357,7 @@ export default function ServersPanel({
           </svg>
           <span
             style={{
-              fontSize: 14,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
               fontWeight: 600,
               color: "var(--ezy-text)",
               letterSpacing: "0.02em",
@@ -1365,7 +1365,7 @@ export default function ServersPanel({
           >
             Remote Servers
           </span>
-          <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>
             {servers.length} configured
           </span>
         </div>
@@ -1380,7 +1380,7 @@ export default function ServersPanel({
             border: "none",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             color: "#ffffff",
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             fontWeight: 600,
             cursor: "pointer",
             fontFamily: "inherit",
@@ -1404,7 +1404,7 @@ export default function ServersPanel({
               backgroundColor: "var(--ezy-surface)",
             }}
           >
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)", marginBottom: 12 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)", marginBottom: 12 }}>
               {editingId ? "Edit Server" : "Add Server"}
             </div>
 
@@ -1466,7 +1466,7 @@ export default function ServersPanel({
                       }}
                       style={{
                         padding: "5px 14px",
-                        fontSize: 12,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                         fontWeight: 600,
                         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                         cursor: "pointer",
@@ -1515,7 +1515,7 @@ export default function ServersPanel({
                 </>
               ) : (
                 <div style={{ flex: 1, display: "flex", alignItems: "flex-end", paddingBottom: 4 }}>
-                  <span style={{ fontSize: 12, color: "var(--ezy-text-muted)", fontStyle: "italic" }}>
+                  <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", fontStyle: "italic" }}>
                     Password prompted on connect
                   </span>
                 </div>
@@ -1540,7 +1540,7 @@ export default function ServersPanel({
                       data-tooltip={mode === "keychain" ? SECURITY_TOKEN_TIP : CLAUDE_TOKEN_TIP}
                       style={{
                         padding: "5px 14px",
-                        fontSize: 12,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                         fontWeight: 600,
                         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                         cursor: "pointer",
@@ -1588,7 +1588,7 @@ export default function ServersPanel({
                         disabled={!canRunWizard}
                         style={{
                           padding: "6px 12px",
-                          fontSize: 12,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                           fontWeight: 600,
                           borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                           border: "1px solid var(--ezy-border-light)",
@@ -1619,7 +1619,7 @@ export default function ServersPanel({
                   border: "none",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   color: "#ffffff",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 600,
                   cursor: "pointer",
                   fontFamily: "inherit",
@@ -1641,7 +1641,7 @@ export default function ServersPanel({
                     border: "none",
                     borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     color: "var(--ezy-text)",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontWeight: 600,
                     cursor: "pointer",
                     fontFamily: "inherit",
@@ -1660,7 +1660,7 @@ export default function ServersPanel({
                   border: "1px solid var(--ezy-border)",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   color: "var(--ezy-text-muted)",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 600,
                   cursor: "pointer",
                   fontFamily: "inherit",
@@ -1692,10 +1692,10 @@ export default function ServersPanel({
               <circle cx="5" cy="4" r="1" fill="var(--ezy-border)" stroke="none" />
               <circle cx="5" cy="12" r="1" fill="var(--ezy-border)" stroke="none" />
             </svg>
-            <p style={{ fontSize: 14, marginBottom: 4 }}>
+            <p style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", marginBottom: 4 }}>
               No remote servers configured
             </p>
-            <p style={{ fontSize: 12, color: "var(--ezy-border-light)" }}>
+            <p style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-border-light)" }}>
               Add a server to SSH into remote machines from MADE
             </p>
           </div>
@@ -1715,7 +1715,7 @@ export default function ServersPanel({
                 backgroundColor: "var(--ezy-surface)",
                 borderBottom: "1px solid var(--ezy-border)",
                 padding: "8px 16px",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 fontWeight: 600,
                 letterSpacing: "0.06em",
                 textTransform: "uppercase",
@@ -1746,7 +1746,7 @@ export default function ServersPanel({
                     style={{
                       gridTemplateColumns: "1fr 140px 100px 120px 160px",
                       padding: "10px 16px",
-                      fontSize: 13,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                       color: "var(--ezy-text)",
                     }}
                   >

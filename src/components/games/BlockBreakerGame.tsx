@@ -618,7 +618,7 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
           justifyContent: "space-between",
           alignItems: "center",
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -630,7 +630,7 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
           Score: <span style={{ color: "var(--ezy-accent)" }}>{score}</span>
         </span>
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>Lvl {level}</span>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>Lvl {level}</span>
           <span style={{ display: "flex", alignItems: "center" }}>{renderLives()}</span>
         </span>
         {bestScore > 0 && <span>Best: {bestScore}</span>}
@@ -666,14 +666,14 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
           >
             {gameState === "over" && (
               <>
-                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--ezy-text)" }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: "var(--ezy-text)" }}>
                   Game Over
                 </div>
-                <div style={{ fontSize: 14, color: "var(--ezy-accent)", fontWeight: 600 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-accent)", fontWeight: 600 }}>
                   Score: {score}
                 </div>
                 {score > 0 && score >= bestScore && (
-                  <div style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "#4ade80", fontWeight: 600 }}>
                     New Highscore!
                   </div>
                 )}
@@ -682,7 +682,7 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
             {gameState === "idle" && (
               <div
                 style={{
-                  fontSize: 14,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
                   color: "var(--ezy-text-secondary)",
                   marginBottom: 4,
                 }}
@@ -698,7 +698,7 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
               }}
               style={{
                 padding: "8px 24px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
@@ -729,10 +729,10 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
               gap: 12,
             }}
           >
-            <div style={{ fontSize: 18, fontWeight: 700, color: "var(--ezy-accent)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: "var(--ezy-accent)" }}>
               Level {level} Complete!
             </div>
-            <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>
               Bonus: +{level * 100}
             </div>
             <button
@@ -743,7 +743,7 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
               }}
               style={{
                 padding: "8px 24px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
@@ -772,7 +772,7 @@ export default function BlockBreakerGame({ onAddHighscore, paused = false }: Blo
               backgroundColor: "rgba(0,0,0,0.6)",
             }}
           >
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 16px)", fontWeight: 700, color: "var(--ezy-text-muted)" }}>
               Paused
             </div>
           </div>

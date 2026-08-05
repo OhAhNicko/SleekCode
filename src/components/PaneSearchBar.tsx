@@ -92,7 +92,7 @@ export default function PaneSearchBar({
         padding: "3px 4px",
         boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
         fontFamily: "system-ui, -apple-system, sans-serif",
-        fontSize: 12,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
       }}
     >
       {/* Search icon */}
@@ -130,7 +130,7 @@ export default function PaneSearchBar({
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           padding: "0 6px",
           color: "var(--ezy-text)",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           outline: "none",
           caretColor: "var(--ezy-accent)",
           transition: "border-color 120ms ease",
@@ -147,7 +147,7 @@ export default function PaneSearchBar({
       {matchDisplay && (
         <span
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             color: noResults ? "var(--ezy-red)" : "var(--ezy-text-muted)",
             padding: "0 4px",
             whiteSpace: "nowrap",
@@ -316,7 +316,7 @@ function ToggleButton({
         borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
         padding: "0 4px",
         cursor: "pointer",
-        fontSize: 11,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
         fontWeight: 600,
         letterSpacing: "0.01em",
         backgroundColor: active ? "var(--ezy-accent-dim)" : "transparent",

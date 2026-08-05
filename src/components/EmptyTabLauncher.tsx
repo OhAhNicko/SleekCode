@@ -1,5 +1,8 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { TerminalType } from "../types";
+import { useAppStore } from "../store";
+import { cliStatus, isAiCli, type CliStatus } from "../lib/cli-availability";
+import { requestCliInstall } from "../lib/cli-install-modal";
 
 interface PaneOption {
   type: TerminalType;
@@ -48,8 +51,44 @@ const PANE_OPTIONS: PaneOption[] = [
 ];
 
 export default function EmptyTabLauncher() {
-  const open = (type: TerminalType) => {
+  const backend = useAppStore((s) => s.terminalBackend) ?? "wsl";
+  const [statuses, setStatuses] = useState<Record<string, CliStatus>>({});
+
+  // Answered from the startup cache for the local backend, so this is free.
+  // Anything that comes back "unknown" is left untagged — a CLI MADE could not
+  // ask about must not be advertised as missing.
+  useEffect(() => {
+    let alive = true;
+    for (const { type } of PANE_OPTIONS) {
+      if (!isAiCli(type)) continue;
+      void cliStatus(type, backend).then((status) => {
+        if (alive && status !== "unknown") {
+          setStatuses((prev) => (prev[type] === status ? prev : { ...prev, [type]: status }));
+        }
+      });
+    }
+    return () => {
+      alive = false;
+    };
+  }, [backend]);
+
+  const spawn = (type: TerminalType) => {
     window.dispatchEvent(new CustomEvent("made:split-terminal", { detail: { type } }));
+  };
+
+  const open = (type: TerminalType) => {
+    if (statuses[type] !== "missing" || !isAiCli(type)) {
+      spawn(type);
+      return;
+    }
+    // Install first, then open — rather than opening a pane whose only output
+    // can be "command not found".
+    requestCliInstall({
+      cli: type,
+      backend,
+      onLaunch: () => spawn(type),
+      launchLabel: "Open pane",
+    });
   };
 
   return (
@@ -58,10 +97,10 @@ export default function EmptyTabLauncher() {
       style={{ backgroundColor: "var(--ezy-bg)" }}
     >
       <div className="flex flex-col items-center gap-3">
-        <div style={{ fontSize: 14, color: "var(--ezy-text-secondary)" }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-text-secondary)" }}>
           This tab is empty
         </div>
-        <div style={{ fontSize: 12, color: "var(--ezy-text-muted)", marginBottom: 8 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", marginBottom: 8 }}>
           Open a new pane to get started
         </div>
         <div className="flex gap-2">
@@ -78,7 +117,7 @@ export default function EmptyTabLauncher() {
                 border: "1px solid var(--ezy-border)",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                 color: "var(--ezy-text)",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontFamily: "inherit",
                 cursor: "pointer",
                 transition: "all 150ms ease",
@@ -94,6 +133,21 @@ export default function EmptyTabLauncher() {
             >
               {icon}
               {label}
+              {statuses[type] === "missing" && (
+                <span
+                  style={{
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+                    fontWeight: 600,
+                    padding: "2px 6px",
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                    backgroundColor: "var(--ezy-surface-raised)",
+                    border: "1px solid var(--ezy-border-light)",
+                    color: "var(--ezy-text-secondary)",
+                  }}
+                >
+                  Install
+                </span>
+              )}
             </button>
           ))}
         </div>

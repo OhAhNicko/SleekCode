@@ -493,7 +493,7 @@ export default function CommitPopover({
             <span
               style={{
                 color: "var(--ezy-text-muted)",
-                fontSize: 11.5,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11.5px)",
                 fontFamily: "inherit",
                 letterSpacing: "0.01em",
                 animation: "ezy-fade 2s ease-in-out infinite",
@@ -529,7 +529,7 @@ export default function CommitPopover({
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 padding: commitMsgMode === "advanced" ? "6px 42px 6px 8px" : "6px 24px 6px 8px",
                 color: "var(--ezy-text)",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 lineHeight: 1.4,
                 resize: "none",
                 outline: "none",

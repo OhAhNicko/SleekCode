@@ -1271,7 +1271,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
           justifyContent: "space-between",
           alignItems: "center",
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -1284,7 +1284,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
         </span>
         <span
           style={{
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: "var(--ezy-text-muted)",
             fontFamily: "monospace",
           }}
@@ -1339,7 +1339,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
           >
             <div
               style={{
-                fontSize: 24,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 24px)",
                 fontWeight: 700,
                 color: "#fff",
                 fontFamily: "monospace",
@@ -1354,7 +1354,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
               onClick={() => initGame()}
               style={{
                 padding: "8px 24px",
-                fontSize: 14,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
                 fontWeight: 700,
                 color: "#0a0a18",
                 backgroundColor: "#5eead4",
@@ -1370,7 +1370,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
             </div>
             <div
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 color: "#888",
                 fontFamily: "monospace",
                 textTransform: "uppercase",
@@ -1416,7 +1416,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
                 >
                   <div
                     style={{
-                      fontSize: 24,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 24px)",
                       fontWeight: 700,
                       color: "#fff",
                       fontFamily: "monospace",
@@ -1444,7 +1444,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
                   >
                     <div
                       style={{
-                        fontSize: 11,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                         fontWeight: 600,
                         color: "#888",
                         fontFamily: "monospace",
@@ -1456,7 +1456,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
                     </div>
                     <div
                       style={{
-                        fontSize: 36,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 36px)",
                         fontWeight: 700,
                         color: "#5eead4",
                         fontFamily: "monospace",
@@ -1469,7 +1469,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
                     {score > 0 && score >= bestScore && (
                       <div
                         style={{
-                          fontSize: 12,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                           fontWeight: 700,
                           color: "#4ade80",
                           fontFamily: "monospace",
@@ -1481,7 +1481,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
                     {bestScore > 0 && (
                       <div
                         style={{
-                          fontSize: 11,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                           color: "#666",
                           fontFamily: "monospace",
                         }}
@@ -1496,19 +1496,19 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
                         display: "flex",
                         gap: 16,
                         marginTop: 4,
-                        fontSize: 11,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                         fontFamily: "monospace",
                         color: "#999",
                       }}
                     >
                       <div style={{ textAlign: "center" }}>
-                        <div style={{ color: "#5eead4", fontSize: 18, fontWeight: 700, lineHeight: 1 }}>
+                        <div style={{ color: "#5eead4", fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, lineHeight: 1 }}>
                           {finalHitsRef.current}
                         </div>
                         <div>Ducks</div>
                       </div>
                       <div style={{ textAlign: "center" }}>
-                        <div style={{ color: "#5eead4", fontSize: 18, fontWeight: 700, lineHeight: 1 }}>
+                        <div style={{ color: "#5eead4", fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, lineHeight: 1 }}>
                           {roundsCompletedRef.current}
                         </div>
                         <div>Rounds</div>
@@ -1520,7 +1520,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
                     onClick={() => initGame()}
                     style={{
                       padding: "8px 24px",
-                      fontSize: 14,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
                       fontWeight: 700,
                       color: "#0a0a18",
                       backgroundColor: "#5eead4",
@@ -1537,7 +1537,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
                   </div>
                   <div
                     style={{
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       color: "#888",
                       fontFamily: "monospace",
                       textTransform: "uppercase",
@@ -1564,7 +1564,7 @@ export default function DuckHuntGame({ onAddHighscore, paused = false }: DuckHun
           >
             <div
               style={{
-                fontSize: 22,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 22px)",
                 fontWeight: 700,
                 color: "#fff",
                 fontFamily: "monospace",

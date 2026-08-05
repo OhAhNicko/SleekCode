@@ -60,6 +60,21 @@ export type UiFont = (typeof UI_FONTS)[number]["id"];
 /** The face used when nothing is chosen, and the fallback for an unknown id. */
 export const DEFAULT_UI_FONT: UiFont = "inter";
 
+/** The app's PRIMARY LABEL size in px, and the anchor the whole chrome scales
+ *  against. The UI is authored at 17 distinct sizes (the mass at 11/12/13px),
+ *  so there is no single size to set outright — instead App.tsx divides the
+ *  user's pick by this to get `--ezy-font-scale`, and every authored size is
+ *  `calc(var(--ezy-font-scale, 1) * Npx)`. At the default the ratio is 1 and
+ *  the app renders exactly as authored. */
+export const UI_FONT_SIZE_DEFAULT = 13;
+
+/** Bounds of the Settings → Appearance stepper, ≈80%–130% of the anchor.
+ *  The ceiling is where the chrome stops fitting: row heights are FIXED (30/32/
+ *  36px) because the setting scales text only, so past ~17px a single-line row
+ *  crowds and fixed-width badges start to ellipsize. */
+export const UI_FONT_SIZE_MIN = 10;
+export const UI_FONT_SIZE_MAX = 17;
+
 /**
  * Resolve a persisted id to a stack.
  *

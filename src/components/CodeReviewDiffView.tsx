@@ -201,13 +201,13 @@ export default function CodeReviewDiffView({
                   style={{
                     backgroundColor: "var(--ezy-surface)",
                     border: "1px solid var(--ezy-border-subtle)",
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     fontVariantNumeric: "tabular-nums",
                     lineHeight: 1,
                   }}
                 >
                   <span style={{ color: "var(--ezy-diff-add)" }}>+{stats.add}</span>
-                  <span style={{ color: "var(--ezy-text-muted)", opacity: 0.5, fontSize: 9 }}>&bull;</span>
+                  <span style={{ color: "var(--ezy-text-muted)", opacity: 0.5, fontSize: "calc(var(--ezy-font-scale, 1) * 9px)" }}>&bull;</span>
                   <span style={{ color: "var(--ezy-diff-remove)" }}>-{stats.del}</span>
                 </div>
 
@@ -220,7 +220,7 @@ export default function CodeReviewDiffView({
                   style={{
                     color: "var(--ezy-text-muted)",
                     border: "1px solid var(--ezy-border-subtle)",
-                    fontSize: 10,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                   }}
                   onClick={() => onOpenInEditor(fileDiff.filePath)}
                   data-tooltip="Open in editor"
@@ -372,7 +372,7 @@ function HunkBlock({
                   width: 44,
                   minWidth: 44,
                   color: "var(--ezy-text-muted)",
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   opacity: 0.6,
                 }}
               >
@@ -385,7 +385,7 @@ function HunkBlock({
                   width: 44,
                   minWidth: 44,
                   color: "var(--ezy-text-muted)",
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   opacity: 0.6,
                 }}
               >

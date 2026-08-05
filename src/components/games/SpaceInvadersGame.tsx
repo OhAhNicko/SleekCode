@@ -1056,7 +1056,7 @@ export default function SpaceInvadersGame({ onAddHighscore, paused = false }: Sp
         >
           <div style={{
             fontFamily: "monospace",
-            fontSize: 24,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 24px)",
             fontWeight: 700,
             color: C.text,
             letterSpacing: 8,
@@ -1088,7 +1088,7 @@ export default function SpaceInvadersGame({ onAddHighscore, paused = false }: Sp
         >
           <div style={{
             fontFamily: "monospace",
-            fontSize: 18,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 18px)",
             fontWeight: 700,
             color: "#ff4444",
             letterSpacing: 4,
@@ -1097,7 +1097,7 @@ export default function SpaceInvadersGame({ onAddHighscore, paused = false }: Sp
           </div>
           <div style={{
             fontFamily: "monospace",
-            fontSize: 14,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
             color: C.text,
             fontVariantNumeric: "tabular-nums",
           }}>
@@ -1106,7 +1106,7 @@ export default function SpaceInvadersGame({ onAddHighscore, paused = false }: Sp
           {displayScore > 0 && displayScore >= bestScore && (
             <div style={{
               fontFamily: "monospace",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               color: C.scoreLabel,
               fontWeight: 600,
             }}>
@@ -1115,7 +1115,7 @@ export default function SpaceInvadersGame({ onAddHighscore, paused = false }: Sp
           )}
           <div style={{
             fontFamily: "monospace",
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: C.textDim,
             marginTop: 4,
           }}>

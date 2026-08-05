@@ -75,7 +75,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
           <div style={{ flex: 1, minWidth: 0 }}>
             <div
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 color: "var(--ezy-text-muted)",
                 letterSpacing: "0.04em",
                 textTransform: "uppercase",
@@ -84,7 +84,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
             >
               MADE updated
             </div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 15px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               What's new in v{version}
             </div>
           </div>
@@ -119,7 +119,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
             minHeight: 0,
             overflowY: "auto",
             padding: "14px 18px",
-            fontSize: 13,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
             lineHeight: 1.55,
             color: "var(--ezy-text-secondary)",
             whiteSpace: "pre-wrap",
@@ -188,7 +188,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
                 </svg>
               )}
             </div>
-            <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)" }}>
               Don't show changelog on future updates
             </span>
           </div>
@@ -199,7 +199,7 @@ export default function ChangelogModal({ version, notes, onClose }: ChangelogMod
               border: "none",
               backgroundColor: "var(--ezy-accent)",
               color: "#0d1117",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 600,
               padding: "6px 14px",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",

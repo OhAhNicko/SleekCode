@@ -62,7 +62,7 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
             justifyContent: "space-between",
           }}
         >
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
             Keyboard Shortcuts
           </span>
           <div
@@ -92,7 +92,7 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
 
             {/* Section title */}
             <div style={{
-              fontSize: 10,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
               fontWeight: 600,
               letterSpacing: "0.06em",
               textTransform: "uppercase",
@@ -115,7 +115,7 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
                     borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   }}
                 >
-                  <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                  <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)" }}>
                     {s.label}
                   </span>
                   <div style={{ display: "flex", gap: 3 }}>
@@ -123,7 +123,7 @@ export default function KeyboardShortcutsModal({ onClose }: KeyboardShortcutsMod
                       <span
                         key={j}
                         style={{
-                          fontSize: 11,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                           fontFamily: "monospace",
                           backgroundColor: "var(--ezy-surface)",
                           color: "var(--ezy-text-muted)",

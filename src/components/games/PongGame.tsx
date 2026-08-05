@@ -413,7 +413,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
         }}
       >
         <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 20 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ezy-text)", marginBottom: 8, fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700, color: "var(--ezy-text)", marginBottom: 8, fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
             Select Difficulty
           </div>
           {(["easy", "medium", "hard"] as Difficulty[]).map((d) => (
@@ -429,7 +429,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
                 border: "1px solid var(--ezy-border)",
                 cursor: "pointer",
                 textAlign: "center",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-text)",
                 transition: "background-color 150ms ease, border-color 150ms ease",
@@ -445,7 +445,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
               }}
             >
               {d.charAt(0).toUpperCase() + d.slice(1)}
-              <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 2, fontWeight: 400 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", marginTop: 2, fontWeight: 400 }}>
                 {d === "easy" ? "Relaxed AI, slow reactions" : d === "medium" ? "Balanced challenge" : "Near-perfect AI"}
               </div>
             </div>
@@ -478,7 +478,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
           justifyContent: "space-between",
           alignItems: "center",
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -490,13 +490,13 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
           You: <span style={{ color: "var(--ezy-accent)" }}>{playerScore}</span>
         </span>
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
             First to {WIN_SCORE} {difficulty ? `(${difficulty})` : ""}
           </span>
           <span
             onClick={() => setUseMouse((v) => !v)}
             style={{
-              fontSize: 9,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
               fontWeight: 600,
               padding: "1px 6px",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
@@ -545,14 +545,14 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
               gap: 12,
             }}
           >
-            <div style={{ fontSize: 14, color: "var(--ezy-text-secondary)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-text-secondary)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
               {useMouse ? "Move mouse to control paddle" : "W/S or Arrow keys to move"}
             </div>
             <div
               onClick={() => { initGame(); setTimeout(() => containerRef.current?.focus(), 50); }}
               style={{
                 padding: "8px 24px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
@@ -583,10 +583,10 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
               gap: 12,
             }}
           >
-            <div style={{ fontSize: 18, fontWeight: 700, color: playerWon ? "#4ade80" : "#f87171", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: playerWon ? "#4ade80" : "#f87171", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
               {playerWon ? "You Win!" : "You Lose"}
             </div>
-            <div style={{ fontSize: 14, color: "var(--ezy-text-secondary)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-text-secondary)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
               {playerScore} - {aiScore}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
@@ -594,7 +594,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
                 onClick={() => { initGame(); setTimeout(() => containerRef.current?.focus(), 50); }}
                 style={{
                   padding: "8px 20px",
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   fontWeight: 600,
                   color: "var(--ezy-bg)",
                   backgroundColor: "var(--ezy-accent)",
@@ -612,7 +612,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
                 onClick={() => { setPhase("select"); phaseRef.current = "select"; setDifficulty(null); }}
                 style={{
                   padding: "8px 20px",
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   fontWeight: 600,
                   color: "var(--ezy-text-secondary)",
                   backgroundColor: "var(--ezy-surface)",
@@ -643,7 +643,7 @@ export default function PongGame({ onUpdateStats, paused = false }: PongGameProp
               backgroundColor: "rgba(0,0,0,0.6)",
             }}
           >
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>Paused</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 16px)", fontWeight: 700, color: "var(--ezy-text-muted)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>Paused</div>
           </div>
         )}
       </div>

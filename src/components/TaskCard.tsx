@@ -33,7 +33,7 @@ export default function TaskCard({ task, onRun, onRemove, onDragStart }: TaskCar
       <div className="flex items-center justify-between" style={{ marginBottom: task.description ? 4 : 0 }}>
         <span
           style={{
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             fontWeight: 500,
             color: "var(--ezy-text)",
           }}
@@ -78,7 +78,7 @@ export default function TaskCard({ task, onRun, onRemove, onDragStart }: TaskCar
       {task.description && (
         <p
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             color: "var(--ezy-text-muted)",
             margin: 0,
             lineHeight: 1.4,
@@ -92,7 +92,7 @@ export default function TaskCard({ task, onRun, onRemove, onDragStart }: TaskCar
           style={{
             display: "inline-block",
             marginTop: 4,
-            fontSize: 9,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
             fontWeight: 600,
             padding: "1px 5px",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",

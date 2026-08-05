@@ -171,7 +171,7 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
         {sidebarTab === "terminals" && (
           <div style={{ overflowY: "auto", height: "100%" }}>
             {activeTerminals.length === 0 ? (
-              <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>
+              <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>
                 No active terminals
               </div>
             ) : (
@@ -196,7 +196,7 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
                       alignItems: "center",
                       gap: 8,
                       padding: "6px 12px",
-                      fontSize: 12,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                       color: "var(--ezy-text-secondary)",
                       borderBottom: "1px solid var(--ezy-border-subtle)",
                     }}
@@ -217,7 +217,7 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
                         color: "var(--ezy-text-muted)",
-                        fontSize: 11,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       }}
                       data-tooltip={term.workingDir}
                     >

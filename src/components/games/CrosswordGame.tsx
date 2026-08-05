@@ -208,7 +208,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
       <div
         style={{
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           color: activeClue ? "var(--ezy-text)" : "var(--ezy-text-muted)",
           borderBottom: "1px solid var(--ezy-border)",
           backgroundColor: "var(--ezy-surface)",
@@ -327,14 +327,14 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
           style={{
             display: "flex",
             gap: 12,
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             color: "var(--ezy-text-secondary)",
             width: "100%",
             maxWidth: cols * cellSize + 4,
           }}
         >
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, color: "var(--ezy-text)", marginBottom: 3, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>Across</div>
+            <div style={{ fontWeight: 700, color: "var(--ezy-text)", marginBottom: 3, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Across</div>
             {puzzle.clues.across.map((cl) => (
               <div
                 key={`a-${cl.number}`}
@@ -357,7 +357,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
             ))}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, color: "var(--ezy-text)", marginBottom: 3, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.04em" }}>Down</div>
+            <div style={{ fontWeight: 700, color: "var(--ezy-text)", marginBottom: 3, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Down</div>
             {puzzle.clues.down.map((cl) => (
               <div
                 key={`d-${cl.number}`}
@@ -386,7 +386,7 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
             onClick={handleGenerate}
             style={{
               padding: "8px 20px",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 600,
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
@@ -402,10 +402,10 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
           </button>
         )}
         {generating && (
-          <div style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>Generating puzzle...</div>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Generating puzzle...</div>
         )}
         {generateError && (
-          <div style={{ fontSize: 12, color: "#f87171" }}>{generateError}</div>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "#f87171" }}>{generateError}</div>
         )}
       </div>
 
@@ -432,8 +432,8 @@ export default function CrosswordGame({ puzzle, onComplete, allCompleted, onGene
               textAlign: "center",
             }}
           >
-            <div style={{ fontSize: 18, fontWeight: 700, color: "#4ade80" }}>Completed!</div>
-            <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginTop: 6 }}>Puzzle solved</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: "#4ade80" }}>Completed!</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)", marginTop: 6 }}>Puzzle solved</div>
           </div>
         </div>
       )}

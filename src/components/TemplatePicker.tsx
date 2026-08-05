@@ -125,7 +125,7 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
     >
       <div
         style={{
-          fontSize: 9,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
           fontWeight: 700,
           letterSpacing: "0.1em",
           color: "var(--ezy-text-muted)",
@@ -136,10 +136,10 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
       </div>
 
       <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-        <span style={{ fontSize: 22, fontWeight: 700, color: "var(--ezy-text)", lineHeight: 1 }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 22px)", fontWeight: 700, color: "var(--ezy-text)", lineHeight: 1 }}>
           {assigned}
         </span>
-        <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>
           / {total} slots
         </span>
       </div>
@@ -177,7 +177,7 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
         />
         <span
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             color: isFull ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
             fontWeight: 500,
           }}
@@ -294,7 +294,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
 
   const quickActionStyle: React.CSSProperties = {
     padding: "4px 10px",
-    fontSize: 10,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
     fontWeight: 600,
     letterSpacing: "0.04em",
     color: "var(--ezy-text-secondary)",
@@ -340,7 +340,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
             justifyContent: "space-between",
           }}
         >
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
             New Workspace
           </span>
           <svg
@@ -362,7 +362,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
         {/* Server Command combobox */}
         <div style={{ padding: "12px 16px 0", position: "relative" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-            <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", fontWeight: 500 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", fontWeight: 500 }}>
               Server Command (optional)
             </div>
             <label
@@ -389,7 +389,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                   </svg>
                 )}
               </div>
-              <span style={{ fontSize: 10, fontWeight: 500, color: "var(--ezy-text-muted)" }}>No dev server</span>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", fontWeight: 500, color: "var(--ezy-text-muted)" }}>No dev server</span>
             </label>
           </div>
           <div style={{ position: "relative", opacity: noDevServer ? 0.35 : 1, pointerEvents: noDevServer ? "none" : "auto", transition: "opacity 150ms ease" }}>
@@ -412,7 +412,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                 border: "1px solid var(--ezy-border)",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 color: "var(--ezy-text)",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 fontFamily: "inherit",
                 outline: "none",
                 boxSizing: "border-box",
@@ -461,7 +461,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                       key={cmd}
                       style={{
                         padding: "6px 10px",
-                        fontSize: 12,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                         color: "var(--ezy-text-secondary)",
                         cursor: "pointer",
                         display: "flex",
@@ -546,7 +546,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                 onClick={() => !isDisabledByKanban && handleTemplateSelect(template)}
               >
                 <GridPreview template={template} />
-                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text)" }}>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "var(--ezy-text)" }}>
                   {template.name}
                 </span>
               </button>
@@ -559,10 +559,10 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
           <div style={{ padding: "0 16px 16px" }}>
             {/* Section header */}
             <div style={{ marginBottom: 4 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text)" }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600, color: "var(--ezy-text)" }}>
                 Assign Agents
               </div>
-              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2 }}>
                 Choose agents for your {slotCount} terminal slot{slotCount !== 1 ? "s" : ""}.
               </div>
             </div>
@@ -684,12 +684,12 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
 
                       {/* Agent info */}
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text)" }}>
+                        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600, color: "var(--ezy-text)" }}>
                           {agent.label}
                           {!!cliYolo[agent.type] && (
                             <span
                               style={{
-                                fontSize: 9,
+                                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                                 fontWeight: 700,
                                 letterSpacing: "0.06em",
                                 lineHeight: 1,
@@ -705,7 +705,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                             </span>
                           )}
                         </div>
-                        <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 1 }}>
+                        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", marginTop: 1 }}>
                           {agent.description}
                         </div>
                       </div>
@@ -725,7 +725,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                             border: `1px solid ${count > 0 ? "var(--ezy-border-light)" : "var(--ezy-border)"}`,
                             borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                             color: count > 0 ? "var(--ezy-text)" : "var(--ezy-text-muted)",
-                            fontSize: 14,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
                             fontWeight: 600,
                             cursor: count > 0 ? "pointer" : "default",
                             fontFamily: "inherit",
@@ -741,7 +741,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                           style={{
                             width: 24,
                             textAlign: "center",
-                            fontSize: 13,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                             fontWeight: 700,
                             color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                             fontVariantNumeric: "tabular-nums",
@@ -762,7 +762,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                             border: `1px solid ${canIncrement ? "var(--ezy-border-light)" : "var(--ezy-border)"}`,
                             borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                             color: canIncrement ? "var(--ezy-text)" : "var(--ezy-text-muted)",
-                            fontSize: 14,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
                             fontWeight: 600,
                             cursor: canIncrement ? "pointer" : "default",
                             fontFamily: "inherit",
@@ -786,7 +786,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
 
             {/* Extra panes */}
             <div style={{ marginTop: 14 }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text-muted)", marginBottom: 8 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "var(--ezy-text-muted)", marginBottom: 8 }}>
                 Additional Panes (optional)
               </div>
               <div style={{ display: "flex", gap: 6 }}>
@@ -853,7 +853,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                           </svg>
                         )}
                       </div>
-                      <span style={{ fontSize: 10, fontWeight: 600, color: "var(--ezy-text)", whiteSpace: "nowrap" }}>
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", fontWeight: 600, color: "var(--ezy-text)", whiteSpace: "nowrap" }}>
                         {pane.description}
                       </span>
                     </button>
@@ -873,7 +873,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
                   border: "none",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   color: canLaunch ? "#fff" : "var(--ezy-text-muted)",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 700,
                   letterSpacing: "0.04em",
                   cursor: canLaunch ? "pointer" : "default",

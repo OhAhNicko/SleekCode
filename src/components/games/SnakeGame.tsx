@@ -345,7 +345,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
           justifyContent: "space-between",
           alignItems: "center",
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -356,7 +356,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
         <span
           onClick={() => { if (gameState !== "playing") setWallDeath((v) => !v); }}
           style={{
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: wallDeath ? "#f87171" : "var(--ezy-text-muted)",
             cursor: gameState === "playing" ? "default" : "pointer",
             userSelect: "none",
@@ -392,15 +392,15 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
           >
             {gameState === "over" && (
               <>
-                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--ezy-text)" }}>Game Over</div>
-                <div style={{ fontSize: 14, color: "var(--ezy-accent)", fontWeight: 600 }}>Score: {score}</div>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: "var(--ezy-text)" }}>Game Over</div>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-accent)", fontWeight: 600 }}>Score: {score}</div>
                 {score > 0 && score >= bestScore && (
-                  <div style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>New Highscore!</div>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "#4ade80", fontWeight: 600 }}>New Highscore!</div>
                 )}
               </>
             )}
             {gameState === "idle" && (
-              <div style={{ fontSize: 14, color: "var(--ezy-text-secondary)", marginBottom: 4 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-text-secondary)", marginBottom: 4 }}>
                 Arrow keys or WASD to move &middot; hold to boost
               </div>
             )}
@@ -412,7 +412,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
               }}
               style={{
                 padding: "8px 24px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
@@ -441,7 +441,7 @@ export default function SnakeGame({ onAddHighscore, paused = false }: SnakeGameP
               backgroundColor: "rgba(0,0,0,0.6)",
             }}
           >
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 16px)", fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
           </div>
         )}
       </div>

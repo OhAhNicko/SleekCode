@@ -39,9 +39,11 @@ import {
   writeBackJiraPairSizes,
   removeJiraInstanceTerm,
   jiraBaseTicket,
+  jiraInstKeyOfTermPaneId,
 } from "../lib/jira-layout";
+import JiraStackedPair from "./JiraStackedPair";
 import { resolveTicketColor } from "../lib/jira-colors";
-import { clearTicketForTerminal } from "../lib/jira-session";
+import { clearTicketForTerminal, nameTicketSession } from "../lib/jira-session";
 
 interface WorkspaceProps {
   tab: Tab;
@@ -110,15 +112,23 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // pair is displayed. Portals below iterate the FULL layout, so background
   // tickets' panes stay mounted and their sessions keep running.
   const jiraClaudeSide = useAppStore((s) => s.jiraClaudeSide ?? "left");
+  const jiraSubticketMode = useAppStore((s) => s.jiraSubticketMode ?? "default");
+  const jiraStacked = tab.isJiraProject && jiraSubticketMode === "stacked";
+  const jiraStackCollapsed = useAppStore((s) => s.jiraStackCollapsed);
+  const toggleJiraStackCollapsed = useAppStore((s) => s.toggleJiraStackCollapsed);
   const displayJiraPair = useMemo(() => {
     if (!tab.isJiraProject || !tab.layout || !tab.selectedJiraTicket) return null;
     // Selection is an INSTANCE key ("SUPPORT-1" or "SUPPORT-1#2" for a
     // duplicate): the displayed pair is the base ticket's pair narrowed to
     // the selected instance's terminal — its siblings stay mounted through
     // the stored layout, and the shared browser never remounts.
-    const pair = displayJiraPairFor(tab.layout, tab.selectedJiraTicket);
-    return pair ? orientJiraPair(pair, jiraClaudeSide) : null;
-  }, [tab.isJiraProject, tab.layout, tab.selectedJiraTicket, jiraClaudeSide]);
+    //
+    // Stacked mode narrows nothing: JiraStackedPair lays the whole term side
+    // out itself (and owns the sides), so no orientJiraPair here either.
+    const pair = displayJiraPairFor(tab.layout, tab.selectedJiraTicket, jiraSubticketMode);
+    if (!pair) return null;
+    return jiraSubticketMode === "stacked" ? pair : orientJiraPair(pair, jiraClaudeSide);
+  }, [tab.isJiraProject, tab.layout, tab.selectedJiraTicket, jiraClaudeSide, jiraSubticketMode]);
 
   // Migration + selection upkeep: old free-form Jira grids are rebuilt as
   // per-ticket views (sessions resume from the rail by id); a missing/stale
@@ -142,11 +152,12 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // its tab were inactive. This is what actually hides a native pane's child
   // HWND: its DOM placeholder unmounting does nothing to a native window,
   // which otherwise keeps painting its last region over the new ticket.
-  const selectedJiraTerminalId = useMemo(() => {
+  // A SET, not one id: stacked mode displays every instance of the ticket at
+  // once, and each of those panes has to count as "on screen" or its HWND
+  // stays hidden and the pane renders as an empty box.
+  const displayedJiraTerminalIds = useMemo(() => {
     if (!displayJiraPair) return null;
-    const [a, b] = displayJiraPair.children;
-    const t = a.type === "terminal" ? a : b.type === "terminal" ? b : null;
-    return t?.terminalId ?? null;
+    return new Set(findAllTerminalLeaves(displayJiraPair).map((l) => l.terminalId));
   }, [displayJiraPair]);
 
   // Each ticket's Claude pane is tinted with its ticket color — the same
@@ -171,6 +182,22 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // pair subtree, so merge its divider position into the stored full layout.
   // Sizes ONLY — the displayed term side is just the selected instance, and
   // adopting the displayed structure would drop the other instances' panes.
+  // Stacked mode's own divider write-back. JiraStackedPair hands back sizes
+  // already mapped to STORED child order, so this is the same sizes-only merge
+  // the grid path uses — never a structural replace, which would drop the
+  // other instances' panes out of the layout and kill their sessions.
+  const handleJiraPairSizes = useCallback(
+    (sizes: [number, number]) => {
+      const layout = useAppStore.getState().tabs.find((t) => t.id === tab.id)?.layout;
+      const instKey = tab.selectedJiraTicket;
+      if (!layout || !instKey) return;
+      const pair = displayJiraPairFor(layout, instKey, "stacked");
+      if (!pair) return;
+      updateTabLayout(tab.id, writeBackJiraPairSizes(layout, instKey, { ...pair, sizes }));
+    },
+    [tab.id, tab.selectedJiraTicket, updateTabLayout],
+  );
+
   const handleJiraPairLayoutChange = useCallback(
     (next: PaneLayout | null) => {
       if (!tab.layout || !tab.selectedJiraTicket) return;
@@ -933,7 +960,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
       >
         <div
           style={{
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             color: "var(--ezy-text-muted)",
             textAlign: "center",
             lineHeight: 1.6,
@@ -966,7 +993,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
               border: "1px solid var(--ezy-border)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
               color: "var(--ezy-text)",
-              fontSize: 14,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
               fontFamily: "inherit",
               cursor: "pointer",
               transition: "all 150ms ease",
@@ -1015,12 +1042,22 @@ export default function Workspace({ tab }: WorkspaceProps) {
 
   return withRail(
     <div className="h-full w-full workspace-enter">
-      <PaneGrid
-        layout={tab.isJiraProject ? displayJiraPair! : tab.layout}
-        tabId={tab.id}
-        onLayoutChange={tab.isJiraProject ? handleJiraPairLayoutChange : handleLayoutChange}
-        getTerminalSlot={getSlotEl}
-      />
+      {jiraStacked && displayJiraPair ? (
+        <JiraStackedPair
+          tabId={tab.id}
+          pair={displayJiraPair}
+          claudeSide={jiraClaudeSide}
+          getTerminalSlot={getSlotEl}
+          onPairSizes={handleJiraPairSizes}
+        />
+      ) : (
+        <PaneGrid
+          layout={tab.isJiraProject ? displayJiraPair! : tab.layout}
+          tabId={tab.id}
+          onLayoutChange={tab.isJiraProject ? handleJiraPairLayoutChange : handleLayoutChange}
+          getTerminalSlot={getSlotEl}
+        />
+      )}
       <FloatingPanesLayer
         layout={tab.isJiraProject ? displayJiraPair! : tab.layout}
         callbacks={floatingCallbacks}
@@ -1033,15 +1070,25 @@ export default function Workspace({ tab }: WorkspaceProps) {
         if (!terminal) return null;
         const slotEl = getSlotEl(termId);
         const leaf = findAllTerminalLeaves(tab.layout!).find((l) => l.terminalId === termId);
+        const jiraInstKey = leaf ? jiraInstKeyOfTermPaneId(leaf.id) : null;
         return createPortal(
           <TerminalPane
             terminalId={termId}
             terminalType={terminal.type}
             workingDir={tab.workingDir}
             isActive={activeTerminalId === termId}
-            isTabActive={isTabActive && (!tab.isJiraProject || termId === selectedJiraTerminalId)}
+            isTabActive={
+              isTabActive && (!tab.isJiraProject || !!displayedJiraTerminalIds?.has(termId))
+            }
             paneTintOverride={jiraTintForTerm(termId)}
             paneCount={allTerminalIds.length}
+            // Only stacked Jira panes fold. Elsewhere these stay undefined and
+            // no other pane header grows a chevron.
+            collapsible={jiraStacked && !!jiraInstKey}
+            collapsed={!!jiraInstKey && !!jiraStackCollapsed?.[`${tab.id}:${jiraInstKey}`]}
+            onToggleCollapse={
+              jiraInstKey ? () => toggleJiraStackCollapsed(tab.id, jiraInstKey) : undefined
+            }
             onClose={() => handleTerminalClose(termId)}
             onChangeType={(type) => {
               useAppStore.getState().changeTerminalType(termId, type);
@@ -1061,6 +1108,13 @@ export default function Workspace({ tab }: WorkspaceProps) {
             backend={tab.backend}
             onSessionResumeId={(id) => {
               updatePaneSessionResumeId(tab.id, termId, id);
+              // Codex/Gemini ticket panes learn their session id by detection,
+              // not by minting it (`--session-id` is a Claude flag), so this is
+              // the first moment their rail row can be named after the ticket.
+              // A no-op for every other pane: nameTicketSession returns unless
+              // this terminal has a ticket parked, and a Claude pane consumed
+              // that entry back at spawn.
+              nameTicketSession(termId, id, terminal.workingDir ?? tab.workingDir ?? "");
             }}
             onSwitchSession={(newSessionId) => {
               updatePaneSessionResumeId(tab.id, termId, newSessionId);

@@ -120,11 +120,11 @@ export default function PromptModal() {
         }}
       >
         <div style={{ padding: "16px 18px 12px" }}>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>{req.title}</div>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600 }}>{req.title}</div>
           {req.detail && (
             <div
               style={{
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 marginTop: 6,
                 lineHeight: 1.45,
                 color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
@@ -138,7 +138,7 @@ export default function PromptModal() {
             <>
               <div
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   marginTop: 14,
                   marginBottom: 5,
                   color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
@@ -157,7 +157,7 @@ export default function PromptModal() {
                   width: "100%",
                   boxSizing: "border-box",
                   padding: "7px 10px",
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   outline: "none",
                   background: "var(--ezy-surface, #161b22)",
@@ -168,7 +168,7 @@ export default function PromptModal() {
             </>
           )}
           {validationError && (
-            <div style={{ fontSize: 11, marginTop: 6, color: "#e5534b" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", marginTop: 6, color: "#e5534b" }}>
               {validationError}
             </div>
           )}
@@ -176,7 +176,7 @@ export default function PromptModal() {
             <>
               <div
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   marginTop: 14,
                   marginBottom: 5,
                   color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
@@ -194,7 +194,7 @@ export default function PromptModal() {
                   width: "100%",
                   boxSizing: "border-box",
                   padding: "7px 10px",
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   outline: "none",
                   background: "var(--ezy-surface, #161b22)",
@@ -240,11 +240,11 @@ export default function PromptModal() {
                       transition: "border-color 0.15s",
                     }}
                   >
-                    <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>{c.label}</div>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, lineHeight: 1.3 }}>{c.label}</div>
                     {sub && (
                       <div
                         style={{
-                          fontSize: 11,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                           marginTop: 2,
                           lineHeight: 1.4,
                           color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
@@ -267,7 +267,7 @@ export default function PromptModal() {
                     display: "flex",
                     alignItems: "center",
                     gap: 8,
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     cursor: "pointer",
                     color: "var(--ezy-text, #e6edf3)",
                   }}
@@ -288,7 +288,7 @@ export default function PromptModal() {
           {req.requireTyped && (
             <div
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 marginTop: 8,
                 color: "var(--ezy-text-muted, rgba(230,237,243,0.6))",
               }}
@@ -309,7 +309,7 @@ export default function PromptModal() {
             onClick={() => finish(false)}
             style={{
               padding: "6px 14px",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: "pointer",
               border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
@@ -326,7 +326,7 @@ export default function PromptModal() {
               onClick={() => finish(true)}
               style={{
                 padding: "6px 14px",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 fontWeight: 600,
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 border: "none",

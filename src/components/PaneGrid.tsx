@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -12,7 +12,7 @@ import {
 } from "../lib/layout-utils";
 import { useAppStore } from "../store";
 import { snapshotPane } from "../store/undoCloseStore";
-import { flushNow, setDragActive } from "../native-term/frameSync";
+import { TerminalSlotHost, BrowserSlotHost, useSplitterDragging } from "./PaneSlotHost";
 import EditorPane from "./EditorPane";
 import KanbanBoard from "./KanbanBoard";
 import CodeReviewPane from "./CodeReviewPane";
@@ -98,23 +98,9 @@ export default function PaneGrid({
   // for every native pane. Track whether a handle in THIS grid armed the
   // flag and clear it when the grid unmounts; frameSync's own watchdog
   // covers a handle that unmounts while the grid stays mounted.
-  const dragArmedRef = useRef(false);
-  const handleSplitterDragging = useCallback((isDragging: boolean) => {
-    dragArmedRef.current = isDragging;
-    setDragActive(isDragging);
-    if (!isDragging) {
-      requestAnimationFrame(() => flushNow());
-    }
-  }, []);
-  useEffect(
-    () => () => {
-      if (dragArmedRef.current) {
-        dragArmedRef.current = false;
-        setDragActive(false);
-      }
-    },
-    []
-  );
+  // All of the above now lives in `useSplitterDragging` (PaneSlotHost.tsx),
+  // shared with the Jira stacked renderer so the two cannot drift.
+  const handleSplitterDragging = useSplitterDragging();
 
   const handleKanbanReposition = useCallback(
     (vertical: boolean) => {
@@ -408,46 +394,17 @@ export default function PaneGrid({
 
     if (node.type === "terminal") {
       return (
-        <div
+        <TerminalSlotHost
           key={node.id}
-          data-pane-id={node.id}
-          className="h-full w-full"
-          ref={(el) => {
-            if (el) {
-              const slot = getTerminalSlot(node.terminalId);
-              if (slot.parentElement !== el) {
-                // Remove stale slot (from a previous terminal assigned to this pane)
-                while (el.firstChild) el.removeChild(el.firstChild);
-                el.appendChild(slot);
-                // Restore scrollTop — DOM detachment silently resets it to 0,
-                // and no scroll events fire on detached elements. TerminalPane
-                // continuously saves the real scrollTop as a data attribute.
-                const viewport = slot.querySelector(".xterm-viewport") as HTMLElement | null;
-                const saved = viewport?.dataset.savedScrollTop;
-                if (viewport && saved) {
-                  const scrollTop = parseFloat(saved);
-                  if (scrollTop > 0) viewport.scrollTop = scrollTop;
-                }
-              }
-            }
-          }}
+          paneId={node.id}
+          terminalId={node.terminalId}
+          getTerminalSlot={getTerminalSlot}
         />
       );
     }
 
     if (node.type === "browser") {
-      // Pure positioning anchor — the iframe lives in a fixed-position slot
-      // owned by Workspace and overlays this placeholder via getBoundingClientRect.
-      // Because the iframe DOM never moves, it never disconnects from the
-      // document and never reloads.
-      return (
-        <div
-          key={node.id}
-          data-pane-id={node.id}
-          data-browser-pane-id={node.id}
-          className="h-full w-full"
-        />
-      );
+      return <BrowserSlotHost key={node.id} paneId={node.id} />;
     }
 
     if (node.type === "editor") {

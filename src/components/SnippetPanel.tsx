@@ -83,7 +83,7 @@ export default function SnippetPanel({ onClose }: SnippetPanelProps) {
     border: "1px solid var(--ezy-border)",
     borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
     color: "var(--ezy-text)",
-    fontSize: 13,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
     fontFamily: "inherit",
     outline: "none",
   };
@@ -125,7 +125,7 @@ export default function SnippetPanel({ onClose }: SnippetPanelProps) {
             borderBottom: "1px solid var(--ezy-border)",
           }}
         >
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)" }}>
             Snippets
           </span>
           <div style={{ display: "flex", gap: 8 }}>
@@ -137,7 +137,7 @@ export default function SnippetPanel({ onClose }: SnippetPanelProps) {
                 border: "none",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 color: "#fff",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 fontWeight: 600,
                 fontFamily: "inherit",
                 cursor: "pointer",
@@ -167,12 +167,12 @@ export default function SnippetPanel({ onClose }: SnippetPanelProps) {
           {/* Variable fill dialog */}
           {runningSnippet && (
             <div style={{ padding: 16, borderBottom: "1px solid var(--ezy-border)" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)", marginBottom: 8 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)", marginBottom: 8 }}>
                 Fill variables for: {runningSnippet.name}
               </div>
               {runningSnippet.variables.map((v) => (
                 <div key={v.name} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-accent)", minWidth: 100 }}>
+                  <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600, color: "var(--ezy-accent)", minWidth: 100 }}>
                     ${v.name}
                   </span>
                   <input
@@ -192,7 +192,7 @@ export default function SnippetPanel({ onClose }: SnippetPanelProps) {
                     border: "1px solid var(--ezy-border)",
                     borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     color: "var(--ezy-text-secondary)",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontFamily: "inherit",
                     cursor: "pointer",
                   }}
@@ -207,7 +207,7 @@ export default function SnippetPanel({ onClose }: SnippetPanelProps) {
                     border: "none",
                     borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     color: "#fff",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontWeight: 600,
                     fontFamily: "inherit",
                     cursor: "pointer",
@@ -230,7 +230,7 @@ export default function SnippetPanel({ onClose }: SnippetPanelProps) {
 
           {/* Snippet list */}
           {!showEditor && snippets.length === 0 && !runningSnippet && (
-            <div style={{ padding: "32px 16px", textAlign: "center", fontSize: 13, color: "var(--ezy-text-muted)" }}>
+            <div style={{ padding: "32px 16px", textAlign: "center", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-muted)" }}>
               No snippets yet. Create one to save reusable command sequences.
             </div>
           )}
@@ -247,15 +247,15 @@ export default function SnippetPanel({ onClose }: SnippetPanelProps) {
               }}
             >
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
                   {snippet.name}
                 </div>
                 {snippet.description && (
-                  <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2 }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2 }}>
                     {snippet.description}
                   </div>
                 )}
-                <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 4, fontFamily: "'Hack', 'Geist Mono', monospace" }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", marginTop: 4, fontFamily: "'Hack', 'Geist Mono', monospace" }}>
                   {snippet.commands.slice(0, 2).join(" && ")}
                   {snippet.commands.length > 2 && " ..."}
                 </div>

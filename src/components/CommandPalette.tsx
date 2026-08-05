@@ -237,7 +237,7 @@ export default function CommandPalette({
               backgroundColor: "transparent",
               border: "none",
               outline: "none",
-              fontSize: 15,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 15px)",
               color: "var(--ezy-text)",
               fontFamily: "inherit",
             }}
@@ -254,7 +254,7 @@ export default function CommandPalette({
               style={{
                 padding: "24px 16px",
                 textAlign: "center",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 color: "var(--ezy-text-muted)",
               }}
             >
@@ -266,7 +266,7 @@ export default function CommandPalette({
                 <div
                   style={{
                     padding: "6px 16px 4px",
-                    fontSize: 10,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                     fontWeight: 600,
                     letterSpacing: "0.08em",
                     textTransform: "uppercase",
@@ -284,7 +284,7 @@ export default function CommandPalette({
                       data-palette-item
                       style={{
                         padding: "8px 16px",
-                        fontSize: 13,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                         color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
                         backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "transparent",
                         cursor: "pointer",
@@ -307,26 +307,26 @@ export default function CommandPalette({
           style={{
             padding: "6px 16px",
             borderTop: "1px solid var(--ezy-border)",
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: "var(--ezy-text-muted)",
             display: "flex",
             gap: 12,
           }}
         >
           <span>
-            <kbd style={{ padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: 9 }}>
+            <kbd style={{ padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: "calc(var(--ezy-font-scale, 1) * 9px)" }}>
               ↑↓
             </kbd>{" "}
             navigate
           </span>
           <span>
-            <kbd style={{ padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: 9 }}>
+            <kbd style={{ padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: "calc(var(--ezy-font-scale, 1) * 9px)" }}>
               ↵
             </kbd>{" "}
             select
           </span>
           <span>
-            <kbd style={{ padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: 9 }}>
+            <kbd style={{ padding: "1px 4px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: "var(--ezy-surface)", border: "1px solid var(--ezy-border)", fontSize: "calc(var(--ezy-font-scale, 1) * 9px)" }}>
               esc
             </kbd>{" "}
             close

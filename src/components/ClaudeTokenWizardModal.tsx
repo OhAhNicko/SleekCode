@@ -237,7 +237,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
             justifyContent: "space-between",
           }}
         >
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>Set up Claude login token</span>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>Set up Claude login token</span>
           <svg
             width="14"
             height="14"
@@ -257,7 +257,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
         {/* Body */}
         <div style={{ padding: 16 }}>
           {phase === "connecting" && (
-            <div style={{ fontSize: 12, color: "var(--ezy-text-muted)", padding: "8px 0", lineHeight: 1.5 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", padding: "8px 0", lineHeight: 1.5 }}>
               Connecting to <strong style={{ color: "var(--ezy-text-secondary)" }}>{server.username}@{server.host}</strong> and
               starting <code style={inlineCodeStyle}>claude setup-token</code>…
             </div>
@@ -265,10 +265,10 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
 
           {(phase === "authorize" || phase === "exchanging") && (
             <>
-              <div style={{ fontSize: 13, color: "var(--ezy-text)", marginBottom: 6, fontWeight: 500 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)", marginBottom: 6, fontWeight: 500 }}>
                 Authorize in your browser
               </div>
-              <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>
                 Open this link, sign in and approve. Anthropic will show you a code — paste it below.
               </div>
 
@@ -289,7 +289,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
                   data-tooltip={url}
                   style={{
                     flex: 1,
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     color: "var(--ezy-accent)",
                     cursor: "pointer",
                     overflow: "hidden",
@@ -339,7 +339,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ezy-accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M20 6L9 17l-5-5" />
               </svg>
-              <span style={{ fontSize: 13, color: "var(--ezy-text)" }}>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)" }}>
                 Token captured and saved to this server. Remember to <strong>Save</strong> the server.
               </span>
             </div>
@@ -347,7 +347,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
 
           {phase === "error" && (
             <>
-              <div style={{ fontSize: 13, color: "var(--ezy-red, #e55)", marginBottom: 10, lineHeight: 1.5 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-red, #e55)", marginBottom: 10, lineHeight: 1.5 }}>
                 {errorMsg}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
@@ -367,7 +367,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
               <button
                 onClick={() => setShowOutput((v) => !v)}
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   color: "var(--ezy-text-muted)",
                   background: "none",
                   border: "none",
@@ -383,7 +383,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
                   style={{
                     marginTop: 8,
                     padding: 10,
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     lineHeight: 1.5,
                     color: "var(--ezy-text-secondary)",
                     backgroundColor: "var(--ezy-bg)",
@@ -409,7 +409,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>{children}</div>
+    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>{children}</div>
   );
 }
 
@@ -425,7 +425,7 @@ const inlineCodeStyle: React.CSSProperties = {
 const inputStyle: React.CSSProperties = {
   width: "100%",
   padding: "8px 10px",
-  fontSize: 13,
+  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
   color: "var(--ezy-text)",
   backgroundColor: "var(--ezy-surface)",
   border: "1px solid var(--ezy-border)",
@@ -436,7 +436,7 @@ const inputStyle: React.CSSProperties = {
 };
 
 const smallBtnStyle: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
   padding: "4px 8px",
   borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
   border: "1px solid var(--ezy-border)",
@@ -450,7 +450,7 @@ const smallBtnStyle: React.CSSProperties = {
 function buttonStyle(primary: boolean, disabled: boolean): React.CSSProperties {
   return {
     padding: "8px 14px",
-    fontSize: 13,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
     fontWeight: 600,
     color: primary ? (disabled ? "var(--ezy-text-muted)" : "#fff") : "var(--ezy-text)",
     backgroundColor: primary ? (disabled ? "var(--ezy-surface)" : "var(--ezy-accent)") : "var(--ezy-surface-raised)",

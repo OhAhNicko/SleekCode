@@ -38,7 +38,7 @@ export default function SnippetEditor({ snippet, onSave, onCancel }: SnippetEdit
     border: "1px solid var(--ezy-border)",
     borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
     color: "var(--ezy-text)",
-    fontSize: 13,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
     fontFamily: "inherit",
     outline: "none",
   };
@@ -52,26 +52,26 @@ export default function SnippetEditor({ snippet, onSave, onCancel }: SnippetEdit
         padding: 16,
       }}
     >
-      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)" }}>
+      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)" }}>
         {snippet ? "Edit Snippet" : "New Snippet"}
       </div>
 
       <div>
-        <label style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 4, display: "block" }}>
+        <label style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 4, display: "block" }}>
           Name
         </label>
         <input value={name} onChange={(e) => setName(e.target.value)} style={inputStyle} placeholder="e.g. Deploy to staging" />
       </div>
 
       <div>
-        <label style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 4, display: "block" }}>
+        <label style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 4, display: "block" }}>
           Description
         </label>
         <input value={description} onChange={(e) => setDescription(e.target.value)} style={inputStyle} placeholder="Optional description" />
       </div>
 
       <div>
-        <label style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 4, display: "block" }}>
+        <label style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 4, display: "block" }}>
           Commands (one per line, use $VAR_NAME for variables)
         </label>
         <textarea
@@ -89,7 +89,7 @@ export default function SnippetEditor({ snippet, onSave, onCancel }: SnippetEdit
 
       {variables.length > 0 && (
         <div>
-          <label style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 4, display: "block" }}>
+          <label style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 4, display: "block" }}>
             Detected Variables
           </label>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -97,7 +97,7 @@ export default function SnippetEditor({ snippet, onSave, onCancel }: SnippetEdit
               <div key={v.name} style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span
                   style={{
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontWeight: 600,
                     color: "var(--ezy-accent)",
                     minWidth: 100,
@@ -130,7 +130,7 @@ export default function SnippetEditor({ snippet, onSave, onCancel }: SnippetEdit
             border: "1px solid var(--ezy-border)",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             color: "var(--ezy-text-secondary)",
-            fontSize: 13,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
             fontFamily: "inherit",
             cursor: "pointer",
           }}
@@ -145,7 +145,7 @@ export default function SnippetEditor({ snippet, onSave, onCancel }: SnippetEdit
             border: "none",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             color: "#fff",
-            fontSize: 13,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
             fontWeight: 600,
             fontFamily: "inherit",
             cursor: "pointer",

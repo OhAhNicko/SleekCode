@@ -67,7 +67,7 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
             padding: "3px 8px",
             paddingLeft: 8 + depth * 16,
             cursor: "pointer",
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             color: isHighlighted ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
             backgroundColor: isHighlighted ? "var(--ezy-accent-glow)" : "transparent",
             transition: "background-color 100ms ease",
@@ -126,7 +126,7 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
         {entry.is_directory && isExpanded && (
           <div>
             {isLoading && !cache[entry.path] ? (
-              <div style={{ padding: "3px 8px", paddingLeft: 8 + (depth + 1) * 16, fontSize: 11, color: "var(--ezy-text-muted)" }}>
+              <div style={{ padding: "3px 8px", paddingLeft: 8 + (depth + 1) * 16, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
                 Loading...
               </div>
             ) : (
@@ -230,7 +230,7 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
       {cache[rootDir] ? (
         cache[rootDir].map((entry) => renderEntry(entry, 0))
       ) : (
-        <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>
+        <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>
           Loading...
         </div>
       )}

@@ -5,6 +5,12 @@ import { getPtyWrite, registerTerminalDataListener, unregisterTerminalDataListen
 import { injectPort } from "../lib/server-commands";
 import { isSameProject, resolveDevServerBackend } from "../lib/spawn-dev-server";
 import { getDefaultBackend } from "../lib/platform";
+import { getPaneState } from "../lib/pane-state-registry";
+import { getTerminalActions } from "../lib/terminal-actions";
+import { registerDevServerActions, unregisterDevServerActions } from "../lib/dev-server-actions";
+import { FaStop, FaPlay } from "react-icons/fa";
+import { FaXmark } from "react-icons/fa6";
+import { BiRefresh } from "react-icons/bi";
 import type { DevServer } from "../types";
 import TerminalPane from "./TerminalPane";
 
@@ -121,6 +127,29 @@ function guessDefaultPort(command: string): number {
  * 5173. With a sibling present we only kill the port this server actually
  * reported, which is the one we know is ours.
  */
+/**
+ * True when the shell that would run the command no longer exists, so writing
+ * to it would vanish.
+ *
+ * A dev server's start/restart has always been *typed text*: ^C, then the
+ * command again. That only works while the PTY is alive — and a dev server
+ * routinely outlives its PTY. `wsl --shutdown` (Settings › Danger Zone, or WSL
+ * falling over on its own) takes the whole VM down: bash reports its foreground
+ * job killed ("Terminated"), the wsl.exe child exits, and `pty.rs` drops the
+ * session from its map. The row, the pane and its LAST PAINTED FRAME all
+ * survive — so nothing on screen says the terminal is a corpse, and every
+ * button silently wrote into a pty id the backend no longer knows (`pty_write`
+ * → `Err("PTY not found")`, an unhandled rejection), while still flipping the
+ * row to "starting". That is the "can't restart it, it's just stuck" report:
+ * a grey dot on "detecting…" with no way back short of removing the server.
+ *
+ * Both renderers publish `exited` when their PTY dies, and the write registry
+ * goes with the pane, so either answer means "respawn, don't type".
+ */
+function isPtyGone(terminalId: string): boolean {
+  return getPaneState(terminalId).exited || !getPtyWrite(terminalId);
+}
+
 function buildCleanupPrefix(
   command: string,
   detectedPort: number,
@@ -161,6 +190,84 @@ function buildCleanupPrefix(
 }
 
 /**
+ * How far the header's control cluster is held off the panel's right edge.
+ *
+ * The panel is `right: 0`, so its right edge IS the window's right edge — and
+ * so is the right edge of whatever workspace pane sits behind it. That pane's
+ * header parks three 20px buttons (expand / restart / close) at 2px gaps behind
+ * 6px of padding, i.e. a band from 6px to 76px inboard, and they are
+ * `opacity-0 group-hover:opacity-100` — INVISIBLE but still hit-testable. So a
+ * control stacked over that band is a trap: the first click closes the panel,
+ * the panel vanishes, and the second click of a double-click lands on a pane
+ * button nobody could see. Clearing the whole band (plus ~20px, roughly one
+ * button) is what keeps the panel's controls off it — not just the ✕, since
+ * whichever control ends up rightmost inherits the problem.
+ */
+const HEADER_RIGHT_GUTTER_PX = 96;
+
+/**
+ * One metric for every control in the panel header.
+ *
+ * The four actions used to be three hand-rolled inline SVGs plus a react-icons
+ * ✕, in 28px boxes beside the 24px shell toggle, with ink ranging from a 10px
+ * solid square down to a 5px cross — the "various alignments and sizes" report.
+ * They now share a box, a radius and an icon set with the dev-server SIDEBAR
+ * row and with the pane header (`TerminalHeader`), so one action looks the same
+ * everywhere it appears instead of three surfaces each inventing a size.
+ *
+ * A `<button>`, not the `<div onClick>` two of them were: keyboard-reachable
+ * and labelled. The line-height zeroing that stops a button from inflating a
+ * compact header (CLAUDE.md's CSS gotchas) was already solved on the ✕ here —
+ * this just applies it to all four.
+ */
+function HeaderIconButton({
+  label,
+  tooltip,
+  onClick,
+  danger,
+  children,
+}: {
+  label: string;
+  tooltip?: string;
+  onClick: () => void;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      data-tooltip={tooltip ?? label}
+      onClick={onClick}
+      style={{
+        width: 24,
+        height: 24,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
+        cursor: "pointer",
+        transition: "background-color 120ms ease",
+        padding: 0,
+        margin: 0,
+        border: "none",
+        background: "transparent",
+        lineHeight: 0,
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = danger
+          ? "rgba(220,60,60,0.15)"
+          : "var(--ezy-accent-glow)";
+      }}
+      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
  * Renders TerminalPanes for all dev servers so PTYs stay alive.
  * All terminals live in one container that is always sized.
  * When collapsed it's off-screen; when expanded it slides in as a panel.
@@ -189,6 +296,10 @@ export default function DevServerTerminalHost() {
   const stoppedMonitorRef = useRef<Map<string, string>>(new Map());
   // Active SSH port-forward tunnels keyed by dev-server id
   const tunnelHandlesRef = useRef<Map<string, number>>(new Map());
+  // Timers for grace-period unregistration after port detection
+  const graceTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Consecutive failed port probes per dev server (liveness poll below)
+  const portFailuresRef = useRef<Map<string, number>>(new Map());
 
   /** Accumulated PTY text per dev server, for the port/error scan.
    *
@@ -302,38 +413,132 @@ export default function DevServerTerminalHost() {
     [updateDevServerStatus, updateDevServerError]
   );
 
-  /** Send Ctrl+C (twice for stubborn processes), wait, then re-run the command. */
-  const restartServer = useCallback(
-    (serverId: string, terminalId: string, command: string, delayMs = 1500) => {
-      const write = getPtyWrite(terminalId);
-      if (!write) return;
-      write("\x03");
-      // Second Ctrl+C after 100ms for processes that need confirmation
-      setTimeout(() => write("\x03"), 100);
-      // Re-enable detection — clear all resolved state BEFORE triggering re-render
-      resolvedRef.current.delete(serverId);
-      portDetectedRef.current.delete(serverId);
-      stoppedMonitorRef.current.delete(serverId);
-      // Stale output must not be re-scanned: it still holds the previous run's
-      // port line, which would be "detected" before the new server even starts.
-      scanBuffersRef.current.delete(serverId);
-      // Tear down any active SSH tunnel; a fresh one will spawn on next port detect
-      const tunnel = tunnelHandlesRef.current.get(serverId);
-      if (tunnel !== undefined) {
-        tunnelHandlesRef.current.delete(serverId);
-        stopSshForward(tunnel);
-      }
+  /**
+   * Forget everything the port/error scanner remembers about the previous run.
+   *
+   * MUST be called synchronously BEFORE the store update that triggers the
+   * re-render. A ref mutation does not re-render, so clearing these in a later
+   * effect is too late: the main effect has already read `resolvedRef`, skipped
+   * both the unregister and the re-register, and nothing will ever run it again
+   * — the row then sits on "detecting…" while the server is perfectly healthy
+   * (docs/learnings/2026-03-09-devserver-stopped-detection.md, "Bug 2").
+   */
+  const resetDetectionState = useCallback((serverId: string) => {
+    resolvedRef.current.delete(serverId);
+    portDetectedRef.current.delete(serverId);
+    stoppedMonitorRef.current.delete(serverId);
+    lockRetryRef.current.delete(serverId);
+    // Stale output must not be re-scanned: it still holds the previous run's
+    // port line, which would be "detected" before the new server even starts.
+    scanBuffersRef.current.delete(serverId);
+    const graceTimer = graceTimersRef.current.get(serverId);
+    if (graceTimer) {
+      clearTimeout(graceTimer);
+      graceTimersRef.current.delete(serverId);
+    }
+    // Tear down any active SSH tunnel; a fresh one will spawn on next port detect
+    const tunnel = tunnelHandlesRef.current.get(serverId);
+    if (tunnel !== undefined) {
+      tunnelHandlesRef.current.delete(serverId);
+      stopSshForward(tunnel);
+    }
+  }, []);
+
+  /** The store half of "this server is coming up": no port, no error, no URLs. */
+  const markStarting = useCallback(
+    (serverId: string) => {
       updateDevServerStatus(serverId, "starting");
       updateDevServerPort(serverId, 0);
       updateDevServerError(serverId, undefined);
       setDevServerNetworkUrls(serverId, []);
-      setTimeout(() => write(command + "\r"), delayMs);
     },
     [updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls]
   );
 
-  // Timers for grace-period unregistration after port detection
-  const graceTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  /**
+   * Bring a dead terminal back and re-run the command in it (see `isPtyGone`).
+   *
+   * Respawning goes through the pane's OWN restart action — the same one the
+   * pane header and the post-`wsl --shutdown` sweep use — so there is exactly
+   * one respawn implementation per renderer rather than a dev-server-specific
+   * copy. `commandSentRef` is cleared so the fresh PTY's `onPtyReady` re-sends
+   * the command, which is how it got there on the very first spawn.
+   *
+   * If no pane registered an action there is nothing to respawn, and saying so
+   * beats a "starting" the row can never leave.
+   */
+  const relaunchServer = useCallback(
+    (ds: DevServer) => {
+      const actions = getTerminalActions(ds.terminalId);
+      if (!actions) {
+        updateDevServerError(
+          ds.id,
+          "Terminal is gone — remove this server and add it again",
+        );
+        return;
+      }
+      resetDetectionState(ds.id);
+      commandSentRef.current.delete(ds.id);
+      markStarting(ds.id);
+      actions.restart();
+    },
+    [resetDetectionState, markStarting, updateDevServerError]
+  );
+
+  /** Run the command. Respawns the terminal first when the PTY is gone. */
+  const startServer = useCallback(
+    (ds: DevServer) => {
+      if (isPtyGone(ds.terminalId)) {
+        relaunchServer(ds);
+        return;
+      }
+      resetDetectionState(ds.id);
+      getPtyWrite(ds.terminalId)?.(ds.command + "\r");
+      markStarting(ds.id);
+    },
+    [relaunchServer, resetDetectionState, markStarting]
+  );
+
+  /** Send Ctrl+C (twice for stubborn processes), wait, then re-run the command. */
+  const restartServer = useCallback(
+    (ds: DevServer, delayMs = 1500) => {
+      if (isPtyGone(ds.terminalId)) {
+        relaunchServer(ds);
+        return;
+      }
+      const write = getPtyWrite(ds.terminalId);
+      if (!write) return;
+      write("\x03");
+      // Second Ctrl+C after 100ms for processes that need confirmation
+      setTimeout(() => write("\x03"), 100);
+      resetDetectionState(ds.id);
+      markStarting(ds.id);
+      setTimeout(() => write(ds.command + "\r"), delayMs);
+    },
+    [relaunchServer, resetDetectionState, markStarting]
+  );
+
+  /**
+   * Publish both actions per row so every OTHER surface — the sidebar's ▶ / ↻,
+   * the row context menu, the port-edit restart — drives the same code instead
+   * of reimplementing it without access to the refs above.
+   *
+   * The server is re-read from the store at call time: `handleSaveEdit` commits
+   * the new command and then restarts, so the closure's copy would re-run the
+   * command the user just edited away.
+   */
+  useEffect(() => {
+    for (const ds of devServers) {
+      const current = () => useAppStore.getState().devServers.find((d) => d.id === ds.id);
+      registerDevServerActions(ds.id, {
+        start: () => { const cur = current(); if (cur) startServer(cur); },
+        restart: () => { const cur = current(); if (cur) restartServer(cur); },
+      });
+    }
+    return () => {
+      for (const ds of devServers) unregisterDevServerActions(ds.id);
+    };
+  }, [devServers, startServer, restartServer]);
 
 
   /**
@@ -557,8 +762,14 @@ export default function DevServerTerminalHost() {
               }
               // After grace period, replace with a lightweight stopped-detection listener
               const timer = setTimeout(() => {
-                resolvedRef.current.add(ds.id);
                 graceTimersRef.current.delete(ds.id);
+                // The liveness poll may have already declared this server
+                // stopped — registering a monitor then would REPLACE nothing
+                // (the listener slot is empty) but would sit forever waiting
+                // for a prompt on a dead server.
+                const cur = useAppStore.getState().devServers.find((d) => d.id === ds.id);
+                if (!cur || cur.status === "stopped" || cur.status === "error") return;
+                resolvedRef.current.add(ds.id);
                 stoppedMonitorRef.current.set(ds.id, ds.terminalId);
                 let monBuf = "";
                 const monDec = new TextDecoder();
@@ -667,6 +878,69 @@ export default function DevServerTerminalHost() {
     }
   }, [devServers]);
 
+  // ── Liveness poll: the authoritative "is it still up" for LOCAL servers ──
+  //
+  // The output-based stopped-detection watches for the shell prompt at the
+  // END of the buffer — and loses the race when the dying server prints
+  // stragglers AFTER the prompt (`concurrently` echoes "[web] … exited with
+  // code SIGTERM" once bash has already prompted). No further output ever
+  // arrives, so the buffer never ends with a prompt again and the sidebar +
+  // header stayed green on a dead server. `status === "running"` always
+  // implies a detected port (see setPort), so poll the port itself: whatever
+  // killed the server — Ctrl+C, SIGTERM, a crash, kill -9 — the socket closes.
+  //
+  // Local servers only. An SSH dev server's local port is our own tunnel:
+  // ssh keeps accepting local connects even after the remote process died, so
+  // a probe would test the tunnel, not the server. Those keep the output
+  // heuristic.
+  //
+  // Two consecutive failures before declaring death: one failed probe can be
+  // a restart-in-progress or a transiently exhausted accept queue.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      for (const ds of useAppStore.getState().devServers) {
+        if (ds.serverId) continue;
+        if (ds.status !== "running" || !(ds.port > 0)) {
+          portFailuresRef.current.delete(ds.id);
+          continue;
+        }
+        void invoke<boolean>("port_check", { port: ds.port })
+          .then((alive) => {
+            // Re-read: the server may have been restarted or re-ported while
+            // the probe was in flight — a verdict about the OLD port must not
+            // touch the new state.
+            const cur = useAppStore.getState().devServers.find((d) => d.id === ds.id);
+            if (!cur || cur.status !== "running" || cur.port !== ds.port) {
+              portFailuresRef.current.delete(ds.id);
+              return;
+            }
+            if (alive) {
+              portFailuresRef.current.delete(ds.id);
+              return;
+            }
+            const fails = (portFailuresRef.current.get(ds.id) ?? 0) + 1;
+            portFailuresRef.current.set(ds.id, fails);
+            if (fails < 2) return;
+            portFailuresRef.current.delete(ds.id);
+            // Retire ALL detection machinery for this server, exactly as the
+            // prompt path does: resolved (so the scan effect never
+            // re-registers), no monitor, no grace timer, no stray listener.
+            const grace = graceTimersRef.current.get(ds.id);
+            if (grace) {
+              clearTimeout(grace);
+              graceTimersRef.current.delete(ds.id);
+            }
+            stoppedMonitorRef.current.delete(ds.id);
+            unregisterTerminalDataListener(ds.terminalId);
+            resolvedRef.current.add(ds.id);
+            updateDevServerStatus(ds.id, "stopped");
+          })
+          .catch(() => {});
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [updateDevServerStatus]);
+
   // ESC to close. Previously this effect also fired a synthetic window resize
   // event to trigger an xterm refit when the panel opened, but TerminalPane
   // refits via its own ResizeObserver on the container element — the synthetic
@@ -737,7 +1011,8 @@ export default function DevServerTerminalHost() {
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              padding: "10px 16px",
+              // Asymmetric on purpose — see HEADER_RIGHT_GUTTER_PX.
+              padding: `10px ${HEADER_RIGHT_GUTTER_PX}px 10px 16px`,
               borderBottom: "1px solid var(--ezy-border)",
               backgroundColor: "var(--ezy-surface)",
               flexShrink: 0,
@@ -761,7 +1036,7 @@ export default function DevServerTerminalHost() {
               />
               <span
                 style={{
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   fontWeight: 600,
                   color: "var(--ezy-text)",
                   overflow: "hidden",
@@ -771,11 +1046,14 @@ export default function DevServerTerminalHost() {
               >
                 {expandedServer.command}
               </span>
-              <span style={{ fontSize: 12, color: "var(--ezy-text-muted)", flexShrink: 0 }}>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", flexShrink: 0 }}>
                 {expandedServer.projectName}
               </span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+            {/* gap 2 matches the pane header's `gap-0.5`; every control in this
+                row is 24px tall, the shell toggle included, so the row has one
+                baseline instead of 28px boxes beside a 24px group. */}
+            <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
               {/* Shell toggle — local servers on a Windows host only. Lets the user
                   override the Tauri auto-detection (WSL bash ⇄ Windows PowerShell). */}
               {!expandedServer.serverId &&
@@ -788,7 +1066,9 @@ export default function DevServerTerminalHost() {
                     display: "inline-flex",
                     alignItems: "center",
                     height: 24,
-                    marginRight: 4,
+                    // Wider than the 2px between the action buttons: "which
+                    // shell" is a different question from "do something".
+                    marginRight: 8,
                     border: "1px solid var(--ezy-border)",
                     borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                     overflow: "hidden",
@@ -807,7 +1087,7 @@ export default function DevServerTerminalHost() {
                           alignItems: "center",
                           height: "100%",
                           padding: "0 8px",
-                          fontSize: 11,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                           fontWeight: 600,
                           letterSpacing: 0.2,
                           cursor: active ? "default" : "pointer",
@@ -824,27 +1104,31 @@ export default function DevServerTerminalHost() {
                   })}
                 </div>
               )}
-              {/* Restart */}
-              <div
-               
-                style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", cursor: "pointer", transition: "background-color 120ms ease" }}
-                onClick={() => {
-                  restartServer(expandedServer.id, expandedServer.terminalId, expandedServer.command);
-                }}
-                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
-              >
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.3" strokeLinecap="round">
-                  <path d="M3.5 2v4h4" />
-                  <path d="M3.5 6A5.5 5.5 0 1 1 2.5 8" />
-                </svg>
-              </div>
+              {/* Sizes here are set by measured INK, not by nominal `size` —
+                  these three glyphs come from three icon sets and fill their
+                  viewBoxes by wildly different amounts, which is how the old
+                  header ended up with a 6.3px ✕ beside a 10px square. Rendered
+                  widths: Restart 10.8, Stop 8.7, ✕ 9.0. Restart runs ~1.25×
+                  the filled marks on purpose — an outlined glyph reads lighter
+                  than a solid one of the same width.
 
-              {/* Stop / Play */}
+                  BiRefresh needs no `scale()` here (the pane header's 1.3× is
+                  correcting a nominal 12 in a 28px-tall header); at 13 its own
+                  viewBox padding lands it exactly where it should be. */}
+              <HeaderIconButton
+                label="Restart"
+                tooltip="Restart the dev server"
+                onClick={() => { restartServer(expandedServer); }}
+              >
+                <BiRefresh size={13} color="var(--ezy-text-muted)" />
+              </HeaderIconButton>
+
+              {/* Stop / Start */}
               {expandedServer.status === "running" || expandedServer.status === "starting" ? (
-                <div
-                 
-                  style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", cursor: "pointer", transition: "background-color 120ms ease" }}
+                <HeaderIconButton
+                  label="Stop"
+                  tooltip="Stop the dev server"
+                  danger
                   onClick={() => {
                     const write = getPtyWrite(expandedServer.terminalId);
                     if (write) write("\x03");
@@ -855,82 +1139,46 @@ export default function DevServerTerminalHost() {
                     }
                     updateDevServerStatus(expandedServer.id, "stopped");
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "rgba(220,60,60,0.15)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
                 >
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="var(--ezy-text-muted)">
-                    <rect x="1" y="1" width="10" height="10" rx="1.5" />
-                  </svg>
-                </div>
+                  <FaStop size={10} color="var(--ezy-text-muted)" />
+                </HeaderIconButton>
               ) : (
-                <div
-                 
-                  style={{ width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)", cursor: "pointer", transition: "background-color 120ms ease" }}
-                  onClick={() => {
-                    // Clear resolved state BEFORE triggering re-render so main effect re-registers listener
-                    resolvedRef.current.delete(expandedServer.id);
-                    portDetectedRef.current.delete(expandedServer.id);
-                    stoppedMonitorRef.current.delete(expandedServer.id);
-                    const write = getPtyWrite(expandedServer.terminalId);
-                    if (write) write(expandedServer.command + "\r");
-                    updateDevServerStatus(expandedServer.id, "starting");
-                    updateDevServerPort(expandedServer.id, 0);
-                    updateDevServerError(expandedServer.id, undefined);
-                  }}
-                  onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+                <HeaderIconButton
+                  label="Start"
+                  tooltip="Start the dev server"
+                  onClick={() => { startServer(expandedServer); }}
                 >
-                  <svg width="12" height="12" viewBox="0 0 12 12" fill="var(--ezy-accent)">
-                    <polygon points="2,1 11,6 2,11" />
-                  </svg>
-                </div>
+                  <FaPlay size={10} color="var(--ezy-accent)" />
+                </HeaderIconButton>
               )}
 
-              {/* Close — the panel only. The server keeps running, which is why
-                  this sits apart from Stop and borrows the neutral hover rather
-                  than Stop's red. Escape already closes, and so does a click on
-                  the backdrop, but neither is discoverable. */}
-              <button
-                type="button"
-                aria-label="Close"
-                data-tooltip="Close. The dev server keeps running."
-                onClick={() => setExpandedDevServerId(null)}
+              {/* The two questions this row answers are not the same question.
+                  Restart and Stop act on the SERVER; ✕ only puts the panel away
+                  and leaves the server running. That distinction was carried
+                  solely by ✕ declining Stop's red hover — invisible until you
+                  hover it. One hairline says it up front. */}
+              <span
+                aria-hidden
                 style={{
-                  width: 28,
-                  height: 28,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
-                  cursor: "pointer",
-                  transition: "background-color 120ms ease",
-                  // Zeroed so the button matches the sibling icon divs exactly:
-                  // a button's inherited line-height would otherwise inflate
-                  // this compact header (see CLAUDE.md's CSS gotchas).
-                  padding: 0,
-                  margin: 0,
-                  border: "none",
-                  background: "transparent",
-                  lineHeight: 0,
+                  width: 1,
+                  height: 14,
+                  margin: "0 6px",
+                  backgroundColor: "var(--ezy-border)",
+                  flexShrink: 0,
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+              />
+
+              {/* Close — the panel only. The server keeps running, which is why
+                  this borrows the neutral hover rather than Stop's red. Escape
+                  already closes, and so does a click on the backdrop, but
+                  neither is discoverable. */}
+              <HeaderIconButton
+                label="Close"
+                tooltip="Close. The dev server keeps running."
+                onClick={() => setExpandedDevServerId(null)}
               >
-                {/* Half-integer coords: a 1.3px stroke on whole-pixel endpoints
-                    straddles two device rows and renders muddy. */}
-                <svg
-                  width="12"
-                  height="12"
-                  viewBox="0 0 12 12"
-                  fill="none"
-                  stroke="var(--ezy-text-muted)"
-                  strokeWidth="1.3"
-                  strokeLinecap="round"
-                >
-                  <path d="M3.5 3.5l5 5" />
-                  <path d="M8.5 3.5l-5 5" />
-                </svg>
-              </button>
+                <FaXmark size={14} color="var(--ezy-text-muted)" />
+              </HeaderIconButton>
             </div>
           </div>
         )}
@@ -958,7 +1206,7 @@ export default function DevServerTerminalHost() {
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     color: "var(--ezy-text-muted)",
                   }}
                 >

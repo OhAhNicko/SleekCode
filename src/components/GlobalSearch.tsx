@@ -95,7 +95,7 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
         <div
           style={{
             padding: "6px 8px",
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             fontWeight: 600,
             letterSpacing: "0.08em",
             textTransform: "uppercase",
@@ -114,7 +114,7 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
               <div
                 style={{
                   padding: "4px 8px",
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   fontWeight: 600,
                   color: "var(--ezy-text)",
                   backgroundColor: "var(--ezy-surface)",
@@ -136,7 +136,7 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
                     gap: 6,
                     padding: "3px 8px 3px 16px",
                     cursor: "pointer",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     color: "var(--ezy-text-secondary)",
                     transition: "background-color 100ms ease",
                   }}
@@ -147,7 +147,7 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
                   <span
                     style={{
                       color: "var(--ezy-text-muted)",
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       fontVariantNumeric: "tabular-nums",
                       flexShrink: 0,
                       minWidth: 28,
@@ -198,7 +198,7 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
               border: "1px solid var(--ezy-border)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               color: "var(--ezy-text)",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontFamily: "inherit",
               outline: "none",
             }}
@@ -211,10 +211,10 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
       {/* Results */}
       <div style={{ flex: 1, overflowY: "auto" }}>
         {searching && (
-          <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>Searching…</div>
+          <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Searching…</div>
         )}
         {!searching && query && totalCount === 0 && (
-          <div style={{ padding: "12px", fontSize: 12, color: "var(--ezy-text-muted)" }}>No results found</div>
+          <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>No results found</div>
         )}
         {remoteServer
           ? renderSection(

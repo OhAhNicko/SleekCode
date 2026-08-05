@@ -252,7 +252,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
           backgroundColor: "var(--ezy-bg)",
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)", marginBottom: 8 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)", marginBottom: 8 }}>
           Select Difficulty
         </div>
         {(["easy", "medium", "hard"] as Difficulty[]).map((d) => (
@@ -261,7 +261,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
             onClick={() => startGame(d)}
             style={{
               padding: "8px 32px",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               fontWeight: 600,
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
@@ -302,7 +302,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
           justifyContent: "space-between",
           alignItems: "center",
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -315,7 +315,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
           onClick={() => { setPuzzle(null); setSolution(null); setGrid(null); setDifficulty(null); }}
           style={{
             padding: "3px 10px",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             color: "var(--ezy-text-secondary)",
             backgroundColor: "var(--ezy-surface)",
@@ -402,7 +402,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
               style={{
                 width: Math.max(28, cellSize - 4),
                 height: Math.max(28, cellSize - 4),
-                fontSize: 14,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
                 fontWeight: 600,
                 color: "var(--ezy-text)",
                 backgroundColor: "var(--ezy-surface)",
@@ -422,7 +422,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
             style={{
               width: Math.max(28, cellSize - 4),
               height: Math.max(28, cellSize - 4),
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               fontWeight: 600,
               color: "#fff",
               backgroundColor: "var(--ezy-red, #dc2626)",
@@ -451,7 +451,7 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
               backgroundColor: "rgba(0,0,0,0.6)",
             }}
           >
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 16px)", fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
           </div>
         )}
 
@@ -469,18 +469,18 @@ export default function SudokuGame({ onAddHighscore, paused = false }: SudokuGam
               gap: 12,
             }}
           >
-            <div style={{ fontSize: 18, fontWeight: 700, color: "#4ade80" }}>Completed!</div>
-            <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: "#4ade80" }}>Completed!</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>
               Time: {formatTime(timer)}
             </div>
-            <div style={{ fontSize: 14, color: "var(--ezy-accent)", fontWeight: 600 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-accent)", fontWeight: 600 }}>
               Score: {Math.round((DIFFICULTY_MULT[difficulty!] * 10000) / Math.max(timer, 1))}
             </div>
             <button
               onClick={() => { setPuzzle(null); setSolution(null); setGrid(null); setDifficulty(null); }}
               style={{
                 padding: "8px 24px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",

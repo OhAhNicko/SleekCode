@@ -246,7 +246,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
       >
         <span
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             color: "var(--ezy-text-muted)",
             letterSpacing: "0.04em",
@@ -310,7 +310,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
               color: "var(--ezy-text)",
               border: "none",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 500,
               cursor: "pointer",
               fontFamily: "inherit",
@@ -401,7 +401,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 border: "1px solid var(--ezy-border)",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 color: "var(--ezy-text)",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 outline: "none",
                 fontFamily: "inherit",
               }}
@@ -424,7 +424,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 border: "1px solid var(--ezy-border)",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                 color: "var(--ezy-text)",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 outline: "none",
                 fontFamily: "inherit",
               }}
@@ -437,7 +437,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 color: "#fff",
                 border: "none",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 fontWeight: 500,
                 cursor: "pointer",
                 fontFamily: "inherit",
@@ -457,7 +457,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 color: "var(--ezy-text-muted)",
                 border: "1px solid var(--ezy-border)",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 cursor: "pointer",
                 fontFamily: "inherit",
               }}
@@ -515,7 +515,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                   />
                   <span
                     style={{
-                      fontSize: 12,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                       fontWeight: 600,
                       color: "var(--ezy-text)",
                       letterSpacing: "0.02em",
@@ -526,7 +526,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                 </div>
                 <span
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-text-muted)",
                     fontWeight: 500,
                   }}
@@ -581,7 +581,7 @@ export default function KanbanBoard({ onClose, initialVertical = false, onReposi
                     style={{
                       padding: "16px 8px",
                       textAlign: "center",
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       color: "var(--ezy-text-muted)",
                       opacity: 0.6,
                     }}

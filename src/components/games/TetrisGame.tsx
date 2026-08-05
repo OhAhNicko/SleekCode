@@ -1024,13 +1024,13 @@ export default function TetrisGame({ onAddHighscore, paused = false }: TetrisGam
       {/* Score bar */}
       <div style={{
         display: "flex", justifyContent: "space-between", alignItems: "center",
-        padding: "6px 12px", fontSize: 12, fontWeight: 600,
+        padding: "6px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600,
         color: "var(--ezy-text-secondary)", borderBottom: "1px solid var(--ezy-border)",
         fontVariantNumeric: "tabular-nums",
         fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)",
       }}>
         <span>Score: <span style={{ color: "var(--ezy-accent)" }}>{score}</span></span>
-        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>
           {phase === "idle" ? "Space to start" : `Level ${level}`}
         </span>
         {bestScore > 0 && <span>Best: {bestScore}</span>}
@@ -1063,14 +1063,14 @@ export default function TetrisGame({ onAddHighscore, paused = false }: TetrisGam
             backgroundColor: "rgba(0,0,0,0.45)", gap: 16,
           }}>
             <div style={{
-              fontSize: 24, fontWeight: 700, color: "#fff",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 24px)", fontWeight: 700, color: "#fff",
               fontFamily: "monospace", textShadow: "3px 3px 0 #000",
               letterSpacing: 2, textTransform: "uppercase",
             }}>
               Tetris
             </div>
             <div onClick={initGame} style={{
-              padding: "8px 24px", fontSize: 14, fontWeight: 700,
+              padding: "8px 24px", fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700,
               color: "#0a0a18", backgroundColor: "#5eead4",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", cursor: "pointer", userSelect: "none",
               fontFamily: "monospace", textTransform: "uppercase",
@@ -1078,7 +1078,7 @@ export default function TetrisGame({ onAddHighscore, paused = false }: TetrisGam
             }}>
               Start Game
             </div>
-            <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
               Press Space to Start
             </div>
           </div>
@@ -1100,7 +1100,7 @@ export default function TetrisGame({ onAddHighscore, paused = false }: TetrisGam
               transition: "transform 0.45s cubic-bezier(0.2, 0.8, 0.3, 1), opacity 0.35s ease",
             }}>
               <div style={{
-                fontSize: 24, fontWeight: 700, color: "#fff",
+                fontSize: "calc(var(--ezy-font-scale, 1) * 24px)", fontWeight: 700, color: "#fff",
                 fontFamily: "monospace", textShadow: "3px 3px 0 #000",
                 letterSpacing: 2, textTransform: "uppercase",
               }}>
@@ -1116,23 +1116,23 @@ export default function TetrisGame({ onAddHighscore, paused = false }: TetrisGam
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
                 minWidth: 160,
               }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#888", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: 1 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "#888", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: 1 }}>
                   Score
                 </div>
                 <div style={{
-                  fontSize: 36, fontWeight: 700, color: ACCENT,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 36px)", fontWeight: 700, color: ACCENT,
                   fontFamily: "monospace", fontVariantNumeric: "tabular-nums",
                   lineHeight: 1,
                 }}>
                   {score}
                 </div>
                 {score > 0 && score >= bestScore && (
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#4ade80", fontFamily: "monospace" }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 700, color: "#4ade80", fontFamily: "monospace" }}>
                     NEW BEST!
                   </div>
                 )}
                 {bestScore > 0 && (
-                  <div style={{ fontSize: 11, color: "#666", fontFamily: "monospace" }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#666", fontFamily: "monospace" }}>
                     Best: {bestScore}
                   </div>
                 )}
@@ -1140,21 +1140,21 @@ export default function TetrisGame({ onAddHighscore, paused = false }: TetrisGam
                 {/* Stats row */}
                 <div style={{
                   display: "flex", gap: 16, marginTop: 4,
-                  fontSize: 11, fontFamily: "monospace", color: "#aaa",
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontFamily: "monospace", color: "#aaa",
                 }}>
                   <div style={{ textAlign: "center" }}>
-                    <div style={{ color: "#666", fontSize: 9, textTransform: "uppercase" }}>Lines</div>
+                    <div style={{ color: "#666", fontSize: "calc(var(--ezy-font-scale, 1) * 9px)", textTransform: "uppercase" }}>Lines</div>
                     <div>{lines}</div>
                   </div>
                   <div style={{ textAlign: "center" }}>
-                    <div style={{ color: "#666", fontSize: 9, textTransform: "uppercase" }}>Level</div>
+                    <div style={{ color: "#666", fontSize: "calc(var(--ezy-font-scale, 1) * 9px)", textTransform: "uppercase" }}>Level</div>
                     <div>{level}</div>
                   </div>
                 </div>
               </div>
 
               <div onClick={initGame} style={{
-                padding: "8px 24px", fontSize: 14, fontWeight: 700,
+                padding: "8px 24px", fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700,
                 color: "#0a0a18", backgroundColor: "#5eead4",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", cursor: "pointer", userSelect: "none",
                 fontFamily: "monospace", textTransform: "uppercase",
@@ -1162,7 +1162,7 @@ export default function TetrisGame({ onAddHighscore, paused = false }: TetrisGam
               }}>
                 Play Again
               </div>
-              <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
                 Press Space to Retry
               </div>
             </div>
@@ -1177,7 +1177,7 @@ export default function TetrisGame({ onAddHighscore, paused = false }: TetrisGam
             backgroundColor: "rgba(0,0,0,0.6)",
           }}>
             <div style={{
-              fontSize: 22, fontWeight: 700, color: "#fff",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 22px)", fontWeight: 700, color: "#fff",
               fontFamily: "monospace", textShadow: "3px 3px 0 #000",
               textTransform: "uppercase", letterSpacing: 2,
             }}>

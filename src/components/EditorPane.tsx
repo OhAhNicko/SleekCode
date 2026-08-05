@@ -263,7 +263,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
           </span>
           <span
             style={{
-              fontSize: 9,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
               padding: "1px 5px",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
               backgroundColor: "var(--ezy-border)",
@@ -274,7 +274,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
             {langLabel}
           </span>
           {saving && (
-            <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
               Saving...
             </span>
           )}
@@ -337,14 +337,14 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
         {loading ? (
           <div
             className="flex items-center justify-center h-full"
-            style={{ color: "var(--ezy-text-muted)", fontSize: 13 }}
+            style={{ color: "var(--ezy-text-muted)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}
           >
             Loading...
           </div>
         ) : error ? (
           <div
             className="flex items-center justify-center h-full"
-            style={{ color: "var(--ezy-red)", fontSize: 13 }}
+            style={{ color: "var(--ezy-red)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}
           >
             {error}
           </div>

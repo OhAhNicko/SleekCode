@@ -368,7 +368,7 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
           gap: 12,
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)", marginBottom: 8 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)", marginBottom: 8 }}>
           Select Difficulty
         </div>
         {(["easy", "medium", "hard"] as Difficulty[]).map((diff) => {
@@ -396,8 +396,8 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
                 e.currentTarget.style.borderColor = "var(--ezy-border)";
               }}
             >
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>{cfg.label}</div>
-              <div style={{ fontSize: 11, color: "var(--ezy-text-secondary)", marginTop: 2 }}>{cfg.description}</div>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>{cfg.label}</div>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-secondary)", marginTop: 2 }}>{cfg.description}</div>
             </div>
           );
         })}
@@ -433,7 +433,7 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -456,7 +456,7 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
           <div
             onClick={handleNewGame}
             style={{
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               fontWeight: 600,
               color: "var(--ezy-text-muted)",
               cursor: "pointer",
@@ -472,7 +472,7 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
           <div
             onClick={handleBackToSelect}
             style={{
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               fontWeight: 600,
               color: "var(--ezy-text-muted)",
               cursor: "pointer",
@@ -593,7 +593,7 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
               zIndex: 10,
             }}
           >
-            <span style={{ fontSize: 18, fontWeight: 700, color: "var(--ezy-text)" }}>Paused</span>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: "var(--ezy-text)" }}>Paused</span>
           </div>
         )}
 
@@ -612,18 +612,18 @@ export default function MinesweeperGame({ onAddTimedHighscore, paused = false }:
               zIndex: 10,
             }}
           >
-            <div style={{ fontSize: 18, fontWeight: 700, color: gameState === "won" ? "#4ade80" : "#f87171" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: gameState === "won" ? "#4ade80" : "#f87171" }}>
               {gameState === "won" ? "You Win!" : "Game Over"}
             </div>
             {gameState === "won" && (
-              <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
                 Time: {formatTime(elapsed)}
               </div>
             )}
             <div
               onClick={handleNewGame}
               style={{
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 padding: "8px 20px",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",

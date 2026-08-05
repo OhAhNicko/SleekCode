@@ -95,7 +95,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
             borderBottom: "1px solid var(--ezy-border)",
           }}
         >
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)" }}>
             Command History
           </span>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -107,7 +107,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
                 border: "1px solid var(--ezy-border)",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 color: "var(--ezy-text-muted)",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 fontFamily: "inherit",
                 cursor: "pointer",
               }}
@@ -142,7 +142,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
               backgroundColor: "transparent",
               border: "none",
               outline: "none",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               color: "var(--ezy-text)",
               fontFamily: "inherit",
             }}
@@ -153,7 +153,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
         {/* History list */}
         <div style={{ overflowY: "auto", flex: 1 }}>
           {filtered.length === 0 ? (
-            <div style={{ padding: "32px 16px", textAlign: "center", fontSize: 13, color: "var(--ezy-text-muted)" }}>
+            <div style={{ padding: "32px 16px", textAlign: "center", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-muted)" }}>
               {history.length === 0 ? "No command history yet." : "No matching commands."}
             </div>
           ) : (
@@ -191,7 +191,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
                       style={{
-                        fontSize: 13,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                         color: "var(--ezy-text)",
                         fontFamily: "'Hack', 'Geist Mono', 'Cascadia Code', monospace",
                         overflow: "hidden",
@@ -202,16 +202,16 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
                       {entry.command}
                     </div>
                     <div style={{ display: "flex", gap: 8, marginTop: 2 }}>
-                      <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
                         {formatRelativeTime(entry.timestamp)}
                       </span>
                       {duration && (
-                        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+                        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
                           {duration}
                         </span>
                       )}
                       {entry.workingDir && (
-                        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>
+                        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>
                           {entry.workingDir.split(/[\\/]/).pop()}
                         </span>
                       )}
@@ -222,7 +222,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
                   {entry.exitCode !== null && (
                     <span
                       style={{
-                        fontSize: 9,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                         fontWeight: 600,
                         padding: "1px 5px",
                         borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
@@ -245,7 +245,7 @@ export default function CommandHistory({ onClose }: CommandHistoryProps) {
           style={{
             padding: "6px 16px",
             borderTop: "1px solid var(--ezy-border)",
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: "var(--ezy-text-muted)",
             display: "flex",
             justifyContent: "space-between",

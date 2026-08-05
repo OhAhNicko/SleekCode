@@ -578,7 +578,7 @@ export default function FileViewerPane({
           )}
           <span
             style={{
-              fontSize: 9,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
               padding: "1px 5px",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
               backgroundColor: "var(--ezy-border)",
@@ -671,14 +671,14 @@ export default function FileViewerPane({
         {loading ? (
           <div
             className="flex items-center justify-center h-full"
-            style={{ color: "var(--ezy-text-muted)", fontSize: 13 }}
+            style={{ color: "var(--ezy-text-muted)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}
           >
             Loading {fileName}...
           </div>
         ) : error ? (
           <div
             className="flex items-center justify-center h-full"
-            style={{ color: "var(--ezy-red)", fontSize: 13 }}
+            style={{ color: "var(--ezy-red)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}
           >
             {error}
           </div>

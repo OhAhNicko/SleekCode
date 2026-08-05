@@ -12,6 +12,7 @@ import { BiRefresh, BiTimer } from "react-icons/bi";
 import PaneExpandButton from "./PaneExpandButton";
 import { resolveOmniboxInput } from "../lib/omnibox";
 import { jiraOriginFromUrl } from "../lib/jira";
+import { consumeJiraTicketPaste } from "../lib/jira-omnibox";
 import { useBrowserViewSurface } from "../browser-view/useBrowserViewSurface";
 import { subscribeBrowserCtxMenu, type BrowserCtxMenuEvent } from "../browser-view/bridge";
 import {
@@ -1395,7 +1396,18 @@ export default function BrowserPreview({
             value={inputUrl}
             onChange={(e) => setInputUrl(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") navigateTo(inputUrl);
+              if (e.key === "Enter") {
+                // A ticket pasted into a Jira ticket browser opens as its OWN
+                // ticket rather than navigating this one's pane away. Only
+                // here, never on the navigation event: a link click inside the
+                // page must stay a plain navigation (see lib/jira-omnibox.ts).
+                if (consumeJiraTicketPaste(paneId, inputUrl)) {
+                  setInputUrl(url); // consumed — put the bar back on this page
+                  e.currentTarget.blur();
+                } else {
+                  navigateTo(inputUrl);
+                }
+              }
               // Esc restores the address bar to the page you are actually on,
               // matching Chrome.
               if (e.key === "Escape") {
@@ -1422,7 +1434,7 @@ export default function BrowserPreview({
             }}
             className="flex-1 bg-transparent outline-none"
             style={{
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               color: "var(--ezy-text)",
               border: "none",
               fontFamily: "inherit",
@@ -1482,7 +1494,7 @@ export default function BrowserPreview({
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 7px)",
                 backgroundColor: "var(--ezy-accent)",
                 color: "#000",
-                fontSize: 10,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                 lineHeight: "13px",
                 fontWeight: 700,
                 textAlign: "center",
@@ -1549,7 +1561,7 @@ export default function BrowserPreview({
               key={preset.mode}
               onClick={() => setViewportMode(preset.mode)}
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 padding: "2px 8px",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
                 border: "none",
@@ -1576,20 +1588,20 @@ export default function BrowserPreview({
                 value={customWidth}
                 onChange={(e) => setCustomWidth(Number(e.target.value) || 0)}
                 style={{
-                  width: 52, height: 20, fontSize: 11,
+                  width: 52, height: 20, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   backgroundColor: "var(--ezy-bg)", color: "var(--ezy-text)",
                   border: "1px solid var(--ezy-border)", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                   padding: "0 4px", fontFamily: "inherit",
                   fontVariantNumeric: "tabular-nums", outline: "none",
                 }}
               />
-              <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>x</span>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>x</span>
               <input
                 type="number"
                 value={customHeight}
                 onChange={(e) => setCustomHeight(Number(e.target.value) || 0)}
                 style={{
-                  width: 52, height: 20, fontSize: 11,
+                  width: 52, height: 20, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   backgroundColor: "var(--ezy-bg)", color: "var(--ezy-text)",
                   border: "1px solid var(--ezy-border)", borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                   padding: "0 4px", fontFamily: "inherit",
@@ -1600,7 +1612,7 @@ export default function BrowserPreview({
           ) : vpDims ? (
             <span
               style={{
-                fontSize: 11, color: "var(--ezy-text-muted)",
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)",
                 marginLeft: 4, fontVariantNumeric: "tabular-nums",
               }}
             >
@@ -1666,7 +1678,7 @@ export default function BrowserPreview({
                     justifyContent: "center",
                     padding: 24,
                     textAlign: "center",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     lineHeight: 1.5,
                     color: "var(--ezy-text-muted)",
                     backgroundColor: "var(--ezy-surface)",
@@ -1709,7 +1721,7 @@ export default function BrowserPreview({
           <div
             style={{
               padding: "7px 10px",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               fontWeight: 600,
               color: "var(--ezy-text-secondary)",
               borderBottom: "1px solid var(--ezy-border-subtle)",
@@ -1722,7 +1734,7 @@ export default function BrowserPreview({
           </div>
 
           {downloads.length === 0 && (
-            <div style={{ padding: "10px", fontSize: 11, color: "var(--ezy-text-muted)" }}>
+            <div style={{ padding: "10px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
               Nothing downloaded yet. Every download asks before it is saved.
             </div>
           )}
@@ -1737,7 +1749,7 @@ export default function BrowserPreview({
             >
               <div
                 style={{
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   color: "var(--ezy-text)",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
@@ -1749,7 +1761,7 @@ export default function BrowserPreview({
               </div>
               <div
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   color:
                     d.status === "failed"
                       ? "var(--ezy-red)"
@@ -1782,7 +1794,7 @@ export default function BrowserPreview({
                       if (e.key === "Enter" || e.key === " ") allowDownload(d);
                     }}
                     style={{
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       fontWeight: 600,
                       padding: "3px 10px",
                       borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
@@ -1802,7 +1814,7 @@ export default function BrowserPreview({
                       if (e.key === "Enter" || e.key === " ") denyDownload(d);
                     }}
                     style={{
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       fontWeight: 600,
                       padding: "3px 10px",
                       borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
@@ -1863,7 +1875,7 @@ export default function BrowserPreview({
                   if (e.key === "Enter" || e.key === " ") switchTab(tab);
                 }}
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   padding: "2px 8px",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                   cursor: "pointer",
@@ -1888,7 +1900,7 @@ export default function BrowserPreview({
             {captureActive && (
               <span
                 style={{
-                  fontSize: 10, padding: "1px 6px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", padding: "1px 6px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                   backgroundColor: "var(--ezy-accent-dim)",
                   color: "#ffffff", marginLeft: 2, fontWeight: 600,
                 }}
@@ -1900,7 +1912,7 @@ export default function BrowserPreview({
             {tabBadgeCount() > 0 && (
               <span
                 style={{
-                  fontSize: 10, padding: "1px 6px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", padding: "1px 6px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
                   backgroundColor: "var(--ezy-surface-raised)",
                   color: "var(--ezy-text-muted)",
                   fontVariantNumeric: "tabular-nums",
@@ -1925,7 +1937,7 @@ export default function BrowserPreview({
             <div className="flex-1" />
 
             {!captureActive && (
-              <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
                 {useIframe ? "Proxy unavailable" : "Surface not ready"}
               </span>
             )}
@@ -1964,7 +1976,7 @@ export default function BrowserPreview({
             {devtoolsTab === "console" && (
               <>
                 {consoleEntries.length === 0 && (
-                  <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--ezy-text-muted)" }}>
+                  <div style={{ padding: "8px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
                     {captureActive ? "No console output yet." : "Console capture is not connected."}
                   </div>
                 )}
@@ -1975,7 +1987,7 @@ export default function BrowserPreview({
                       key={entry.id}
                       className="flex gap-2"
                       style={{
-                        padding: "1px 12px", fontSize: 12, lineHeight: "18px",
+                        padding: "1px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", lineHeight: "18px",
                         color: consoleMethodColor(entry.method),
                         borderBottom: "1px solid var(--ezy-border-subtle)",
                         cursor: consoleSelectMode ? "pointer" : undefined,
@@ -2002,7 +2014,7 @@ export default function BrowserPreview({
                       )}
                       <span
                         style={{
-                          fontSize: 10, color: "var(--ezy-text-muted)",
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)",
                           fontVariantNumeric: "tabular-nums",
                           flexShrink: 0, lineHeight: "18px",
                         }}
@@ -2026,7 +2038,7 @@ export default function BrowserPreview({
                 <div
                   className="flex gap-2 select-none"
                   style={{
-                    padding: "2px 12px", fontSize: 10, lineHeight: "16px",
+                    padding: "2px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", lineHeight: "16px",
                     color: "var(--ezy-text-muted)", fontWeight: 600,
                     borderBottom: "1px solid var(--ezy-border-subtle)",
                     position: "sticky", top: 0,
@@ -2040,7 +2052,7 @@ export default function BrowserPreview({
                   <span style={{ width: 56, flexShrink: 0, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>Size</span>
                 </div>
                 {networkEntries.length === 0 && (
-                  <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--ezy-text-muted)" }}>
+                  <div style={{ padding: "8px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
                     {captureActive ? "No network requests yet." : "Network capture is not connected."}
                   </div>
                 )}
@@ -2049,7 +2061,7 @@ export default function BrowserPreview({
                     key={`${entry.id}-${i}`}
                     className="flex gap-2"
                     style={{
-                      padding: "1px 12px", fontSize: 11, lineHeight: "18px",
+                      padding: "1px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", lineHeight: "18px",
                       borderBottom: "1px solid var(--ezy-border-subtle)",
                       color: entry.error ? "var(--ezy-red)" : "var(--ezy-text)",
                     }}
@@ -2110,10 +2122,10 @@ export default function BrowserPreview({
                     style={{ padding: "16px 12px" }}
                   >
                     <FaCrosshairs size={24} color="var(--ezy-text-muted)" style={{ opacity: 0.5 }} />
-                    <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)", fontWeight: 500 }}>
+                    <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)", fontWeight: 500 }}>
                       No element selected
                     </span>
-                    <span style={{ fontSize: 11, color: "var(--ezy-text-muted)", textAlign: "center", maxWidth: 320, lineHeight: "16px" }}>
+                    <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", textAlign: "center", maxWidth: 320, lineHeight: "16px" }}>
                       Click the inspect button in the toolbar, then click any
                       element in the preview to inspect it.
                     </span>
@@ -2123,13 +2135,13 @@ export default function BrowserPreview({
                   <div style={{ padding: "6px 12px" }}>
                     {/* Element selector */}
                     <div style={{ marginBottom: 6 }}>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-accent)" }}>
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-accent)" }}>
                         {"<"}{inspectedElement.tag}{">"}
                       </span>
                       {inspectedElement.id && (
                         <span
                           style={{
-                            fontSize: 11, marginLeft: 6, padding: "1px 6px",
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", marginLeft: 6, padding: "1px 6px",
                             borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)", backgroundColor: "var(--ezy-surface-raised)",
                             color: "var(--ezy-text)",
                           }}
@@ -2140,7 +2152,7 @@ export default function BrowserPreview({
                       {inspectedElement.classes && (
                         <span
                           style={{
-                            fontSize: 11, marginLeft: 4, color: "var(--ezy-text-secondary)",
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", marginLeft: 4, color: "var(--ezy-text-secondary)",
                           }}
                         >
                           .{inspectedElement.classes.split(/\s+/).join(".")}
@@ -2149,14 +2161,14 @@ export default function BrowserPreview({
                     </div>
 
                     {/* Dimensions */}
-                    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 8, fontVariantNumeric: "tabular-nums" }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 8, fontVariantNumeric: "tabular-nums" }}>
                       {inspectedElement.rect.width} x {inspectedElement.rect.height}px
                       {" \u2014 "}
                       top: {inspectedElement.rect.top}, left: {inspectedElement.rect.left}
                     </div>
 
                     {/* Computed styles */}
-                    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", fontWeight: 600, marginBottom: 4 }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", fontWeight: 600, marginBottom: 4 }}>
                       Computed Styles
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "1px 12px" }}>
@@ -2164,10 +2176,10 @@ export default function BrowserPreview({
                         .filter(([, v]) => v && v !== "none" && v !== "normal" && v !== "auto" && v !== "visible" && v !== "0px")
                         .map(([key, val]) => (
                           <div key={key} style={{ display: "contents" }}>
-                            <span style={{ fontSize: 11, color: "var(--ezy-text-muted)", lineHeight: "18px" }}>
+                            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", lineHeight: "18px" }}>
                               {key}
                             </span>
-                            <span style={{ fontSize: 11, color: "var(--ezy-text)", lineHeight: "18px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text)", lineHeight: "18px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {val}
                             </span>
                           </div>
@@ -2182,7 +2194,7 @@ export default function BrowserPreview({
             {devtoolsTab === "storage" && (
               <>
                 {!storageData && (
-                  <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--ezy-text-muted)" }}>
+                  <div style={{ padding: "8px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
                     {captureActive ? "Loading storage..." : "Storage viewer is not connected."}
                   </div>
                 )}
@@ -2232,7 +2244,7 @@ function StorageSection({
       <div
         className="flex items-center gap-2"
         style={{
-          padding: "4px 12px", fontSize: 11, fontWeight: 600,
+          padding: "4px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border-subtle)",
           position: "sticky", top: 0,
@@ -2242,7 +2254,7 @@ function StorageSection({
         {title}
         <span
           style={{
-            fontSize: 10, padding: "0px 5px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", padding: "0px 5px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             backgroundColor: "var(--ezy-surface-raised)",
             color: "var(--ezy-text-muted)",
             fontWeight: 400, fontVariantNumeric: "tabular-nums",
@@ -2252,7 +2264,7 @@ function StorageSection({
         </span>
       </div>
       {keys.length === 0 && (
-        <div style={{ padding: "3px 12px", fontSize: 11, color: "var(--ezy-text-muted)" }}>
+        <div style={{ padding: "3px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
           (empty)
         </div>
       )}
@@ -2261,7 +2273,7 @@ function StorageSection({
           key={key}
           className="flex gap-3"
           style={{
-            padding: "1px 12px", fontSize: 11, lineHeight: "18px",
+            padding: "1px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", lineHeight: "18px",
             borderBottom: "1px solid var(--ezy-border-subtle)",
           }}
         >
@@ -2383,7 +2395,7 @@ function DevServerWaitingState({
         <div
           style={{
             marginTop: 18,
-            fontSize: 14,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
             fontWeight: 600,
             letterSpacing: "-0.01em",
             color: "var(--ezy-text)",
@@ -2395,7 +2407,7 @@ function DevServerWaitingState({
         <div
           style={{
             marginTop: 8,
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             lineHeight: 1.5,
             color: "var(--ezy-text-muted)",
             fontVariantNumeric: "tabular-nums",
@@ -2409,7 +2421,7 @@ function DevServerWaitingState({
             style={{
               marginTop: 14,
               padding: "6px 10px",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               color: "var(--ezy-text-secondary)",
               backgroundColor: "var(--ezy-surface-raised, var(--ezy-bg))",
               border: "1px solid var(--ezy-border)",

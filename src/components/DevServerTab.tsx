@@ -9,6 +9,7 @@ import { useAppStore } from "../store";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
 import ServersPanel from "./ServersPanel";
 import { getPtyWrite } from "../store/terminalSlice";
+import { getDevServerActions } from "../lib/dev-server-actions";
 import { createDevServer, isSameProject, syncProjectServerCommands } from "../lib/spawn-dev-server";
 import type { DevServer } from "../types";
 import {
@@ -206,7 +207,7 @@ function CommandEditor({
             flex: 1,
             minWidth: 0,
             padding: "2px 6px",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 500,
             color: "var(--ezy-text)",
             backgroundColor: "var(--ezy-bg)",
@@ -237,7 +238,7 @@ function CommandEditor({
               style={{
                 width: 44,
                 padding: "2px 4px",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 color: "var(--ezy-cyan)",
                 backgroundColor: "var(--ezy-bg)",
                 border: "1px solid var(--ezy-accent)",
@@ -273,7 +274,7 @@ function CommandEditor({
               style={{
                 flexShrink: 0,
                 padding: "2px 6px",
-                fontSize: 10,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                 fontWeight: 600,
                 letterSpacing: "0.02em",
                 color: customPort ? "#fff" : "var(--ezy-text)",
@@ -320,7 +321,7 @@ function CommandEditor({
           onChange={() => onChange(hasHostFlag(value) ? stripHost(value) : injectHost(value, hostStyle))}
           style={{ flexShrink: 0 }}
         />
-        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
           Reachable from other devices
         </span>
       </label>
@@ -343,8 +344,6 @@ function DevServerRow({
   const removeDevServer = useAppStore((s) => s.removeDevServer);
   const updateDevServerCommand = useAppStore((s) => s.updateDevServerCommand);
   const updateDevServerStatus = useAppStore((s) => s.updateDevServerStatus);
-  const updateDevServerError = useAppStore((s) => s.updateDevServerError);
-  const updateDevServerPort = useAppStore((s) => s.updateDevServerPort);
   const setExpandedDevServerId = useAppStore((s) => s.setExpandedDevServerId);
 
   const [editing, setEditing] = useState(false);
@@ -437,19 +436,18 @@ function DevServerRow({
   // Drop the popover if the URL list changes out from under it
   useEffect(() => { if (networkUrls.length === 0) setPopoverRect(null); }, [networkUrls.length]);
 
+  // Start / Restart live in DevServerTerminalHost — it owns the PTY panes AND
+  // the port-detection refs, and both have to move together. This row used to
+  // reimplement them with a bare getPtyWrite(): the command ran, but the refs
+  // stayed set, so no detection listener was ever re-registered and the row sat
+  // on "detecting…" forever (the panel's buttons had this exact bug fixed in
+  // docs/learnings/2026-03-09-devserver-stopped-detection.md — this copy never
+  // got the fix). It also could not notice a DEAD PTY, so after a WSL restart
+  // it typed the command into a corpse and flipped the row to "starting"
+  // regardless. Both are the host's job now; see lib/dev-server-actions.ts.
   const handleRestart = useCallback(() => {
-    const write = getPtyWrite(server.terminalId);
-    if (write) {
-      write("\x03");
-      setTimeout(() => write("\x03"), 100);
-      setTimeout(() => {
-        write(server.command + "\r");
-      }, 1500);
-    }
-    updateDevServerStatus(server.id, "starting");
-    updateDevServerPort(server.id, 0);
-    updateDevServerError(server.id, undefined);
-  }, [server, updateDevServerStatus, updateDevServerPort, updateDevServerError]);
+    getDevServerActions(server.id)?.restart();
+  }, [server.id]);
 
   // Publish this row's Restart for the context menu, keyed by id so the menu
   // acts on the row that was right-clicked rather than the last one mounted.
@@ -476,14 +474,8 @@ function DevServerRow({
   }, [server, removeDevServer]);
 
   const handleStart = useCallback(() => {
-    const write = getPtyWrite(server.terminalId);
-    if (write) {
-      write(server.command + "\r");
-    }
-    updateDevServerStatus(server.id, "starting");
-    updateDevServerPort(server.id, 0);
-    updateDevServerError(server.id, undefined);
-  }, [server, updateDevServerStatus, updateDevServerPort, updateDevServerError]);
+    getDevServerActions(server.id)?.start();
+  }, [server.id]);
 
   const handleSaveEdit = useCallback(() => {
     const trimmed = editValue.trim();
@@ -509,22 +501,15 @@ function DevServerRow({
     const prevPort = explicitPortInCommand(server.command);
     const nextPort = explicitPortInCommand(trimmed);
     if (nextPort !== prevPort) {
-      // 0 = "unknown, re-detect from output" — which is exactly true across a
-      // restart, and what keeps the dot from claiming "running" on a port that
-      // no longer exists.
-      updateDevServerPort(server.id, nextPort ?? 0);
-      const write = getPtyWrite(server.terminalId);
-      if (write) {
-        write("\x03");
-        setTimeout(() => write("\x03"), 100);
-        setTimeout(() => write(trimmed + "\r"), 1500);
-      }
-      updateDevServerStatus(server.id, "starting");
-      updateDevServerError(server.id, undefined);
+      // The restart zeroes the port for us — "unknown, re-detect from output",
+      // which is exactly true across a restart and what keeps the dot from
+      // claiming "running" on a port that no longer exists. It re-reads the
+      // command from the store, so the edit committed just above is what runs.
+      getDevServerActions(server.id)?.restart();
     }
 
     setEditing(false);
-  }, [editValue, server, isQuickOpen, updateDevServerCommand, updateDevServerPort, updateDevServerStatus, updateDevServerError]);
+  }, [editValue, server, isQuickOpen, updateDevServerCommand]);
 
   const handleCancelEdit = useCallback(() => {
     setEditValue(server.command);
@@ -611,7 +596,7 @@ function DevServerRow({
 
         <span
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 500,
             color: "var(--ezy-text)",
             flex: 1,
@@ -696,7 +681,7 @@ function DevServerRow({
                   : `${serverUrl} \u2014 Click to open in browser / Ctrl+Click for preview`
               }
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 color: "var(--ezy-cyan)",
                 cursor: "pointer",
                 flexShrink: 1,
@@ -721,7 +706,7 @@ function DevServerRow({
           ) : server.status !== "stopped" ? (
             <span
               style={{
-                fontSize: 10,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                 color: "var(--ezy-text-muted)",
                 flexShrink: 0,
                 opacity: 0.5,
@@ -742,7 +727,7 @@ function DevServerRow({
           style={{
             margin: `1px 10px 5px ${indent}px`,
             padding: "4px 7px",
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             lineHeight: 1.35,
             color: "#fff",
             backgroundColor: "var(--ezy-red)",
@@ -815,7 +800,7 @@ function NewServerDraftRow({
       >
         <span
           style={{
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             fontWeight: 600,
             letterSpacing: "0.04em",
             textTransform: "uppercase",
@@ -847,7 +832,7 @@ function NewServerDraftRow({
           style={{
             margin: "0 10px 5px 16px",
             padding: "3px 7px",
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             lineHeight: 1.35,
             color: "#fff",
             backgroundColor: "var(--ezy-red)",
@@ -908,7 +893,7 @@ function DevServerGroup({ servers }: { servers: DevServer[] }) {
           // information.
           data-tooltip={first.workingDir}
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             color: "var(--ezy-text)",
             flexShrink: 1,
@@ -1091,7 +1076,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
   const inputStyle: React.CSSProperties = {
     width: "100%",
     padding: "4px 8px",
-    fontSize: 12,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
     color: "var(--ezy-text)",
     backgroundColor: "var(--ezy-bg)",
     border: "1px solid var(--ezy-border-light)",
@@ -1110,7 +1095,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
       }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <span style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text)" }}>Add Dev Server</span>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "var(--ezy-text)" }}>Add Dev Server</span>
         <FaXmark
           size={12}
           color="var(--ezy-text-muted)"
@@ -1121,7 +1106,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
 
       {/* Project selector */}
       <div ref={projectDropdownRef} style={{ marginBottom: 6, position: "relative" }}>
-        <label style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginBottom: 2, display: "block" }}>
+        <label style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", marginBottom: 2, display: "block" }}>
           Project directory
         </label>
         <div
@@ -1136,7 +1121,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
             color: selectedPath ? "var(--ezy-text)" : "var(--ezy-text-muted)",
           }}
         >
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, fontSize: 11 }}>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)" }}>
             {selectedPath ? selectedName : "Select a project..."}
           </span>
           <FaChevronDown size={8} color="var(--ezy-text-muted)" style={{ flexShrink: 0, marginLeft: 4 }} />
@@ -1162,7 +1147,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
             <div
               style={{
                 padding: "6px 10px",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 color: "var(--ezy-accent)",
                 cursor: "pointer",
                 borderBottom: recentProjects.length > 0 ? "1px solid var(--ezy-border-subtle)" : "none",
@@ -1183,7 +1168,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
                 key={project.id}
                 style={{
                   padding: "5px 10px",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   color: "var(--ezy-text)",
                   cursor: "pointer",
                   display: "flex",
@@ -1203,7 +1188,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
                 onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
               >
                 <span style={{ fontWeight: 500 }}>{project.name}</span>
-                <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {project.path}
                   {project.serverCommand && <span style={{ color: "var(--ezy-accent)", marginLeft: 6 }}>{project.serverCommand}</span>}
                 </span>
@@ -1215,7 +1200,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
 
       {/* Server command input */}
       <div ref={cmdDropdownRef} style={{ marginBottom: 8, position: "relative" }}>
-        <label style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginBottom: 2, display: "block" }}>
+        <label style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", marginBottom: 2, display: "block" }}>
           Server command
         </label>
         <div style={{ position: "relative" }}>
@@ -1265,7 +1250,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
                 key={cmd}
                 style={{
                   padding: "5px 10px",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   color: "var(--ezy-text)",
                   cursor: "pointer",
                   display: "flex",
@@ -1327,10 +1312,10 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
           style={{ marginTop: 1 }}
         />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 12, color: "var(--ezy-text)" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text)" }}>
             Reachable from other devices
           </div>
-          <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 1, lineHeight: 1.3 }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", marginTop: 1, lineHeight: 1.3 }}>
             {networkOn
               ? "Open it from another machine using this one's IP, over Tailscale or the local network."
               : `Adds ${hostStylePreview(hostStyle)} so the server listens beyond localhost.`}
@@ -1343,7 +1328,7 @@ function AddServerForm({ onClose }: { onClose: () => void }) {
         onClick={handleStart}
         style={{
           padding: "5px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: !selectedPath || !command.trim() ? "var(--ezy-text-muted)" : "#fff",
           backgroundColor: !selectedPath || !command.trim() ? "var(--ezy-border)" : "var(--ezy-accent)",
@@ -1400,11 +1385,11 @@ export default function DevServerTab() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "var(--ezy-text-muted)", letterSpacing: "0.04em", textTransform: "uppercase" }}>
             Dev Servers
           </span>
           {devServers.length > 0 && (
-            <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", opacity: 0.6 }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", opacity: 0.6 }}>
               {devServers.length}
             </span>
           )}
@@ -1460,10 +1445,10 @@ export default function DevServerTab() {
               <circle cx="5" cy="8" r="1.2" fill="var(--ezy-border)" stroke="none" />
               <line x1="8" y1="8" x2="12" y2="8" strokeLinecap="round" />
             </svg>
-            <p style={{ fontSize: 11, marginBottom: 2 }}>
+            <p style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", marginBottom: 2 }}>
               No dev servers
             </p>
-            <p style={{ fontSize: 10, color: "var(--ezy-border-light)" }}>
+            <p style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-border-light)" }}>
               Click + to add one
             </p>
           </div>

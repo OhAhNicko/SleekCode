@@ -1479,13 +1479,13 @@ export default function DonkeyKongGame({ onAddHighscore, paused = false }: Donke
       {/* Score bar */}
       <div style={{
         display: "flex", justifyContent: "space-between", alignItems: "center",
-        padding: "6px 12px", fontSize: 12, fontWeight: 600,
+        padding: "6px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600,
         color: "var(--ezy-text-secondary)", borderBottom: "1px solid var(--ezy-border)",
         fontVariantNumeric: "tabular-nums",
         fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)",
       }}>
         <span>Score: <span style={{ color: "var(--ezy-accent)" }}>{score}</span></span>
-        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>
           {phase === "idle" ? "Arrows to move, Space to jump" : `Level ${levelRef.current}`}
         </span>
         {bestScore > 0 && <span>Best: {bestScore}</span>}
@@ -1521,7 +1521,7 @@ export default function DonkeyKongGame({ onAddHighscore, paused = false }: Donke
             backgroundColor: "rgba(0,0,0,0.5)", gap: 16,
           }}>
             <div style={{
-              fontSize: 22, fontWeight: 700, color: "#fff",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 22px)", fontWeight: 700, color: "#fff",
               fontFamily: "monospace", textShadow: "3px 3px 0 #000",
               letterSpacing: 2, textTransform: "uppercase",
             }}>
@@ -1530,7 +1530,7 @@ export default function DonkeyKongGame({ onAddHighscore, paused = false }: Donke
             <div
               onClick={() => initGame()}
               style={{
-                padding: "8px 24px", fontSize: 14, fontWeight: 700,
+                padding: "8px 24px", fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700,
                 color: "#0a0a18", backgroundColor: "#5eead4",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", cursor: "pointer", userSelect: "none",
                 fontFamily: "monospace", textTransform: "uppercase",
@@ -1539,7 +1539,7 @@ export default function DonkeyKongGame({ onAddHighscore, paused = false }: Donke
             >
               Start Game
             </div>
-            <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
               Arrows / WASD to move, Space to jump
             </div>
           </div>
@@ -1561,7 +1561,7 @@ export default function DonkeyKongGame({ onAddHighscore, paused = false }: Donke
               transition: "transform 0.45s cubic-bezier(0.2, 0.8, 0.3, 1), opacity 0.35s ease",
             }}>
               <div style={{
-                fontSize: 22, fontWeight: 700, color: "#fff",
+                fontSize: "calc(var(--ezy-font-scale, 1) * 22px)", fontWeight: 700, color: "#fff",
                 fontFamily: "monospace", textShadow: "3px 3px 0 #000",
                 letterSpacing: 2, textTransform: "uppercase",
               }}>
@@ -1576,28 +1576,28 @@ export default function DonkeyKongGame({ onAddHighscore, paused = false }: Donke
                 display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
                 minWidth: 160,
               }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#888", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: 1 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "#888", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: 1 }}>
                   Score
                 </div>
                 <div style={{
-                  fontSize: 36, fontWeight: 700, color: "#5eead4",
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 36px)", fontWeight: 700, color: "#5eead4",
                   fontFamily: "monospace", fontVariantNumeric: "tabular-nums",
                   lineHeight: 1,
                 }}>
                   {score}
                 </div>
                 {score > 0 && score >= bestScore && (
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#4ade80", fontFamily: "monospace" }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 700, color: "#4ade80", fontFamily: "monospace" }}>
                     NEW BEST!
                   </div>
                 )}
                 {bestScore > 0 && (
-                  <div style={{ fontSize: 11, color: "#666", fontFamily: "monospace" }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#666", fontFamily: "monospace" }}>
                     Best: {bestScore}
                   </div>
                 )}
                 <div style={{
-                  display: "flex", gap: 16, fontSize: 11, color: "#999",
+                  display: "flex", gap: 16, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#999",
                   fontFamily: "monospace", marginTop: 4,
                 }}>
                   <span>Barrels: {barrelsJumped.current}</span>
@@ -1608,7 +1608,7 @@ export default function DonkeyKongGame({ onAddHighscore, paused = false }: Donke
               <div
                 onClick={() => initGame()}
                 style={{
-                  padding: "8px 24px", fontSize: 14, fontWeight: 700,
+                  padding: "8px 24px", fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700,
                   color: "#0a0a18", backgroundColor: "#5eead4",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", cursor: "pointer", userSelect: "none",
                   fontFamily: "monospace", textTransform: "uppercase",
@@ -1617,7 +1617,7 @@ export default function DonkeyKongGame({ onAddHighscore, paused = false }: Donke
               >
                 Play Again
               </div>
-              <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
                 Space to retry
               </div>
             </div>
@@ -1632,7 +1632,7 @@ export default function DonkeyKongGame({ onAddHighscore, paused = false }: Donke
             backgroundColor: "rgba(0,0,0,0.6)",
           }}>
             <div style={{
-              fontSize: 22, fontWeight: 700, color: "#fff",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 22px)", fontWeight: 700, color: "#fff",
               fontFamily: "monospace", textShadow: "3px 3px 0 #000",
               textTransform: "uppercase", letterSpacing: 2,
             }}>

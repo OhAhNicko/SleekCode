@@ -158,7 +158,7 @@ export default function CommandBlockOverlay({
               {block.command && (
                 <span
                   style={{
-                    fontSize: 10,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                     color: "var(--ezy-text-muted)",
                     backgroundColor: "var(--ezy-surface)",
                     padding: "1px 6px",
@@ -179,7 +179,7 @@ export default function CommandBlockOverlay({
               {duration && (
                 <span
                   style={{
-                    fontSize: 9,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                     color: "var(--ezy-text-muted)",
                     opacity: 0.7,
                   }}
@@ -192,7 +192,7 @@ export default function CommandBlockOverlay({
               {block.exitCode !== null && (
                 <span
                   style={{
-                    fontSize: 9,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                     fontWeight: 600,
                     padding: "1px 5px",
                     borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",

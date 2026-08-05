@@ -46,6 +46,9 @@ interface XtermTuiScrollbarProps {
   sessionId?: string;
   workingDir?: string;
   backend?: TerminalBackend;
+  /** This pane runs over SSH, so wheel reports cross a network to reach the
+   *  program. Makes `scrollBy` pace its notches — see there. */
+  remote?: boolean;
   /** Bumped on prompt submit — a submitted prompt lands at the bottom. */
   submitNonce?: number;
 }
@@ -64,6 +67,7 @@ export default function XtermTuiScrollbar({
   sessionId,
   workingDir,
   backend,
+  remote,
   submitNonce,
 }: XtermTuiScrollbarProps) {
   const enabled = enabledFor(terminalType);
@@ -137,17 +141,46 @@ export default function XtermTuiScrollbar({
     setPos(0);
   }, [submitNonce]);
 
+  // Notch pacing, remote panes only. `encodeSgrWheel(n)` concatenates n wheel
+  // reports into ONE write, so a fast drag hands the far side a pile of escape
+  // sequences in a single read — exactly what the CLI's parser loses sync on,
+  // spilling the remainder into its composer as text. Locally that read is
+  // drained a report at a time and the pile never forms. So on a remote pane
+  // the notches are queued and released one per frame: same total travel, just
+  // spread out enough that each report gets its own read.
+  const remoteRef = useRef(remote);
+  remoteRef.current = remote;
+  const pacedRef = useRef<string[]>([]);
+  const pacedRafRef = useRef(0);
+  function pumpPaced() {
+    pacedRafRef.current = 0;
+    const next = pacedRef.current.shift();
+    if (next) writeRef.current(next);
+    if (pacedRef.current.length) {
+      pacedRafRef.current = requestAnimationFrame(pumpPaced);
+    }
+  }
+
   /** Send `n` wheel notches, aimed at the pane centre. */
   const scrollBy = useCallback(
     (n: number) => {
       if (!terminal || n === 0) return;
       const col = Math.max(1, Math.floor(terminal.cols / 2));
       const row = Math.max(1, Math.floor(terminal.rows / 2));
-      writeRef.current(encodeSgrWheel(n, col, row));
+      const count = Math.abs(n);
+      if (remoteRef.current && count > 1) {
+        const one = encodeSgrWheel(n > 0 ? 1 : -1, col, row);
+        for (let i = 0; i < count; i++) pacedRef.current.push(one);
+        if (!pacedRafRef.current) {
+          pacedRafRef.current = requestAnimationFrame(pumpPaced);
+        }
+      } else {
+        writeRef.current(encodeSgrWheel(n, col, row));
+      }
       setPosition(posRef.current + n);
       scheduleSample(n);
     },
-    // scheduleSample is stable (defined below via ref indirection).
+    // scheduleSample and pumpPaced are stable (ref indirection).
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [terminal, setPosition],
   );
@@ -202,6 +235,8 @@ export default function XtermTuiScrollbar({
   useEffect(
     () => () => {
       if (sampleTimer.current) clearTimeout(sampleTimer.current);
+      if (pacedRafRef.current) cancelAnimationFrame(pacedRafRef.current);
+      pacedRef.current = [];
     },
     [],
   );

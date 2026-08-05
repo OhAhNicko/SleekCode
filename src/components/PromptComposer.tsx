@@ -9,7 +9,7 @@ import { useBrowserConsoleStore } from "../store/browserConsoleStore";
 import { getImageLabel, resolveImagePath } from "../lib/clipboard-insert";
 import { registerImageMask } from "../lib/image-mask";
 import { SLASH_COMMANDS, SLASH_ARG_HINTS, loadUserSkills, type SlashCommand } from "../lib/slash-commands";
-import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
+import { resolveTerminalFontFamily, terminalFontStack } from "../lib/terminal-fonts";
 import type { TerminalType } from "../types";
 import { HiMiniArrowLongRight, HiMiniArrowLongLeft } from "react-icons/hi2";
 import { FaWandMagicSparkles, FaCopy, FaDeleteLeft } from "react-icons/fa6";
@@ -137,6 +137,15 @@ export default function PromptComposer({
   // TerminalPane's doFit() scales font down for narrow panes). Updated by
   // resize observers so the composer re-renders when the terminal font changes.
   const [effectiveFontSize, setEffectiveFontSize] = useState(terminal?.options.fontSize ?? fontSize);
+  // The pane's face — same source the terminal itself resolves, including the
+  // per-CLI override, because every layer below draws ON TOP of terminal text
+  // (the ghost textarea, the tag overlay, the slash-command color overlay). A
+  // different family here is a visible glyph-by-glyph misalignment, not a
+  // styling nicety. Resolved inside the selector so it yields a string; a
+  // selector returning the font triple as an object re-renders forever.
+  const fontStack = useAppStore((s) =>
+    terminalFontStack(resolveTerminalFontFamily(s, terminalType)),
+  );
   const panePromptHistory = useAppStore((s) => s.panePromptHistory);
   const promptHistory = panePromptHistory[terminalId] ?? EMPTY_HISTORY;
   const addPromptHistory = useAppStore((s) => s.addPromptHistory);
@@ -1851,7 +1860,7 @@ export default function PromptComposer({
                 >
                   <span
                     style={{
-                      fontFamily: TERMINAL_FONT_FAMILY,
+                      fontFamily: fontStack,
                       fontSize: effectiveFontSize - 1,
                       minWidth: 90,
                       flexShrink: 0,
@@ -1991,7 +2000,7 @@ export default function PromptComposer({
             width: "100%",
             backgroundColor: "transparent",
             color: (consoleTagRef.current && value.includes(consoleTagRef.current)) || styledSegments || hasArrows ? "transparent" : terminalFg,
-            fontFamily: TERMINAL_FONT_FAMILY,
+            fontFamily: fontStack,
             fontSize: effectiveFontSize,
             lineHeight: 1.4,
             letterSpacing: 1,
@@ -2022,7 +2031,7 @@ export default function PromptComposer({
                 left: 0,
                 right: 0,
                 pointerEvents: "none",
-                fontFamily: TERMINAL_FONT_FAMILY,
+                fontFamily: fontStack,
                 fontSize: effectiveFontSize,
                 lineHeight: 1.4,
                 letterSpacing: 1,
@@ -2049,7 +2058,7 @@ export default function PromptComposer({
               left: 0,
               right: 0,
               pointerEvents: "none",
-              fontFamily: TERMINAL_FONT_FAMILY,
+              fontFamily: fontStack,
               fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
@@ -2075,7 +2084,7 @@ export default function PromptComposer({
               left: 0,
               right: 0,
               pointerEvents: "none",
-              fontFamily: TERMINAL_FONT_FAMILY,
+              fontFamily: fontStack,
               fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
@@ -2100,7 +2109,7 @@ export default function PromptComposer({
               left: value ? 0 : 10,
               right: 0,
               pointerEvents: "none",
-              fontFamily: TERMINAL_FONT_FAMILY,
+              fontFamily: fontStack,
               fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
@@ -2130,7 +2139,7 @@ export default function PromptComposer({
               left: 10,
               right: 0,
               pointerEvents: "none",
-              fontFamily: TERMINAL_FONT_FAMILY,
+              fontFamily: fontStack,
               fontSize: effectiveFontSize,
               lineHeight: 1.4,
               letterSpacing: 1,
@@ -2195,7 +2204,7 @@ export default function PromptComposer({
                 justifyContent: "center",
                 backgroundColor: terminalCursor,
                 borderBottomRightRadius: 2,
-                fontSize: 6,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 6px)",
                 fontWeight: 700,
                 color: "#fff",
                 lineHeight: 1,
@@ -2245,7 +2254,7 @@ export default function PromptComposer({
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             backgroundColor: "#dc2626",
             color: "#fff",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             fontVariantNumeric: "tabular-nums",
             transition: "opacity 120ms ease",

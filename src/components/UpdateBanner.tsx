@@ -44,7 +44,7 @@ export default function UpdateBanner({
         backgroundColor: "var(--ezy-surface)",
         borderBottom: "1px solid var(--ezy-border-subtle)",
         flexShrink: 0,
-        fontSize: 13,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
         color: "var(--ezy-text-secondary)",
         overflow: "hidden",
       }}
@@ -79,7 +79,7 @@ export default function UpdateBanner({
               border: "none",
               background: "var(--ezy-accent-dim)",
               color: "#fff",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 500,
               cursor: "pointer",
               flexShrink: 0,
@@ -134,7 +134,7 @@ export default function UpdateBanner({
           {pct != null && (
             <span
               style={{
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 color: "var(--ezy-text-muted)",
                 flexShrink: 0,
                 fontVariantNumeric: "tabular-nums",
@@ -223,7 +223,7 @@ export default function UpdateBanner({
               border: "1px solid var(--ezy-border)",
               background: "transparent",
               color: "var(--ezy-text-secondary)",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 500,
               cursor: "pointer",
               flexShrink: 0,

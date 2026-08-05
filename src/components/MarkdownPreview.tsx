@@ -113,7 +113,7 @@ function MarkdownImage({
 
   if (failed) {
     return (
-      <span style={{ color: "var(--ezy-text-muted)", fontSize: 12 }}>
+      <span style={{ color: "var(--ezy-text-muted)", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)" }}>
         {alt || raw}
       </span>
     );

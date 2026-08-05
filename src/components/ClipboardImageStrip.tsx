@@ -399,7 +399,7 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
                 justifyContent: "center",
                 backgroundColor: "var(--ezy-accent)",
                 borderBottomRightRadius: 3,
-                fontSize: 8,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 8px)",
                 fontWeight: 700,
                 color: "#fff",
                 lineHeight: 1,

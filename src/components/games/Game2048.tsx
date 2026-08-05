@@ -321,7 +321,7 @@ export default function Game2048({ onAddHighscore, paused = false }: Game2048Pro
           justifyContent: "space-between",
           alignItems: "center",
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -334,7 +334,7 @@ export default function Game2048({ onAddHighscore, paused = false }: Game2048Pro
           onClick={resetGame}
           style={{
             padding: "3px 10px",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             color: "var(--ezy-text-secondary)",
             backgroundColor: "var(--ezy-surface)",
@@ -411,10 +411,10 @@ export default function Game2048({ onAddHighscore, paused = false }: Game2048Pro
               gap: 12,
             }}
           >
-            <div style={{ fontSize: 18, fontWeight: 700, color: "var(--ezy-text)" }}>Game Over</div>
-            <div style={{ fontSize: 14, color: "var(--ezy-accent)", fontWeight: 600 }}>Score: {score}</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: "var(--ezy-text)" }}>Game Over</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-accent)", fontWeight: 600 }}>Score: {score}</div>
             {score > 0 && score >= bestScore && (
-              <div style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>New Highscore!</div>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "#4ade80", fontWeight: 600 }}>New Highscore!</div>
             )}
             <button
               onClick={() => {
@@ -423,7 +423,7 @@ export default function Game2048({ onAddHighscore, paused = false }: Game2048Pro
               }}
               style={{
                 padding: "8px 24px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
@@ -448,7 +448,7 @@ export default function Game2048({ onAddHighscore, paused = false }: Game2048Pro
               backgroundColor: "rgba(0,0,0,0.6)",
             }}
           >
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 16px)", fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
           </div>
         )}
       </div>

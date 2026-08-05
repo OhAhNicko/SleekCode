@@ -157,7 +157,7 @@ export default function CreatePullRequestModal({
           <div style={{ flex: 1, minWidth: 0 }}>
             <div
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 color: "var(--ezy-text-muted)",
                 textTransform: "uppercase",
                 letterSpacing: "0.04em",
@@ -166,7 +166,7 @@ export default function CreatePullRequestModal({
             >
               New pull request
             </div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 15px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               {currentBranch} → {base}
             </div>
           </div>
@@ -214,7 +214,7 @@ export default function CreatePullRequestModal({
             <label
               style={{
                 display: "block",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 fontWeight: 600,
                 color: "var(--ezy-text-muted)",
                 textTransform: "uppercase",
@@ -236,7 +236,7 @@ export default function CreatePullRequestModal({
                 border: "1px solid var(--ezy-border)",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 padding: "0 10px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontFamily: "inherit",
                 outline: "none",
                 cursor: submitting ? "not-allowed" : "pointer",
@@ -257,7 +257,7 @@ export default function CreatePullRequestModal({
             <label
               style={{
                 display: "block",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 fontWeight: 600,
                 color: "var(--ezy-text-muted)",
                 textTransform: "uppercase",
@@ -284,7 +284,7 @@ export default function CreatePullRequestModal({
                 border: "1px solid var(--ezy-border)",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 padding: "0 10px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontFamily: "inherit",
                 outline: "none",
               }}
@@ -296,7 +296,7 @@ export default function CreatePullRequestModal({
             <label
               style={{
                 display: "block",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 fontWeight: 600,
                 color: "var(--ezy-text-muted)",
                 textTransform: "uppercase",
@@ -325,7 +325,7 @@ export default function CreatePullRequestModal({
                 border: "1px solid var(--ezy-border)",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 padding: "8px 10px",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 lineHeight: 1.5,
                 fontFamily: "inherit",
                 resize: "vertical",
@@ -384,7 +384,7 @@ export default function CreatePullRequestModal({
                 </svg>
               )}
             </div>
-            <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)" }}>
               Open as draft
             </span>
           </div>
@@ -392,7 +392,7 @@ export default function CreatePullRequestModal({
           {error && (
             <div
               style={{
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 color: "var(--ezy-red)",
                 lineHeight: 1.5,
                 whiteSpace: "pre-wrap",
@@ -429,7 +429,7 @@ export default function CreatePullRequestModal({
               border: "1px solid var(--ezy-border)",
               backgroundColor: "var(--ezy-surface-raised)",
               color: "var(--ezy-text)",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 500,
               cursor: submitting ? "not-allowed" : "pointer",
               opacity: submitting ? 0.6 : 1,
@@ -448,7 +448,7 @@ export default function CreatePullRequestModal({
               border: "none",
               backgroundColor: "var(--ezy-accent)",
               color: "#0d1117",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 600,
               cursor: canSubmit ? "pointer" : "not-allowed",
               opacity: canSubmit ? 1 : 0.6,

@@ -550,7 +550,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         const list = highscores[key];
         if (!list || list.length === 0) return null;
         return (
-          <div style={{ fontSize: 11, color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
             {list[0].score.toLocaleString()}
           </div>
         );
@@ -560,14 +560,14 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         const list = timedHighscores[key];
         if (!list || list.length === 0) return null;
         return (
-          <div style={{ fontSize: 11, color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
             {formatTime(list[0].seconds)}
           </div>
         );
       }
       case "crossword": {
         return (
-          <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontVariantNumeric: "tabular-nums" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", fontVariantNumeric: "tabular-nums" }}>
             {completedCrosswordIds.length}/{allPuzzles.length}
           </div>
         );
@@ -576,7 +576,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         const best = gameStats.wordle.tech.won > gameStats.wordle.classic.won ? gameStats.wordle.tech : gameStats.wordle.classic;
         if (best.played === 0) return null;
         return (
-          <div style={{ fontSize: 10, color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
             W:{best.won} Str:{best.currentStreak}
           </div>
         );
@@ -590,7 +590,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         const l = s3.losses + s5.losses;
         const d = s3.draws + s5.draws;
         return (
-          <div style={{ fontSize: 10, color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
             {w}W {l}L {d}D
           </div>
         );
@@ -599,7 +599,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         const ps = gameStats.pong ?? { wins: 0, losses: 0 };
         if (ps.wins + ps.losses === 0) return null;
         return (
-          <div style={{ fontSize: 10, color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
             {ps.wins}W {ps.losses}L
           </div>
         );
@@ -612,7 +612,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         const td = cs.easy.draws + cs.medium.draws + cs.hard.draws;
         if (tw + tl + td === 0) return null;
         return (
-          <div style={{ fontSize: 10, color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-accent)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
             {tw}W {tl}L {td}D
           </div>
         );
@@ -681,7 +681,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
         )}
         <span
           style={{
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             fontWeight: 600,
             color: "var(--ezy-text)",
             flex: 1,
@@ -776,10 +776,10 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
                   {card.icon}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)", lineHeight: 1.3 }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)", lineHeight: 1.3 }}>
                     {card.name}
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--ezy-text-secondary)", lineHeight: 1.4, marginTop: 2 }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-secondary)", lineHeight: 1.4, marginTop: 2 }}>
                     {card.description}
                   </div>
                 </div>
@@ -792,7 +792,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
             {/* Highscores section */}
             {(highscores.snake.length > 0 || highscores.twentyFortyEight.length > 0 || highscores.sudoku.length > 0 || highscores.blockBreaker.length > 0 || highscores.flappyBird.length > 0 || highscores.spaceInvaders.length > 0 || highscores.tetris.length > 0 || highscores.asteroids.length > 0 || highscores.frogger.length > 0 || highscores.duckHunt.length > 0 || highscores.donkeyKong.length > 0) && (
               <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
                   Top Scores
                 </div>
                 {(["snake", "twentyFortyEight", "sudoku", "blockBreaker", "flappyBird", "spaceInvaders", "tetris", "asteroids", "frogger", "duckHunt", "donkeyKong"] as const).map((key) => {
@@ -802,7 +802,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
                   const label = labelMap[key] ?? key;
                   return (
                     <div key={key} style={{ marginBottom: 8 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text-secondary)", marginBottom: 4 }}>{label}</div>
+                      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "var(--ezy-text-secondary)", marginBottom: 4 }}>{label}</div>
                       {list.slice(0, 5).map((entry, i) => (
                         <div
                           key={i}
@@ -811,7 +811,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
                             justifyContent: "space-between",
                             alignItems: "center",
                             padding: "2px 8px",
-                            fontSize: 11,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                             color: i === 0 ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
                             fontVariantNumeric: "tabular-nums",
                           }}
@@ -831,7 +831,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
               timedHighscores.solitaireKlondike.length > 0 || timedHighscores.solitaireSpider.length > 0 || timedHighscores.solitaireFreecell.length > 0 ||
               timedHighscores.memoryEasy.length > 0 || timedHighscores.memoryMedium.length > 0 || timedHighscores.memoryHard.length > 0) && (
               <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
                   Best Times
                 </div>
                 {(["minesweeperEasy", "minesweeperMedium", "minesweeperHard", "solitaireKlondike", "solitaireSpider", "solitaireFreecell", "memoryEasy", "memoryMedium", "memoryHard"] as const).map((key) => {
@@ -850,7 +850,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
                   };
                   return (
                     <div key={key} style={{ marginBottom: 8 }}>
-                      <div style={{ fontSize: 11, fontWeight: 600, color: "var(--ezy-text-secondary)", marginBottom: 4 }}>{labels[key]}</div>
+                      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "var(--ezy-text-secondary)", marginBottom: 4 }}>{labels[key]}</div>
                       {list.slice(0, 5).map((entry, i) => (
                         <div
                           key={i}
@@ -859,7 +859,7 @@ export default function GamePane({ onClose, initialGame, startPaused }: GamePane
                             justifyContent: "space-between",
                             alignItems: "center",
                             padding: "2px 8px",
-                            fontSize: 11,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                             color: i === 0 ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
                             fontVariantNumeric: "tabular-nums",
                           }}

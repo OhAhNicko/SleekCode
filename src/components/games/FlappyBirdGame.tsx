@@ -962,13 +962,13 @@ export default function FlappyBirdGame({ onAddHighscore, paused = false }: Flapp
       {/* Score bar */}
       <div style={{
         display: "flex", justifyContent: "space-between", alignItems: "center",
-        padding: "6px 12px", fontSize: 12, fontWeight: 600,
+        padding: "6px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600,
         color: "var(--ezy-text-secondary)", borderBottom: "1px solid var(--ezy-border)",
         fontVariantNumeric: "tabular-nums",
         fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)",
       }}>
         <span>Score: <span style={{ color: "var(--ezy-accent)" }}>{score}</span></span>
-        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>
           {score > 0 ? getTheme(score).label : "Space / Click to flap"}
         </span>
         {bestScore > 0 && <span>Best: {bestScore}</span>}
@@ -1002,14 +1002,14 @@ export default function FlappyBirdGame({ onAddHighscore, paused = false }: Flapp
             backgroundColor: "rgba(0,0,0,0.45)", gap: 16,
           }}>
             <div style={{
-              fontSize: 24, fontWeight: 700, color: "#fff",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 24px)", fontWeight: 700, color: "#fff",
               fontFamily: "monospace", textShadow: "3px 3px 0 #000",
               letterSpacing: 2, textTransform: "uppercase",
             }}>
               Flappy Bird
             </div>
             <div onClick={flap} style={{
-              padding: "8px 24px", fontSize: 14, fontWeight: 700,
+              padding: "8px 24px", fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700,
               color: "#0a0a18", backgroundColor: "#5eead4",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", cursor: "pointer", userSelect: "none",
               fontFamily: "monospace", textTransform: "uppercase",
@@ -1017,7 +1017,7 @@ export default function FlappyBirdGame({ onAddHighscore, paused = false }: Flapp
             }}>
               Start Game
             </div>
-            <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
               Press Space or Click to Flap
             </div>
           </div>
@@ -1041,7 +1041,7 @@ export default function FlappyBirdGame({ onAddHighscore, paused = false }: Flapp
                 transition: "transform 0.45s cubic-bezier(0.2, 0.8, 0.3, 1), opacity 0.35s ease",
               }}>
                 <div style={{
-                  fontSize: 24, fontWeight: 700, color: "#fff",
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 24px)", fontWeight: 700, color: "#fff",
                   fontFamily: "monospace", textShadow: "3px 3px 0 #000",
                   letterSpacing: 2, textTransform: "uppercase",
                 }}>
@@ -1057,23 +1057,23 @@ export default function FlappyBirdGame({ onAddHighscore, paused = false }: Flapp
                   display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
                   minWidth: 140,
                 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: "#888", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: 1 }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 600, color: "#888", fontFamily: "monospace", textTransform: "uppercase", letterSpacing: 1 }}>
                     Score
                   </div>
                   <div style={{
-                    fontSize: 36, fontWeight: 700, color: "#5eead4",
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 36px)", fontWeight: 700, color: "#5eead4",
                     fontFamily: "monospace", fontVariantNumeric: "tabular-nums",
                     lineHeight: 1,
                   }}>
                     {score}
                   </div>
                   {score > 0 && score >= bestScore && (
-                    <div style={{ fontSize: 12, fontWeight: 700, color: "#4ade80", fontFamily: "monospace" }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 700, color: "#4ade80", fontFamily: "monospace" }}>
                       NEW BEST!
                     </div>
                   )}
                   {bestScore > 0 && (
-                    <div style={{ fontSize: 11, color: "#666", fontFamily: "monospace" }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#666", fontFamily: "monospace" }}>
                       Best: {bestScore}
                     </div>
                   )}
@@ -1094,7 +1094,7 @@ export default function FlappyBirdGame({ onAddHighscore, paused = false }: Flapp
                         <rect x="7" y="12" width="4" height="4" rx="1" fill={medal.border} opacity="0.6" />
                       </svg>
                       <span style={{
-                        fontSize: 14, fontWeight: 700, color: medal.color,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700, color: medal.color,
                         fontFamily: "monospace", letterSpacing: 2,
                         textShadow: `1px 1px 0 ${medal.border}`,
                       }}>
@@ -1105,7 +1105,7 @@ export default function FlappyBirdGame({ onAddHighscore, paused = false }: Flapp
                 </div>
 
                 <div onClick={flap} style={{
-                  padding: "8px 24px", fontSize: 14, fontWeight: 700,
+                  padding: "8px 24px", fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700,
                   color: "#0a0a18", backgroundColor: "#5eead4",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", cursor: "pointer", userSelect: "none",
                   fontFamily: "monospace", textTransform: "uppercase",
@@ -1113,7 +1113,7 @@ export default function FlappyBirdGame({ onAddHighscore, paused = false }: Flapp
                 }}>
                   Play Again
                 </div>
-                <div style={{ fontSize: 11, color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#888", fontFamily: "monospace", textTransform: "uppercase" }}>
                   Press Space or Click
                 </div>
               </div>
@@ -1129,7 +1129,7 @@ export default function FlappyBirdGame({ onAddHighscore, paused = false }: Flapp
             backgroundColor: "rgba(0,0,0,0.6)",
           }}>
             <div style={{
-              fontSize: 22, fontWeight: 700, color: "#fff",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 22px)", fontWeight: 700, color: "#fff",
               fontFamily: "monospace", textShadow: "3px 3px 0 #000",
               textTransform: "uppercase", letterSpacing: 2,
             }}>

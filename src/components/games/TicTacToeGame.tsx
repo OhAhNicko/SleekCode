@@ -478,7 +478,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
           fontFamily: FONT_UI,
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)", marginBottom: 4 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)", marginBottom: 4 }}>
           Select Mode
         </div>
         {(["3x3", "5x5"] as Variant[]).map((v) => (
@@ -505,10 +505,10 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
               e.currentTarget.style.borderColor = "var(--ezy-border)";
             }}
           >
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               {v === "3x3" ? "Classic 3x3" : "5x5 (First to 4)"}
             </div>
-            <div style={{ fontSize: 11, color: "var(--ezy-text-secondary)", marginTop: 4 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-secondary)", marginTop: 4 }}>
               {v === "3x3" ? "Three difficulty levels" : "Alpha-beta AI opponent"}
             </div>
           </div>
@@ -537,7 +537,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
           fontFamily: FONT_UI,
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)", marginBottom: 4 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)", marginBottom: 4 }}>
           Select Difficulty
         </div>
         {([
@@ -568,8 +568,8 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
               e.currentTarget.style.borderColor = "var(--ezy-border)";
             }}
           >
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>{d.label}</div>
-            <div style={{ fontSize: 11, color: "var(--ezy-text-secondary)", marginTop: 3 }}>{d.desc}</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>{d.label}</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-secondary)", marginTop: 3 }}>{d.desc}</div>
           </div>
         ))}
       </div>
@@ -595,7 +595,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
       {/* Score bar */}
       <div
         style={{
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -611,7 +611,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
         <span style={{ color: COLOR_O }}>L {scores.losses}</span>
         <span style={{ color: "var(--ezy-text-muted)" }}>D {scores.draws}</span>
         <span style={{ flex: 1 }} />
-        <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
           {variant === "3x3" ? `3x3 ${difficulty}` : "5x5"}
         </span>
       </div>
@@ -691,7 +691,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
               left: 0,
               right: 0,
               textAlign: "center",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               color: currentTurn === "X" ? COLOR_X : COLOR_O,
               fontWeight: 600,
               fontFamily: FONT_UI,
@@ -718,7 +718,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
           >
             <div
               style={{
-                fontSize: 20,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 20px)",
                 fontWeight: 700,
                 color: winner === "X" ? COLOR_X : winner === "O" ? COLOR_O : "var(--ezy-text)",
                 fontFamily: FONT_UI,
@@ -733,7 +733,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                 backgroundColor: "var(--ezy-accent)",
                 color: "var(--ezy-bg)",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 cursor: "pointer",
                 fontFamily: FONT_UI,
@@ -762,7 +762,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
           >
             <div
               style={{
-                fontSize: 18,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 18px)",
                 fontWeight: 700,
                 color: "var(--ezy-text)",
                 fontFamily: FONT_UI,

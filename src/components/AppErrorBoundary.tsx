@@ -76,12 +76,12 @@ export default class AppErrorBoundary extends Component<Props, State> {
         }}
       >
         <div style={{ maxWidth: 720, width: "100%" }}>
-          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 16px)", fontWeight: 600, marginBottom: 6 }}>
             MADE hit an error and stopped drawing
           </div>
           <div
             style={{
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               color: "var(--ezy-text-muted, #8a8a8a)",
               lineHeight: 1.5,
               marginBottom: 16,
@@ -93,7 +93,7 @@ export default class AppErrorBoundary extends Component<Props, State> {
 
           <div
             style={{
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               color: "var(--ezy-red, #fd8183)",
               marginBottom: 10,
               wordBreak: "break-word",
@@ -108,7 +108,7 @@ export default class AppErrorBoundary extends Component<Props, State> {
               padding: 12,
               maxHeight: 260,
               overflow: "auto",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               lineHeight: 1.45,
               color: "var(--ezy-text-secondary, #c4c4c4)",
               backgroundColor: "var(--ezy-surface, #1d1d1d)",
@@ -133,7 +133,7 @@ export default class AppErrorBoundary extends Component<Props, State> {
               padding: "6px 14px",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
               cursor: "pointer",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: 600,
               backgroundColor: "var(--ezy-accent, #80e2ad)",
               color: "#000",

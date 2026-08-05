@@ -1206,7 +1206,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
         }}
       >
         <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 20 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ezy-text)", marginBottom: 8, fontFamily: FONT_UI }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700, color: "var(--ezy-text)", marginBottom: 8, fontFamily: FONT_UI }}>
             Select Difficulty
           </div>
           {([
@@ -1226,7 +1226,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                 border: "1px solid var(--ezy-border)",
                 cursor: "pointer",
                 textAlign: "center",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-text)",
                 transition: "background-color 150ms ease, border-color 150ms ease",
@@ -1242,7 +1242,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
               }}
             >
               {label}
-              <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 2, fontWeight: 400 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", marginTop: 2, fontWeight: 400 }}>
                 {desc}
               </div>
             </div>
@@ -1305,7 +1305,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
           justifyContent: "space-between",
           alignItems: "center",
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -1317,10 +1317,10 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
         <span>
           Move {gameState.fullMoveNumber}
         </span>
-        <span style={{ fontSize: 11 }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)" }}>
           {turnLabel}
         </span>
-        <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
           {difficulty}
         </span>
       </div>
@@ -1397,7 +1397,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                         position: "absolute",
                         top: 1,
                         left: 2,
-                        fontSize: 9,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                         color: "var(--ezy-text-muted)",
                         opacity: 0.5,
                         lineHeight: 1,
@@ -1414,7 +1414,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                         position: "absolute",
                         bottom: 1,
                         right: 2,
-                        fontSize: 9,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                         color: "var(--ezy-text-muted)",
                         opacity: 0.5,
                         lineHeight: 1,
@@ -1545,7 +1545,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
         }}>
           <div style={{
             padding: "6px 8px 4px",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             color: "var(--ezy-text-secondary)",
             fontFamily: FONT_UI,
@@ -1571,7 +1571,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                     display: "flex",
                     alignItems: "center",
                     gap: 2,
-                    fontSize: 13,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                     fontFamily: FONT_UI,
                     fontVariantNumeric: "tabular-nums",
                     padding: "3px 4px",
@@ -1579,7 +1579,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                     backgroundColor: isLast ? "color-mix(in srgb, var(--ezy-accent) 10%, transparent)" : "transparent",
                   }}
                 >
-                  <span style={{ color: "var(--ezy-text-muted)", minWidth: 20, textAlign: "right", fontSize: 11 }}>
+                  <span style={{ color: "var(--ezy-text-muted)", minWidth: 20, textAlign: "right", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)" }}>
                     {pair.num}.
                   </span>
                   <span style={{
@@ -1601,7 +1601,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
             })}
             {movePairs.length === 0 && (
               <div style={{
-                fontSize: 10,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                 color: "var(--ezy-text-muted)",
                 padding: "8px 4px",
                 textAlign: "center",
@@ -1627,7 +1627,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
             gap: 12,
           }}>
             <div style={{
-              fontSize: 18,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 18px)",
               fontWeight: 700,
               fontFamily: FONT_UI,
               color: gameResult === "checkmate"
@@ -1642,7 +1642,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                     ? "Draw - 50-move rule"
                     : "Draw - Insufficient material"}
             </div>
-            <div style={{ fontSize: 12, color: "var(--ezy-text-muted)", fontFamily: FONT_UI }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", fontFamily: FONT_UI }}>
               {moveHistory.length} moves played
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
@@ -1654,7 +1654,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                   border: "none",
                   backgroundColor: "var(--ezy-accent)",
                   color: "#fff",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 600,
                   cursor: "pointer",
                   fontFamily: FONT_UI,
@@ -1674,7 +1674,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
                   border: "1px solid var(--ezy-border)",
                   backgroundColor: "var(--ezy-surface)",
                   color: "var(--ezy-text-secondary)",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 600,
                   cursor: "pointer",
                   fontFamily: FONT_UI,
@@ -1702,7 +1702,7 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
             zIndex: 30,
           }}>
             <div style={{
-              fontSize: 18,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 18px)",
               fontWeight: 700,
               color: "var(--ezy-text-secondary)",
               fontFamily: FONT_UI,

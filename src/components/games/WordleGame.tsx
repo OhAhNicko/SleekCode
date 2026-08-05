@@ -306,7 +306,7 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
           justifyContent: "space-between",
           alignItems: "center",
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -324,7 +324,7 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
               style={{
                 padding: "2px 10px",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 fontWeight: 600,
                 cursor: "pointer",
                 backgroundColor: mode === m ? "var(--ezy-accent)" : "var(--ezy-surface)",
@@ -337,7 +337,7 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
           ))}
         </div>
         {completed && (
-          <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
             Next: {countdown}
           </span>
         )}
@@ -407,7 +407,7 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
         {completed && (
           <div style={{ textAlign: "center", padding: "4px 0" }}>
             <div style={{
-              fontSize: 14,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
               fontWeight: 700,
               color: won ? "#4ade80" : "#f87171",
               fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)",
@@ -478,7 +478,7 @@ export default function WordleGame({ onUpdateStats, paused = false }: WordleGame
             backgroundColor: "rgba(0,0,0,0.6)",
           }}
         >
-          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>Paused</div>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 16px)", fontWeight: 700, color: "var(--ezy-text-muted)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>Paused</div>
         </div>
       )}
     </div>

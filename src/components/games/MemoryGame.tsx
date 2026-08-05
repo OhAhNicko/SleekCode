@@ -505,7 +505,7 @@ export default function MemoryGame({ onAddTimedHighscore, paused = false }: Memo
           fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)",
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--ezy-text)", marginBottom: 8 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 700, color: "var(--ezy-text)", marginBottom: 8 }}>
           Select Difficulty
         </div>
         {(["easy", "medium", "hard"] as Difficulty[]).map((d) => {
@@ -533,8 +533,8 @@ export default function MemoryGame({ onAddTimedHighscore, paused = false }: Memo
                 e.currentTarget.style.borderColor = "var(--ezy-border)";
               }}
             >
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>{cfg.label}</div>
-              <div style={{ fontSize: 11, color: "var(--ezy-text-secondary)", marginTop: 2 }}>{cfg.description}</div>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>{cfg.label}</div>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-secondary)", marginTop: 2 }}>{cfg.description}</div>
             </div>
           );
         })}
@@ -578,7 +578,7 @@ export default function MemoryGame({ onAddTimedHighscore, paused = false }: Memo
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -710,20 +710,20 @@ export default function MemoryGame({ onAddTimedHighscore, paused = false }: Memo
               zIndex: 10,
             }}
           >
-            <div style={{ fontSize: 18, fontWeight: 700, color: "#4ade80" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: "#4ade80" }}>
               Completed!
             </div>
-            <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
               Moves: {moves}
             </div>
-            <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)", fontVariantNumeric: "tabular-nums" }}>
               Time: {formatTime(elapsed)}
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
               <div
                 onClick={handleNewGame}
                 style={{
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   fontWeight: 600,
                   padding: "8px 20px",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
@@ -741,7 +741,7 @@ export default function MemoryGame({ onAddTimedHighscore, paused = false }: Memo
               <div
                 onClick={handleBackToSelect}
                 style={{
-                  fontSize: 13,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                   fontWeight: 600,
                   padding: "8px 20px",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
@@ -774,7 +774,7 @@ export default function MemoryGame({ onAddTimedHighscore, paused = false }: Memo
               zIndex: 10,
             }}
           >
-            <span style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 16px)", fontWeight: 700, color: "var(--ezy-text-muted)", fontFamily: "var(--ezy-font-ui, Inter Variable, system-ui, sans-serif)" }}>
               Paused
             </span>
           </div>

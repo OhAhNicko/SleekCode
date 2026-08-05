@@ -288,7 +288,7 @@ export default function ScreenshotAnnotationToolbar({
                     position: "absolute",
                     right: 2,
                     bottom: 1,
-                    fontSize: 8,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 8px)",
                     fontWeight: 700,
                     lineHeight: 1,
                     color: tool === t.id ? "#fff" : "var(--ezy-text-muted)",
@@ -335,7 +335,7 @@ export default function ScreenshotAnnotationToolbar({
                         alignItems: "center",
                         gap: 8,
                         padding: "6px 10px",
-                        fontSize: 12,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                         color: "var(--ezy-text)",
                         cursor: "pointer",
                       }}
@@ -369,7 +369,7 @@ export default function ScreenshotAnnotationToolbar({
                         )}
                       </span>
                       <span style={{ flex: 1 }}>{v.label}</span>
-                      <span style={{ fontSize: 10, color: "var(--ezy-text-muted)" }}>{v.hint}</span>
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>{v.hint}</span>
                     </div>
                   ))}
                 </div>
@@ -572,7 +572,7 @@ export default function ScreenshotAnnotationToolbar({
                 border: "none",
                 backgroundColor: "var(--ezy-accent)",
                 color: "#fff",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 fontWeight: 600,
                 cursor: "pointer",
               }}
@@ -604,7 +604,7 @@ export default function ScreenshotAnnotationToolbar({
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                 border: "1px solid var(--ezy-border)",
                 color: "var(--ezy-text-secondary)",
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 cursor: "pointer",
               }}
             >
@@ -650,7 +650,7 @@ export default function ScreenshotAnnotationToolbar({
               ? "var(--ezy-red, #dc2626)"
               : "var(--ezy-accent)",
           color: dirty ? "#fff" : "var(--ezy-text-muted)",
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           fontWeight: 600,
           cursor: dirty && !saving ? "pointer" : "default",
           opacity: saving ? 0.6 : 1,
@@ -691,7 +691,7 @@ export default function ScreenshotAnnotationToolbar({
           border: "1px solid var(--ezy-border)",
           backgroundColor: "transparent",
           color: dirty ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           cursor: dirty && !saving ? "pointer" : "default",
           opacity: saving ? 0.6 : 1,
         }}

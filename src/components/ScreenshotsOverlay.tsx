@@ -1094,13 +1094,13 @@ export default function ScreenshotsOverlay({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               Screenshots
             </span>
             {images.length > 0 && (
               <span
                 style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   fontWeight: 600,
                   lineHeight: 1,
                   padding: "3px 7px",
@@ -1141,7 +1141,7 @@ export default function ScreenshotsOverlay({
                       onClose();
                     }}
                     style={{
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       fontWeight: 600,
                       fontFamily: "inherit",
                       height: 26,
@@ -1320,7 +1320,7 @@ export default function ScreenshotsOverlay({
                             padding: "0 3px",
                             backgroundColor: "var(--ezy-accent)",
                             borderBottomRightRadius: 4,
-                            fontSize: 9,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                             fontWeight: 700,
                             color: "#fff",
                             lineHeight: 1,
@@ -1562,14 +1562,14 @@ export default function ScreenshotsOverlay({
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div
                   className="truncate"
-                  style={{ fontSize: 12, color: "var(--ezy-text)" }}
+                  style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text)" }}
                   data-tooltip={active?.originalPath ?? active?.winPath}
                 >
                   {active ? fileNameOf(active.originalPath ?? active.winPath) : ""}
                 </div>
                 <div
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-text-muted)",
                     marginTop: 2,
                     fontVariantNumeric: "tabular-nums",
@@ -1598,7 +1598,7 @@ export default function ScreenshotsOverlay({
                 </GhostButton>
                 <span
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-text-secondary)",
                     minWidth: 40,
                     textAlign: "center",
@@ -1661,7 +1661,7 @@ export default function ScreenshotsOverlay({
                     border: "none",
                     backgroundColor: "var(--ezy-accent)",
                     color: "#fff",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontWeight: 600,
                     fontFamily: "inherit",
                     cursor: "pointer",
@@ -1750,7 +1750,7 @@ export default function ScreenshotsOverlay({
                       border: "none",
                       backgroundColor: "var(--ezy-red, #dc2626)",
                       color: "#fff",
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       fontWeight: 600,
                       fontFamily: "inherit",
                       cursor: "pointer",
@@ -1912,7 +1912,7 @@ function GhostButton({
         border: "1px solid var(--ezy-border)",
         backgroundColor: "transparent",
         color: danger ? "var(--ezy-red, #dc2626)" : "var(--ezy-text-secondary)",
-        fontSize: 11,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
         fontWeight: 500,
         fontFamily: "inherit",
         cursor: "pointer",
@@ -1957,7 +1957,7 @@ function SegButton({
         border: "none",
         backgroundColor: active ? "var(--ezy-accent)" : "transparent",
         color: active ? "#fff" : "var(--ezy-text-secondary)",
-        fontSize: 11,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
         fontWeight: 600,
         fontFamily: "inherit",
         cursor: "pointer",
@@ -2064,7 +2064,7 @@ function EmptyState({ onSnip }: { onSnip: () => void }) {
         gap: 14,
       }}
     >
-      <div style={{ fontSize: 14, color: "var(--ezy-text-secondary)" }}>No screenshots yet</div>
+      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-text-secondary)" }}>No screenshots yet</div>
       <button
         onClick={onSnip}
         style={{
@@ -2074,7 +2074,7 @@ function EmptyState({ onSnip }: { onSnip: () => void }) {
           border: "none",
           backgroundColor: "var(--ezy-accent)",
           color: "#fff",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           fontFamily: "inherit",
           cursor: "pointer",
@@ -2082,7 +2082,7 @@ function EmptyState({ onSnip }: { onSnip: () => void }) {
       >
         Take a screenshot
       </button>
-      <div style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>
+      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
         Win+Shift+S, or paste an image
       </div>
     </div>

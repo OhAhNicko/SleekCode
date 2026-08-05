@@ -57,7 +57,7 @@ function SegmentedControl<T extends string>({ options, value, onChange }: {
             style={{
               flex: 1,
               padding: "6px 16px",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: isActive ? 600 : 400,
               color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
               backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
@@ -158,7 +158,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
         {/* ── Header ─────────────────────────────────────── */}
         <div style={{ marginBottom: 24 }}>
           <h1 style={{
-            fontSize: 20,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 20px)",
             fontWeight: 700,
             color: "var(--ezy-text)",
             margin: 0,
@@ -167,7 +167,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
             Welcome to MADE
           </h1>
           <p style={{
-            fontSize: 13,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
             color: "var(--ezy-text-muted)",
             margin: "4px 0 0",
           }}>
@@ -178,7 +178,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
         {/* ── Section: Theme ─────────────────────────────── */}
         <div style={{ marginBottom: 20 }}>
           <div style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             textTransform: "uppercase",
             letterSpacing: "0.06em",
@@ -224,7 +224,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
                     <div style={{ width: 10, height: 10, borderRadius: "calc(var(--ezy-radius-scale, 1) * 2px)", backgroundColor: t.surface.cyan }} />
                   </div>
                   <span style={{
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontWeight: isSelected ? 600 : 400,
                     color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
                   }}>
@@ -253,7 +253,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
           }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-text)",
                 marginBottom: 4,
@@ -261,13 +261,13 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
                 MadeComposer
               </div>
               <div style={{
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 color: "var(--ezy-text-muted)",
                 lineHeight: 1.4,
               }}>
                 Rich prompt editor with image attachments, slash commands, and prompt history. Press{" "}
                 <span style={{
-                  fontSize: 11,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                   backgroundColor: "var(--ezy-surface-raised)",
                   border: "1px solid var(--ezy-border)",
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
@@ -294,8 +294,8 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
           borderTop: "1px solid var(--ezy-border-subtle)",
         }}>
           <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Restore last session</div>
-            <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>Restore last session</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
               Reopen your tabs from the previous session on startup.
             </div>
           </div>
@@ -313,8 +313,8 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
             borderTop: "1px solid var(--ezy-border-subtle)",
           }}>
             <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Terminal backend</div>
-              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>Terminal backend</div>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
                 Choose the shell backend for terminal sessions.
               </div>
             </div>
@@ -341,7 +341,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
           <div
             onClick={onSkip}
             style={{
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               color: "var(--ezy-text-muted)",
               cursor: "pointer",
               padding: "6px 0",
@@ -359,7 +359,7 @@ export default function WelcomeModal({ onComplete, onSkip }: WelcomeModalProps) 
               border: "none",
               backgroundColor: "var(--ezy-accent)",
               color: "#fff",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               fontWeight: 600,
               cursor: "pointer",
               fontFamily: "inherit",

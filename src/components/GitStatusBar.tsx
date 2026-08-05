@@ -329,7 +329,7 @@ export default function GitStatusBar({ workingDir, serverId, compact = false }: 
           />
         </svg>
         <span style={{ color: "var(--ezy-text-secondary)" }}>{stats.filesChanged}</span>
-        <span style={{ color: "var(--ezy-text-muted)", opacity: 0.6, fontSize: 10, lineHeight: 1 }}>&bull;</span>
+        <span style={{ color: "var(--ezy-text-muted)", opacity: 0.6, fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", lineHeight: 1 }}>&bull;</span>
         <span style={{ color: "var(--ezy-diff-add)" }}>+{stats.insertions}</span>
         <span style={{ color: "var(--ezy-diff-remove)" }}>-{stats.deletions}</span>
       </div>
@@ -429,7 +429,7 @@ export default function GitStatusBar({ workingDir, serverId, compact = false }: 
             border: "1px solid var(--ezy-border)",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
             boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             color: pullToast.kind === "ok" ? "#34d399" : "var(--ezy-red)",
             whiteSpace: "nowrap",
             maxWidth: 360,

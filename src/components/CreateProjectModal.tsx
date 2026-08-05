@@ -283,7 +283,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
             flexShrink: 0,
           }}
         >
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
             Create New Project
           </span>
           <svg
@@ -307,7 +307,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           {/* Location — local machine or one of the configured servers */}
           {servers.length > 0 && (
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
                 Location
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -318,7 +318,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
                       onClick={() => pickLocation(loc.id)}
                       style={{
                         padding: "5px 12px",
-                        fontSize: 12,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                         fontWeight: 600,
                         borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
                         cursor: "pointer",
@@ -335,7 +335,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
                 )}
               </div>
               {isRemote && !remoteServerHasKey && (
-                <div style={{ fontSize: 11, color: "#e55", marginTop: 6 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 6 }}>
                   This server needs a working SSH key first — set one up in the Servers panel.
                 </div>
               )}
@@ -345,7 +345,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           {/* Remote parent directory */}
           {isRemote && (
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
                 Parent directory on {remoteServer?.name}
               </div>
               <div style={{ display: "flex", gap: 6 }}>
@@ -358,7 +358,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
                   style={{
                     flex: 1,
                     padding: "8px 10px",
-                    fontSize: 13,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                     color: "var(--ezy-text)",
                     backgroundColor: "var(--ezy-surface)",
                     border: "1px solid var(--ezy-border)",
@@ -374,7 +374,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
                   disabled={!remoteServerHasKey}
                   style={{
                     padding: "3px 12px",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontWeight: 500,
                     color: "var(--ezy-text-secondary)",
                     backgroundColor: "var(--ezy-surface-raised)",
@@ -390,7 +390,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
                 </button>
               </div>
               {remoteParentTrimmed.length > 0 && !remoteParentOk && (
-                <div style={{ fontSize: 11, color: "#e55", marginTop: 4 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 4 }}>
                   Use an absolute path starting with / (no ~).
                 </div>
               )}
@@ -398,13 +398,13 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           )}
 
           {localBlocked && (
-            <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 12 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 12 }}>
               Set a projects directory in Settings to create local projects
               {servers.length > 0 ? ", or pick a server above." : "."}
             </div>
           )}
 
-          <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
             Project Name
           </div>
           <input
@@ -420,7 +420,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
             style={{
               width: "100%",
               padding: "8px 10px",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
               border: `1px solid ${validationError ? "#e55" : "var(--ezy-border)"}`,
@@ -432,11 +432,11 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           />
 
           {validationError && (
-            <div style={{ fontSize: 11, color: "#e55", marginTop: 4 }}>{validationError}</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 4 }}>{validationError}</div>
           )}
 
           {existsWarning && !validationError && (
-            <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 4 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 4 }}>
               A folder with this name already exists — scaffold files will overwrite existing ones.
             </div>
           )}
@@ -444,7 +444,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           {fullPath && !validationError && (
             <div
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 color: "var(--ezy-text-muted)",
                 marginTop: 8,
                 overflow: "hidden",
@@ -460,7 +460,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           <div style={{ marginTop: 16 }}>
             <div
               style={{
-                fontSize: 11,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                 color: "var(--ezy-text-muted)",
                 fontWeight: 500,
                 marginBottom: 6,
@@ -501,24 +501,24 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
                 style={{ marginTop: 2 }}
               />
               <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, color: "var(--ezy-text)" }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text)" }}>
                   Single source + pointers
                 </div>
-                <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
                   AGENTS.md holds the canonical instructions. CLAUDE.md and GEMINI.md (if checked) are written as small pointer files that reference it.
                 </div>
               </div>
             </label>
 
             {singleSource && !agentsHasSource && (
-              <div style={{ fontSize: 11, color: "#e55", marginTop: 6 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 6 }}>
                 AGENTS.md needs a template path to use single-source mode. Set one in Settings or click Browse on the AGENTS.md row.
               </div>
             )}
           </div>
 
           {error && (
-            <div style={{ fontSize: 11, color: "#e55", marginTop: 8 }}>{error}</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 8 }}>{error}</div>
           )}
 
           <button
@@ -528,7 +528,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
               marginTop: 16,
               width: "100%",
               padding: "8px 0",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               fontWeight: 600,
               color: canCreate ? "#fff" : "var(--ezy-text-muted)",
               backgroundColor: canCreate ? "var(--ezy-accent)" : "var(--ezy-surface)",
@@ -655,17 +655,17 @@ function ScaffoldRowView({
           onChange={onToggle}
           disabled={disabled}
         />
-        <span style={{ fontSize: 12, color: "var(--ezy-text)", flexShrink: 0 }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text)", flexShrink: 0 }}>
           {row.filename}
         </span>
         {row.role === "custom" && (
-          <span style={{ fontSize: 10, color: "var(--ezy-text-muted)", flexShrink: 0 }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", flexShrink: 0 }}>
             (custom)
           </span>
         )}
         <span
           style={{
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             color: willBePointer ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
             fontStyle: row.sourcePath ? "normal" : "italic",
             overflow: "hidden",
@@ -682,7 +682,7 @@ function ScaffoldRowView({
         onClick={onBrowse}
         style={{
           padding: "3px 10px",
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           fontWeight: 500,
           color: "var(--ezy-text-secondary)",
           backgroundColor: "var(--ezy-surface-raised)",

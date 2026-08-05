@@ -662,7 +662,7 @@ function KlondikeGame({
         disabled={undoStack.current.length === 0}
         style={{
           padding: "4px 14px",
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           fontWeight: 600,
           color: undoStack.current.length > 0 ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
           backgroundColor: "var(--ezy-surface)",
@@ -903,10 +903,10 @@ function SpiderGame({
     <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: 6, width: "100%", alignItems: "center" }}>
       {/* Info row */}
       <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "center", width: "100%" }}>
-        <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
           Completed: <span style={{ color: "var(--ezy-accent)" }}>{state.completedSuits}/8</span>
         </span>
-        <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
           Stock: {Math.ceil(state.stock.length / 10)} deals
         </span>
         {state.stock.length > 0 && (
@@ -915,7 +915,7 @@ function SpiderGame({
             disabled={state.tableau.some((col) => col.length === 0)}
             style={{
               padding: "3px 10px",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               fontWeight: 600,
               color: "var(--ezy-text-secondary)",
               backgroundColor: "var(--ezy-surface)",
@@ -976,7 +976,7 @@ function SpiderGame({
         disabled={undoStack.current.length === 0}
         style={{
           padding: "4px 14px",
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           fontWeight: 600,
           color: undoStack.current.length > 0 ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
           backgroundColor: "var(--ezy-surface)",
@@ -1388,7 +1388,7 @@ function FreeCellGame({
 
       {/* Move limit info + undo */}
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-        <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
           Max movable: <span style={{ color: "var(--ezy-accent)" }}>{maxMovable}</span>
         </span>
         <button
@@ -1396,7 +1396,7 @@ function FreeCellGame({
           disabled={undoStack.current.length === 0}
           style={{
             padding: "4px 14px",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             color: undoStack.current.length > 0 ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
             backgroundColor: "var(--ezy-surface)",
@@ -1712,7 +1712,7 @@ function PyramidGame({
             <CardView card={null} width={cardWidth} height={cardHeight} empty />
           )}
         </div>
-        <span style={{ fontSize: 11, color: "var(--ezy-text-muted)", alignSelf: "center" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", alignSelf: "center" }}>
           Pairs sum to 13
         </span>
       </div>
@@ -1722,7 +1722,7 @@ function PyramidGame({
         disabled={undoStack.current.length === 0}
         style={{
           padding: "4px 14px",
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           fontWeight: 600,
           color: undoStack.current.length > 0 ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
           backgroundColor: "var(--ezy-surface)",
@@ -1851,7 +1851,7 @@ export default function SolitaireGame({
           padding: 16,
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)", marginBottom: 6 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)", marginBottom: 6 }}>
           Select Variant
         </div>
         {(
@@ -1867,7 +1867,7 @@ export default function SolitaireGame({
             onClick={() => startVariant(v.key)}
             style={{
               padding: "10px 24px",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               fontWeight: 600,
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
@@ -1888,7 +1888,7 @@ export default function SolitaireGame({
             }}
           >
             <div>{v.name}</div>
-            <div style={{ fontSize: 11, fontWeight: 400, color: "var(--ezy-text-muted)", marginTop: 2 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 400, color: "var(--ezy-text-muted)", marginTop: 2 }}>
               {v.desc}
             </div>
           </button>
@@ -1914,7 +1914,7 @@ export default function SolitaireGame({
           padding: 16,
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)", marginBottom: 6 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)", marginBottom: 6 }}>
           Spider - Number of Suits
         </div>
         {(
@@ -1929,7 +1929,7 @@ export default function SolitaireGame({
             onClick={() => startSpider(opt.suits)}
             style={{
               padding: "10px 24px",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               fontWeight: 600,
               color: "var(--ezy-text)",
               backgroundColor: "var(--ezy-surface)",
@@ -1950,7 +1950,7 @@ export default function SolitaireGame({
             }}
           >
             <div>{opt.label}</div>
-            <div style={{ fontSize: 11, fontWeight: 400, color: "var(--ezy-text-muted)", marginTop: 2 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", fontWeight: 400, color: "var(--ezy-text-muted)", marginTop: 2 }}>
               {opt.desc}
             </div>
           </button>
@@ -1959,7 +1959,7 @@ export default function SolitaireGame({
           onClick={() => setVariant(null)}
           style={{
             padding: "6px 16px",
-            fontSize: 11,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
             fontWeight: 600,
             color: "var(--ezy-text-muted)",
             backgroundColor: "transparent",
@@ -2003,7 +2003,7 @@ export default function SolitaireGame({
           justifyContent: "space-between",
           alignItems: "center",
           padding: "6px 12px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontWeight: 600,
           color: "var(--ezy-text-secondary)",
           borderBottom: "1px solid var(--ezy-border)",
@@ -2011,7 +2011,7 @@ export default function SolitaireGame({
           gap: 8,
         }}
       >
-        <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>{variantLabel}</span>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>{variantLabel}</span>
         {variant === "pyramid" ? (
           <span>
             Score: <span style={{ color: "var(--ezy-accent)" }}>{pyramidScore}</span>
@@ -2024,7 +2024,7 @@ export default function SolitaireGame({
             onClick={handleNewGame}
             style={{
               padding: "3px 10px",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               fontWeight: 600,
               color: "var(--ezy-text-secondary)",
               backgroundColor: "var(--ezy-surface)",
@@ -2044,7 +2044,7 @@ export default function SolitaireGame({
             }}
             style={{
               padding: "3px 10px",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               fontWeight: 600,
               color: "var(--ezy-text-muted)",
               backgroundColor: "transparent",
@@ -2126,13 +2126,13 @@ export default function SolitaireGame({
               zIndex: 50,
             }}
           >
-            <div style={{ fontSize: 18, fontWeight: 700, color: "#4ade80" }}>You Win!</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 18px)", fontWeight: 700, color: "#4ade80" }}>You Win!</div>
             {variant === "pyramid" ? (
-              <div style={{ fontSize: 14, color: "var(--ezy-accent)", fontWeight: 600 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", color: "var(--ezy-accent)", fontWeight: 600 }}>
                 Score: {pyramidScore}
               </div>
             ) : (
-              <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>
                 Time: {formatTime(timer)}
               </div>
             )}
@@ -2140,7 +2140,7 @@ export default function SolitaireGame({
               onClick={handleNewGame}
               style={{
                 padding: "8px 24px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 600,
                 color: "var(--ezy-bg)",
                 backgroundColor: "var(--ezy-accent)",
@@ -2167,7 +2167,7 @@ export default function SolitaireGame({
               zIndex: 50,
             }}
           >
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 16px)", fontWeight: 700, color: "var(--ezy-text-muted)" }}>Paused</div>
           </div>
         )}
       </div>

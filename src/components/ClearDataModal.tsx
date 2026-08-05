@@ -39,6 +39,8 @@ const CATEGORIES: Category[] = [
     stateKeys: [
       "themeId",
       "vibrantColors",
+      "colorPresets",
+      "activeColorPresetId",
       "alwaysShowTemplatePicker",
       "restoreLastSession",
       "autoInsertClipboardImage",
@@ -47,6 +49,15 @@ const CATEGORIES: Category[] = [
       "rememberScreenshotWindow",
       "screenshotWindowRect",
       "cliFontSizes",
+      "terminalFontFamily",
+      "perCliFontFamily",
+      "cliFontFamilies",
+      "terminalLineHeight",
+      "boldUsesBright",
+      "minContrast",
+      "dimStrength",
+      "cursorBlockOpacity",
+      "scrollbackLines",
       "cliYolo",
       "promptComposerEnabled",
       "promptComposerAlwaysVisible",
@@ -265,7 +276,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
               <path d="M8 6v3.5" stroke="var(--ezy-red, #e55)" strokeWidth="1.3" strokeLinecap="round" />
               <circle cx="8" cy="11.5" r="0.7" fill="var(--ezy-red, #e55)" />
             </svg>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               Clear local data
             </span>
           </div>
@@ -290,7 +301,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
             padding: "12px 18px",
             backgroundColor: "var(--ezy-red, #e55)",
             color: "#fff",
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             lineHeight: 1.45,
             flexShrink: 0,
           }}
@@ -321,7 +332,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
             onMouseLeave={(e) => { if (!allSelected) e.currentTarget.style.backgroundColor = "transparent"; }}
           >
             <Checkbox checked={allSelected} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               {allSelected ? "Deselect all" : "Select all"}
             </span>
           </div>
@@ -349,8 +360,8 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
                 >
                   <div style={{ marginTop: 1 }}><Checkbox checked={isOn} /></div>
                   <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontSize: 13, color: "var(--ezy-text)", fontWeight: 500 }}>{cat.label}</div>
-                    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.4 }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)", fontWeight: 500 }}>{cat.label}</div>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.4 }}>
                       {cat.description}
                     </div>
                   </div>
@@ -373,7 +384,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
             flexShrink: 0,
           }}
         >
-          <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>{summary}</span>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>{summary}</span>
           <div style={{ display: "flex", gap: 8 }}>
             <button
               onClick={() => { if (!wiping) onClose(); }}
@@ -385,7 +396,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
                 border: "1px solid var(--ezy-border)",
                 backgroundColor: "var(--ezy-surface-raised)",
                 color: "var(--ezy-text-secondary)",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 fontWeight: 500,
                 fontFamily: "inherit",
                 cursor: wiping ? "not-allowed" : "pointer",
@@ -403,7 +414,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
                 border: "none",
                 backgroundColor: nothing ? "var(--ezy-surface)" : "var(--ezy-red, #e55)",
                 color: nothing ? "var(--ezy-text-muted)" : "#fff",
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 fontWeight: 600,
                 fontFamily: "inherit",
                 cursor: nothing || wiping ? "not-allowed" : "pointer",

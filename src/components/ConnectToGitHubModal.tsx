@@ -153,7 +153,7 @@ export default function ConnectToGitHubModal({
             <svg width="15" height="15" viewBox="0 0 16 16" fill="var(--ezy-text)" aria-hidden="true">
               <path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
             </svg>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               Connect to GitHub
             </span>
           </div>
@@ -176,14 +176,14 @@ export default function ConnectToGitHubModal({
         {/* Body */}
         <div style={{ padding: "16px" }}>
           {phase === "checking" && (
-            <div style={{ fontSize: 12, color: "var(--ezy-text-muted)", padding: "8px 0" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", padding: "8px 0" }}>
               Checking for the GitHub CLI...
             </div>
           )}
 
           {phase === "error" && (
             <>
-              <div style={{ fontSize: 12, color: "var(--ezy-red, #e55)", marginBottom: 10 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-red, #e55)", marginBottom: 10 }}>
                 {fatalError}
               </div>
               <button
@@ -197,19 +197,19 @@ export default function ConnectToGitHubModal({
 
           {phase === "not-installed" && status && (
             <>
-              <div style={{ fontSize: 13, color: "var(--ezy-text)", marginBottom: 6, fontWeight: 500 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)", marginBottom: 6, fontWeight: 500 }}>
                 GitHub CLI is not installed
               </div>
-              <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>
                 MADE uses the <code style={inlineCodeStyle}>gh</code> CLI to create a repository and push your code
                 without storing any GitHub credentials inside the app.
               </div>
-              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 4, fontWeight: 500 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 4, fontWeight: 500 }}>
                 Install command ({install.label})
               </div>
               <CommandRow command={install.command} onCopy={() => copyToClipboard(install.command)} />
               {install.help && (
-                <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 6 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 6 }}>
                   {install.help}
                 </div>
               )}
@@ -226,10 +226,10 @@ export default function ConnectToGitHubModal({
 
           {phase === "not-authed" && (
             <>
-              <div style={{ fontSize: 13, color: "var(--ezy-text)", marginBottom: 6, fontWeight: 500 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)", marginBottom: 6, fontWeight: 500 }}>
                 Sign in to GitHub
               </div>
-              <div style={{ fontSize: 12, color: "var(--ezy-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)", marginBottom: 12, lineHeight: 1.5 }}>
                 The <code style={inlineCodeStyle}>gh</code> CLI is installed but not signed in. Run this in your terminal —
                 it will open a browser for OAuth device login.
               </div>
@@ -248,7 +248,7 @@ export default function ConnectToGitHubModal({
           {(phase === "ready" || phase === "creating") && status && (
             <>
               {status.user && (
-                <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 12 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 12 }}>
                   Signed in as{" "}
                   <span style={{ color: "var(--ezy-text-secondary)", fontWeight: 500 }}>{status.user}</span>
                 </div>
@@ -265,7 +265,7 @@ export default function ConnectToGitHubModal({
                 style={inputStyle(nameInvalid)}
               />
               {nameInvalid && (
-                <div style={{ fontSize: 11, color: "var(--ezy-red, #e55)", marginTop: 4 }}>
+                <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-red, #e55)", marginTop: 4 }}>
                   Use letters, numbers, dashes, underscores, or dots only.
                 </div>
               )}
@@ -308,7 +308,7 @@ export default function ConnectToGitHubModal({
                   alignItems: "center",
                   gap: 8,
                   marginTop: 14,
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   color: "var(--ezy-text-secondary)",
                   cursor: phase === "creating" ? "not-allowed" : "pointer",
                   userSelect: "none",
@@ -326,7 +326,7 @@ export default function ConnectToGitHubModal({
               {createError && (
                 <pre
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-red, #e55)",
                     marginTop: 12,
                     whiteSpace: "pre-wrap",
@@ -362,7 +362,7 @@ export default function ConnectToGitHubModal({
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
+    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginBottom: 6, fontWeight: 500 }}>
       {children}
     </div>
   );
@@ -398,8 +398,8 @@ function VisibilityChip({
         transition: "border-color 120ms ease, background-color 120ms ease",
       }}
     >
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text)" }}>{label}</div>
-      <div style={{ fontSize: 10, color: "var(--ezy-text-muted)", marginTop: 2 }}>{hint}</div>
+      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600, color: "var(--ezy-text)" }}>{label}</div>
+      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)", marginTop: 2 }}>{hint}</div>
     </button>
   );
 }
@@ -421,7 +421,7 @@ function CommandRow({ command, onCopy }: { command: string; onCopy: () => void }
       <span
         style={{
           flex: 1,
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           color: "var(--ezy-text)",
           fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
           overflow: "auto",
@@ -437,7 +437,7 @@ function CommandRow({ command, onCopy }: { command: string; onCopy: () => void }
           setTimeout(() => setCopied(false), 1500);
         }}
         style={{
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           padding: "4px 8px",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
           border: "1px solid var(--ezy-border)",
@@ -467,7 +467,7 @@ function inputStyle(invalid: boolean): React.CSSProperties {
   return {
     width: "100%",
     padding: "8px 10px",
-    fontSize: 13,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
     color: "var(--ezy-text)",
     backgroundColor: "var(--ezy-surface)",
     border: `1px solid ${invalid ? "var(--ezy-red, #e55)" : "var(--ezy-border)"}`,
@@ -481,7 +481,7 @@ function inputStyle(invalid: boolean): React.CSSProperties {
 function buttonStyle(primary: boolean, disabled: boolean): React.CSSProperties {
   return {
     padding: "8px 14px",
-    fontSize: 13,
+    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
     fontWeight: 600,
     color: primary ? (disabled ? "var(--ezy-text-muted)" : "#fff") : "var(--ezy-text)",
     backgroundColor: primary

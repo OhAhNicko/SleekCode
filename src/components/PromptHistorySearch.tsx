@@ -121,7 +121,7 @@ export default function PromptHistorySearch({ onClose, onSelect }: PromptHistory
             borderBottom: "1px solid var(--ezy-border)",
           }}
         >
-          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--ezy-text)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600, color: "var(--ezy-text)" }}>
             Prompt History
           </span>
           <svg
@@ -152,7 +152,7 @@ export default function PromptHistorySearch({ onClose, onSelect }: PromptHistory
               backgroundColor: "transparent",
               border: "none",
               outline: "none",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               color: "var(--ezy-text)",
               fontFamily: "inherit",
             }}
@@ -163,7 +163,7 @@ export default function PromptHistorySearch({ onClose, onSelect }: PromptHistory
         {/* List */}
         <div ref={listRef} style={{ overflowY: "auto", flex: 1 }}>
           {filtered.length === 0 ? (
-            <div style={{ padding: "32px 16px", textAlign: "center", fontSize: 13, color: "var(--ezy-text-muted)" }}>
+            <div style={{ padding: "32px 16px", textAlign: "center", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-muted)" }}>
               {globalHistory.length === 0 ? "No prompt history yet." : "No matching prompts."}
             </div>
           ) : (
@@ -184,7 +184,7 @@ export default function PromptHistorySearch({ onClose, onSelect }: PromptHistory
               >
                 <div
                   style={{
-                    fontSize: 13,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                     color: "var(--ezy-text)",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
@@ -203,7 +203,7 @@ export default function PromptHistorySearch({ onClose, onSelect }: PromptHistory
           style={{
             padding: "6px 16px",
             borderTop: "1px solid var(--ezy-border)",
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: "var(--ezy-text-muted)",
             display: "flex",
             justifyContent: "space-between",

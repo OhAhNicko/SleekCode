@@ -1,7 +1,9 @@
-import { useState, useRef, useEffect } from "react";
-import type { TerminalType } from "../types";
+import { useState, useRef, useEffect, useCallback } from "react";
+import type { TerminalBackend, TerminalType } from "../types";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { useAppStore } from "../store";
+import { cliStatus, isAiCli, type CliStatus } from "../lib/cli-availability";
+import { requestCliInstall } from "../lib/cli-install-modal";
 
 interface ToolSelectorProps {
   onSelect: (type: TerminalType, serverId?: string) => void;
@@ -90,6 +92,7 @@ export default function ToolSelector({
   onClose,
 }: ToolSelectorProps) {
   const servers = useAppStore((s) => s.servers);
+  const terminalBackend = useAppStore((s) => s.terminalBackend);
   const [hoveredIndex, setHoveredIndex] = useState(0);
   // No hole-cut publisher: this selector only renders on a brand-new EMPTY
   // tab (needsInitialTerminal) — there is no native pane to occlude it.
@@ -124,6 +127,56 @@ export default function ToolSelector({
     });
   }
 
+  // Which of these CLIs are actually installed where the row would run them.
+  //
+  // Local backends answer from the startup cache, so this costs nothing. SSH
+  // rows are read from what Test Connection already probed and NEVER probe
+  // here: opening a menu must not fire an SSH round-trip per server, and a
+  // server nobody has tested simply shows no tag.
+  const [statuses, setStatuses] = useState<Record<string, CliStatus>>({});
+  useEffect(() => {
+    let alive = true;
+    const localBackend: TerminalBackend = terminalBackend ?? "wsl";
+    const record = (key: string, status: CliStatus) => {
+      if (!alive || status === "unknown") return;
+      setStatuses((prev) => (prev[key] === status ? prev : { ...prev, [key]: status }));
+    };
+    for (const type of TOOL_ORDER) {
+      if (!isAiCli(type)) continue;
+      void cliStatus(type, localBackend).then((s) => record(`local-${type}`, s));
+      for (const server of servers) {
+        if (!server.detectedCliShells) continue;
+        void cliStatus(type, "ssh", server).then((s) => record(`${server.id}-${type}`, s));
+      }
+    }
+    return () => {
+      alive = false;
+    };
+  }, [servers, terminalBackend]);
+
+  const statusOf = (type: TerminalType, serverId?: string): CliStatus | undefined =>
+    isAiCli(type) ? statuses[`${serverId ?? "local"}-${type}`] : undefined;
+
+  /** A row for a CLI that isn't there installs it first, then opens the pane —
+   *  rather than opening a pane that can only report "command not found". */
+  const choose = useCallback(
+    (type: TerminalType, serverId: string | undefined, missing: boolean) => {
+      if (!missing || !isAiCli(type)) {
+        onSelect(type, serverId);
+        return;
+      }
+      onClose();
+      requestCliInstall({
+        cli: type,
+        backend: serverId ? "ssh" : (terminalBackend ?? "wsl"),
+        serverId,
+        onLaunch: () => onSelect(type, serverId),
+        launchLabel: "Open pane",
+      });
+    },
+    [onSelect, onClose, terminalBackend],
+  );
+
   // Close on click outside
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -153,12 +206,15 @@ export default function ToolSelector({
         );
       } else if (e.key === "Enter") {
         const item = menuItems[hoveredIndex];
-        if (item) onSelect(item.type, item.serverId);
+        if (item) choose(item.type, item.serverId, statusOf(item.type, item.serverId) === "missing");
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [hoveredIndex, onClose, onSelect, menuItems]);
+    // No dep array on purpose: `menuItems` is rebuilt every render, so this
+    // effect already re-subscribed every render before `statuses` existed.
+    // Listing deps here would only pretend otherwise.
+  });
 
   return (
     <div
@@ -183,7 +239,7 @@ export default function ToolSelector({
       <div
         style={{
           padding: "6px 10px",
-          fontSize: 10,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
           fontWeight: 600,
           letterSpacing: "0.08em",
           textTransform: "uppercase",
@@ -198,6 +254,7 @@ export default function ToolSelector({
         const config = TERMINAL_CONFIGS[item.type];
         const isShell = item.type === "shell";
         const isHovered = hoveredIndex === index;
+        const missing = statusOf(item.type, item.serverId) === "missing";
 
         return (
           <div key={`${item.serverId ?? "local"}-${item.type}`}>
@@ -206,7 +263,7 @@ export default function ToolSelector({
               <div
                 style={{
                   padding: "6px 10px 4px",
-                  fontSize: 10,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                   fontWeight: 600,
                   letterSpacing: "0.08em",
                   textTransform: "uppercase",
@@ -254,7 +311,7 @@ export default function ToolSelector({
                 outline: "none",
               }}
               onMouseEnter={() => setHoveredIndex(index)}
-              onClick={() => onSelect(item.type, item.serverId)}
+              onClick={() => choose(item.type, item.serverId, missing)}
             >
               <div
                 style={{
@@ -273,7 +330,7 @@ export default function ToolSelector({
               <div style={{ minWidth: 0 }}>
                 <div
                   style={{
-                    fontSize: 13,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                     fontWeight: 500,
                     color: isHovered ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
                   }}
@@ -282,14 +339,32 @@ export default function ToolSelector({
                 </div>
                 <div
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-text-muted)",
                     marginTop: 1,
                   }}
                 >
-                  {config.description}
+                  {missing ? "Not installed — click to install" : config.description}
                 </div>
               </div>
+              {missing && (
+                <div
+                  style={{
+                    marginLeft: "auto",
+                    flexShrink: 0,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+                    fontWeight: 600,
+                    letterSpacing: "0.04em",
+                    padding: "2px 6px",
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                    backgroundColor: "var(--ezy-surface)",
+                    border: "1px solid var(--ezy-border-light)",
+                    color: "var(--ezy-text-secondary)",
+                  }}
+                >
+                  Install
+                </div>
+              )}
               {isHovered && (
                 <svg
                   width="14"

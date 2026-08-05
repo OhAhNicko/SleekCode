@@ -293,7 +293,7 @@ export default function ReleaseModal({
                 fill="var(--ezy-text)"
               />
             </svg>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               Release new version
             </span>
           </div>
@@ -316,7 +316,7 @@ export default function ReleaseModal({
         <div style={{ padding: "16px 18px", overflowY: "auto", flex: 1 }}>
           {/* No manifests found */}
           {manifests !== null && manifests.length === 0 && (
-            <div style={{ fontSize: 12, color: "var(--ezy-text-muted)", padding: "8px 0" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", padding: "8px 0" }}>
               No version-manifest files found in this project root
               (package.json, Cargo.toml, pyproject.toml, or tauri.conf.json).
             </div>
@@ -326,10 +326,10 @@ export default function ReleaseModal({
             <>
               {/* Version preview */}
               <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
-                <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>Version</span>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Version</span>
                 <span
                   style={{
-                    fontSize: 14,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
                     color: "var(--ezy-text-secondary)",
                     fontFeatureSettings: '"tnum"',
                   }}
@@ -354,7 +354,7 @@ export default function ReleaseModal({
                 </svg>
                 <span
                   style={{
-                    fontSize: 14,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
                     fontWeight: 600,
                     color: "var(--ezy-text)",
                     fontFeatureSettings: '"tnum"',
@@ -367,7 +367,7 @@ export default function ReleaseModal({
               {versionsMismatch && (
                 <div
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-text-muted)",
                     marginBottom: 14,
                     lineHeight: 1.5,
@@ -383,7 +383,7 @@ export default function ReleaseModal({
               <div style={{ marginBottom: 16 }}>
                 <div
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-text-muted)",
                     marginBottom: 6,
                     fontWeight: 500,
@@ -425,7 +425,7 @@ export default function ReleaseModal({
                         />
                         <span
                           style={{
-                            fontSize: 12,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                             color: "var(--ezy-text)",
                             fontFamily: "inherit",
                           }}
@@ -434,7 +434,7 @@ export default function ReleaseModal({
                         </span>
                         <span
                           style={{
-                            fontSize: 11,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                             color: "var(--ezy-text-muted)",
                             marginLeft: "auto",
                             fontFeatureSettings: '"tnum"',
@@ -452,7 +452,7 @@ export default function ReleaseModal({
               <div style={{ marginBottom: 16 }}>
                 <div
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-text-muted)",
                     marginBottom: 6,
                     fontWeight: 500,
@@ -478,7 +478,7 @@ export default function ReleaseModal({
                         onClick={() => setLevel(opt)}
                         style={{
                           padding: "6px 16px",
-                          fontSize: 12,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                           fontWeight: active ? 600 : 400,
                           color: active ? "var(--ezy-text)" : "var(--ezy-text-muted)",
                           backgroundColor: active ? "var(--ezy-accent-glow)" : "transparent",
@@ -500,7 +500,7 @@ export default function ReleaseModal({
               <div style={{ marginBottom: 16 }}>
                 <div
                   style={{
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     color: "var(--ezy-text-muted)",
                     marginBottom: 6,
                     fontWeight: 500,
@@ -550,7 +550,7 @@ export default function ReleaseModal({
                         ? "var(--ezy-accent)"
                         : "var(--ezy-surface)",
                     color: preflightOk && !releasing ? "#fff" : "var(--ezy-text-muted)",
-                    fontSize: 13,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                     fontWeight: 600,
                     cursor: preflightOk && !releasing ? "pointer" : "not-allowed",
                     fontFamily: "inherit",
@@ -573,7 +573,7 @@ export default function ReleaseModal({
                     border: "1px solid var(--ezy-border)",
                     background: "var(--ezy-surface-raised)",
                     color: "var(--ezy-text-secondary)",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     cursor: releasing ? "not-allowed" : "pointer",
                     fontFamily: "inherit",
                   }}
@@ -611,7 +611,7 @@ export default function ReleaseModal({
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div
                           style={{
-                            fontSize: 12,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                             fontWeight: 500,
                             color: "var(--ezy-text)",
                           }}
@@ -621,7 +621,7 @@ export default function ReleaseModal({
                         {s.message && (
                           <div
                             style={{
-                              fontSize: 11,
+                              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                               color: s.ok
                                 ? "var(--ezy-text-muted)"
                                 : "var(--ezy-red, #e55)",
@@ -645,7 +645,7 @@ export default function ReleaseModal({
                 <div
                   style={{
                     marginTop: 12,
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     color: "var(--ezy-accent)",
                     lineHeight: 1.5,
                   }}
@@ -678,7 +678,7 @@ export default function ReleaseModal({
                 <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--ezy-border)" }}>
                   <div
                     style={{
-                      fontSize: 12,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                       fontWeight: 600,
                       color: "var(--ezy-text)",
                       marginBottom: 6,
@@ -688,7 +688,7 @@ export default function ReleaseModal({
                   </div>
                   <div
                     style={{
-                      fontSize: 11,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                       color: "var(--ezy-text-muted)",
                       marginBottom: 8,
                       lineHeight: 1.5,
@@ -712,7 +712,7 @@ export default function ReleaseModal({
                       border: "1px solid var(--ezy-border)",
                       borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                       padding: "8px 10px",
-                      fontSize: 12,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                       lineHeight: 1.5,
                       fontFamily: "inherit",
                       resize: "vertical",
@@ -734,7 +734,7 @@ export default function ReleaseModal({
                           border: "none",
                           background: "var(--ezy-accent)",
                           color: "#0d1117",
-                          fontSize: 12,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                           fontWeight: 600,
                           cursor:
                             publishing || !noteDraft.trim() || ghAuthed === false
@@ -752,7 +752,7 @@ export default function ReleaseModal({
                     {publishResult && (
                       <div
                         style={{
-                          fontSize: 12,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                           color: "var(--ezy-accent)",
                           lineHeight: 1.5,
                         }}
@@ -782,7 +782,7 @@ export default function ReleaseModal({
                     {ghAuthed === false && !publishResult && (
                       <span
                         style={{
-                          fontSize: 11,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                           color: "var(--ezy-text-muted)",
                           lineHeight: 1.4,
                         }}
@@ -795,7 +795,7 @@ export default function ReleaseModal({
                     <div
                       style={{
                         marginTop: 8,
-                        fontSize: 11,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                         color: "var(--ezy-red)",
                         lineHeight: 1.5,
                         whiteSpace: "pre-wrap",
@@ -812,7 +812,7 @@ export default function ReleaseModal({
                 <div
                   style={{
                     marginTop: 12,
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     color: "var(--ezy-red, #e55)",
                     lineHeight: 1.5,
                   }}
@@ -876,7 +876,7 @@ function PreflightRow({
       )}
       <span
         style={{
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           color: pending
             ? "var(--ezy-text-muted)"
             : ok
@@ -887,7 +887,7 @@ function PreflightRow({
         {label}
       </span>
       {detail && (
-        <span style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
           — {detail}
         </span>
       )}
