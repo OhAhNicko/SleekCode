@@ -100,11 +100,20 @@ export const useAppStore = create<AppStore>()(
         jiraReplyInEnglish: state.jiraReplyInEnglish,
         jiraClaudeSide: state.jiraClaudeSide,
         jiraClaudeModel: state.jiraClaudeModel,
+        jiraCli: state.jiraCli,
+        jiraCodexModel: state.jiraCodexModel,
+        jiraGeminiModel: state.jiraGeminiModel,
         jiraMode: state.jiraMode,
         jiraAcronyms: state.jiraAcronyms,
         jiraAcronymCounts: state.jiraAcronymCounts,
         jiraTicketColors: state.jiraTicketColors,
         jiraRowFullColor: state.jiraRowFullColor,
+        jiraSubticketMode: state.jiraSubticketMode,
+        jiraStackCollapsed: state.jiraStackCollapsed,
+        jiraStackSizes: state.jiraStackSizes,
+        jiraDetectPastedTickets: state.jiraDetectPastedTickets,
+        jiraAutoSwitchToDetected: state.jiraAutoSwitchToDetected,
+        jiraArchivedTicketAction: state.jiraArchivedTicketAction,
         codeReviewCollapseAll: state.codeReviewCollapseAll,
         perProjectEditor: state.perProjectEditor,
         editorWordWrap: state.editorWordWrap,
@@ -134,9 +143,23 @@ export const useAppStore = create<AppStore>()(
         projectPaneTint: state.projectPaneTint,
         projectPaneTintStrength: state.projectPaneTintStrength,
         activePaneLift: state.activePaneLift,
+        radiusScaleOverride: state.radiusScaleOverride,
         uiFont: state.uiFont,
+        uiFontSize: state.uiFontSize,
         nativeCursorStyle: state.nativeCursorStyle,
         nativeCursorBlink: state.nativeCursorBlink,
+        terminalFontFamily: state.terminalFontFamily,
+        perCliFontFamily: state.perCliFontFamily,
+        cliFontFamilies: state.cliFontFamilies,
+        terminalLineHeight: state.terminalLineHeight,
+        boldUsesBright: state.boldUsesBright,
+        minContrast: state.minContrast,
+        dimStrength: state.dimStrength,
+        cursorBlockOpacity: state.cursorBlockOpacity,
+        scrollbackLines: state.scrollbackLines,
+        appIconVariant: state.appIconVariant,
+        colorPresets: state.colorPresets,
+        activeColorPresetId: state.activeColorPresetId,
         highscores: state.highscores,
         timedHighscores: state.timedHighscores,
         gameStats: state.gameStats,
@@ -337,6 +360,15 @@ export const useAppStore = create<AppStore>()(
 
         const aiTimeBursts = state.aiTimeBursts ?? current.aiTimeBursts;
 
+        // A dangling active color-preset id (hand-edited or partially wiped
+        // blob) must not survive hydration — panes would silently render as
+        // "no preset" while the dropdown showed a phantom selection.
+        const activeColorPresetId =
+          state.activeColorPresetId != null &&
+          (state.colorPresets ?? []).some((p) => p.id === state.activeColorPresetId)
+            ? state.activeColorPresetId
+            : null;
+
         // Auto-complete onboarding for existing users who already have persisted state
         const onboardingCompleted = state.onboardingCompleted ?? true;
 
@@ -345,6 +377,7 @@ export const useAppStore = create<AppStore>()(
           ...state,
           tabs: filteredTabs,
           activeTabId,
+          activeColorPresetId,
           cliYolo,
           gameStats,
           highscores,

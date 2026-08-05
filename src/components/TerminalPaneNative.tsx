@@ -33,10 +33,12 @@ import {
   nativeTermSetTheme,
   nativeTermSetCursorStyle,
   nativeTermSetFont,
+  nativeTermSetRenderOpts,
   nativeTermSetCopyOnSelect,
   nativeTermSetWheelAcceleration,
   subscribeTitle,
   nativeTermProposeDimensions,
+  type RenderOpts,
   registerNativeTermForTerminal,
   unregisterNativeTermForTerminal,
 } from "../lib/native-term-bridge";
@@ -70,6 +72,10 @@ import {
   OCCLUDER_SELECTOR,
 } from "../native-term/occlusion";
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
+import CliMissingCard, { RemoteOfflineCard } from "./CliMissingCard";
+import { useCliPreflight } from "../hooks/useCliPreflight";
+import { SshSpawnFailureWatch } from "../lib/ssh-reachability";
+import { isAiCli } from "../lib/cli-availability";
 import PromptComposer from "./PromptComposer";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
@@ -87,9 +93,10 @@ import {
   clearTerminalActivity,
 } from "../lib/terminal-activity";
 import { getTheme, getEffectiveTerminalTheme } from "../lib/themes";
+import type { ColorOverrides } from "../lib/color-overrides";
 import { getProjectColor } from "../store/recentProjectsSlice";
 import { DEFAULT_CLI_FONT_SIZE } from "../store/recentProjectsSlice";
-import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
+import { resolveTerminalFontFamily } from "../lib/terminal-fonts";
 import { invoke } from "@tauri-apps/api/core";
 import { supportsSessionResume } from "../lib/session-resume";
 import { toWslPath } from "../lib/terminal-config";
@@ -169,6 +176,12 @@ function madeThemeToNative(
     // the renderer falls back to the standard xterm cube, whose constants are
     // built for dark canvases and sit at ~1.2:1 on paper.
     ...(extendedAnsi ? { extendedAnsi } : {}),
+    // Preset extras: only present when a user color preset sets them —
+    // omission keeps the renderer's pre-preset behavior for each.
+    ...(t.selectionForeground ? { selectionForeground: t.selectionForeground } : {}),
+    ...(t.link ? { link: t.link } : {}),
+    ...(t.searchMatch ? { searchMatch: t.searchMatch } : {}),
+    ...(t.searchMatchActive ? { searchMatchActive: t.searchMatchActive } : {}),
     background: pick("background", "#0d0d11"),
     foreground: pick("foreground", "#d3d7cf"),
     cursor: pick("cursor", "#dbd6cf"),
@@ -205,8 +218,9 @@ function nativeThemeFor(
   isActive: boolean,
   tint: string | null,
   tintAmount: number,
+  overrides: ColorOverrides | null = null,
 ): NativeTermTheme {
-  const eff = getEffectiveTerminalTheme(themeId, vibrant, isActive, tint, tintAmount);
+  const eff = getEffectiveTerminalTheme(themeId, vibrant, isActive, tint, tintAmount, overrides);
   return madeThemeToNative(
     eff as Record<string, string | undefined>,
     eff.extendedAnsi,
@@ -261,6 +275,10 @@ interface TerminalPaneNativeProps {
   onPtyReady?: () => void;
   onPtyExit?: (exitCode: number) => void;
   hideChrome?: boolean;
+  /** Jira stacked sub-tickets — see TerminalPane. */
+  collapsible?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
   serverId?: string;
   sessionResumeId?: string;
   onSessionResumeId?: (id: string) => void;
@@ -285,6 +303,9 @@ export default function TerminalPaneNative({
   onPtyReady,
   onPtyExit,
   hideChrome,
+  collapsible,
+  collapsed,
+  onToggleCollapse,
   serverId,
   sessionResumeId,
   onSessionResumeId,
@@ -536,6 +557,16 @@ export default function TerminalPaneNative({
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const vibrantColorsRef = useRef(vibrantColors);
   useEffect(() => { vibrantColorsRef.current = vibrantColors; }, [vibrantColors]);
+  // Active user color preset (Settings > Appearance > Terminal colors). The
+  // sparse override map rides the effective theme; ref-mirrored like the
+  // other theme inputs so a pane CREATED after an edit spawns already
+  // recolored without the create effect depending on it.
+  const activeColorPreset = useAppStore(
+    (s) => s.colorPresets.find((p) => p.id === s.activeColorPresetId) ?? null,
+  );
+  const colorOverrides = activeColorPreset?.overrides ?? null;
+  const colorOverridesRef = useRef(colorOverrides);
+  useEffect(() => { colorOverridesRef.current = colorOverrides; }, [colorOverrides]);
   // Project-color wash (Settings > Appearance > Theme > "Project color pane
   // tint"). Key normalization mirrors TabBar's projectColors lookup. Mirrored
   // into a ref so the create effect reads it once — a tint change must flow
@@ -572,9 +603,9 @@ export default function TerminalPaneNative({
   // uses — or the gap reads as a seam instead of as part of the terminal.
   const surfaceBg = useMemo(
     () =>
-      getEffectiveTerminalTheme(themeId, vibrantColors, liftActive, paneTint, paneTintAmount).background ??
+      getEffectiveTerminalTheme(themeId, vibrantColors, liftActive, paneTint, paneTintAmount, colorOverrides).background ??
       "#0d1117",
-    [themeId, vibrantColors, liftActive, paneTint, paneTintAmount],
+    [themeId, vibrantColors, liftActive, paneTint, paneTintAmount, colorOverrides],
   );
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
@@ -619,6 +650,39 @@ export default function TerminalPaneNative({
   // flow through the dedicated font hot-swap effect below.
   const cliFontSizeRef = useRef(cliFontSize);
   useEffect(() => { cliFontSizeRef.current = cliFontSize; }, [cliFontSize]);
+  // The pane's face. Resolved INSIDE the selector so what comes out is a
+  // string: a selector returning the {global, per-CLI, map} triple would be a
+  // fresh object every render and re-render forever. Bare family name — the
+  // Rust side takes a family, not a CSS stack.
+  const fontFamily = useAppStore((s) => resolveTerminalFontFamily(s, terminalType));
+  const fontFamilyRef = useRef(fontFamily);
+  useEffect(() => { fontFamilyRef.current = fontFamily; }, [fontFamily]);
+  // Renderer knobs (Settings > Appearance). Percent-valued store fields become
+  // 0..1 fractions on the wire; everything is sent explicitly rather than
+  // omitted-at-default, so a pane can never disagree with the settings UI.
+  const boldUsesBright = useAppStore((s) => s.boldUsesBright);
+  const minContrast = useAppStore((s) => s.minContrast);
+  const dimStrength = useAppStore((s) => s.dimStrength);
+  const cursorBlockOpacity = useAppStore((s) => s.cursorBlockOpacity);
+  const terminalLineHeight = useAppStore((s) => s.terminalLineHeight);
+  const renderOpts = useMemo<RenderOpts>(
+    () => ({
+      boldUsesBright,
+      minContrast,
+      dimStrength: dimStrength / 100,
+      cursorBlockAlpha: cursorBlockOpacity / 100,
+      lineHeightScale: terminalLineHeight,
+    }),
+    [boldUsesBright, minContrast, dimStrength, cursorBlockOpacity, terminalLineHeight],
+  );
+  const renderOptsRef = useRef(renderOpts);
+  useEffect(() => { renderOptsRef.current = renderOpts; }, [renderOpts]);
+  // Create-only on the native side: the Rust grid allocates its history at
+  // build time, so a change reaches existing panes on their next create (the
+  // hot-swap effects below deliberately have no scrollback counterpart).
+  const scrollbackLines = useAppStore((s) => s.scrollbackLines);
+  const scrollbackRef = useRef(scrollbackLines);
+  useEffect(() => { scrollbackRef.current = scrollbackLines; }, [scrollbackLines]);
   const composerAlwaysVisible = useAppStore(
     (s) => s.promptComposerEnabled && s.promptComposerAlwaysVisible,
   );
@@ -642,14 +706,27 @@ export default function TerminalPaneNative({
   // buffer to write the banner into (the way TerminalPaneXterm does at
   // ~:610), so it's a DOM overlay instead.
   const [exited, setExited] = useState(false);
+  // Did ssh die before ever connecting? Holds the ssh client's error line;
+  // while set, the HWND is torn down (`paneAllowed` below) and the DOM
+  // "No connection" card takes the anchor — a child window could never sit
+  // under a DOM card, so the surface must not exist. Remote panes only.
+  const [sshOffline, setSshOffline] = useState<string | null>(null);
+  const sshWatchRef = useRef<SshSpawnFailureWatch | null>(null);
+  if (serverId && !sshWatchRef.current) sshWatchRef.current = new SshSpawnFailureWatch();
+  // One-shot guard for the resume self-heal below: a fresh spawn carries no
+  // resume id so it cannot re-fail, but a guard beats trusting that forever.
+  const resumeHealTriedRef = useRef(false);
+  // handleRestart is declared far below; the exit handler reaches it via ref.
+  const restartRef = useRef<() => void>(() => {});
   // Phase 1 overlay migration: the "[Process exited]" banner now renders in the
   // transparent OVERLAY webview (above the native panes — no hole cut). We emit
   // the pane anchor rect while `exited` so the overlay draws the banner at the
   // pane's bottom-center. `exited` still gates clipboard paste below.
+  // Suppressed while the "No connection" card explains the exit better.
   useOverlayPopupAnchor({
     id: `exit-banner-${terminalId}`,
     kind: "exit-banner",
-    open: exited,
+    open: exited && !sshOffline,
     anchorRef: terminalDivRef,
   });
 
@@ -673,10 +750,22 @@ export default function TerminalPaneNative({
     (s) => (s as AppStoreWithNative).unregisterNativeTerm,
   );
 
+  // Is this pane's CLI installed on the backend it would run on? Resolved
+  // before anything is created — see the note on the gate below. An ssh
+  // connect failure closes the gate too: destroying the HWND is what lets
+  // the DOM "No connection" card be seen at all.
+  const preflight = useCliPreflight({ terminalType, backend, serverId });
+  const paneAllowed = preflight.gate === "ok" && !sshOffline;
+
   // ── HWND lifecycle ────────────────────────────────────────────────────
   useLayoutEffect(() => {
     const el = terminalDivRef.current;
     if (!el) return;
+    // Blocked panes create NO window. Not "create it and hide it": the child
+    // HWND is not DOM, so the install card rendered over this anchor could
+    // never be drawn above it at any z-index. When the gate opens the effect
+    // re-runs and the pane comes up normally.
+    if (!paneAllowed) return;
     let cancelled = false;
     let createdId: NativeTermId | null = null;
     let raf2Id = 0;
@@ -694,9 +783,10 @@ export default function TerminalPaneNative({
         try {
           tCreateStart = performance.now();
           // P7a: ONE `native_term_create` carries the full CreateOpts —
-          // theme, font (Hack + the user's CLI font size), cursor
-          // style/blink, scrollback and the live focus state — so the
-          // first frame already paints with the user's settings and the
+          // theme, font (the user's face + CLI font size), cursor
+          // style/blink, scrollback, the renderer knobs and the live focus
+          // state — so the first frame already paints with the user's
+          // settings and the
           // dimension handshake below runs against the real font metrics.
           // Everything is read through refs so this effect's dep array
           // stays create-once; live changes flow through the dedicated
@@ -710,14 +800,16 @@ export default function TerminalPaneNative({
               liftActiveRef.current,
               paneTintRef.current,
               paneTintAmountRef.current,
+              colorOverridesRef.current,
             ),
             font: {
-              family: TERMINAL_FONT_FAMILY,
+              family: fontFamilyRef.current,
               sizePx: cliFontSizeRef.current,
             },
             cursorStyle: nativeCursorStyleRef.current,
             cursorBlink: nativeCursorBlinkRef.current,
-            scrollback: 10000,
+            scrollback: scrollbackRef.current,
+            renderOpts: renderOptsRef.current,
             focused: isActiveRef.current && appWindowFocusedRef.current,
             // Read through a ref, ONCE, at create: flipping the Settings
             // toggle must not disturb panes that are already running on the
@@ -893,7 +985,7 @@ export default function TerminalPaneNative({
         void nativeTermDestroy(createdId).catch(() => {});
       }
     };
-  }, [registerNativeTerm, unregisterNativeTerm]);
+  }, [registerNativeTerm, unregisterNativeTerm, paneAllowed]);
 
   // ── Event subscriptions ──────────────────────────────────────────────
   // Subscribes to per-id channels emitted by the Rust renderer. Subscriber
@@ -1134,11 +1226,11 @@ export default function TerminalPaneNative({
     // changes exactly like the legacy renderer.
     void nativeTermSetTheme(
       termId,
-      nativeThemeFor(themeId, vibrantColors, liftActive, paneTint, paneTintAmount),
+      nativeThemeFor(themeId, vibrantColors, liftActive, paneTint, paneTintAmount, colorOverrides),
     ).catch(
       (e) => console.error("[TerminalPaneNative] set_theme update failed", e),
     );
-  }, [termId, themeId, vibrantColors, liftActive, paneTint, paneTintAmount]);
+  }, [termId, themeId, vibrantColors, liftActive, paneTint, paneTintAmount, colorOverrides]);
 
   // ── Cursor style/blink hot-swap ───────────────────────────────────────
   // Re-push the cursor settings whenever the user changes them in Settings.
@@ -1209,10 +1301,23 @@ export default function TerminalPaneNative({
   // commit_dims no-ops when the grid already matches).
   useEffect(() => {
     if (termId == null) return;
-    void nativeTermSetFont(termId, TERMINAL_FONT_FAMILY, cliFontSize).catch(
+    void nativeTermSetFont(termId, fontFamily, cliFontSize).catch(
       (e) => console.error("[TerminalPaneNative] set_font update failed", e),
     );
-  }, [termId, cliFontSize]);
+  }, [termId, fontFamily, cliFontSize]);
+
+  // ── Renderer-knob hot-swap ────────────────────────────────────────────
+  // Bold-bright, contrast floor, dim strength, cursor alpha and line height.
+  // First apply rides CreateOpts.renderOpts above; the termId-flip firing here
+  // re-sends the same values, which is idempotent. `lineHeightScale` changes
+  // cell metrics, so Rust re-grids and resizes the PTY exactly as set_font
+  // does — the pane reflows, it does not just repaint.
+  useEffect(() => {
+    if (termId == null) return;
+    void nativeTermSetRenderOpts(termId, renderOpts).catch(
+      (e) => console.error("[TerminalPaneNative] set_render_opts update failed", e),
+    );
+  }, [termId, renderOpts]);
 
   // ── Cursor focus push (P2b) ───────────────────────────────────────────
   // JS-authoritative: the store computes the single source of truth
@@ -1366,6 +1471,9 @@ export default function TerminalPaneNative({
   // branch in pty.rs. The JS-side onData channel stays live during rollout
   // (plan hard requirement) — we just don't write into a JS renderer.
   const handlePtyData = useCallback((data: Uint8Array) => {
+    // Remote panes: keep the first bytes so an exit can tell "ssh never
+    // connected" apart from a normal process end. Self-retires after ~4KB.
+    sshWatchRef.current?.note(data);
     // Native side RENDERS bytes directly via the attached pty_id, but the
     // JS onData channel is still the tap for cross-cutting consumers that
     // must see raw output regardless of renderer:
@@ -1538,8 +1646,40 @@ export default function TerminalPaneNative({
       // input + shows the banner), stop the "AI working" activity badge from
       // spinning forever, and cancel any in-flight session-lookup retries.
       setExited(true);
+      // Publish it too, exactly as the xterm pane does. `subscribeExit` also
+      // sets this, but only when the RENDERER sees the exit — this channel is
+      // the one that fires when the PTY dies out from under a detached or
+      // never-attached surface, and a dev server asks `getPaneState().exited`
+      // to decide whether its restart button can type or must respawn.
+      setPaneExited(terminalId, true);
       clearTerminalActivity(terminalId);
       sessionRetryCancelRef.current?.();
+      // The CLI rejected this pane's resume id ("No conversation found with
+      // session ID: …") — the id has no transcript behind it, so dropping it
+      // loses nothing. Drop it and respawn fresh ONCE, exactly what the local
+      // branch's pre-spawn check does quietly (session-exists.ts).
+      // Remote-only: the watch exists only for ssh panes.
+      const deadId = sessionResumeIdPropRef.current;
+      if (deadId && !resumeHealTriedRef.current && sshWatchRef.current?.resumeFailure(deadId)) {
+        resumeHealTriedRef.current = true;
+        console.warn(
+          `[SessionResume] CLI rejected ${deadId.slice(0, 8)} — dropping the id and starting fresh`,
+        );
+        useAppStore.getState().removeProjectSession(workingDir || "", deadId);
+        setSessionTrusted(false);
+        sessionResumeIdPropRef.current = undefined;
+        onSessionResumeIdRef.current?.("");
+        onPtyExit?.(code);
+        restartRef.current();
+        return;
+      }
+      // ssh died before it ever connected → tear the HWND down and show the
+      // "No connection" card instead of a dead terminal holding one ssh error.
+      const connectFailure = sshWatchRef.current?.failure();
+      if (connectFailure) {
+        setSshOffline(connectFailure);
+        setComposerOpen(false);
+      }
       onPtyExit?.(code);
     },
     [onPtyExit, terminalId],
@@ -1903,7 +2043,13 @@ export default function TerminalPaneNative({
           setSearchResult(r);
           // Push rects to the renderer so the highlight overlay draws.
           // Best-effort: a destroyed pane racing this call is benign.
-          void nativeTermSetSearchHighlights(termId, r.rects).catch(() => {});
+          // `rects` is parallel to the match list Rust walked, so activeIndex
+          // indexes it directly — that one gets the CURRENT-match color, the
+          // same "n of m" match the counter is pointing at.
+          void nativeTermSetSearchHighlights(
+            termId,
+            r.rects.map((rect, i) => ({ ...rect, active: i === r.activeIndex })),
+          ).catch(() => {});
           // D-review: bring the active match into the viewport — the
           // renderer clips off-viewport rects by design, so without this
           // Find Next/Prev against a scrollback match updated the counter
@@ -2021,6 +2167,10 @@ export default function TerminalPaneNative({
   const handleRestart = useCallback(() => {
     // Capture current YOLO state at restart time — updates badge + forceYolo for spawn
     setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
+    // Clearing sshOffline re-opens `paneAllowed`, so the HWND recreates and
+    // the (bumped) spawn effect runs against the fresh surface.
+    sshWatchRef.current?.reset();
+    setSshOffline(null);
     setExited(false);
     setPaneExited(terminalId, false);
     setContextInfo(null);
@@ -2039,6 +2189,7 @@ export default function TerminalPaneNative({
     }
     setRestartKey((k) => k + 1);
   }, [terminalType, setContextInfo]);
+  restartRef.current = handleRestart;
 
   // Imperative actions the context menu calls. Same registry the xterm pane
   // uses, so one menu item serves both renderers.
@@ -2072,6 +2223,9 @@ export default function TerminalPaneNative({
         sessionLookupDone.current = false;
       }
       setContextInfo(null);
+      sshWatchRef.current?.reset();
+      setSshOffline(null);
+      resumeHealTriedRef.current = false;
       onSwitchSession?.(sid);
       // Eagerly update the ref so the PTY spawn reads the correct session ID
       // before React delivers the prop update.
@@ -2192,6 +2346,9 @@ export default function TerminalPaneNative({
           onScrollToPromptLine={handleScrollToPromptLine}
           onRefreshContext={refreshContext}
           isNativeRenderer
+          collapsible={collapsible}
+          collapsed={collapsed}
+          onToggleCollapse={onToggleCollapse}
         />
       )}
       {/* Long-operation progress (OSC 9;4), as a hairline directly above the
@@ -2226,7 +2383,42 @@ export default function TerminalPaneNative({
           marginLeft: PANE_PAD_LEFT,
           marginBottom: PANE_PAD_BOTTOM,
         }}
-      />
+      >
+        {/* No HWND exists while the gate is closed (see the lifecycle effect),
+            so this card is the only thing in the anchor and is fully visible. */}
+        {preflight.gate === "missing" && isAiCli(terminalType) && (
+          <CliMissingCard
+            cli={terminalType}
+            backend={preflight.backend}
+            server={preflight.server}
+            onRecheck={preflight.recheck}
+            onStartAnyway={preflight.allow}
+            onInstalled={preflight.allow}
+          />
+        )}
+        {/* The server did not answer the reachability probe — "isn't
+            installed" would be a lie, and the install could not run anyway. */}
+        {preflight.gate === "offline" && isAiCli(terminalType) && (
+          <RemoteOfflineCard
+            variant="preflight"
+            server={preflight.server}
+            cli={terminalType}
+            onRetry={preflight.recheck}
+            onStartAnyway={preflight.allow}
+          />
+        )}
+        {/* ssh exited before ever connecting — any remote pane type. The
+            HWND was torn down when sshOffline was set, so the card owns the
+            anchor exactly like the missing card above. */}
+        {sshOffline && (
+          <RemoteOfflineCard
+            variant="spawn"
+            server={preflight.server}
+            detail={sshOffline}
+            onRetry={handleRestart}
+          />
+        )}
+      </div>
       {/* IME pre-edit overlay. Subscribes to ime_composition + cursor
           directly so cursor moves don't re-render the whole pane. */}
       {termId != null && (

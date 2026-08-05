@@ -31,6 +31,10 @@ import { recordTerminalActivity, recordTerminalWrite, recordTerminalResize, clea
 import { applyImageMask, clearImageMasks } from "../lib/image-mask";
 import XtermTuiScrollbar from "./XtermTuiScrollbar";
 import TerminalHeader from "./TerminalHeader";
+import CliMissingCard, { RemoteOfflineCard } from "./CliMissingCard";
+import { useCliPreflight } from "../hooks/useCliPreflight";
+import { isAiCli } from "../lib/cli-availability";
+import { SshSpawnFailureWatch } from "../lib/ssh-reachability";
 import CommandBlockOverlay from "./CommandBlockOverlay";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import PromptComposer from "./PromptComposer";
@@ -41,7 +45,7 @@ import { registerTerminalActions, unregisterTerminalActions } from "../lib/termi
 import { isPromptLine as isCliPromptLine, promptLineText } from "../lib/prompt-lines";
 import hackRegularUrl from "../fonts/hack-regular.woff2?url";
 import hackBoldUrl from "../fonts/hack-bold.woff2?url";
-import { TERMINAL_FONT_FAMILY } from "../lib/terminal-fonts";
+import { resolveTerminalFontFamily, terminalFontStack } from "../lib/terminal-fonts";
 import {
   claimedSessionIds,
   claimSessionId,
@@ -69,6 +73,27 @@ export {
   sessionDebug,
   lookupClaudeBySpawn,
 } from "../lib/session-dedup";
+
+/** The row height xterm panes have always rendered at. The user's
+ *  `terminalLineHeight` is a SCALE on top of it (1 = exactly this), so the
+ *  default setting keeps today's look instead of tightening every pane. */
+const XTERM_BASE_LINE_HEIGHT = 1.2;
+
+/**
+ * The user's scrollback depth, reduced for dense layouts.
+ *
+ * A crowded tab has always kept less history per pane — sixteen panes at full
+ * depth is a lot of buffer, and this is the only renderer that holds it in the
+ * webview's heap. So the old ladder survives as a MULTIPLIER of the setting
+ * rather than as fixed numbers: at the default 10000 these fractions reproduce
+ * exactly the 10000 / 5000 / 3000 / 1500 the panes shipped with, and raising
+ * the setting still raises every tier.
+ */
+function tieredScrollback(lines: number, paneCount: number): number {
+  const fraction =
+    paneCount <= 3 ? 1 : paneCount <= 6 ? 0.5 : paneCount <= 9 ? 0.3 : 0.15;
+  return Math.round(lines * fraction);
+}
 
 // Load Hack font via JS FontFace API — bypasses CSS @font-face which
 // can fail silently in Tauri's WebView due to URL resolution issues.
@@ -104,6 +129,10 @@ interface TerminalPaneProps {
   onPtyReady?: () => void;
   onPtyExit?: (exitCode: number) => void;
   hideChrome?: boolean;
+  /** Jira stacked sub-tickets — see TerminalPane. */
+  collapsible?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
   serverId?: string;
   sessionResumeId?: string;
   onSessionResumeId?: (id: string) => void;
@@ -129,6 +158,9 @@ export default function TerminalPane({
   onPtyReady,
   onPtyExit,
   hideChrome,
+  collapsible,
+  collapsed,
+  onToggleCollapse,
   serverId,
   sessionResumeId,
   onSessionResumeId,
@@ -231,9 +263,15 @@ export default function TerminalPane({
   // header stays the only active marker.
   const activePaneLift = useAppStore((s) => s.activePaneLift);
   const liftActive = isActive && activePaneLift;
-  const effectiveTerminalTheme = useMemo(() => getEffectiveTerminalTheme(themeId, vibrantColors, liftActive, paneTint, paneTintAmount), [themeId, vibrantColors, liftActive, paneTint, paneTintAmount]);
-  const activePaneBg = useMemo(() => getActivePaneBg(themeId, paneTint, paneTintAmount), [themeId, paneTint, paneTintAmount]);
-  const containerBg = liftActive ? activePaneBg : getInactivePaneBg(themeId, paneTint, paneTintAmount);
+  // Active user color preset — sparse overrides layered onto the theme
+  // inside getEffectiveTerminalTheme (Settings > Appearance > Terminal colors).
+  const activeColorPreset = useAppStore(
+    (s) => s.colorPresets.find((p) => p.id === s.activeColorPresetId) ?? null,
+  );
+  const colorOverrides = activeColorPreset?.overrides ?? null;
+  const effectiveTerminalTheme = useMemo(() => getEffectiveTerminalTheme(themeId, vibrantColors, liftActive, paneTint, paneTintAmount, colorOverrides), [themeId, vibrantColors, liftActive, paneTint, paneTintAmount, colorOverrides]);
+  const activePaneBg = useMemo(() => getActivePaneBg(themeId, paneTint, paneTintAmount, colorOverrides), [themeId, paneTint, paneTintAmount, colorOverrides]);
+  const containerBg = liftActive ? activePaneBg : getInactivePaneBg(themeId, paneTint, paneTintAmount, colorOverrides);
   const cliFontSize = useAppStore((s) => s.cliFontSizes[terminalType] ?? DEFAULT_CLI_FONT_SIZE);
   const copyOnSelect = useAppStore((s) => s.copyOnSelect);
   const copyOnSelectRef = useRef(copyOnSelect);
@@ -272,13 +310,34 @@ export default function TerminalPane({
   const recordedBlocksRef = useRef<Set<string>>(new Set());
   const initialDims = useRef({ cols: 80, rows: 24 });
   const [termReady, setTermReady] = useState(false);
+  // Is the CLI this pane wants actually installed on its backend? Blocks the
+  // spawn rather than letting it open on "command not found" — see
+  // useCliPreflight. Non-CLI panes and unanswerable backends resolve to "ok".
+  const preflight = useCliPreflight({ terminalType, backend, serverId });
+  // Did ssh die before ever connecting? Set to the ssh client's error line at
+  // exit time, and shows the "No connection" card over the dead terminal
+  // instead of leaving `ssh: connect to host … Connection timed out` as the
+  // pane's only content. Remote panes only; matched pre-connection failures
+  // only (mid-session drops keep the scrollback visible).
+  const [sshOffline, setSshOffline] = useState<string | null>(null);
+  const sshWatchRef = useRef<SshSpawnFailureWatch | null>(null);
+  if (serverId && !sshWatchRef.current) sshWatchRef.current = new SshSpawnFailureWatch();
+  // One-shot guard for the resume self-heal below: a fresh spawn carries no
+  // resume id so it cannot re-fail, but a guard beats trusting that forever.
+  const resumeHealTriedRef = useRef(false);
+  // handleRestart is declared far below; the exit handler reaches it via ref.
+  const restartRef = useRef<() => void>(() => {});
   const [zoomIndicator, setZoomIndicator] = useState<number | null>(null);
   const zoomIndicatorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const [searchAddon, setSearchAddon] = useState<SearchAddon | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchFocusBump, setSearchFocusBump] = useState(0);
-  const xtermSearch = useXtermSearch(searchAddon);
+  const xtermSearch = useXtermSearch(
+    searchAddon,
+    effectiveTerminalTheme.searchMatch,
+    effectiveTerminalTheme.searchMatchActive,
+  );
   const jumpBtnRef = useRef<HTMLDivElement>(null);
   // Bumped on prompt submit; re-zeroes the TUI scrollbar's estimate,
   // because a submitted prompt lands the transcript at the bottom.
@@ -299,6 +358,30 @@ export default function TerminalPane({
   paneCountRef.current = paneCount;
   const cliFontSizeRef = useRef(cliFontSize);
   cliFontSizeRef.current = cliFontSize;
+  // The pane's face as a CSS stack. Resolved INSIDE the selector so what comes
+  // out is a string — a selector returning the {global, per-CLI, map} triple
+  // would be a fresh object every render and re-render forever.
+  const fontStack = useAppStore((s) =>
+    terminalFontStack(resolveTerminalFontFamily(s, terminalType)),
+  );
+  const fontStackRef = useRef(fontStack);
+  fontStackRef.current = fontStack;
+  // Renderer knobs shared with the native pane (Settings > Appearance). Read
+  // through refs at init — like the font size — and re-applied live by the
+  // effect below, so a change never tears the terminal down. Dim strength and
+  // cursor alpha have no xterm equivalent and are native-only by design.
+  const terminalLineHeight = useAppStore((s) => s.terminalLineHeight);
+  const boldUsesBright = useAppStore((s) => s.boldUsesBright);
+  const minContrast = useAppStore((s) => s.minContrast);
+  const scrollbackLines = useAppStore((s) => s.scrollbackLines);
+  const terminalLineHeightRef = useRef(terminalLineHeight);
+  terminalLineHeightRef.current = terminalLineHeight;
+  const boldUsesBrightRef = useRef(boldUsesBright);
+  boldUsesBrightRef.current = boldUsesBright;
+  const minContrastRef = useRef(minContrast);
+  minContrastRef.current = minContrast;
+  const scrollbackLinesRef = useRef(scrollbackLines);
+  scrollbackLinesRef.current = scrollbackLines;
   const useShellIntegration = shouldInjectShellIntegration(terminalType);
   // MadeComposer is only for AI CLI terminals — not plain shell or devserver
   const composerSupported = terminalType !== "shell" && terminalType !== "devserver";
@@ -408,6 +491,9 @@ export default function TerminalPane({
   }, [terminalId]);
 
   const handlePtyData = useCallback((data: Uint8Array) => {
+    // Remote panes: keep the first bytes so an exit can tell "ssh never
+    // connected" apart from a normal process end. Self-retires after ~4KB.
+    sshWatchRef.current?.note(data);
     // Queue data for batched write on next animation frame
     pendingChunksRef.current.push(new Uint8Array(data));
     pendingBytesRef.current += data.length;
@@ -612,6 +698,33 @@ export default function TerminalPane({
     clearTerminalActivity(terminalId);
     sessionRetryCancelRef.current?.();
     terminalRef.current?.write("\r\n\x1b[38;2;139;148;158m[Process exited]\x1b[0m\r\n");
+    // The CLI rejected this pane's resume id ("No conversation found with
+    // session ID: …") — the id has no transcript behind it, so dropping it
+    // loses nothing. Drop it and respawn fresh ONCE, exactly what the local
+    // branch's pre-spawn check does quietly (session-exists.ts). Remote-only:
+    // the watch exists only for ssh panes.
+    const deadId = sessionResumeIdPropRef.current;
+    if (deadId && !resumeHealTriedRef.current && sshWatchRef.current?.resumeFailure(deadId)) {
+      resumeHealTriedRef.current = true;
+      console.warn(
+        `[SessionResume] CLI rejected ${deadId.slice(0, 8)} — dropping the id and starting fresh`,
+      );
+      useAppStore.getState().removeProjectSession(workingDirRef.current || "", deadId);
+      setSessionTrusted(false);
+      sessionResumeIdPropRef.current = undefined;
+      onSessionResumeIdRef.current?.("");
+      onPtyExitRef.current?.(exitCode);
+      restartRef.current();
+      return;
+    }
+    // ssh died before it ever connected → the pane's only content is the ssh
+    // client's error. Cover it with the "No connection" card (the terminal
+    // hides while the card is up; Try again respawns).
+    const connectFailure = sshWatchRef.current?.failure();
+    if (connectFailure) {
+      setSshOffline(connectFailure);
+      setComposerOpen(false);
+    }
     onPtyExitRef.current?.(exitCode);
   }, [terminalId]);
 
@@ -657,7 +770,7 @@ export default function TerminalPane({
     // after mount vanished into a not-yet-spawned PTY every startup.
     onSpawned: () => onPtyReadyRef.current?.(),
     injectShellIntegration: useShellIntegration,
-    ready: termReady,
+    ready: termReady && preflight.gate === "ok",
     restartKey,
     forceYolo: launchedWithYolo,
     backend,
@@ -689,22 +802,24 @@ export default function TerminalPane({
 
     const manyPanes = paneCountRef.current > 6; // used for WebGL stagger delay
     const baseFontSize = cliFontSizeRef.current;
+    const baseFontStack = fontStackRef.current;
 
     const term = new Terminal({
       theme: effectiveTerminalTheme,
       cursorBlink: true,
       cursorStyle: "bar",
       cursorWidth: 2,
-      fontFamily: TERMINAL_FONT_FAMILY,
+      fontFamily: baseFontStack,
       fontSize: baseFontSize,
       fontWeight: "normal",
       fontWeightBold: "bold",
-      lineHeight: 1.2,
+      lineHeight: XTERM_BASE_LINE_HEIGHT * terminalLineHeightRef.current,
       letterSpacing: 0, // Must stay 0 — any value >0 gaps box-drawing chars in ALL renderers (DOM, WebGL, Canvas)
       allowTransparency: true,
       allowProposedApi: true,
-      scrollback: paneCount <= 3 ? 10000 : paneCount <= 6 ? 5000 : paneCount <= 9 ? 3000 : 1500,
-      minimumContrastRatio: 1,
+      scrollback: tieredScrollback(scrollbackLinesRef.current, paneCountRef.current),
+      minimumContrastRatio: minContrastRef.current,
+      drawBoldTextInBrightColors: boldUsesBrightRef.current,
       // ConPTY (Windows/PowerShell) needs explicit pty hinting so xterm.js applies
       // its Windows-specific reflow + cursor-tracking heuristics. Without this,
       // PSReadLine's cursor coordinates desync after line wraps and typed text
@@ -916,7 +1031,7 @@ export default function TerminalPane({
           const webgl = new WebglAddon();
           term.loadAddon(webgl);
           // Force WebGL to rebuild glyph atlas with the correct font
-          term.options.fontFamily = TERMINAL_FONT_FAMILY;
+          term.options.fontFamily = baseFontStack;
           term.options.fontSize = baseFontSize;
           safeFit();
           if (wasAtBottom) {
@@ -1553,6 +1668,19 @@ export default function TerminalPane({
         // xterm.js owns the mouse-report encoding, so the multiplier is applied
         // by re-dispatching the same event rather than by hand-encoding SGR.
         if (term.buffer.active.type === "alternate" || term.modes.mouseTrackingMode !== "none") {
+          // NOT on an SSH pane. Here the multiplier's output is escape
+          // sequences on the wire: one flick becomes up to 12 wheel reports
+          // back-to-back. Locally the CLI's reader drains them one at a time,
+          // but across a network round-trip they queue up and land in a single
+          // read — and the Ink parser these CLIs use handles the first report,
+          // loses sync, and spills the remainder into the composer as literal
+          // text (`65;129;35M65;129;35M…`, tails like `18M` when the pile
+          // breaks mid-report). One physical notch, one report.
+          //
+          // Only this branch is affected: on the normal buffer MADE scrolls its
+          // own viewport and nothing reaches the PTY, so acceleration there is
+          // free and stays on for every pane.
+          if (serverIdRef.current) return;
           const now = e.timeStamp;
           const fast = lastWheelAt > 0 && now - lastWheelAt < ACCEL_WINDOW_MS;
           lastWheelAt = now;
@@ -1923,12 +2051,30 @@ export default function TerminalPane({
     }
   }, [effectiveTerminalTheme]);
 
-  // Live font-size update when user changes CLI font size in settings
+  // Live update when the user changes any metric-bearing appearance setting:
+  // CLI font size, the face, or the line-height scale. All three change the
+  // cell box, so the pane is refit and its scroll position restored — the
+  // reason these share one effect rather than getting one each.
+  //
+  // The three that do NOT touch metrics (contrast floor, bold-bright,
+  // scrollback depth) ride along because xterm applies them on the next
+  // repaint anyway; scrollback is the one xterm can resize live where the
+  // native renderer cannot (there it is create-only).
   useEffect(() => {
     const term = terminalRef.current;
     const fit = fitAddonRef.current;
     if (term) {
       term.options.fontSize = cliFontSize;
+      term.options.fontFamily = fontStack;
+      term.options.lineHeight = XTERM_BASE_LINE_HEIGHT * terminalLineHeight;
+      term.options.minimumContrastRatio = minContrast;
+      term.options.drawBoldTextInBrightColors = boldUsesBright;
+      // Re-tiered here too, or the first run of this effect would wipe the
+      // ladder the create call just applied. paneCountRef, NOT the `paneCount`
+      // prop as a dep: the tier has always been decided when a pane is built,
+      // and re-deciding it on every open/close would truncate a live pane's
+      // scrollback out from under the user each time a neighbour appears.
+      term.options.scrollback = tieredScrollback(scrollbackLines, paneCountRef.current);
       if (fit) {
         const buf = term.buffer.active;
         const wasAtBottom = buf.baseY - buf.viewportY <= 3;
@@ -1945,7 +2091,14 @@ export default function TerminalPane({
         }
       }
     }
-  }, [cliFontSize]);
+  }, [
+    cliFontSize,
+    fontStack,
+    terminalLineHeight,
+    minContrast,
+    boldUsesBright,
+    scrollbackLines,
+  ]);
 
   const handleToggleCollapse = useCallback((blockId: string) => {
     blockParserRef.current?.toggleCollapse(blockId);
@@ -2018,6 +2171,8 @@ export default function TerminalPane({
     }
     // Capture current YOLO state at restart time — updates badge + forceYolo for spawn
     setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
+    sshWatchRef.current?.reset();
+    setSshOffline(null);
     setExited(false);
     setPaneExited(terminalId, false);
     setContextInfo(null);
@@ -2035,6 +2190,7 @@ export default function TerminalPane({
     }
     setRestartKey((k) => k + 1);
   }, [terminalType]);
+  restartRef.current = handleRestart;
 
   const onSwitchSessionRef = useRef(onSwitchSession);
   onSwitchSessionRef.current = onSwitchSession;
@@ -2061,6 +2217,9 @@ export default function TerminalPane({
       terminalRef.current.reset();
     }
     setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
+    sshWatchRef.current?.reset();
+    setSshOffline(null);
+    resumeHealTriedRef.current = false;
     setExited(false);
     setPaneExited(terminalId, false);
     setContextInfo(null);
@@ -2242,13 +2401,50 @@ export default function TerminalPane({
           getPromptEntries={getPromptEntries}
           onScrollToPromptLine={handleScrollToPromptLine}
           onRefreshContext={refreshContext}
+          collapsible={collapsible}
+          collapsed={collapsed}
+          onToggleCollapse={onToggleCollapse}
         />
       )}
       <div className="flex-1 min-h-0 relative" style={{ backgroundColor: containerBg }}>
         <div
           ref={containerRef}
           className="h-full w-full"
+          style={preflight.gate === "ok" && !sshOffline ? undefined : { visibility: "hidden" }}
         />
+        {/* The CLI is not on this backend. The terminal stays mounted but
+            hidden — xterm needs a laid-out container to size itself, and it
+            has no PTY to show anyway until the gate opens. */}
+        {preflight.gate === "missing" && isAiCli(terminalType) && (
+          <CliMissingCard
+            cli={terminalType}
+            backend={preflight.backend}
+            server={preflight.server}
+            onRecheck={preflight.recheck}
+            onStartAnyway={preflight.allow}
+            onInstalled={preflight.allow}
+          />
+        )}
+        {/* The server did not answer the reachability probe — "isn't
+            installed" would be a lie, and the install could not run anyway. */}
+        {preflight.gate === "offline" && isAiCli(terminalType) && (
+          <RemoteOfflineCard
+            variant="preflight"
+            server={preflight.server}
+            cli={terminalType}
+            onRetry={preflight.recheck}
+            onStartAnyway={preflight.allow}
+          />
+        )}
+        {/* ssh exited before ever connecting — any remote pane type. */}
+        {sshOffline && (
+          <RemoteOfflineCard
+            variant="spawn"
+            server={preflight.server}
+            detail={sshOffline}
+            onRetry={handleRestart}
+          />
+        )}
         {useShellIntegration && (
           <CommandBlockOverlay
             terminal={terminalRef.current}
@@ -2300,7 +2496,7 @@ export default function TerminalPane({
               backgroundColor: "var(--ezy-surface-raised)",
               border: "1px solid var(--ezy-border)",
               color: "var(--ezy-fg)",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontFamily: "system-ui, sans-serif",
               pointerEvents: "none",
               zIndex: 20,
@@ -2322,6 +2518,7 @@ export default function TerminalPane({
           sessionId={sessionResumeId}
           workingDir={workingDir}
           backend={backend}
+          remote={!!serverId}
           submitNonce={xtermSubmitNonce}
         />
         {/* Jump-to-bottom button — appears below scrollbar thumb when scrolled up */}

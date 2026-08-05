@@ -34,6 +34,14 @@ pub struct ThemeColors {
     /// frame builder snapshots it by value under a short read lock, and the
     /// per-cell hot path reads that stack copy.
     pub extended: Option<[[u8; 4]; 240]>,
+    /// User color-preset extras. `None` on each = pre-preset behavior:
+    /// selection recolors only the cell bg, links draw in the cell fg, and
+    /// search matches use the built-in translucent white.
+    pub selection_foreground: Option<[u8; 4]>,
+    pub link: Option<[u8; 4]>,
+    pub search_match: Option<[u8; 4]>,
+    /// Highlight for the ACTIVE search match; `None` = the built-in green.
+    pub search_match_active: Option<[u8; 4]>,
 }
 
 impl ThemeColors {
@@ -66,6 +74,68 @@ impl ThemeColors {
             cursor_accent: [0x0D, 0x0D, 0x11, 0xFF],
             selection: [0x44, 0x55, 0x6B, 0xFF],
             extended: None,
+            selection_foreground: None,
+            link: None,
+            search_match: None,
+            search_match_active: None,
+        }
+    }
+}
+
+/// Resolved, clamped counterpart of the wire-format `window::RenderOpts` —
+/// every `Option` collapsed to the value the renderer actually uses. Shared
+/// with `CellGrid` through `Arc<RwLock<..>>` exactly like `ThemeColors`: the
+/// frame builder snapshots it by value under a short read lock and the
+/// per-cell hot path reads that stack copy.
+///
+/// `Default` IS the historical behavior — a pane that never receives a
+/// `set_render_opts` renders identically to the pre-settings build.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderTuning {
+    pub bold_uses_bright: bool,
+    /// Target WCAG ratio; `1.0` disables the pass (every color pair already
+    /// meets 1.0, so the check would be a no-op anyway).
+    pub min_contrast: f32,
+    pub dim_strength: f32,
+    pub cursor_block_alpha: f32,
+    pub line_height_scale: f32,
+}
+
+impl Default for RenderTuning {
+    fn default() -> Self {
+        RenderTuning {
+            bold_uses_bright: false,
+            min_contrast: 1.0,
+            // The fixed halfway blend `dim_toward` has always applied.
+            dim_strength: 0.5,
+            // The translucent overlay the focused block cursor has always used.
+            cursor_block_alpha: 0.30,
+            line_height_scale: 1.0,
+        }
+    }
+}
+
+impl RenderTuning {
+    /// Fold the wire struct into resolved values. Clamped defensively — these
+    /// numbers come from JS and feed geometry (a 0 or NaN line height would
+    /// divide the pane into an unbounded row count) and color math.
+    pub fn resolve(opts: &super::window::RenderOpts) -> Self {
+        let d = RenderTuning::default();
+        // NaN survives `clamp` on floats as NaN, so route every value through
+        // the default when it isn't finite rather than letting it reach the
+        // cell-metric math.
+        let num = |v: Option<f32>, fallback: f32, lo: f32, hi: f32| -> f32 {
+            match v {
+                Some(x) if x.is_finite() => x.clamp(lo, hi),
+                _ => fallback,
+            }
+        };
+        RenderTuning {
+            bold_uses_bright: opts.bold_uses_bright.unwrap_or(d.bold_uses_bright),
+            min_contrast: num(opts.min_contrast, d.min_contrast, 1.0, 21.0),
+            dim_strength: num(opts.dim_strength, d.dim_strength, 0.0, 1.0),
+            cursor_block_alpha: num(opts.cursor_block_alpha, d.cursor_block_alpha, 0.0, 1.0),
+            line_height_scale: num(opts.line_height_scale, d.line_height_scale, 1.0, 2.0),
         }
     }
 }

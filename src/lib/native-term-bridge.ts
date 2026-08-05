@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { WINDOW_RESIZE_EDGE_PX } from "./window-resize-frame";
 
 export type Rect = { x: number; y: number; width: number; height: number };
 export type NativeTermId = number;
@@ -8,10 +9,6 @@ export function rectOf(el: Element): Rect {
   return { x: r.x, y: r.y, width: r.width, height: r.height };
 }
 
-/** Thickness of the frameless window's invisible resize border. Mirrors
- * `HANDLE` in components/WindowResizeHandles.tsx — keep the two in step. */
-const WINDOW_RESIZE_EDGE_PX = 6;
-
 /**
  * `rectOf` for a native pane's ANCHOR, pulled back off the window's resize
  * edges.
@@ -20,6 +17,12 @@ const WINDOW_RESIZE_EDGE_PX = 6;
  * pane is a child HWND and sits above ALL webview content — so a pane flush
  * with the window's right edge swallowed the East handle and the window simply
  * could not be resized from that side (user-reported 2026-07-26).
+ *
+ * This covers the PANE's own window and nothing else. The overlay popup window
+ * is a second OS window over the same pixels with its own hit-test shape, and
+ * it swallowed the same handle again on 2026-08-04 via the far-right pane's TUI
+ * scrollbar; that side is clipped in overlay/OverlayRoot.tsx. Both subtract
+ * `WINDOW_RESIZE_EDGE_PX` from lib/window-resize-frame.ts.
  *
  * Only the far edges are trimmed, never the origin: shrinking width/height
  * keeps the surface origin on the anchor's origin, so everything that
@@ -79,6 +82,39 @@ export interface TerminalTheme {
    *  order. Light themes send a canvas-adapted palette here; omitting it keeps
    *  the renderer's standard xterm cube. */
   extendedAnsi?: string[];
+  /** User color-preset extras — all optional; omitting each keeps the
+   *  renderer's pre-preset behavior (bg-only selection, fg-colored links,
+   *  translucent-white search matches). */
+  selectionForeground?: string;
+  link?: string;
+  searchMatch?: string;
+  /** The CURRENT match of a search, drawn over `searchMatch` for the rest.
+   *  Absent = the renderer draws every match alike. */
+  searchMatchActive?: string;
+}
+
+/**
+ * Renderer knobs the user can turn (Settings > Appearance). Every field is
+ * optional and its absence means EXACTLY today's hardcoded behavior, so a Rust
+ * side that has not caught up — or a pane created before a setting existed —
+ * renders unchanged.
+ */
+export interface RenderOpts {
+  /** Draw bold text in the bright ANSI color (classic terminal behavior).
+   *  Absent = false, i.e. bold is a weight only. */
+  boldUsesBright?: boolean;
+  /** Minimum foreground/background contrast ratio; the renderer lightens or
+   *  darkens the glyph until it is met. Absent or <= 1 = off (no adjustment). */
+  minContrast?: number;
+  /** How far SGR 2 (dim/faint) text fades toward the background, 0..1.
+   *  Absent = 0.5 (today). */
+  dimStrength?: number;
+  /** Alpha of the block cursor's fill, 0..1. Absent = 0.30 (today);
+   *  >= 1 means an opaque block with the glyph redrawn in the cursor accent. */
+  cursorBlockAlpha?: number;
+  /** Row height as a multiple of the font's natural line height, >= 1.
+   *  Absent = 1.0 (today). */
+  lineHeightScale?: number;
 }
 
 export interface FontSpec {
@@ -101,6 +137,9 @@ export interface CreateOpts {
   /** Opt in to the process-wide wgpu Device/Queue (Settings toggle). Read once
    *  at create, so flipping the toggle only affects panes opened afterwards. */
   sharedGpu: boolean;
+  /** Renderer knobs, so the FIRST frame already honors them. Live changes go
+   *  through `nativeTermSetRenderOpts`; only `scrollback` above is create-only. */
+  renderOpts?: RenderOpts;
 }
 
 export interface ViewportState {
@@ -429,6 +468,8 @@ export type NativeTermCmd =
   | "native_term_frame_sync"
   | "native_term_set_theme"
   | "native_term_set_font"
+  | "native_term_set_render_opts"
+  | "native_term_list_mono_fonts"
   | "native_term_set_cursor_style"
   | "native_term_set_focused"
   | "native_term_set_hover_link"
@@ -638,6 +679,28 @@ export function nativeTermSetFont(
   return invoke<void>("native_term_set_font", { id, family, sizePx });
 }
 
+/**
+ * Push the renderer knobs (bold-bright, contrast floor, dim strength, cursor
+ * alpha, line height) to a live pane. Cheap: one IPC + an atomic swap, then a
+ * repaint — except `lineHeightScale`, which changes cell metrics and therefore
+ * re-runs the grid/PTY resize Rust-side, exactly like `set_font`.
+ */
+export function nativeTermSetRenderOpts(
+  id: NativeTermId,
+  opts: RenderOpts,
+): Promise<void> {
+  return invoke<void>("native_term_set_render_opts", { id, opts });
+}
+
+/**
+ * The MONOSPACE family names installed on this machine, for the font picker.
+ * Enumerated Rust-side (the webview has no font-enumeration API) and sorted;
+ * the bundled "Hack" is always present whether or not it is installed.
+ */
+export function nativeTermListMonoFonts(): Promise<string[]> {
+  return invoke<string[]>("native_term_list_mono_fonts");
+}
+
 export function nativeTermSetCursorStyle(
   id: NativeTermId,
   style: CursorStyle,
@@ -841,6 +904,13 @@ export function nativeTermSearchClear(id: NativeTermId): Promise<void> {
   return invoke<void>("native_term_search_clear", { id });
 }
 
+/** A search rect on its way BACK to the renderer: the verbatim SearchResult
+ *  rect plus which one is the CURRENT match, so that one can be drawn in
+ *  `searchMatchActive`. Absent/false = an ordinary match. */
+export interface SearchHighlightRect extends Rect {
+  active?: boolean;
+}
+
 // Phase 3: push the rects from a SearchResult to the renderer so it can draw
 // the highlight overlay. Decoupled from `nativeTermSearch` so callers can opt
 // out of the overlay (e.g. when previewing a live-typed regex). Best-effort —
@@ -848,7 +918,7 @@ export function nativeTermSearchClear(id: NativeTermId): Promise<void> {
 // them since a missing/destroyed pane is a benign race.
 export function nativeTermSetSearchHighlights(
   id: NativeTermId,
-  rects: Rect[],
+  rects: SearchHighlightRect[],
 ): Promise<void> {
   return invoke<void>("native_term_set_search_highlights", { id, rects });
 }

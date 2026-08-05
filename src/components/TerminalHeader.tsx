@@ -100,6 +100,11 @@ interface TerminalHeaderProps {
   /** True when this pane is drawn by the native (wgpu) renderer. Shows a
    * neutral NATIVE chip so a mixed native/xterm grid is readable at a glance. */
   isNativeRenderer?: boolean;
+  /** Jira stacked sub-tickets: the pane can be folded down to just this header.
+   *  Absent everywhere else, so no other pane grows a chevron. */
+  collapsible?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
 function TerminalIcon({ type }: { type: TerminalType }) {
@@ -187,6 +192,18 @@ function formatTimestamp(ts: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   return `${Math.floor(diff / 86400)}d ago`;
+}
+
+/** Longest prompt a hover chip will carry. The chip wraps at 280px, so ~360
+ *  chars is about 12 lines — enough to identify any prompt, short enough that a
+ *  pasted stack trace cannot fill the screen. */
+const TIP_TEXT_MAX = 360;
+
+/** Prompt text for a tooltip: collapsed to one flow (a prompt sent from the
+ *  composer keeps its newlines, and a chip is not a document viewer) and capped. */
+function truncateForTip(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > TIP_TEXT_MAX ? `${flat.slice(0, TIP_TEXT_MAX)}…` : flat;
 }
 
 
@@ -453,6 +470,9 @@ export default function TerminalHeader({
   onScrollToPromptLine,
   onRefreshContext,
   isNativeRenderer = false,
+  collapsible = false,
+  collapsed = false,
+  onToggleCollapse,
 }: TerminalHeaderProps) {
   const contextPercent = contextInfo?.percent ?? null;
   const [refreshingContext, setRefreshingContext] = useState(false);
@@ -569,6 +589,14 @@ export default function TerminalHeader({
                           shortcut: entry.timestamp
                             ? formatTimestamp(entry.timestamp)
                             : undefined,
+                          // A 320px row ellipsizes everything past ~40 chars,
+                          // which is most prompts — the tooltip is the only
+                          // place the whole thing can be read. Capped so a
+                          // pasted wall of text can't grow a chip taller than
+                          // the window; the row shows where it starts, the chip
+                          // shows enough to tell two similar prompts apart.
+                          tooltip: truncateForTip(entry.text),
+                          tooltipHint: "Click to scroll to this prompt",
                         })),
               },
             ],
@@ -636,10 +664,43 @@ export default function TerminalHeader({
         transition: "border-color 200ms ease, background-color 200ms ease",
       }}
     >
+      {/* Fold this pane down to just this header (Jira stacked sub-tickets).
+          A bare SVG, not a <button>: buttons inherit line-height 1.5 and would
+          push this 28px header to 24px+ of content. Collapsing gives the pane's
+          terminal surface a zero-height anchor, which the native renderer
+          already treats as "hidden" WITHOUT resizing the PTY — so folding a
+          pane never reflows the conversation inside it. */}
+      {collapsible && (
+        <svg
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleCollapse?.();
+          }}
+          width="12"
+          height="12"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.75"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          style={{
+            flexShrink: 0,
+            margin: "0 2px 0 5px",
+            cursor: "pointer",
+            color: "var(--ezy-text-muted)",
+            transform: collapsed ? "rotate(-90deg)" : undefined,
+            transition: "transform 150ms ease",
+          }}
+        >
+          <title>{collapsed ? "Expand pane" : "Collapse pane"}</title>
+          <path d="M4 6l4 4 4-4" />
+        </svg>
+      )}
       {/* Drag handle — custom pointer drag (HTML5 DnD doesn't work in Tauri
           WebView2). Hidden entirely when the host disabled pane moving
           (onSwapPane undefined — Jira tabs: one pane per ticket). */}
-      {!onSwapPane && <div style={{ width: 6, flexShrink: 0 }} />}
+      {!onSwapPane && !collapsible && <div style={{ width: 6, flexShrink: 0 }} />}
       {onSwapPane && <div
         onMouseDown={(e) => {
           e.preventDefault();
@@ -731,7 +792,7 @@ export default function TerminalHeader({
           {isYolo && (
             <span
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontWeight: 700,
                 letterSpacing: "0.06em",
                 lineHeight: 1.2,
@@ -747,7 +808,7 @@ export default function TerminalHeader({
           {sl("collabMode") && contextInfo?.collabMode && contextInfo.collabMode !== "default" && (
             <span
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontWeight: 700,
                 letterSpacing: "0.06em",
                 lineHeight: 1.2,
@@ -765,7 +826,7 @@ export default function TerminalHeader({
             <span
               data-tooltip="Drawn by the native GPU renderer"
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontWeight: 700,
                 letterSpacing: "0.06em",
                 lineHeight: 1.2,
@@ -800,7 +861,7 @@ export default function TerminalHeader({
           }
           onClick={toggleShellPsMode}
           style={{
-            fontSize: 9,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
             fontWeight: 700,
             letterSpacing: "0.06em",
             lineHeight: 1.2,
@@ -825,7 +886,7 @@ export default function TerminalHeader({
       {sl("filePath") && workingDir && (
         <span
           style={{
-            fontSize: 10,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: "var(--ezy-text-muted)",
             whiteSpace: "nowrap",
             overflow: "hidden",
@@ -906,7 +967,7 @@ export default function TerminalHeader({
           {sl("model") && contextInfo.model && (
             <span
               style={{
-                fontSize: 10,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                 color: "var(--ezy-text-muted)",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
@@ -921,7 +982,7 @@ export default function TerminalHeader({
           {sl("version") && contextInfo.cliVersion && (
             <span
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
@@ -934,7 +995,7 @@ export default function TerminalHeader({
           {sl("speed") && contextInfo.speed && (
             <span
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
@@ -958,7 +1019,7 @@ export default function TerminalHeader({
                 return parts.join(" · ");
               })()}
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontVariantNumeric: "tabular-nums",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
@@ -975,7 +1036,7 @@ export default function TerminalHeader({
             <span
               data-tooltip={`Context compacted ${contextInfo.compactCount} time${contextInfo.compactCount !== 1 ? "s" : ""}`}
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontVariantNumeric: "tabular-nums",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
@@ -1004,7 +1065,7 @@ export default function TerminalHeader({
                     e.stopPropagation();
                   }}
                   style={{
-                    fontSize: 9,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                     lineHeight: 1.2,
                     fontFamily: "inherit",
                     backgroundColor: "var(--ezy-bg)",
@@ -1046,7 +1107,7 @@ export default function TerminalHeader({
                 >
                   <span
                     style={{
-                      fontSize: 9,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                       color: "var(--ezy-text-muted)",
                       lineHeight: 1.2,
                       whiteSpace: "nowrap",
@@ -1082,7 +1143,7 @@ export default function TerminalHeader({
             <span
               data-tooltip={contextInfo.sessionName}
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
@@ -1101,7 +1162,7 @@ export default function TerminalHeader({
             <span
               data-tooltip={contextInfo.summary}
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
@@ -1120,7 +1181,7 @@ export default function TerminalHeader({
             <span
               data-tooltip={`Last response used ${contextInfo.thinkingTokens.toLocaleString()} thinking tokens`}
               style={{
-                fontSize: 9,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontVariantNumeric: "tabular-nums",
                 lineHeight: 1.2,
                 whiteSpace: "nowrap",
@@ -1143,7 +1204,7 @@ export default function TerminalHeader({
               <span
                 data-tooltip={`Quota resets at ${reset.toLocaleTimeString()}`}
                 style={{
-                  fontSize: 9,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                   fontVariantNumeric: "tabular-nums",
                   lineHeight: 1.2,
                   whiteSpace: "nowrap",
@@ -1166,7 +1227,7 @@ export default function TerminalHeader({
               <span
                 data-tooltip={tooltip}
                 style={{
-                  fontSize: 9,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                   fontVariantNumeric: "tabular-nums",
                   lineHeight: 1.2,
                   whiteSpace: "nowrap",
@@ -1183,7 +1244,7 @@ export default function TerminalHeader({
               <span
                 data-tooltip={`Weekly rate limit: ${left}% left (${contextInfo.rateLimitWeekly}% used)`}
                 style={{
-                  fontSize: 9,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                   fontVariantNumeric: "tabular-nums",
                   lineHeight: 1.2,
                   whiteSpace: "nowrap",
@@ -1244,7 +1305,7 @@ export default function TerminalHeader({
             </div>
             <span
               style={{
-                fontSize: 10,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                 fontVariantNumeric: "tabular-nums",
                 color:
                   contextPercent <= 15

@@ -43,6 +43,12 @@ pub struct GlyphStack {
     pub atlas: TextAtlas,
     pub viewport: Viewport,
     pub renderer: TextRenderer,
+    /// Second glyphon renderer, used ONLY by the opaque ("inverse") block
+    /// cursor. It cannot share `renderer`: glyphon's `prepare` replaces the
+    /// whole vertex list, and this text has to be drawn AFTER the cursor quad
+    /// that covers the row's own glyph — a different point in the pass. Both
+    /// share `atlas` / `viewport`, so the extra cost is one vertex buffer.
+    pub cursor_renderer: TextRenderer,
     pub font_family: String,
     /// P5b: the parsed PRIMARY family name — first comma-separated segment
     /// of `font_family`, trimmed of whitespace/quotes ("Hack, monospace" →
@@ -60,9 +66,21 @@ pub struct GlyphStack {
     /// surface is physical px, so rasterizing at this size is what makes
     /// glyphs sharp on 125%/150% displays.
     pub font_size_px: f32,
-    /// PHYSICAL line height: `(font_size_px * 1.2).ceil()` — always integer,
-    /// so row tops (`y * line_height_px`) are integer by construction.
+    /// PHYSICAL line height: `(font_size_px * 1.2 * line_height_scale).ceil()`
+    /// — always integer, so row tops (`y * line_height_px`) are integer by
+    /// construction. This is the CELL height: with a scale above 1.0 it is
+    /// taller than the glyph box, and cosmic-text centers the glyphs inside it.
     pub line_height_px: f32,
+    /// PHYSICAL height of the GLYPH box — `line_height_px` with the scale
+    /// factored out, i.e. what the line height would be at scale 1.0. Equal to
+    /// `line_height_px` at the default scale. Decoration placement measures
+    /// against this so underlines track the (centered) glyphs rather than
+    /// drifting toward the bottom of a stretched cell.
+    pub text_line_px: f32,
+    /// User line-height multiplier (`RenderTuning::line_height_scale`).
+    /// Consumed by `set_font_scaled`, which is the only place cell metrics are
+    /// derived — set this, then re-run that, exactly like a font-size change.
+    pub line_height_scale: f32,
     /// Real per-cell horizontal advance in PHYSICAL pixels, measured via
     /// cosmic-text by shaping a representative monospace glyph ("M").
     /// After `set_font_scaled`'s advance quantization this is an INTEGER
@@ -111,6 +129,8 @@ impl GlyphStack {
             },
         );
         let renderer = TextRenderer::new(&mut atlas, device, MultisampleState::default(), None);
+        let cursor_renderer =
+            TextRenderer::new(&mut atlas, device, MultisampleState::default(), None);
 
         // Metric fields are placeholders here — `set_font_scaled` below is
         // the single derivation point (construction + every hot-swap).
@@ -120,10 +140,13 @@ impl GlyphStack {
             atlas,
             viewport,
             renderer,
+            cursor_renderer,
             font_family: String::new(),
             family_name: String::new(),
             font_size_px: font_logical_px.max(1.0),
             line_height_px: (font_logical_px.max(1.0) * 1.2).ceil(),
+            text_line_px: (font_logical_px.max(1.0) * 1.2).ceil(),
+            line_height_scale: 1.0,
             cell_advance_px: font_logical_px.max(1.0) * 0.6,
             cell_fit: std::collections::HashMap::new(),
         };
@@ -185,7 +208,10 @@ impl GlyphStack {
                 &mut fs,
                 &self.family_name,
                 self.font_size_px,
-                self.line_height_px,
+                // The GLYPH box, not the (possibly stretched) cell — a
+                // horizontal advance must not depend on the line-height
+                // setting, and `set_font_scaled` measures the same way.
+                self.text_line_px,
                 ch,
             )
         };
@@ -204,33 +230,63 @@ impl GlyphStack {
         Buffer::new(fs, Metrics::new(font_size_px, line_height_px))
     }
 
-    /// Single-shot prepare+render path for a list of `TextArea`s. The
-    /// canonical "draw text this frame" call from `pipeline::render`.
-    pub fn prepare_and_render<'pass>(
-        &'pass mut self,
+    /// Upload this frame's text. Split from the draw (below) because the two
+    /// glyph passes land on opposite sides of the cursor quad, and glyphon's
+    /// `render` borrows `&self` for the whole render pass — so every `prepare`
+    /// (which needs `&mut self`) must happen BEFORE the pass opens.
+    ///
+    /// `cursor_areas` is the opaque block cursor's re-drawn character; pass an
+    /// empty slice when there is none (its renderer is then simply not drawn).
+    pub fn prepare(
+        &mut self,
         device: &Device,
         queue: &Queue,
-        text_areas: &[TextArea<'pass>],
-        pass: &mut RenderPass<'pass>,
+        text_areas: &[TextArea<'_>],
+        cursor_areas: &[TextArea<'_>],
     ) -> Result<(), String> {
-        {
-            let mut fs = self.font_system.lock().expect("fonts: shared FontSystem poisoned");
-            self.renderer
+        let mut fs = self.font_system.lock().expect("fonts: shared FontSystem poisoned");
+        self.renderer
+            .prepare(
+                device,
+                queue,
+                &mut fs,
+                &mut self.atlas,
+                &self.viewport,
+                text_areas.iter().cloned(),
+                &mut self.swash_cache,
+            )
+            .map_err(|e| format!("glyphon prepare: {e:?}"))?;
+        if !cursor_areas.is_empty() {
+            self.cursor_renderer
                 .prepare(
                     device,
                     queue,
                     &mut fs,
                     &mut self.atlas,
                     &self.viewport,
-                    text_areas.iter().cloned(),
+                    cursor_areas.iter().cloned(),
                     &mut self.swash_cache,
                 )
-                .map_err(|e| format!("glyphon prepare: {e:?}"))?;
+                .map_err(|e| format!("glyphon prepare (cursor): {e:?}"))?;
         }
+        Ok(())
+    }
+
+    /// Draw the cell text prepared by `prepare`.
+    pub fn render<'pass>(&'pass self, pass: &mut RenderPass<'pass>) -> Result<(), String> {
         self.renderer
             .render(&self.atlas, &self.viewport, pass)
-            .map_err(|e| format!("glyphon render: {e:?}"))?;
-        Ok(())
+            .map_err(|e| format!("glyphon render: {e:?}"))
+    }
+
+    /// Draw the opaque block cursor's character. Only valid when the matching
+    /// `prepare` call was given a non-empty `cursor_areas` THIS frame — the
+    /// caller gates on the same condition, so a stale vertex list can never be
+    /// drawn.
+    pub fn render_cursor<'pass>(&'pass self, pass: &mut RenderPass<'pass>) -> Result<(), String> {
+        self.cursor_renderer
+            .render(&self.atlas, &self.viewport, pass)
+            .map_err(|e| format!("glyphon render (cursor): {e:?}"))
     }
 
     /// P5a text sharpness — the SINGLE metric-derivation entry point, called
@@ -275,6 +331,38 @@ impl GlyphStack {
         // this, so the measured advance and the drawn glyphs come from the
         // SAME face.
         self.family_name = parse_family_name(family);
+        // A family the fontdb has never heard of is NOT a shaping error —
+        // cosmic-text silently substitutes whatever it ranks first, which is
+        // the same wrong-font outcome `Family::Monospace` used to produce.
+        // Fall back to the bundled Hack explicitly so the pane stays
+        // deterministic and the log says why. (Per-glyph fallback for coverage
+        // the resolved face LACKS — CJK, emoji — is untouched: that is
+        // cosmic-text's job and still runs.)
+        if self.family_name != "Hack" {
+            let known = {
+                let fs = self
+                    .font_system
+                    .lock()
+                    .expect("fonts: shared FontSystem poisoned");
+                // Bound to a local: the `faces()` iterator borrows the guard,
+                // so it must be dropped before the guard leaves scope.
+                let hit = fs.db().faces().any(|f| {
+                    f.families
+                        .iter()
+                        .any(|(n, _)| n.eq_ignore_ascii_case(&self.family_name))
+                });
+                hit
+            };
+            if !known {
+                let line = format!(
+                    "[native_term] fonts: family `{}` not installed — falling back to Hack",
+                    self.family_name
+                );
+                eprintln!("{line}");
+                crate::debug_log::dlog(&line);
+                self.family_name = "Hack".to_string();
+            }
+        }
         let dpr = if dpr > 0.0 { dpr } else { 1.0 };
         let logical_px = logical_px.max(1.0);
         let font_px_raw = logical_px * dpr;
@@ -308,13 +396,25 @@ impl GlyphStack {
             // 5% clamp stopped short of the integer). Keep the RAW physical
             // size + fractional advance so text and grid still agree.
             self.font_size_px = font_px_raw;
-            self.line_height_px = line_h_raw;
+            self.text_line_px = line_h_raw;
             self.cell_advance_px = advance_raw;
         } else {
             self.font_size_px = font_px;
-            self.line_height_px = line_h_scaled;
+            self.text_line_px = line_h_scaled;
             self.cell_advance_px = advance_int;
         }
+        // The user line-height multiplier stretches the CELL only — the font
+        // size and the measured advance above are deliberately derived from
+        // the unscaled metrics, so changing line height can never change the
+        // column width. cosmic-text centers the glyph box inside the taller
+        // line box for us (`centering_offset` in its LayoutRunIter), so the
+        // baseline needs no adjustment here. Ceil keeps row tops integer.
+        let scale = if self.line_height_scale.is_finite() {
+            self.line_height_scale.clamp(1.0, 2.0)
+        } else {
+            1.0
+        };
+        self.line_height_px = (self.text_line_px * scale).ceil();
     }
 }
 

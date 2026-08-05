@@ -4,7 +4,7 @@ import { getCachedWindowsCliPath } from "./windows-cli-cache";
 import { getCachedNativeCliPath } from "./macos-cli-cache";
 import { getResumeFlag, supportsSessionResume } from "./session-resume";
 import { isWindows } from "./platform";
-import { getKeychainUnlockPreamble } from "./keychain";
+import { getKeychainUnlockPreamble, needsKeychainUnlock } from "./keychain";
 
 // POSIX shell single-quote an arbitrary string. Escapes embedded single quotes
 // via the standard `'\''` sequence. Safe for any character including (, ), $, etc.
@@ -330,6 +330,22 @@ function safePaneId(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]/g, "");
 }
 
+/**
+ * How a CLI takes its FIRST prompt at launch and still stays interactive.
+ *
+ * Claude and Codex read it as a positional and drop into their TUI with the
+ * work already running. Gemini does NOT: its `isHeadlessMode` returns true the
+ * moment a positional query exists, so `gemini "…"` answers once and exits —
+ * a Jira pane spawned that way would vanish as soon as it replied. `-i` is the
+ * flag that runs a prompt AND stays interactive.
+ *
+ * Claude's positional must stay last in the arg list (see the call sites);
+ * Gemini's flag pair is order-independent.
+ */
+export function firstPromptArgs(type: TerminalType, prompt: string): string[] {
+  return type === "gemini" ? ["-i", prompt] : [prompt];
+}
+
 export function claudeSessionIdArgs(
   type: TerminalType,
   resumeId?: string,
@@ -577,12 +593,24 @@ export function isWslTerminal(type: TerminalType, backend?: TerminalBackend): bo
  *  looking identical. */
 const CLEAR_SCREEN = `printf '\\033[2J\\033[H'`;
 
+/**
+ * Encode a cwd the way Claude names its per-project transcript directory
+ * (`~/.claude/projects/<key>`): every non-alphanumeric character becomes `-`,
+ * INCLUDING the leading `/` — `/Volumes/projects/x` → `-Volumes-projects-x`.
+ * Verified against real `~/.claude/projects` layouts (spaces and parens
+ * become dashes too, and the leading dash is always present).
+ */
+export function claudeProjectKey(cwd: string): string {
+  return cwd.replace(/[^A-Za-z0-9]/g, "-");
+}
+
 /** Map terminal type to the remote command to exec over SSH */
 function getRemoteExecCommand(
   type: TerminalType,
   sessionResumeId?: string,
   extraCliArgs?: string[],
   execShell?: string,
+  remoteCwd?: string,
 ): string {
   const resumeArgs = sessionResumeId && supportsSessionResume(type)
     ? getResumeFlag(type, sessionResumeId).split(" ")
@@ -591,8 +619,36 @@ function getRemoteExecCommand(
   // claude only; the other CLIs don't take them.
   const extraArgs = type === "claude" && extraCliArgs?.length ? extraCliArgs : [];
 
-  const cliExec = (bin: string) => {
+  /**
+   * The exec statement for the CLI — for a Claude resume, a server-side guard
+   * instead of a bare `--resume`.
+   *
+   * MADE mints a remote pane's session id at spawn (`--session-id <uuid>`),
+   * but Claude only writes the transcript once a first message exists — so a
+   * pane that was opened and never prompted persists an id with no transcript,
+   * and the next launch's `--resume <id>` dies on "No conversation found with
+   * session ID: …" as the pane's only content. The local branch pre-checks the
+   * transcript file (session-exists.ts) and quietly starts fresh; over SSH a
+   * pre-check would cost a whole extra round-trip per spawn, so the check runs
+   * ON the server inside the command we were sending anyway:
+   *
+   *   if [ -f <transcript> ] → resume;  else → fresh session with the SAME id
+   *
+   * Reusing the id in the fresh branch is the point: MADE's stored id, the
+   * rail row and the next relaunch all stay valid without MADE ever learning
+   * which branch ran.
+   */
+  const execLine = (bin: string): string => {
     const inner = [bin, ...resumeArgs, ...extraArgs].map(sh).join(" ");
+    if (type !== "claude" || !sessionResumeId || !remoteCwd) return `exec ${inner}`;
+    // The id lands inside a double-quoted path — accept only uuid-shaped ids.
+    if (!/^[0-9a-fA-F-]{8,64}$/.test(sessionResumeId)) return `exec ${inner}`;
+    const transcript = `"$HOME/.claude/projects/${claudeProjectKey(remoteCwd)}/${sessionResumeId}.jsonl"`;
+    const fresh = [bin, "--session-id", sessionResumeId, ...extraArgs].map(sh).join(" ");
+    return `if [ -f ${transcript} ]; then exec ${inner}; else exec ${fresh}; fi`;
+  };
+
+  const cliExec = (bin: string) => {
     // Exec through an interactive login shell when detection knows which
     // shell's rc files put the CLI on PATH (`remote-cli-shells.ts`): the plain
     // remote command runs the login shell NON-interactively, so PATH entries
@@ -601,7 +657,7 @@ function getRemoteExecCommand(
     // Braces are load-bearing, not style: the caller emits `cd <dir> && <this>`,
     // and an ungrouped `printf …; exec …` would bind `&&` to the printf alone,
     // leaving the CLI to exec in the WRONG directory after a failed cd.
-    if (!execShell) return `{ ${CLEAR_SCREEN}; exec ${inner}; }`;
+    if (!execShell) return `{ ${CLEAR_SCREEN}; ${execLine(bin)}; }`;
 
     // …but sourcing /etc/zprofile + ~/.zshrc also prints whatever the user's
     // setup prints — version managers, greeters, update nags — and THAT is the
@@ -633,7 +689,7 @@ function getRemoteExecCommand(
     // `cd <dir> && <this>`, and without grouping `&&` would bind to the fd
     // setup alone, leaving the exec to run with fd 9 unopened after a failed
     // cd — a shell error instead of a pane.
-    const quiet = `exec 1>&9 2>&8 9>&- 8>&-; ${CLEAR_SCREEN}; exec ${inner}`;
+    const quiet = `exec 1>&9 2>&8 9>&- 8>&-; ${CLEAR_SCREEN}; ${execLine(bin)}`;
     return `{ exec 9>&1 8>&2; exec ${execShell} -lic ${sh(quiet)} >/dev/null 2>&1; }`;
   };
 
@@ -688,6 +744,11 @@ export function getSshCommand(
   // failures (refused, permission denied) and drops that one-time warning —
   // the only ssh-client chatter that reaches a pane's first paint.
   args.push("-o", "LogLevel=ERROR");
+  // Bound the connect attempt: with the default (OS TCP timeout) an offline
+  // Tailscale host leaves the pane black for up to ~2 minutes before the
+  // "Connection timed out" the offline card keys on. A healthy connect
+  // finishes in a couple of seconds; 15 is headroom for slow relays.
+  args.push("-o", "ConnectTimeout=15");
 
   args.push(userHost);
 
@@ -699,16 +760,21 @@ export function getSshCommand(
   // non-GUI SSH shells, so without this every new pane re-prompts for login. Preferred way
   // (claudeAuth "keychain", the default): unlock the login keychain in-session via the
   // preamble below — the keychain watcher in the PTY hooks answers its password sentinel.
+  // The preamble is gated by needsKeychainUnlock — the SAME condition that attaches the
+  // watcher, and it must stay that way: a preamble without a watcher parks the pane at
+  // the remote `read` with nothing to answer it. Claude panes only; codex/gemini keep
+  // their logins in plain files that read fine over SSH, and shell/dev-server panes
+  // sign in to nothing.
   // Optional fallback (claudeAuth "token"): inject the long-lived OAuth token
-  // (`claude setup-token`), bypassing the Keychain entirely. Either applies to every
-  // terminal type so a manually launched `claude` in a shell pane also stays signed in.
+  // (`claude setup-token`), bypassing the Keychain entirely. The token export applies to
+  // every terminal type, so a manually launched `claude` in a shell pane stays signed in.
   let preamble = "";
   if (server.claudeAuth === "token" && server.claudeOauthToken) {
     envExport += ` export CLAUDE_CODE_OAUTH_TOKEN=${sh(server.claudeOauthToken)};`;
-  } else {
+  } else if (needsKeychainUnlock(server, terminalType)) {
     preamble = ` ${getKeychainUnlockPreamble()}`;
   }
-  const remoteCmd = getRemoteExecCommand(terminalType, sessionResumeId, extraCliArgs, execShell);
+  const remoteCmd = getRemoteExecCommand(terminalType, sessionResumeId, extraCliArgs, execShell, remoteCwd);
   if (remoteCwd) {
     args.push(`${envExport}${preamble} cd ${sh(remoteCwd)} && ${remoteCmd}`);
   } else {

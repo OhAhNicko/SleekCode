@@ -1,10 +1,10 @@
 import { useState, useMemo, useCallback, useEffect, useRef, useContext, createContext, Fragment } from "react";
-import { nativeTermGpuInfo, type GpuInfo } from "../lib/native-term-bridge";
+import { nativeTermGpuInfo, nativeTermListMonoFonts, type GpuInfo } from "../lib/native-term-bridge";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { confirmAction } from "../lib/prompt-modal";
+import { confirmAction, promptForInput } from "../lib/prompt-modal";
 import { getCachedDistro, clearWslCliCache, resolveWslCliPaths } from "../lib/wsl-cache";
 import { getTerminalActions } from "../lib/terminal-actions";
 import { findAllTerminalIds } from "../lib/layout-utils";
@@ -15,17 +15,45 @@ import { setClaudeNotifChannel, type ClaudeNotifChannel } from "../lib/sessions-
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
-import { THEMES, getTheme } from "../lib/themes";
-import { UI_FONT_OPTIONS, type UiFont } from "../lib/ui-fonts";
+import { THEMES, getTheme, getEffectiveTerminalTheme, SEMANTIC_DIFF_ADD, SEMANTIC_DIFF_REMOVE } from "../lib/themes";
+import {
+  ANSI_OVERRIDE_KEYS,
+  CORE_OVERRIDE_KEYS,
+  OVERRIDE_KEYS,
+  OVERRIDE_KEY_LABELS,
+  type ColorOverrides,
+  type OverrideKey,
+} from "../lib/color-overrides";
+import ColorSwatchPicker, { normalizeHexColor } from "./ColorSwatchPicker";
+import TerminalColorsPreview from "./TerminalColorsPreview";
+import { UI_FONT_OPTIONS, UI_FONT_SIZE_MIN, UI_FONT_SIZE_MAX, type UiFont } from "../lib/ui-fonts";
+import { APP_ICON_OPTIONS, applyAppIcon } from "../lib/app-icon";
+import { AppIconPreview } from "./AppIconPreview";
 import { getDefaultBackend } from "../lib/platform";
 import { previewSound } from "../lib/notification-sounds";
 import {
   readJiraMcpStatus,
   installJiraMcp,
   JIRA_MCP_AUTH_HINT,
+  JIRA_CLI_LABEL,
+  JIRA_CLIS,
+  CODEX_MCP_SSH_AUTH,
+  type JiraCli,
   type JiraMcpStatus,
 } from "../lib/jira-mcp";
+import { pickExecShell } from "../lib/remote-cli-shells";
 import { normalizeJiraBaseUrl } from "../lib/jira";
+import {
+  AI_CLIS,
+  AI_CLI_LABEL,
+  backendLabel,
+  cliStatus,
+  invalidateCliStatus,
+  type AiCli,
+  type CliStatus,
+} from "../lib/cli-availability";
+import { requestCliInstall } from "../lib/cli-install-modal";
+import { pendingSettingsSection } from "../lib/settings-section";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { isWindows } from "../lib/platform";
 import { currentIsoWeek } from "../lib/iso-week";
@@ -33,7 +61,7 @@ import { DEFAULT_CLI_FONT_SIZE, type DevServerTabIconMode } from "../store/recen
 import { FaCheck } from "react-icons/fa";
 import { STATUSLINE_FEATURES, getStatuslineDefault } from "./TerminalHeader";
 import ClearDataModal from "./ClearDataModal";
-import type { TerminalType, ComposerExpansion } from "../types";
+import type { TerminalType, TerminalBackend, ComposerExpansion } from "../types";
 import type { VoiceLanguage, VoiceWhisperFormat, VoiceActivationMode } from "../store/voiceSlice";
 import { pingWhisper } from "../lib/voice/whisperClient";
 import { pingLlm } from "../lib/voice/llmClient";
@@ -111,7 +139,7 @@ function FontSizeStepper({ value, onChange, min = 10, max = 24, suffix = "", ste
         backgroundColor: "transparent",
         border: "1px solid var(--ezy-border-light)",
         color: "var(--ezy-text-secondary)",
-        fontSize: 14,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
         lineHeight: 1,
         transition: "background-color 120ms ease",
         userSelect: "none",
@@ -125,10 +153,69 @@ function FontSizeStepper({ value, onChange, min = 10, max = 24, suffix = "", ste
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
       {step(-stepSize, value <= min)}
-      <span style={{ fontSize: 13, color: "var(--ezy-text)", minWidth: 24, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
+      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)", minWidth: 24, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>
         {value}{suffix}
       </span>
       {step(stepSize, value >= max)}
+    </div>
+  );
+}
+
+/** Slider + numeric readout + a reset. Built on a native `input[type=range]`
+ *  so keyboard control, the focus ring and OS accessibility all come for free;
+ *  `accent-color` is the whole theming story, and Chromium/WebKit both honour
+ *  it. The reset DISABLES at the default rather than sitting there as a no-op,
+ *  which is also how a user learns what "Default" would give them. */
+function SliderWithReset({ value, onChange, onReset, isDefault, min, max, step, resetLabel = "Default" }: {
+  value: number;
+  onChange: (v: number) => void;
+  onReset: () => void;
+  /** Value already equals the default, so the reset has nothing to do. */
+  isDefault: boolean;
+  min: number;
+  max: number;
+  step: number;
+  resetLabel?: string;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 180 }}>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        style={{ flex: 1, minWidth: 96, accentColor: "var(--ezy-accent)", cursor: "pointer" }}
+      />
+      {/* String(2.25) is already "2.25" and String(2) is "2" — no formatter
+          needed, and tabular-nums stops the row twitching as digits change. */}
+      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)", minWidth: 30, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+        {String(value)}
+      </span>
+      <button
+        onClick={() => { if (!isDefault) onReset(); }}
+        disabled={isDefault}
+        style={{
+          padding: "0 8px",
+          height: 24,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+          border: "1px solid var(--ezy-border-light)",
+          backgroundColor: "transparent",
+          color: "var(--ezy-text-secondary)",
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+          fontFamily: "inherit",
+          lineHeight: 1,
+          cursor: isDefault ? "default" : "pointer",
+          opacity: isDefault ? 0.3 : 1,
+          transition: "background-color 120ms ease",
+          flexShrink: 0,
+        }}
+        onMouseEnter={(e) => { if (!isDefault) e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+      >
+        {resetLabel}
+      </button>
     </div>
   );
 }
@@ -153,7 +240,7 @@ function SegmentedControl<T extends string>({ options, value, onChange, disabled
             style={{
               flex: 1,
               padding: "6px 12px",
-              fontSize: 12,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
               fontWeight: isActive ? 600 : 400,
               color: isOff ? "var(--ezy-text-muted)" : isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
               backgroundColor: isActive ? "var(--ezy-accent-glow)" : "transparent",
@@ -185,14 +272,14 @@ function SettingsSection({ id, title, description, children }: {
   return (
     <section id={id} data-settings-section style={{ paddingBottom: 32 }}>
       <h2 style={{
-        fontSize: 15,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 15px)",
         fontWeight: 600,
         color: "var(--ezy-text)",
         margin: "0 0 4px",
         letterSpacing: "-0.01em",
       }}>{title}</h2>
       {description && (
-        <p style={{ fontSize: 12, color: "var(--ezy-text-muted)", margin: "0 0 5px", lineHeight: 1.4 }}>{description}</p>
+        <p style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", margin: "0 0 5px", lineHeight: 1.4 }}>{description}</p>
       )}
       {!description && <div style={{ height: 12 }} />}
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -223,8 +310,8 @@ function SettingsRow({ label, description, children, vertical }: {
         borderBottom: "1px solid var(--ezy-border-subtle)",
       }}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>{label}</div>
-          {description && <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>{description}</div>}
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>{label}</div>
+          {description && <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>{description}</div>}
         </div>
         <div>{children}</div>
       </div>
@@ -240,8 +327,8 @@ function SettingsRow({ label, description, children, vertical }: {
       borderBottom: "1px solid var(--ezy-border-subtle)",
     }}>
       <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>{label}</div>
-        {description && <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>{description}</div>}
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>{label}</div>
+        {description && <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>{description}</div>}
       </div>
       <div style={{ flexShrink: 0 }}>{children}</div>
     </div>
@@ -275,7 +362,7 @@ function PathPicker({ value, onChange, directory, filters }: {
       <div
         data-tooltip={value || undefined}
         style={{
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           color: value ? "var(--ezy-text-secondary)" : "var(--ezy-text-muted)",
           maxWidth: 180,
           overflow: "hidden",
@@ -290,7 +377,7 @@ function PathPicker({ value, onChange, directory, filters }: {
         onClick={handleBrowse}
         style={{
           padding: "4px 10px",
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           fontWeight: 500,
           color: "var(--ezy-text-secondary)",
           backgroundColor: "var(--ezy-surface)",
@@ -307,7 +394,7 @@ function PathPicker({ value, onChange, directory, filters }: {
           onClick={() => onChange("")}
           style={{
             padding: "2px 6px",
-            fontSize: 12,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             color: "var(--ezy-text-muted)",
             backgroundColor: "transparent",
             border: "none",
@@ -382,10 +469,10 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
     <SettingsSection id="statistics" title="Statistics" description="AI working time tracked from terminal output bursts.">
       {/* This Week */}
       <div style={{ marginBottom: 24 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
           This Week
         </div>
-        <div style={{ fontSize: 28, fontWeight: 700, color: "var(--ezy-text)", letterSpacing: "-0.02em", marginBottom: 8 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 28px)", fontWeight: 700, color: "var(--ezy-text)", letterSpacing: "-0.02em", marginBottom: 8 }}>
           {formatDuration(weekTotal)}
         </div>
         <div style={{ display: "flex", gap: 16 }}>
@@ -395,7 +482,7 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
             return (
               <div key={cli} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <div style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: CLI_COLORS[cli] }} />
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)" }}>
                   {CLI_LABELS[cli]}: {formatDuration(ms)}
                 </span>
               </div>
@@ -406,10 +493,10 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
 
       {/* All Time */}
       <div style={{ marginBottom: 24, paddingTop: 16, borderTop: "1px solid var(--ezy-border-subtle)" }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
           All Time
         </div>
-        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--ezy-text)", letterSpacing: "-0.02em", marginBottom: 8 }}>
+        <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 22px)", fontWeight: 700, color: "var(--ezy-text)", letterSpacing: "-0.02em", marginBottom: 8 }}>
           {formatDuration(allTotal)}
         </div>
         <div style={{ display: "flex", gap: 16 }}>
@@ -419,7 +506,7 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
             return (
               <div key={cli} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <div style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: CLI_COLORS[cli] }} />
-                <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)" }}>
                   {CLI_LABELS[cli]}: {formatDuration(ms)}
                 </span>
               </div>
@@ -431,7 +518,7 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
       {/* Per Project */}
       {projects.length > 0 && (
         <div style={{ marginBottom: 24, paddingTop: 16, borderTop: "1px solid var(--ezy-border-subtle)" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 600, color: "var(--ezy-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
             Per Project
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -447,10 +534,10 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
                   borderBottom: "1px solid var(--ezy-border-subtle)",
                 }}
               >
-                <span style={{ fontSize: 13, color: "var(--ezy-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1, marginRight: 12 }}>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1, marginRight: 12 }}>
                   {p.name}
                 </span>
-                <span style={{ fontSize: 13, fontWeight: 500, color: "var(--ezy-text)", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 500, color: "var(--ezy-text)", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
                   {formatDuration(p.ms)}
                 </span>
               </div>
@@ -461,7 +548,7 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
 
       {/* Empty state */}
       {bursts.length === 0 && (
-        <div style={{ padding: "24px 0", textAlign: "center", color: "var(--ezy-text-muted)", fontSize: 13 }}>
+        <div style={{ padding: "24px 0", textAlign: "center", color: "var(--ezy-text-muted)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}>
           No AI time tracked yet. Open an AI terminal and let it work to start tracking.
         </div>
       )}
@@ -473,7 +560,7 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
             <div
               onClick={() => setShowConfirm(true)}
               style={{
-                fontSize: 12,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                 color: "var(--ezy-red, #e55)",
                 cursor: "pointer",
                 padding: "6px 0",
@@ -485,11 +572,11 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
             </div>
           ) : (
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>Are you sure?</span>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Are you sure?</span>
               <div
                 onClick={() => { onClear(); setShowConfirm(false); }}
                 style={{
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 600,
                   color: "#fff",
                   backgroundColor: "var(--ezy-red, #e55)",
@@ -503,7 +590,7 @@ function AiTimeStatsSection({ bursts, onClear }: { bursts: AiTimeBurst[]; onClea
               <div
                 onClick={() => setShowConfirm(false)}
                 style={{
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   color: "var(--ezy-text-muted)",
                   cursor: "pointer",
                 }}
@@ -678,7 +765,7 @@ function UpdatesSection() {
     <SettingsSection id="updates" title="Updates">
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {appVersion && (
-          <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>
             Current version:{" "}
             <span style={{ color: "var(--ezy-text)", fontWeight: 500 }}>{appVersion}</span>
           </div>
@@ -694,7 +781,7 @@ function UpdatesSection() {
               border: "1px solid var(--ezy-border)",
               background: "var(--ezy-surface-raised)",
               color: "var(--ezy-text)",
-              fontSize: 13,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               fontWeight: 500,
               cursor: checkStatus === "checking" || isUpdating ? "not-allowed" : "pointer",
               opacity: checkStatus === "checking" || isUpdating ? 0.6 : 1,
@@ -721,7 +808,7 @@ function UpdatesSection() {
                 border: "none",
                 background: "var(--ezy-accent-dim)",
                 color: "#fff",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 fontWeight: 500,
                 cursor: "pointer",
                 flexShrink: 0,
@@ -740,17 +827,17 @@ function UpdatesSection() {
           {/* Status sits on the button's baseline rather than on its own line
               below — it reads as the button's answer, not a new paragraph. */}
           {checkStatus === "up-to-date" && (
-            <span style={{ fontSize: 13, color: "var(--ezy-accent)", lineHeight: 1 }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-accent)", lineHeight: 1 }}>
               Up to date
             </span>
           )}
           {checkStatus === "available" && latestVersion && (
-            <span style={{ fontSize: 13, color: "var(--ezy-accent)", lineHeight: 1 }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-accent)", lineHeight: 1 }}>
               v{latestVersion} is available
             </span>
           )}
           {checkStatus === "installing" && (
-            <span style={{ fontSize: 13, color: "var(--ezy-accent)", lineHeight: 1 }}>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-accent)", lineHeight: 1 }}>
               Installing update, restarting...
             </span>
           )}
@@ -774,14 +861,14 @@ function UpdatesSection() {
               }} />
             </div>
             {pct != null && (
-              <span style={{ fontSize: 12, color: "var(--ezy-text-muted)", fontVariantNumeric: "tabular-nums" }}>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", fontVariantNumeric: "tabular-nums" }}>
                 {pct}%
               </span>
             )}
           </div>
         )}
         {checkStatus === "error" && (
-          <span style={{ fontSize: 12, color: "var(--ezy-red)" }}>
+          <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-red)" }}>
             {errorMsg || "Failed to check for updates"}
           </span>
         )}
@@ -795,7 +882,7 @@ function UpdatesSection() {
         </div>
         {prevVersions.length > 0 && (
           <div style={{ borderTop: "1px solid var(--ezy-border)", paddingTop: 14, marginTop: 4 }}>
-            <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)", marginBottom: 8 }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)", marginBottom: 8 }}>
               Previous versions
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -812,15 +899,15 @@ function UpdatesSection() {
                       height: 30,
                     }}
                   >
-                    <span style={{ fontSize: 13, color: "var(--ezy-text)", fontWeight: 500, width: 64 }}>
+                    <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text)", fontWeight: 500, width: 64 }}>
                       v{version}
                     </span>
-                    <span style={{ fontSize: 12, color: "var(--ezy-text-muted)", flex: 1 }}>
+                    <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", flex: 1 }}>
                       {date}
                     </span>
                     {confirmVersion === version && !busy ? (
                       <>
-                        <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>
+                        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>
                           Restarts the app
                         </span>
                         <button
@@ -832,7 +919,7 @@ function UpdatesSection() {
                             border: "none",
                             background: "var(--ezy-accent-dim)",
                             color: "#fff",
-                            fontSize: 12,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                             fontWeight: 500,
                             cursor: "pointer",
                           }}
@@ -850,7 +937,7 @@ function UpdatesSection() {
                             border: "1px solid var(--ezy-border)",
                             background: "var(--ezy-surface-raised)",
                             color: "var(--ezy-text)",
-                            fontSize: 12,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                             cursor: "pointer",
                           }}
                         >
@@ -858,7 +945,7 @@ function UpdatesSection() {
                         </button>
                       </>
                     ) : isThisRow ? (
-                      <span style={{ fontSize: 12, color: "var(--ezy-accent)" }}>
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-accent)" }}>
                         {downgrade.installing
                           ? "Installing, restarting..."
                           : downgrade.total
@@ -876,7 +963,7 @@ function UpdatesSection() {
                           border: "1px solid var(--ezy-border)",
                           background: "var(--ezy-surface-raised)",
                           color: "var(--ezy-text)",
-                          fontSize: 12,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                           cursor: busy ? "not-allowed" : "pointer",
                           opacity: busy ? 0.5 : 1,
                           transition: "border-color 120ms ease",
@@ -894,7 +981,7 @@ function UpdatesSection() {
               })}
             </div>
             {downgradeError && (
-              <span style={{ fontSize: 12, color: "var(--ezy-red)", display: "block", marginTop: 6 }}>
+              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-red)", display: "block", marginTop: 6 }}>
                 {downgradeError}
               </span>
             )}
@@ -1009,7 +1096,7 @@ function Dropdown<T extends string>({
           // Matches TextInput exactly so a dropdown and a field can sit side
           // by side without looking mismatched.
           padding: "5px 8px",
-          fontSize: 12,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
           fontFamily: "inherit",
           textAlign: "left",
           color: current ? "var(--ezy-text)" : "var(--ezy-text-muted)",
@@ -1082,7 +1169,7 @@ function Dropdown<T extends string>({
                 }}
                 style={{
                   padding: "5px 10px",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   cursor: "pointer",
                   whiteSpace: "nowrap",
                   overflow: "hidden",
@@ -1134,7 +1221,7 @@ function TextInput({
       style={{
         width: 260,
         padding: "5px 8px",
-        fontSize: 12,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
         fontFamily: monospace ? "var(--ezy-font-mono, ui-monospace, Menlo, monospace)" : "inherit",
         color: "var(--ezy-text)",
         backgroundColor: "var(--ezy-surface)",
@@ -1149,26 +1236,49 @@ function TextInput({
 type PingState = { status: "idle" | "checking" | "ok" | "fail"; ms?: number; error?: string };
 
 /**
- * Atlassian MCP state for the Jira section.
+ * Atlassian MCP state for ONE CLI, in the Jira section.
  *
  * Three states, deliberately distinct: connected, not set up, and unknown. The
  * last one matters — if the config could not be read we must not tell someone to
- * install a server they already have.
+ * install a server they already have. It is also how a CLI that isn't on this
+ * machine reads: no config directory, nothing to claim.
  */
-function JiraPluginRow() {
+function JiraPluginRow({ cli }: { cli: JiraCli }) {
   const terminalBackend = useAppStore((s) => s.terminalBackend);
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
-  const backend = terminalBackend ?? getDefaultBackend();
-  const projectPath = tabs.find((t) => t.id === activeTabId)?.workingDir;
+  const servers = useAppStore((s) => s.servers);
+  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const projectPath = activeTab?.workingDir;
+  // A remote project's ticket pane runs the CLI on its SERVER, so that is the
+  // machine this row must describe — reporting the local config there would be
+  // a confidently wrong "Connected".
+  const server = activeTab?.serverId
+    ? servers.find((s) => s.id === activeTab.serverId) ?? null
+    : null;
+  const backend: TerminalBackend = server ? "ssh" : terminalBackend ?? getDefaultBackend();
+  const target = useMemo(
+    () =>
+      server
+        ? {
+            host: server.host,
+            username: server.username,
+            sshKeyPath: server.sshKeyPath,
+            authMethod: server.authMethod,
+            shellFor: (c: JiraCli) => pickExecShell(server.detectedCliShells ?? null, c),
+          }
+        : null,
+    [server],
+  );
 
   const [status, setStatus] = useState<JiraMcpStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    void readJiraMcpStatus(backend, projectPath).then(setStatus);
-  }, [backend, projectPath]);
+    setStatus(null);
+    void readJiraMcpStatus(cli, backend, projectPath, target).then(setStatus);
+  }, [cli, backend, projectPath, target]);
 
   useEffect(refresh, [refresh]);
 
@@ -1176,7 +1286,7 @@ function JiraPluginRow() {
     setBusy(true);
     setError(null);
     try {
-      await installJiraMcp(backend);
+      await installJiraMcp(cli, backend, target);
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -1187,6 +1297,7 @@ function JiraPluginRow() {
 
   const connected = !!status?.configured;
   const unknown = !!status && !status.checked;
+  const remoteNoKey = backend === "ssh" && !target?.sshKeyPath?.trim();
   const label = connected
     ? status.scope === "user"
       ? "Connected"
@@ -1195,18 +1306,23 @@ function JiraPluginRow() {
       ? "Unknown"
       : "Not set up";
   const dot = connected ? "#10b981" : unknown ? "var(--ezy-text-muted)" : "var(--ezy-red, #e55)";
+  // Why a row can say nothing useful, rather than leaving "Unknown" bare.
+  const description = remoteNoKey
+    ? `${target?.host ?? "This server"} uses password auth — MADE can only read it over an SSH key.`
+    : connected
+      ? backend === "ssh" && cli === "codex"
+        ? CODEX_MCP_SSH_AUTH
+        : JIRA_MCP_AUTH_HINT[cli]
+      : undefined;
 
   return (
-    <SettingsRow
-      label="Jira plugin"
-      description={connected ? JIRA_MCP_AUTH_HINT : undefined}
-    >
+    <SettingsRow label={JIRA_CLI_LABEL[cli]} description={description}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {error && (
           <span
             data-tooltip={error}
             style={{
-              fontSize: 10,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
               color: "var(--ezy-red, #e55)",
               maxWidth: 150,
               overflow: "hidden",
@@ -1217,27 +1333,112 @@ function JiraPluginRow() {
             {error}
           </span>
         )}
-        <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--ezy-text-secondary)" }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-secondary)" }}>
           <span style={{ width: 7, height: 7, borderRadius: "50%", backgroundColor: dot, flexShrink: 0 }} />
           {status === null ? "Checking…" : label}
         </span>
         {!connected && (
           <button
             onClick={install}
-            disabled={busy}
+            disabled={busy || remoteNoKey}
+            // Disabled needs a reason, or the row is just a dead control.
+            data-tooltip={
+              remoteNoKey ? "Needs SSH-key auth to configure this server" : undefined
+            }
             style={{
               padding: "4px 10px",
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               fontWeight: 500,
               color: "var(--ezy-text-secondary)",
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
-              cursor: busy ? "default" : "pointer",
+              cursor: busy || remoteNoKey ? "default" : "pointer",
+              opacity: remoteNoKey ? 0.5 : 1,
               fontFamily: "inherit",
             }}
           >
             {busy ? "Setting up…" : "Set up"}
+          </button>
+        )}
+      </div>
+    </SettingsRow>
+  );
+}
+
+/**
+ * Is ONE AI CLI installed on the machine its panes would run on?
+ *
+ * Same three states as the Jira row above and for the same reason: "unknown"
+ * (the backend could not be asked) must never be rendered as "not installed".
+ * The target follows the active tab — a remote project's panes run the CLI on
+ * its SERVER, so reporting the local machine there would be confidently wrong.
+ */
+function CliInstallRow({ cli }: { cli: AiCli }) {
+  const terminalBackend = useAppStore((s) => s.terminalBackend);
+  const tabs = useAppStore((s) => s.tabs);
+  const activeTabId = useAppStore((s) => s.activeTabId);
+  const servers = useAppStore((s) => s.servers);
+  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const server = activeTab?.serverId ? servers.find((s) => s.id === activeTab.serverId) ?? null : null;
+  const backend: TerminalBackend = server ? "ssh" : terminalBackend ?? getDefaultBackend();
+
+  const [status, setStatus] = useState<CliStatus | null>(null);
+
+  const refresh = useCallback(() => {
+    setStatus(null);
+    invalidateCliStatus(cli, backend, server);
+    void cliStatus(cli, backend, server).then(setStatus);
+  }, [cli, backend, server]);
+
+  useEffect(refresh, [refresh]);
+
+  const where = backendLabel(backend, server);
+  const label =
+    status === "present" ? "Installed" : status === "missing" ? "Not installed" : "Unknown";
+  const dot =
+    status === "present"
+      ? "#10b981"
+      : status === "missing"
+        ? "var(--ezy-red, #e55)"
+        : "var(--ezy-text-muted)";
+
+  return (
+    <SettingsRow
+      label={AI_CLI_LABEL[cli]}
+      description={status === "unknown" ? `${where} did not answer.` : undefined}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+            color: "var(--ezy-text-secondary)",
+          }}
+        >
+          <span style={{ width: 7, height: 7, borderRadius: "50%", backgroundColor: dot, flexShrink: 0 }} />
+          {status === null ? "Checking…" : label}
+        </span>
+        {status === "missing" && (
+          <button
+            onClick={() =>
+              requestCliInstall({ cli, backend, serverId: server?.id ?? undefined })
+            }
+            style={{
+              padding: "4px 10px",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+              fontWeight: 500,
+              color: "var(--ezy-text-secondary)",
+              backgroundColor: "var(--ezy-surface)",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            Install
           </button>
         )}
       </div>
@@ -1262,7 +1463,7 @@ function TestButton({ onClick, state }: { onClick: () => void; state: PingState 
         disabled={state.status === "checking"}
         style={{
           padding: "4px 10px",
-          fontSize: 11,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           fontWeight: 500,
           color: "var(--ezy-text-secondary)",
           backgroundColor: "var(--ezy-surface)",
@@ -1275,12 +1476,12 @@ function TestButton({ onClick, state }: { onClick: () => void; state: PingState 
         {label}
       </button>
       {state.status === "fail" && state.error && (
-        <span data-tooltip={state.error} style={{ fontSize: 10, color, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span data-tooltip={state.error} style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {state.error}
         </span>
       )}
       {state.status === "ok" && (
-        <span style={{ fontSize: 10, color }}>connected</span>
+        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color }}>connected</span>
       )}
     </div>
   );
@@ -1316,7 +1517,7 @@ function HotkeyCapture({ value, onChange }: { value: string; onChange: (v: strin
       style={{
         minWidth: 160,
         padding: "5px 10px",
-        fontSize: 12,
+        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
         color: recording ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
         backgroundColor: recording ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
         border: `1px solid ${recording ? "var(--ezy-accent)" : "var(--ezy-border)"}`,
@@ -1419,7 +1620,7 @@ function VoiceAgentSection() {
           <HotkeyCapture value={pttHotkey} onChange={setPttHotkey} />
         </SettingsRow>
         {!hotkeyValid && pttHotkey && (
-          <div style={{ fontSize: 11, color: "var(--ezy-red, #e55)", padding: "0 0 6px" }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-red, #e55)", padding: "0 0 6px" }}>
             Hotkey "{pttHotkey}" is invalid. Click the field and press a new combination.
           </div>
         )}
@@ -1486,6 +1687,51 @@ function VoiceAgentSection() {
   );
 }
 
+// ─── Color presets ─────────────────────────────────────────────────────────
+
+/** The ghost button shared by the color-preset cluster (New / Rename /
+ *  Duplicate / Export / Import / Reset / Delete). Delete overrides `color`. */
+const PRESET_BTN_STYLE: React.CSSProperties = {
+  padding: "5px 10px",
+  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+  fontFamily: "inherit",
+  color: "var(--ezy-text-secondary)",
+  backgroundColor: "transparent",
+  border: "1px solid var(--ezy-border)",
+  borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+  cursor: "pointer",
+};
+
+const OVERRIDE_KEY_SET: ReadonlySet<string> = new Set(OVERRIDE_KEYS);
+
+/**
+ * Parses an exported preset back into `{ name, overrides }`, or null when the
+ * text is not one. Pasted JSON is untrusted input: unknown keys and any value
+ * `normalizeHexColor` rejects (including 8-digit hex, which the native renderer
+ * would silently drop the alpha from) are dropped rather than stored, so an
+ * import can never put a color in a preset the picker itself would refuse.
+ */
+function parsePresetJson(raw: string): { name: string; overrides: ColorOverrides } | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== "object") return null;
+  const rec = data as Record<string, unknown>;
+  const name = typeof rec.name === "string" ? rec.name.trim() : "";
+  if (!name) return null;
+  if (!rec.overrides || typeof rec.overrides !== "object") return null;
+  const overrides: ColorOverrides = {};
+  for (const [key, val] of Object.entries(rec.overrides as Record<string, unknown>)) {
+    if (!OVERRIDE_KEY_SET.has(key) || typeof val !== "string") continue;
+    const hex = normalizeHexColor(val);
+    if (hex) overrides[key as OverrideKey] = hex;
+  }
+  return { name, overrides };
+}
+
 // ─── Nav sections ──────────────────────────────────────────────────────────
 
 const NAV_SECTIONS = [
@@ -1496,6 +1742,7 @@ const NAV_SECTIONS = [
   { id: "projects", label: "Projects" },
   { id: "editor", label: "Editor" },
   { id: "ai", label: "AI" },
+  { id: "jira", label: "Jira" },
   ...(VOICE_ENABLED ? [{ id: "voice", label: "Voice agent" }] : []),
   { id: "updates", label: "Updates" },
 ];
@@ -1503,7 +1750,20 @@ const NAV_SECTIONS = [
 // ─── Main component ───────────────────────────────────────────────────────
 
 export default function SettingsPane() {
-  const [activeSection, setActiveSection] = useState(NAV_SECTIONS[0]?.id ?? "behavior");
+  // pendingSettingsSection covers the deep-link that OPENS the panel (this
+  // component mounts after the request); the listener below covers a panel
+  // that is already open.
+  const [activeSection, setActiveSection] = useState(
+    () => pendingSettingsSection() ?? NAV_SECTIONS[0]?.id ?? "behavior",
+  );
+  useEffect(() => {
+    const onSection = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (id) setActiveSection(id);
+    };
+    window.addEventListener("made:settings-section", onSection as EventListener);
+    return () => window.removeEventListener("made:settings-section", onSection as EventListener);
+  }, []);
   const [showClearModal, setShowClearModal] = useState(false);
   const [wslShutdownBusy, setWslShutdownBusy] = useState(false);
   const [wslShutdownResult, setWslShutdownResult] = useState<string | null>(null);
@@ -1716,6 +1976,25 @@ export default function SettingsPane() {
   const setJiraRowFullColor = useAppStore((s) => s.setJiraRowFullColor);
   const jiraMode = useAppStore((s) => s.jiraMode ?? true);
   const setJiraMode = useAppStore((s) => s.setJiraMode);
+  const jiraSubticketMode = useAppStore((s) => s.jiraSubticketMode ?? "default");
+  const setJiraSubticketMode = useAppStore((s) => s.setJiraSubticketMode);
+  const jiraDetectPastedTickets = useAppStore((s) => s.jiraDetectPastedTickets ?? true);
+  const setJiraDetectPastedTickets = useAppStore((s) => s.setJiraDetectPastedTickets);
+  const jiraAutoSwitchToDetected = useAppStore((s) => s.jiraAutoSwitchToDetected ?? "auto");
+  const setJiraAutoSwitchToDetected = useAppStore((s) => s.setJiraAutoSwitchToDetected);
+  const jiraArchivedTicketAction = useAppStore((s) => s.jiraArchivedTicketAction ?? "resume");
+  const setJiraArchivedTicketAction = useAppStore((s) => s.setJiraArchivedTicketAction);
+  // The plugin rows describe whichever machine the ACTIVE project's panes run
+  // on, which for a remote project is its server. Saying so is the difference
+  // between a status and a guess.
+  const jiraPluginServerHost = useAppStore((s) => {
+    const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    if (!tab?.serverId) return null;
+    return s.servers.find((srv) => srv.id === tab.serverId)?.host ?? null;
+  });
+  const jiraPluginTargetNote = jiraPluginServerHost
+    ? `Plugin status is read from ${jiraPluginServerHost} — the active project's server, where its panes run.`
+    : undefined;
   const cliFontSizes = useAppStore((s) => s.cliFontSizes);
   const setCliFontSize = useAppStore((s) => s.setCliFontSize);
   const cliYolo = useAppStore((s) => s.cliYolo);
@@ -1726,6 +2005,8 @@ export default function SettingsPane() {
   const setTheme = useAppStore((s) => s.setTheme);
   const vibrantColors = useAppStore((s) => s.vibrantColors);
   const setVibrantColors = useAppStore((s) => s.setVibrantColors);
+  const appIconVariant = useAppStore((s) => s.appIconVariant);
+  const setAppIconVariant = useAppStore((s) => s.setAppIconVariant);
   const projectPaneTint = useAppStore((s) => s.projectPaneTint);
   const setProjectPaneTint = useAppStore((s) => s.setProjectPaneTint);
   const projectPaneTintStrength = useAppStore((s) => s.projectPaneTintStrength);
@@ -1734,12 +2015,79 @@ export default function SettingsPane() {
   const setActivePaneLift = useAppStore((s) => s.setActivePaneLift);
   const uiFont = useAppStore((s) => s.uiFont);
   const setUiFont = useAppStore((s) => s.setUiFont);
+  const uiFontSize = useAppStore((s) => s.uiFontSize);
+  const setUiFontSize = useAppStore((s) => s.setUiFontSize);
+  const radiusScaleOverride = useAppStore((s) => s.radiusScaleOverride);
+  const setRadiusScaleOverride = useAppStore((s) => s.setRadiusScaleOverride);
   const hoverTooltips = useAppStore((s) => s.hoverTooltips);
   const setHoverTooltips = useAppStore((s) => s.setHoverTooltips);
   const nativeCursorStyle = useAppStore((s) => s.nativeCursorStyle);
   const setNativeCursorStyle = useAppStore((s) => s.setNativeCursorStyle);
   const nativeCursorBlink = useAppStore((s) => s.nativeCursorBlink);
   const setNativeCursorBlink = useAppStore((s) => s.setNativeCursorBlink);
+  const colorPresets = useAppStore((s) => s.colorPresets);
+  const activeColorPresetId = useAppStore((s) => s.activeColorPresetId);
+  const createColorPreset = useAppStore((s) => s.createColorPreset);
+  const renameColorPreset = useAppStore((s) => s.renameColorPreset);
+  const deleteColorPreset = useAppStore((s) => s.deleteColorPreset);
+  const setActiveColorPreset = useAppStore((s) => s.setActiveColorPreset);
+  const setPresetColor = useAppStore((s) => s.setPresetColor);
+  const clearPresetColor = useAppStore((s) => s.clearPresetColor);
+  const clearPresetColors = useAppStore((s) => s.clearPresetColors);
+  const activeColorPreset = colorPresets.find((p) => p.id === activeColorPresetId) ?? null;
+  // What each picker's trigger swatch shows: the theme with the ACTIVE
+  // preset's overrides already applied (no tint/lift — those are per-pane).
+  const presetPreviewTheme = useMemo(
+    () => getEffectiveTerminalTheme(themeId, vibrantColors, false, null, 0, activeColorPreset?.overrides ?? null),
+    [themeId, vibrantColors, activeColorPreset],
+  );
+  const terminalFontFamily = useAppStore((s) => s.terminalFontFamily);
+  const setTerminalFontFamily = useAppStore((s) => s.setTerminalFontFamily);
+  const perCliFontFamily = useAppStore((s) => s.perCliFontFamily);
+  const setPerCliFontFamily = useAppStore((s) => s.setPerCliFontFamily);
+  const cliFontFamilies = useAppStore((s) => s.cliFontFamilies);
+  const setCliFontFamily = useAppStore((s) => s.setCliFontFamily);
+  const terminalLineHeight = useAppStore((s) => s.terminalLineHeight);
+  const setTerminalLineHeight = useAppStore((s) => s.setTerminalLineHeight);
+  const boldUsesBright = useAppStore((s) => s.boldUsesBright);
+  const setBoldUsesBright = useAppStore((s) => s.setBoldUsesBright);
+  const minContrast = useAppStore((s) => s.minContrast);
+  const setMinContrast = useAppStore((s) => s.setMinContrast);
+  const dimStrength = useAppStore((s) => s.dimStrength);
+  const setDimStrength = useAppStore((s) => s.setDimStrength);
+  const cursorBlockOpacity = useAppStore((s) => s.cursorBlockOpacity);
+  const setCursorBlockOpacity = useAppStore((s) => s.setCursorBlockOpacity);
+  const scrollbackLines = useAppStore((s) => s.scrollbackLines);
+  const setScrollbackLines = useAppStore((s) => s.setScrollbackLines);
+  // The monospace families installed on this machine. Enumerated Rust-side, so
+  // a machine whose backend has not caught up still gets the bundled face
+  // rather than an empty picker.
+  const [monoFonts, setMonoFonts] = useState<string[]>(["Hack"]);
+  useEffect(() => {
+    let alive = true;
+    void nativeTermListMonoFonts()
+      .then((fonts) => { if (alive && fonts.length) setMonoFonts(fonts); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const fontOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { value: string; label: string }[] = [];
+    // Hack first — the ONLY truly bundled face (embedded in the native
+    // renderer + woff2 in the webview), so it renders identically on every
+    // machine. Geist Mono is deliberately NOT pinned: its @font-face is
+    // local()-only, so it appears here only when the enumeration finds it
+    // installed — offering it everywhere would silently render Hack in native
+    // panes. A saved family that is no longer installed stays listed for the
+    // same reason the WSL distro row keeps a missing distro: a blank control
+    // would hide that the setting is still in force.
+    for (const family of ["Hack", terminalFontFamily, ...monoFonts]) {
+      if (!family || seen.has(family)) continue;
+      seen.add(family);
+      out.push({ value: family, label: family });
+    }
+    return out;
+  }, [monoFonts, terminalFontFamily]);
   const useNativeTerminalRenderer = useAppStore((s) => s.useNativeTerminalRenderer);
   const scrollThumbAcceleration = useAppStore((s) => s.scrollThumbAcceleration);
   const wheelAcceleration = useAppStore((s) => s.wheelAcceleration);
@@ -1775,6 +2123,72 @@ export default function SettingsPane() {
   const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
   const setVerticalModeEnabled = useAppStore((s) => s.setVerticalModeEnabled);
   const theme = getTheme(themeId);
+  // What a picker's trigger swatch shows for a key: the override if set, else
+  // the theme's own value. The three preset-only extras fall back to each
+  // renderer's built-in color so the swatch never renders empty.
+  const presetEffectiveColor = (key: OverrideKey): string => {
+    if (key === "accent") return activeColorPreset?.overrides.accent ?? theme.surface.accent;
+    if (key === "diffAdd") return activeColorPreset?.overrides.diffAdd ?? theme.surface.diffAdd ?? SEMANTIC_DIFF_ADD;
+    if (key === "diffRemove") return activeColorPreset?.overrides.diffRemove ?? theme.surface.diffRemove ?? SEMANTIC_DIFF_REMOVE;
+    const t = presetPreviewTheme as Record<string, string | undefined>;
+    const fallback =
+      key === "link" ? "#92bcff"
+      : key === "searchMatch" ? "#e6e6e6"
+      : key === "searchMatchActive" ? "#39d353"
+      : "#0d0d11";
+    return t[key] ?? fallback;
+  };
+  const handlePresetColor = (key: OverrideKey, hex: string | null) => {
+    if (!activeColorPreset) return;
+    if (hex) setPresetColor(activeColorPreset.id, key, hex);
+    else clearPresetColor(activeColorPreset.id, key);
+  };
+  // There is no "create with overrides" action, so both Duplicate and Import
+  // create an empty preset and fill it. `createColorPreset` activates what it
+  // makes and zustand's set is synchronous, so the fresh id is readable
+  // immediately — and reading it back beats re-deriving the id format here.
+  const createPresetWithOverrides = (name: string, overrides: ColorOverrides) => {
+    createColorPreset(name);
+    const newId = useAppStore.getState().activeColorPresetId;
+    if (!newId) return;
+    for (const [key, hex] of Object.entries(overrides)) {
+      if (hex) setPresetColor(newId, key as OverrideKey, hex);
+    }
+  };
+  // Export copies to the clipboard: the repo has no file-write path (the dialog
+  // plugin is imported for `open` only, and there is no fs write command), and
+  // adding one is not this change's job.
+  const [exportState, setExportState] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => {
+    if (exportState === "idle") return;
+    const t = setTimeout(() => setExportState("idle"), 1500);
+    return () => clearTimeout(t);
+  }, [exportState]);
+  const handleExportPreset = () => {
+    if (!activeColorPreset) return;
+    const json = JSON.stringify(
+      { name: activeColorPreset.name, overrides: activeColorPreset.overrides },
+      null,
+      2,
+    );
+    void navigator.clipboard
+      .writeText(json)
+      .then(() => setExportState("copied"))
+      .catch(() => setExportState("failed"));
+  };
+  const handleImportPreset = () => {
+    void promptForInput({
+      title: "Import color preset",
+      label: "Paste preset JSON",
+      detail: "The JSON an Export put on your clipboard.",
+      confirmLabel: "Import",
+      validate: (v) =>
+        !v.trim() || parsePresetJson(v) ? null : "Not a preset — paste what Export copied.",
+    }).then((raw) => {
+      const parsed = raw ? parsePresetJson(raw) : null;
+      if (parsed) createPresetWithOverrides(parsed.name, parsed.overrides);
+    });
+  };
 
   // Render only the requested section's content
   const renderSection = (sectionId: string) => {
@@ -1898,8 +2312,8 @@ export default function SettingsPane() {
             <SettingsSection id="danger-zone" title="Danger Zone">
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
                 <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
-                  <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Clear local data</div>
-                  <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>Clear local data</div>
+                  <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
                     Wipe preferences, history, recent projects, game scores, or cached CLI paths. Choose what to clear in the next step.
                   </div>
                 </div>
@@ -1912,7 +2326,7 @@ export default function SettingsPane() {
                     border: "none",
                     backgroundColor: "var(--ezy-red, #e55)",
                     color: "#fff",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     fontWeight: 600,
                     fontFamily: "inherit",
                     cursor: "pointer",
@@ -1928,8 +2342,8 @@ export default function SettingsPane() {
               {isWindows() && (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderTop: "1px solid var(--ezy-border-subtle, rgba(255,255,255,0.06))" }}>
                   <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
-                    <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>Restart WSL</div>
-                    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>Restart WSL</div>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
                       Full reset for when WSL stops responding: shuts WSL down, then respawns every WSL pane (Claude sessions resume).
                       {wslShutdownResult && (
                         <span style={{ display: "block", marginTop: 4, color: "var(--ezy-text-secondary)" }}>
@@ -1948,7 +2362,7 @@ export default function SettingsPane() {
                       border: "none",
                       backgroundColor: "var(--ezy-red, #e55)",
                       color: "#fff",
-                      fontSize: 12,
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                       fontWeight: 600,
                       fontFamily: "inherit",
                       cursor: wslShutdownBusy ? "default" : "pointer",
@@ -2011,7 +2425,7 @@ export default function SettingsPane() {
                         <div style={{ width: 12, height: 12, borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: t.surface.accent }} />
                         <div style={{ width: 12, height: 12, borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)", backgroundColor: t.surface.cyan }} />
                       </div>
-                      <span style={{ fontSize: 13, fontWeight: isSelected ? 600 : 400, color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)" }}>
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: isSelected ? 600 : 400, color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)" }}>
                         {t.name}
                       </span>
                       {isSelected && <FaCheck size={12} color={theme.surface.accent} style={{ marginLeft: "auto" }} />}
@@ -2039,19 +2453,323 @@ export default function SettingsPane() {
               <SettingsRow label="Lighten active pane" description="Off: the pane header alone marks the active pane.">
                 <ToggleSwitch checked={activePaneLift} onChange={setActivePaneLift} />
               </SettingsRow>
-              {/* Last in the section on purpose — the four rows above are all
-                  color, and dropping a typography row between them would split
-                  the tint toggle from its own strength stepper. */}
+              {/* Shape, not color — so it sits after the color rows and before
+                  the typography pair below. Dragging this visibly rounds the
+                  Default button beside it: the control is drawn with the same
+                  --ezy-radius-scale it sets, so the row previews itself. */}
               <SettingsRow
-                label="UI font"
-                description="Atkinson Hyperlegible is built for low-vision reading, with an unslashed zero. Terminal text stays Hack."
+                label="Corners"
+                description="Applies one roundness to every theme. Default keeps whatever the current theme asks for."
               >
-                <SegmentedControl<UiFont>
-                  options={UI_FONT_OPTIONS}
-                  value={uiFont}
-                  onChange={setUiFont}
+                <SliderWithReset
+                  value={radiusScaleOverride ?? theme.radiusScale ?? 1}
+                  onChange={setRadiusScaleOverride}
+                  onReset={() => setRadiusScaleOverride(null)}
+                  isDefault={radiusScaleOverride === null}
+                  min={0}
+                  max={3}
+                  // 0.25 is the finest step that still renders: below it the
+                  // smallest base radius (4px) moves by less than a pixel.
+                  step={0.25}
                 />
               </SettingsRow>
+              {/* Last in the section on purpose — the color rows above must not
+                  be split from their own strength stepper. ONE row for the
+                  face AND the size it renders at: the size belongs to the
+                  font, so it lives beside it instead of as its own row. */}
+              <SettingsRow
+                label="UI font"
+                description="Atkinson Hyperlegible is built for low-vision reading, with an unslashed zero. Size scales every label, menu and panel; terminal text stays Hack, sized per CLI below."
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "flex-end",
+                    flexWrap: "wrap",
+                    gap: 6,
+                  }}
+                >
+                  <SegmentedControl<UiFont>
+                    options={UI_FONT_OPTIONS}
+                    value={uiFont}
+                    onChange={setUiFont}
+                  />
+                  <FontSizeStepper
+                    value={uiFontSize}
+                    onChange={setUiFontSize}
+                    min={UI_FONT_SIZE_MIN}
+                    max={UI_FONT_SIZE_MAX}
+                  />
+                </div>
+              </SettingsRow>
+            </SettingsSection>
+            <SettingsSection
+              id="terminal-colors"
+              title="Terminal colors"
+              description="Override individual theme colors. Only colors you set change — everything else follows the theme, and your preset stays applied when you switch themes."
+            >
+              {/* vertical: the dropdown + three buttons are wider than the
+                  label column tolerates — side-by-side crushed the label. */}
+              <SettingsRow label="Color preset" vertical>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <Dropdown
+                    value={activeColorPresetId ?? "none"}
+                    onChange={(v) => setActiveColorPreset(v === "none" ? null : v)}
+                    options={[
+                      { value: "none", label: "None (theme colors)" },
+                      ...colorPresets.map((p) => ({ value: p.id, label: p.name })),
+                    ]}
+                    width={200}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void promptForInput({
+                        title: "New color preset",
+                        label: "Name",
+                        confirmLabel: "Create",
+                        validate: (v) => (v.trim() ? null : "Name the preset"),
+                      }).then((name) => {
+                        if (name?.trim()) createColorPreset(name.trim());
+                      });
+                    }}
+                    style={PRESET_BTN_STYLE}
+                  >
+                    New
+                  </button>
+                  {/* Import sits with New: both make a preset, and neither
+                      needs one selected first. */}
+                  <button type="button" onClick={handleImportPreset} style={PRESET_BTN_STYLE}>
+                    Import
+                  </button>
+                  {activeColorPreset && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void promptForInput({
+                            title: "Rename preset",
+                            label: "Name",
+                            initialValue: activeColorPreset.name,
+                            confirmLabel: "Rename",
+                            validate: (v) => (v.trim() ? null : "Name the preset"),
+                          }).then((name) => {
+                            if (name?.trim()) renameColorPreset(activeColorPreset.id, name.trim());
+                          });
+                        }}
+                        style={PRESET_BTN_STYLE}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          createPresetWithOverrides(
+                            `${activeColorPreset.name} copy`,
+                            activeColorPreset.overrides,
+                          )
+                        }
+                        style={PRESET_BTN_STYLE}
+                      >
+                        Duplicate
+                      </button>
+                      {/* The label carries the result for ~1.5s — the clipboard
+                          gives no other sign it worked, and a silent failure
+                          would look identical to a success. */}
+                      <button type="button" onClick={handleExportPreset} style={PRESET_BTN_STYLE}>
+                        {exportState === "copied" ? "Copied" : exportState === "failed" ? "Failed" : "Export"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void confirmAction({
+                            title: "Reset preset",
+                            detail: `Clear all color overrides in "${activeColorPreset.name}"? Every color returns to the current theme's defaults.`,
+                            confirmLabel: "Reset",
+                            danger: true,
+                          }).then((ok) => {
+                            if (ok) clearPresetColors(activeColorPreset.id);
+                          });
+                        }}
+                        style={PRESET_BTN_STYLE}
+                      >
+                        Reset
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void confirmAction({
+                            title: "Delete preset",
+                            detail: `Delete "${activeColorPreset.name}"? Panes return to plain theme colors.`,
+                            confirmLabel: "Delete",
+                            danger: true,
+                          }).then((ok) => {
+                            if (ok) deleteColorPreset(activeColorPreset.id);
+                          });
+                        }}
+                        style={{ ...PRESET_BTN_STYLE, color: "var(--ezy-red)" }}
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
+                </div>
+              </SettingsRow>
+              {/* Shown with or without a preset: with none it is the plain
+                  theme, which is exactly what "None (theme colors)" means. */}
+              <SettingsRow label="Preview" vertical>
+                <TerminalColorsPreview theme={presetPreviewTheme} />
+              </SettingsRow>
+              {!activeColorPreset ? (
+                <div
+                  style={{
+                    padding: "8px 0 2px",
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                    color: "var(--ezy-text-muted)",
+                  }}
+                >
+                  Select or create a preset to customize colors.
+                </div>
+              ) : (
+                <>
+                  {CORE_OVERRIDE_KEYS.map((key) => (
+                    <SettingsRow
+                      key={key}
+                      label={OVERRIDE_KEY_LABELS[key].label}
+                      description={OVERRIDE_KEY_LABELS[key].description}
+                    >
+                      <ColorSwatchPicker
+                        value={activeColorPreset.overrides[key] ?? null}
+                        effectiveColor={presetEffectiveColor(key)}
+                        onChange={(hex) => handlePresetColor(key, hex)}
+                        label={OVERRIDE_KEY_LABELS[key].label}
+                      />
+                    </SettingsRow>
+                  ))}
+                  <SettingsRow
+                    label="ANSI colors"
+                    description="The 16 palette colors CLI output is drawn with — diff added and removed lines, prompts, syntax."
+                    vertical
+                  >
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(8, minmax(0, 44px))",
+                        gap: 8,
+                      }}
+                    >
+                      {ANSI_OVERRIDE_KEYS.map((key) => (
+                        <div
+                          key={key}
+                          style={{
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            gap: 3,
+                          }}
+                        >
+                          <ColorSwatchPicker
+                            value={activeColorPreset.overrides[key] ?? null}
+                            effectiveColor={presetEffectiveColor(key)}
+                            onChange={(hex) => handlePresetColor(key, hex)}
+                            label={OVERRIDE_KEY_LABELS[key].label}
+                          />
+                          <span
+                            style={{
+                              fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+                              color: "var(--ezy-text-muted)",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {/* "Bright black" → "Black" under the bright row's
+                                swatch: the row split already says bright. */}
+                            {OVERRIDE_KEY_LABELS[key].label.replace(/^Bright /, "")}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </SettingsRow>
+                  <SettingsRow
+                    label={OVERRIDE_KEY_LABELS.accent.label}
+                    description={OVERRIDE_KEY_LABELS.accent.description}
+                  >
+                    <ColorSwatchPicker
+                      value={activeColorPreset.overrides.accent ?? null}
+                      effectiveColor={presetEffectiveColor("accent")}
+                      onChange={(hex) => handlePresetColor("accent", hex)}
+                      label={OVERRIDE_KEY_LABELS.accent.label}
+                    />
+                  </SettingsRow>
+                  <SettingsRow
+                    label={OVERRIDE_KEY_LABELS.diffAdd.label}
+                    description={OVERRIDE_KEY_LABELS.diffAdd.description}
+                  >
+                    <ColorSwatchPicker
+                      value={activeColorPreset.overrides.diffAdd ?? null}
+                      effectiveColor={presetEffectiveColor("diffAdd")}
+                      onChange={(hex) => handlePresetColor("diffAdd", hex)}
+                      label={OVERRIDE_KEY_LABELS.diffAdd.label}
+                    />
+                  </SettingsRow>
+                  <SettingsRow
+                    label={OVERRIDE_KEY_LABELS.diffRemove.label}
+                    description={OVERRIDE_KEY_LABELS.diffRemove.description}
+                  >
+                    <ColorSwatchPicker
+                      value={activeColorPreset.overrides.diffRemove ?? null}
+                      effectiveColor={presetEffectiveColor("diffRemove")}
+                      onChange={(hex) => handlePresetColor("diffRemove", hex)}
+                      label={OVERRIDE_KEY_LABELS.diffRemove.label}
+                    />
+                  </SettingsRow>
+                </>
+              )}
+            </SettingsSection>
+            <SettingsSection id="app-icon" title="App icon" description="Shown in the title bar and taskbar while MADE is running.">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
+                {APP_ICON_OPTIONS.map((opt) => {
+                  const isSelected = opt.id === appIconVariant;
+                  return (
+                    <button
+                      key={opt.id}
+                      onClick={() => {
+                        setAppIconVariant(opt.id);
+                        void applyAppIcon(opt.id);
+                      }}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "10px 12px",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
+                        // 1px border in every state + inset selected ring, same
+                        // zero-layout-cost trick as the theme cards above.
+                        border: "1px solid",
+                        borderColor: isSelected ? "var(--ezy-accent)" : "var(--ezy-border)",
+                        boxShadow: isSelected ? "inset 0 0 0 1px var(--ezy-accent)" : "none",
+                        backgroundColor: isSelected ? "var(--ezy-accent-glow)" : "var(--ezy-surface)",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        textAlign: "left",
+                        transition: "all 120ms ease",
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isSelected) e.currentTarget.style.borderColor = "var(--ezy-accent)";
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isSelected) e.currentTarget.style.borderColor = "var(--ezy-border)";
+                      }}
+                    >
+                      <AppIconPreview variant={opt.id} size={36} />
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: isSelected ? 600 : 400, color: isSelected ? "var(--ezy-text)" : "var(--ezy-text-secondary)" }}>
+                        {opt.name}
+                      </span>
+                      {isSelected && <FaCheck size={12} color={theme.surface.accent} style={{ marginLeft: "auto" }} />}
+                    </button>
+                  );
+                })}
+              </div>
             </SettingsSection>
             <SettingsSection id="cursor" title="Cursor" description="Applies to the native terminal renderer.">
               <SettingsRow label="Cursor style">
@@ -2068,8 +2786,33 @@ export default function SettingsPane() {
               <SettingsRow label="Cursor blink">
                 <ToggleSwitch checked={nativeCursorBlink} onChange={setNativeCursorBlink} />
               </SettingsRow>
+              <SettingsRow
+                label="Block cursor opacity"
+                description="At 100% the block is solid and the character shows in the cursor accent color. Native panes only."
+              >
+                <SliderWithReset
+                  value={cursorBlockOpacity}
+                  onChange={setCursorBlockOpacity}
+                  onReset={() => setCursorBlockOpacity(30)}
+                  isDefault={cursorBlockOpacity === 30}
+                  min={10}
+                  max={100}
+                  step={5}
+                />
+              </SettingsRow>
             </SettingsSection>
             <SettingsSection id="cli" title="CLI Options">
+            <SettingsRow label="Terminal font">
+              <Dropdown<string>
+                value={terminalFontFamily}
+                onChange={setTerminalFontFamily}
+                options={fontOptions}
+                width={260}
+              />
+            </SettingsRow>
+            <SettingsRow label="Per-CLI font" description="Pick a different face per CLI below.">
+              <ToggleSwitch checked={perCliFontFamily} onChange={setPerCliFontFamily} />
+            </SettingsRow>
             {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
               const isYolo = !!cliYolo[cliType];
               const label = TERMINAL_CONFIGS[cliType].label;
@@ -2089,7 +2832,7 @@ export default function SettingsPane() {
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <div style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: CLI_COLORS[cliType] }} />
-                      <span style={{ fontSize: 13, fontWeight: 500, color: "var(--ezy-text)" }}>{label}</span>
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 500, color: "var(--ezy-text)" }}>{label}</span>
                     </div>
                     <svg
                       width="12"
@@ -2107,17 +2850,28 @@ export default function SettingsPane() {
                   {isExpanded && (
                   <div style={{ paddingBottom: 16 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                    <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>Font size</span>
+                    <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)" }}>Font size</span>
                     <FontSizeStepper
                       value={cliFontSizes[cliType] ?? DEFAULT_CLI_FONT_SIZE}
                       onChange={(v) => setCliFontSize(cliType, v)}
                     />
                   </div>
+                  {perCliFontFamily && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)" }}>Font</span>
+                      <Dropdown<string>
+                        value={cliFontFamilies[cliType] ?? terminalFontFamily}
+                        onChange={(v) => setCliFontFamily(cliType, v)}
+                        options={fontOptions}
+                        width={200}
+                      />
+                    </div>
+                  )}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       {isYolo ? (
                         <span style={{
-                          fontSize: 10,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                           fontWeight: 700,
                           padding: "2px 5px",
                           borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
@@ -2127,9 +2881,9 @@ export default function SettingsPane() {
                           letterSpacing: "0.06em",
                         }}>YOLO</span>
                       ) : (
-                        <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>YOLO</span>
+                        <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>YOLO</span>
                       )}
-                      <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>mode</span>
+                      <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>mode</span>
                     </div>
                     <ToggleSwitch checked={isYolo} onChange={(v) => setCliYolo(cliType, v)} color="var(--ezy-red, #e55)" />
                   </div>
@@ -2152,7 +2906,7 @@ export default function SettingsPane() {
                             borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
                             border: "1px solid var(--ezy-border-light)",
                             color: "var(--ezy-text-secondary)",
-                            fontSize: 11,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                             lineHeight: 1.3,
                             cursor: disabled ? "default" : "pointer",
                             opacity: disabled ? 0.3 : 1,
@@ -2168,7 +2922,7 @@ export default function SettingsPane() {
                       );
                       return (
                         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                          <div style={{ fontSize: 11, color: "var(--ezy-text-muted)" }}>Statusline</div>
+                          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>Statusline</div>
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                             {btn("All", () => setAll(true), allOn)}
                             {btn("None", () => setAll(false), allOff)}
@@ -2186,7 +2940,7 @@ export default function SettingsPane() {
                             style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 0", cursor: "pointer" }}
                             onClick={() => setStatuslineToggle(cliType, key, !isOn)}
                           >
-                            <span style={{ fontSize: 12, color: "var(--ezy-text-secondary)" }}>{feat.label}</span>
+                            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-secondary)" }}>{feat.label}</span>
                             <ToggleSwitch checked={isOn} onChange={(v) => setStatuslineToggle(cliType, key, v)} />
                           </div>
                         );
@@ -2257,6 +3011,15 @@ export default function SettingsPane() {
                 )}
               </SettingsSection>
             )}
+            <SettingsSection
+              id="cli-install"
+              title="AI CLIs"
+              description="Checked on the machine the active project's panes run on."
+            >
+              {AI_CLIS.map((cli) => (
+                <CliInstallRow key={cli} cli={cli} />
+              ))}
+            </SettingsSection>
             <SettingsSection id="native-renderer" title="Native renderer">
               <SettingsRow label="Native terminal renderer (beta)" description="GPU renderer instead of xterm panes. Open terminals reload.">
                 <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
@@ -2275,7 +3038,7 @@ export default function SettingsPane() {
                     : "Available once a native pane is open — the adapter is picked when the first pane creates its surface."
                 }
               >
-                <span style={{ fontSize: 12, color: "var(--ezy-text-muted)", textAlign: "right" }}>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", textAlign: "right" }}>
                   {gpuInfo
                     ? `${gpuInfo.backend} · ${gpuInfo.name}${gpuInfo.shared ? "" : " (per-pane adapter)"}`
                     : "—"}
@@ -2346,7 +3109,7 @@ export default function SettingsPane() {
                   {notifChannelState.status !== "idle" && (
                     <span
                       style={{
-                        fontSize: 11,
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                         color:
                           notifChannelState.status === "ok"
                             ? "var(--ezy-accent)"
@@ -2364,6 +3127,71 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow label="Scroll thumb acceleration" description="Off is a strict 1:1 drag, so the top of the bar is the top of the buffer.">
                 <ToggleSwitch checked={scrollThumbAcceleration} onChange={setScrollThumbAcceleration} />
+              </SettingsRow>
+            </SettingsSection>
+            <SettingsSection id="terminal-rendering" title="Rendering">
+              <SettingsRow label="Line height">
+                <SliderWithReset
+                  value={terminalLineHeight}
+                  onChange={setTerminalLineHeight}
+                  onReset={() => setTerminalLineHeight(1)}
+                  isDefault={terminalLineHeight === 1}
+                  min={1}
+                  max={1.6}
+                  step={0.05}
+                />
+              </SettingsRow>
+              <SettingsRow label="Bold uses bright colors">
+                <ToggleSwitch checked={boldUsesBright} onChange={setBoldUsesBright} />
+              </SettingsRow>
+              <SettingsRow
+                label="Minimum contrast"
+                description="Nudges text color until it reads against its background."
+              >
+                <SegmentedControl<"off" | "4.5" | "7">
+                  options={[
+                    { value: "off", label: "Off" },
+                    { value: "4.5", label: "4.5:1" },
+                    { value: "7", label: "7:1" },
+                  ]}
+                  // 1 is "no ratio enforced" — every other value is the ratio
+                  // itself, so the control reads the number back rather than
+                  // keeping a second copy of the choice.
+                  value={minContrast <= 1 ? "off" : minContrast >= 7 ? "7" : "4.5"}
+                  onChange={(v) => setMinContrast(v === "off" ? 1 : Number(v))}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Dim text strength"
+                description="How faded dim (SGR 2) text renders. Native panes only."
+              >
+                <SliderWithReset
+                  value={dimStrength}
+                  onChange={setDimStrength}
+                  onReset={() => setDimStrength(50)}
+                  isDefault={dimStrength === 50}
+                  min={20}
+                  max={80}
+                  step={5}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Scrollback"
+                description="Lines of history per pane; dense layouts scale it down. Applies when a pane is created."
+              >
+                <Dropdown<string>
+                  value={String(scrollbackLines)}
+                  onChange={(v) => setScrollbackLines(Number(v))}
+                  options={[
+                    { value: "1000", label: "1 000 lines" },
+                    { value: "5000", label: "5 000 lines" },
+                    { value: "10000", label: "10 000 lines" },
+                    { value: "20000", label: "20 000 lines" },
+                    { value: "50000", label: "50 000 lines" },
+                    { value: "100000", label: "100 000 lines" },
+                  ]}
+                  width={160}
+                />
               </SettingsRow>
             </SettingsSection>
             <SettingsSection
@@ -2497,7 +3325,7 @@ export default function SettingsPane() {
                         style={{
                           flex: "0 0 140px",
                           padding: "4px 8px",
-                          fontSize: 12,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                           color: "var(--ezy-text)",
                           backgroundColor: "var(--ezy-surface-raised)",
                           border: `1px solid ${filenameInvalid ? "#e55" : "var(--ezy-border)"}`,
@@ -2518,7 +3346,7 @@ export default function SettingsPane() {
                           display: "flex",
                           alignItems: "center",
                           gap: 4,
-                          fontSize: 11,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                           color: "var(--ezy-text-secondary)",
                           cursor: "pointer",
                           userSelect: "none",
@@ -2540,7 +3368,7 @@ export default function SettingsPane() {
                         aria-label="Remove"
                         style={{
                           padding: "2px 8px",
-                          fontSize: 14,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 14px)",
                           color: "var(--ezy-text-muted)",
                           backgroundColor: "transparent",
                           border: "none",
@@ -2559,7 +3387,7 @@ export default function SettingsPane() {
                   style={{
                     alignSelf: "flex-start",
                     padding: "5px 12px",
-                    fontSize: 11,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
                     fontWeight: 500,
                     color: "var(--ezy-text-secondary)",
                     backgroundColor: "var(--ezy-surface)",
@@ -2653,7 +3481,7 @@ export default function SettingsPane() {
                   onChange={setCommitMsgMode}
                 />
               </SettingsRow>
-              <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", padding: "4px 0 0", lineHeight: 1.3 }}>
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", padding: "4px 0 0", lineHeight: 1.3 }}>
                 {commitMsgMode === "empty" && "Start with a blank commit message"}
                 {commitMsgMode === "simple" && "Auto-fill from changed filenames"}
                 {commitMsgMode === "advanced" && "Generate message via background AI session"}
@@ -2676,7 +3504,7 @@ export default function SettingsPane() {
                   <path d="M5 5l2 2-2 2" />
                   <line x1="8" y1="10" x2="12" y2="10" />
                 </svg>
-                <span style={{ fontSize: 13, color: "var(--ezy-text-secondary)", flex: 1 }}>Manage Snippets</span>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)", flex: 1 }}>Manage Snippets</span>
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="var(--ezy-text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M6 4l4 4-4 4" />
                 </svg>
@@ -2699,8 +3527,8 @@ export default function SettingsPane() {
                   <line x1="10.5" y1="7" x2="12" y2="7" />
                   <line x1="4.5" y1="10" x2="11.5" y2="10" />
                 </svg>
-                <span style={{ fontSize: 13, color: "var(--ezy-text-secondary)", flex: 1 }}>Keyboard Shortcuts</span>
-                <span style={{ fontSize: 11, color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>Ctrl+/</span>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)", flex: 1 }}>Keyboard Shortcuts</span>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", fontFamily: "monospace" }}>Ctrl+/</span>
               </div>
             </SettingsSection>
           </>
@@ -2722,14 +3550,25 @@ export default function SettingsPane() {
                 />
               </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="jira" title="Jira">
-              <JiraPluginRow />
+            <AiTimeStatsSection bursts={aiTimeBursts} onClear={clearAiTimeStats} />
+          </>
+        );
+
+      case "jira":
+        return (
+          <>
+            <SettingsSection id="jira" title="Jira" description={jiraPluginTargetNote}>
               <SettingsRow
                 label="Jira mode"
                 description="Declutter the tab bar while a Jira project tab is active — the dev server and file sidebar buttons hide there. Ordinary project tabs keep them."
               >
                 <ToggleSwitch checked={jiraMode} onChange={setJiraMode} />
               </SettingsRow>
+              {/* One row per CLI: all three can reach Atlassian over the same
+                  MCP endpoint, and a ticket pane can now run on any of them. */}
+              {JIRA_CLIS.map((cli) => (
+                <JiraPluginRow key={cli} cli={cli} />
+              ))}
               <SettingsRow
                 label="Jira address"
                 description="Company name is enough — it becomes https://<company>.atlassian.net. Full addresses also work (self-hosted)."
@@ -2752,6 +3591,54 @@ export default function SettingsPane() {
                   ]}
                   value={jiraClaudeSide}
                   onChange={setJiraClaudeSide}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Sub-ticket mode"
+                description="Default shows one conversation at a time — the rail switches between a ticket and its sub-tickets. Stacked shows them all at once, stacked above each other beside the ticket's browser, each foldable to its header from the chevron in its own header."
+              >
+                <SegmentedControl<"default" | "stacked">
+                  options={[
+                    { value: "default", label: "Default" },
+                    { value: "stacked", label: "Stacked panes" },
+                  ]}
+                  value={jiraSubticketMode}
+                  onChange={setJiraSubticketMode}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Detect pasted tickets"
+                description="Paste a ticket link into a ticket's browser address bar and that ticket opens as its own ticket — its own pane, browser and rail row — instead of navigating this one's page away. A bare ticket number works too, for a prefix this project already uses. Clicking a ticket link inside the page is unaffected."
+              >
+                <ToggleSwitch
+                  checked={jiraDetectPastedTickets}
+                  onChange={setJiraDetectPastedTickets}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Switch to detected ticket"
+                description="Automatic shows the detected ticket straight away. Manual opens it in the background and offers a Switch button."
+              >
+                <SegmentedControl<"auto" | "manual">
+                  options={[
+                    { value: "auto", label: "Automatic" },
+                    { value: "manual", label: "Manual" },
+                  ]}
+                  value={jiraAutoSwitchToDetected}
+                  onChange={setJiraAutoSwitchToDetected}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Detected ticket is archived"
+                description="Whether a detected ticket whose only rows are archived gets unarchived and resumed, or left alone with a new conversation started. Either way you are told which happened."
+              >
+                <SegmentedControl<"resume" | "new">
+                  options={[
+                    { value: "resume", label: "Resume it" },
+                    { value: "new", label: "Start new" },
+                  ]}
+                  value={jiraArchivedTicketAction}
+                  onChange={setJiraArchivedTicketAction}
                 />
               </SettingsRow>
               <SettingsRow
@@ -2778,7 +3665,7 @@ export default function SettingsPane() {
                     width: "100%",
                     boxSizing: "border-box",
                     padding: "6px 8px",
-                    fontSize: 12,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                     lineHeight: 1.5,
                     fontFamily: "inherit",
                     resize: "vertical",
@@ -2803,7 +3690,6 @@ export default function SettingsPane() {
                 <ToggleSwitch checked={jiraRowFullColor} onChange={setJiraRowFullColor} />
               </SettingsRow>
             </SettingsSection>
-            <AiTimeStatsSection bursts={aiTimeBursts} onClear={clearAiTimeStats} />
           </>
         );
 
@@ -2873,7 +3759,7 @@ export default function SettingsPane() {
         }}>
           {!searchOpen && (
             <span style={{
-              fontSize: 11,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
               fontWeight: 600,
               textTransform: "uppercase",
               letterSpacing: "0.06em",
@@ -2918,7 +3804,7 @@ export default function SettingsPane() {
                   outline: "none",
                   padding: 0,
                   fontFamily: "inherit",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   color: "var(--ezy-text)",
                 }}
               />
@@ -3038,7 +3924,7 @@ export default function SettingsPane() {
               onClick={() => setActiveSection(s.id)}
               style={{
                 padding: "7px 16px",
-                fontSize: 13,
+                fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
                 color: isActive ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
                 fontWeight: isActive ? 600 : 400,
                 cursor: "pointer",
@@ -3089,10 +3975,10 @@ export default function SettingsPane() {
                       textAlign: "center",
                     }}
                   >
-                    <div style={{ fontSize: 13, color: "var(--ezy-text-secondary)" }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>
                       No matching settings
                     </div>
-                    <div style={{ fontSize: 11, color: "var(--ezy-text-muted)", lineHeight: 1.4 }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", lineHeight: 1.4 }}>
                       Nothing matches “{trimmedQuery}”. Esc clears the search.
                     </div>
                   </div>
@@ -3140,7 +4026,7 @@ export default function SettingsPane() {
               gap: 12,
             }}
           >
-            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ezy-text)" }}>
+            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 15px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               Are you sure you want to reload all panes?
             </div>
             {/* Remember shares the action row: the choice and the buttons that
@@ -3166,14 +4052,14 @@ export default function SettingsPane() {
                 >
                   {reloadRemember && <FaCheck size={9} color="#fff" />}
                 </div>
-                <span style={{ fontSize: 12, color: "var(--ezy-text-muted)" }}>Remember</span>
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Remember</span>
               </div>
               <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
               <div
                 onClick={() => setShowReloadConfirm(false)}
                 style={{
                   padding: "6px 16px",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 500,
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   cursor: "pointer",
@@ -3198,7 +4084,7 @@ export default function SettingsPane() {
                 }}
                 style={{
                   padding: "6px 16px",
-                  fontSize: 12,
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
                   fontWeight: 500,
                   borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
                   cursor: "pointer",

@@ -47,6 +47,13 @@ interface TerminalPaneProps {
   onPtyReady?: () => void;
   onPtyExit?: (exitCode: number) => void;
   hideChrome?: boolean;
+  /** Jira stacked sub-tickets: show a fold chevron in this pane's header.
+   *  Collapsing shrinks the pane to its header, which zero-sizes the terminal
+   *  anchor — the native renderer reads that as "hidden" and skips the resize,
+   *  so the conversation inside is never reflowed. */
+  collapsible?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
   serverId?: string;
   sessionResumeId?: string;
   onSessionResumeId?: (id: string) => void;
