@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 use alacritty_terminal::term::Term;
-use glyphon::TextArea;
+use glyphon::{Attrs, Buffer, Color, Family, Shaping, Style, TextArea, TextBounds, Weight};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use super::super::parser_bridge::TermListener;
@@ -26,7 +26,7 @@ use super::glyph_atlas::GlyphStack;
 use super::gpu;
 use super::grid::{CellGrid, TermFrameInfo};
 use super::quad_pipeline::{QuadInstance, QuadPipeline, QuadProgram};
-use super::ThemeColors;
+use super::{RenderTuning, ThemeColors};
 
 /// P3a frame-scheduler stage 1: externally-visible state that can change the
 /// rendered output WITHOUT marking any row in the damage bitset. Compared
@@ -56,6 +56,10 @@ struct FrameSnapshot {
     /// Underline/hollow cursors span 2 cells, so a narrow↔wide flip is a
     /// visible change even at an unchanged cursor point.
     cursor_wide: bool,
+    /// Character under the cursor. Only the OPAQUE block cursor draws it, but
+    /// it belongs in the identity either way — cheap, and it keeps the inverse
+    /// glyph honest if a future path ever changes it without row damage.
+    cursor_char: char,
 }
 
 /// Outcome of a `render()` call so the platform paint handler can tell
@@ -83,6 +87,21 @@ pub enum RenderOutcome {
 /// swapchain went stale". A resize or a monitor change produces one or two;
 /// a dead device produces them forever.
 const LOST_FRAMES_UNTIL_DEVICE_VERDICT: u32 = 10;
+
+/// The character an OPAQUE block cursor has to re-draw on top of itself, and
+/// how. Only produced when `cursor_block_alpha` reaches full opacity — at
+/// lower alphas the block is an overlay and the row's own glyph shows through.
+#[derive(Clone, Copy, Debug)]
+struct InverseCursorGlyph {
+    /// Physical-pixel origin, matching the block quad exactly.
+    left: f32,
+    top: f32,
+    ch: char,
+    /// `cursor_accent` from the live theme, as byte RGBA.
+    color: [u8; 4],
+    bold: bool,
+    italic: bool,
+}
 
 pub struct Renderer {
     surface: wgpu::Surface<'static>,
@@ -124,6 +143,17 @@ pub struct Renderer {
     /// re-passing them through `attach_term` on every theme swap. The
     /// CellGrid clones the Arc on construction.
     theme: Arc<RwLock<ThemeColors>>,
+    /// Shared user rendering tunables, same ownership pattern as `theme` — the
+    /// CellGrid clones the Arc on construction and snapshots it per sync.
+    /// `RenderTuning::default()` is the pre-settings behavior, so a pane that
+    /// never receives `set_render_opts` renders exactly as it always did.
+    tuning: Arc<RwLock<RenderTuning>>,
+    /// One-cell shaped Buffer holding the character under an OPAQUE block
+    /// cursor, re-drawn in `cursor_accent` on top of the block (true xterm
+    /// inverse). Rebuilt per frame while that cursor is showing, `None`
+    /// otherwise — including for the translucent block, which lets the row's
+    /// own glyph show through instead.
+    cursor_glyph: Option<Buffer>,
     /// Active cursor visual style. Mutated by `set_cursor_style`.
     cursor_style: CursorStyle,
     /// True when the cursor should be blinking. When false, the cursor is
@@ -460,6 +490,8 @@ impl Renderer {
             block_quads,
             bg_clear,
             theme,
+            tuning: Arc::new(RwLock::new(RenderTuning::default())),
+            cursor_glyph: None,
             cursor_style: CursorStyle::Bar,
             cursor_blink: false,
             cursor_visible: true,
@@ -681,6 +713,48 @@ impl Renderer {
         self.force_render = true;
     }
 
+    /// Hot-swap the user rendering tunables. Called from
+    /// `PlatformWindow::set_render_opts` after the wire-format `RenderOpts`
+    /// has been resolved + clamped into a `RenderTuning`.
+    ///
+    /// Colors (bold-is-bright, dim strength, minimum contrast) are resolved
+    /// during shaping, so every row must re-snapshot — same reasoning as
+    /// `set_theme`, and the same invalidation.
+    ///
+    /// A LINE-HEIGHT change goes further: it is a cell-metric change, exactly
+    /// like a font-size change. It re-derives the metrics through the one
+    /// derivation point (`GlyphStack::set_font_scaled`) and rebuilds every row
+    /// Buffer, because the old Buffers baked the previous Metrics. The CALLER
+    /// must then re-mirror `cell_metrics()` and re-run its propose/commit
+    /// chain — the pane now holds a different number of rows, and the PTY has
+    /// to be told.
+    pub fn set_render_opts(&mut self, opts: RenderTuning) {
+        let relayout = {
+            let mut guard = self.tuning.write().expect("tuning lock poisoned");
+            let changed = guard.line_height_scale != opts.line_height_scale;
+            *guard = opts;
+            changed
+        };
+        if relayout {
+            self.glyph.line_height_scale = opts.line_height_scale;
+            let family = self.glyph.font_family.clone();
+            self.glyph
+                .set_font_scaled(&family, self.font_logical_px, self.dpr);
+        }
+        if let Some(grid) = self.grid.as_mut() {
+            if relayout {
+                // Also clears every per-row cache (and marks all damaged), so
+                // it covers the color invalidation too.
+                grid.rebuild_buffers(&mut self.glyph);
+            } else {
+                grid.invalidate_for_theme_swap();
+            }
+        }
+        // P3a: cursor alpha and metrics are visible even on the no-grid
+        // placeholder path, where neither call above marks anything.
+        self.force_render = true;
+    }
+
     /// Re-configure the surface and the glyphon viewport. Called from the
     /// WM_SIZE handler. width/height are PHYSICAL pixels.
     pub fn resize(&mut self, width_px: u32, height_px: u32) {
@@ -730,7 +804,13 @@ impl Renderer {
     }
 
     pub fn attach_term(&mut self, term: Arc<Mutex<Term<TermListener>>>, cols: usize, rows: usize) {
-        let grid = CellGrid::new(&mut self.glyph, cols, rows, Arc::clone(&self.theme));
+        let grid = CellGrid::new(
+            &mut self.glyph,
+            cols,
+            rows,
+            Arc::clone(&self.theme),
+            Arc::clone(&self.tuning),
+        );
         self.term = Some(term);
         self.grid = Some(grid);
         // P3a: placeholder → live grid swap must render.
@@ -790,6 +870,7 @@ impl Renderer {
             focused: self.focused,
             search_gen: self.search_gen,
             cursor_wide: term_info.map_or(false, |i| i.cursor_wide),
+            cursor_char: term_info.map_or(' ', |i| i.cursor_char),
         };
         let dirty = self.force_render
             || self.grid.as_ref().map_or(false, |g| g.damage.any_dirty())
@@ -847,9 +928,14 @@ impl Renderer {
         // an integer so quads and cosmic-text's continuous row layout agree
         // to the pixel and glyph stems land identically in every column).
         let line_h = self.glyph.line_height_px;
+        let text_h = self.glyph.text_line_px;
         let cell_w = self.glyph.cell_advance_px;
         let surface_w = self.config.width as f32;
         let surface_h = self.config.height as f32;
+        // User tunables, one short read lock per frame (the shaping side takes
+        // its own snapshot in `snapshot_rows`). Only the cursor pass below
+        // consumes this copy.
+        let tuning = *self.tuning.read().expect("tuning poisoned");
 
         // Build bg + decoration quad instances for the current frame. Both
         // are cheap allocations (Vec<QuadInstance>) over the grid's cached
@@ -858,7 +944,7 @@ impl Renderer {
         let (bg_instances, decor_instances, block_instances) = if let Some(grid) = self.grid.as_ref() {
             (
                 grid.build_bg_quads(cell_w, line_h),
-                grid.build_decor_quads(cell_w, line_h),
+                grid.build_decor_quads(cell_w, line_h, text_h),
                 grid.build_block_quads(cell_w, line_h),
             )
         } else {
@@ -875,7 +961,10 @@ impl Renderer {
         // quads but BEFORE the glyph pass so the underlying text stays
         // crisp on top. CLAUDE.md bans amber/yellow palette colors even in
         // native code (project-wide rule applies); we use a semi-transparent
-        // neutral white that reads as "highlighted" against any theme bg.
+        // neutral white that reads as "highlighted" against any theme bg —
+        // unless the user's color preset supplies a `searchMatch` color, in
+        // which case that wins (opaque is fine: the quad sits under glyphs,
+        // matching xterm's opaque matchBackground semantics).
         //
         // P6a scrollback contract: `search_highlights` rects arrive in
         // CONTENT space — y = absolute grid line × cell_h, NEGATIVE for
@@ -884,7 +973,27 @@ impl Renderer {
         // while the user scrolls, and clip rects wholly outside the surface
         // (the swapchain would clip anyway; skipping keeps the instance
         // buffer small when most matches live in history).
-        let search_color = [0.9_f32, 0.9, 0.9, 0.40];
+        //
+        // Rects flagged `active` are the match the user is currently sitting
+        // on and get their own color — `searchMatchActive` from the preset,
+        // else #39d353 at 0.55 alpha (xterm's active-match green).
+        let (search_color, search_active_color) = {
+            let t = self.theme.read().expect("theme poisoned");
+            let conv = |c: [u8; 4]| {
+                [
+                    c[0] as f32 / 255.0,
+                    c[1] as f32 / 255.0,
+                    c[2] as f32 / 255.0,
+                    c[3] as f32 / 255.0,
+                ]
+            };
+            (
+                t.search_match.map(conv).unwrap_or([0.9_f32, 0.9, 0.9, 0.40]),
+                t.search_match_active
+                    .map(conv)
+                    .unwrap_or([0.22_f32, 0.83, 0.33, 0.55]),
+            )
+        };
         let search_offset_px =
             term_info.map_or(0.0, |i| i.display_offset as f32) * line_h;
         let search_instances: Vec<QuadInstance> = self
@@ -897,7 +1006,11 @@ impl Renderer {
                 }
                 Some(QuadInstance {
                     rect: [r.x, y, r.width.max(0.0), r.height.max(0.0)],
-                    color: search_color,
+                    color: if r.active {
+                        search_active_color
+                    } else {
+                        search_color
+                    },
                 })
             })
             .collect();
@@ -914,6 +1027,11 @@ impl Renderer {
         // `cursor_visible`. Geometry is physical px, integer-snapped
         // (rounded origins/sizes).
         let mut cursor_instances: Vec<QuadInstance> = Vec::new();
+        // Set by the OPAQUE block arm below. Shaped after this block (it needs
+        // the FontSystem lock) and drawn in its own glyph pass AFTER the
+        // cursor quad — the block is opaque, so anything drawn with the row's
+        // text would just be painted over.
+        let mut inverse_glyph: Option<InverseCursorGlyph> = None;
         if let Some(info) = term_info {
             let col = info.cursor_col;
             // P6a scrollback: cursor.line is a GRID line; the viewport shows
@@ -930,8 +1048,12 @@ impl Renderer {
             {
                 // Cursor color comes from the live theme — read once per
                 // frame under a short shared lock and convert byte RGBA to
-                // wgpu's 0..1 floats.
-                let c = self.theme.read().expect("theme poisoned").cursor;
+                // wgpu's 0..1 floats. `cursor_accent` rides along for the
+                // opaque-block arm, which paints the character in it.
+                let (c, accent) = {
+                    let t = self.theme.read().expect("theme poisoned");
+                    (t.cursor, t.cursor_accent)
+                };
                 let cursor_rgba = [
                     c[0] as f32 / 255.0,
                     c[1] as f32 / 255.0,
@@ -973,19 +1095,51 @@ impl Renderer {
                                 });
                             }
                             CursorStyle::Block => {
-                                // 0.30 alpha keeps the underlying glyph
-                                // visible (QuadPipeline alpha-blends). True
-                                // xterm "inverse" block would re-render the
-                                // glyph in the bg color — deferred.
-                                cursor_instances.push(QuadInstance {
-                                    rect: [x, y, w, h],
-                                    color: [
-                                        cursor_rgba[0],
-                                        cursor_rgba[1],
-                                        cursor_rgba[2],
-                                        cursor_rgba[3] * 0.30,
-                                    ],
-                                });
+                                // Below full opacity the block is an overlay:
+                                // it alpha-blends (QuadPipeline blends) and
+                                // the row's own glyph stays visible through
+                                // it. The historical — and default — value is
+                                // 0.30.
+                                //
+                                // At full opacity that stops working: the
+                                // glyph would simply vanish under the block.
+                                // So the opaque case is a true xterm inverse
+                                // instead — a solid block in `cursor`, with
+                                // the cell's character re-drawn on top in
+                                // `cursor_accent` (see `inverse_glyph`). Wide
+                                // chars need nothing extra: `w` already spans
+                                // both cells and the re-shaped glyph is the
+                                // same double-width one.
+                                let alpha = tuning.cursor_block_alpha;
+                                if alpha >= 0.999 {
+                                    cursor_instances.push(QuadInstance {
+                                        rect: [x, y, w, h],
+                                        color: [
+                                            cursor_rgba[0],
+                                            cursor_rgba[1],
+                                            cursor_rgba[2],
+                                            1.0,
+                                        ],
+                                    });
+                                    inverse_glyph = Some(InverseCursorGlyph {
+                                        left: x,
+                                        top: y,
+                                        ch: info.cursor_char,
+                                        color: accent,
+                                        bold: info.cursor_bold,
+                                        italic: info.cursor_italic,
+                                    });
+                                } else {
+                                    cursor_instances.push(QuadInstance {
+                                        rect: [x, y, w, h],
+                                        color: [
+                                            cursor_rgba[0],
+                                            cursor_rgba[1],
+                                            cursor_rgba[2],
+                                            cursor_rgba[3] * alpha,
+                                        ],
+                                    });
+                                }
                             }
                         }
                     }
@@ -1028,6 +1182,58 @@ impl Renderer {
             None => Vec::new(),
         };
 
+        // Shape the opaque block cursor's character. Cheap: one glyph, and
+        // only while such a cursor is actually showing (never for the
+        // translucent default, an unfocused pane, or a hidden/blinked-off
+        // cursor). Blanks skip it — nothing to invert on an empty cell.
+        self.cursor_glyph = None;
+        let mut cursor_areas: Vec<TextArea> = Vec::new();
+        if let Some(inv) = inverse_glyph.filter(|i| i.ch != ' ') {
+            let accent = Color::rgba(inv.color[0], inv.color[1], inv.color[2], 0xFF);
+            let buf = {
+                let mut fs = self
+                    .glyph
+                    .font_system
+                    .lock()
+                    .expect("fonts: shared FontSystem poisoned");
+                let mut b = GlyphStack::make_buffer_with(
+                    &mut fs,
+                    self.glyph.font_size_px,
+                    self.glyph.line_height_px,
+                );
+                let mut attrs = Attrs::new()
+                    .family(Family::Name(self.glyph.family_name.as_str()))
+                    .color(accent);
+                if inv.bold {
+                    attrs = attrs.weight(Weight::BOLD);
+                }
+                if inv.italic {
+                    attrs = attrs.style(Style::Italic);
+                }
+                let mut tmp = [0u8; 4];
+                b.set_text(&mut fs, inv.ch.encode_utf8(&mut tmp), attrs, Shaping::Advanced);
+                b
+            };
+            self.cursor_glyph = Some(buf);
+            if let Some(buf) = self.cursor_glyph.as_ref() {
+                cursor_areas.push(TextArea {
+                    buffer: buf,
+                    left: inv.left,
+                    top: inv.top,
+                    scale: 1.0,
+                    bounds: TextBounds::default(),
+                    default_color: accent,
+                    custom_glyphs: &[],
+                });
+            }
+        }
+
+        // Both glyph passes upload BEFORE the render pass opens — glyphon's
+        // `render` borrows its renderer for the whole pass, so no `prepare`
+        // can run once we are inside one.
+        self.glyph
+            .prepare(&self.device, &self.queue, &text_areas, &cursor_areas)?;
+
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("native_term R1 pass"),
@@ -1056,12 +1262,7 @@ impl Renderer {
             // the matching text underneath stays legible.
             self.search_quads.draw(&mut pass);
 
-            self.glyph.prepare_and_render(
-                &self.device,
-                &self.queue,
-                &text_areas,
-                &mut pass,
-            )?;
+            self.glyph.render(&mut pass)?;
 
             // Underline / strikeout bars sit on top of the glyph pass.
             self.decor_quads.draw(&mut pass);
@@ -1071,6 +1272,12 @@ impl Renderer {
             // uploaded before the pass began; empty = no draw (SHOW_CURSOR
             // unset, blink half-phase, no Term attached).
             self.cursor_quads.draw(&mut pass);
+
+            // The opaque block cursor's character, LAST — it is the only
+            // thing that has to sit on top of the cursor quad itself.
+            if !cursor_areas.is_empty() {
+                self.glyph.render_cursor(&mut pass)?;
+            }
         }
 
         self.queue.submit(Some(enc.finish()));

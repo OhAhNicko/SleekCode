@@ -1,4 +1,5 @@
 import type { ITheme } from "@xterm/xterm";
+import { terminalOverrides, type ColorOverrides } from "./color-overrides";
 
 export interface MadeSurface {
   bg: string;
@@ -25,6 +26,16 @@ export interface MadeSurface {
    *  with a pair that still reads unmistakably as green-vs-red. */
   diffAdd?: string;
   diffRemove?: string;
+  /** Background of the ACTIVE tab, and of the "on" state of the toggles that
+   *  share the tab strip (sidebar, dev server, settings). Optional: omit and
+   *  it falls back to `surface`, which is what every theme but Heads uses.
+   *  Exists because the step from `bg` to `surface` is what makes the active
+   *  tab findable, and that step is not the same in every palette — Graphite
+   *  clears 1.23:1, Heads only managed 1.10:1 and the strip read as flat. A
+   *  theme in that position must NOT fix it by brightening `surface`, which
+   *  paints every panel in the app and would collapse into `surfaceRaised`;
+   *  it overrides this token alone. */
+  tabActive?: string;
 }
 
 /** The universal diff pair, used by every theme that does not override it.
@@ -42,11 +53,22 @@ export interface MadeTheme {
   radiusScale?: number;
 }
 
-// ─── Default (GitHub Dark) ───────────────────────────────────────────
+// ─── Carbon (GitHub Dark) ───────────────────────────────────────────
+//
+// A faithful GitHub Dark port: `#0d1117` is GitHub's dark canvas and
+// `#39d353` its contribution-graph green, both verbatim. The name does not
+// say so, hence this comment — it was called "Default" until Sorbet became
+// the theme MADE actually ships in, at which point "Default" named nothing
+// true. "Carbon" puts it in the materials cluster it always belonged to
+// (Graphite, Goldphite, Black Steel, Porcelain).
+//
+// `id` stays "default" and MUST NOT be renamed: it is the persisted value in
+// every existing install's localStorage, and there is no migration — see the
+// note on DEFAULT_THEME_ID below.
 
-const defaultTheme: MadeTheme = {
+const carbonTheme: MadeTheme = {
   id: "default",
-  name: "Default",
+  name: "Carbon",
   terminal: {
     background: "#0d1117",
     foreground: "#e6edf3",
@@ -709,7 +731,12 @@ const goldphiteTheme: MadeTheme = {
   },
 };
 
-// ─── Heads (POS pastels) ────────────────────────────────────────────
+// ─── Sorbet (POS pastels) ───────────────────────────────────────────
+//
+// Named for what it is — pastel scoops on a dark base, churned smooth so the
+// colour runs evenly throughout. Its sibling Granita below is the same base
+// scraped icy and sparse; the pair name carries the one real difference
+// between them (see Granita's own header).
 //
 // Sampled pixel-for-pixel from a screenshot of the Heads POS app the user
 // works with (cos.png): canvas #131313, panel #1d1d1d, tile #272727, pill
@@ -726,9 +753,10 @@ const goldphiteTheme: MadeTheme = {
 // radiusScale doubles every corner radius (6px surfaces → 12px) to match
 // the app's pillowy tiles — the only theme that sets it.
 
+// `id` stays "heads" for the persisted-value reason given on Carbon above.
 const headsTheme: MadeTheme = {
   id: "heads",
-  name: "Heads",
+  name: "Sorbet",
   radiusScale: 2,
   terminal: {
     background: "#131313",
@@ -784,17 +812,30 @@ const headsTheme: MadeTheme = {
     // regardless.
     diffAdd: "#80e2ad",
     diffRemove: "#f4b4d1",
+    // The active tab needs a wider step off `bg` than this theme's `surface`
+    // gives it: #1d1d1d on #131313 is 1.10:1, against Graphite's 1.23:1, and
+    // the strip read as having no selected tab at all. The app's own tile
+    // grey restores exactly Graphite's step (1.24:1) without inventing a
+    // neutral that isn't in the source screenshot — and without touching
+    // `surface`, which is one shade off `surfaceRaised` and cannot move.
+    tabActive: "#272727",
   },
 };
 
-// ─── Heads 2.0 (POS pastels, rationed) ──────────────────────────────
+// ─── Granita (POS pastels, rationed) ────────────────────────────────
 //
-// Same source app as `heads`, but designed from it rather than sampled
+// Sorbet's sibling, and named to say how it differs: same base, but
+// scraped icy and crystalline instead of churned smooth — colour arriving
+// as separated flakes against ice rather than an evenly saturated mass.
+// Both readings below are literal, not decorative: the colour really is
+// rationed rather than spread, and the neutrals really are colder.
+//
+// Same source app as Sorbet, but designed from it rather than sampled
 // off it. The screenshot's real idea is not its hex values — it is that
 // colour is RATIONED: of ~20 action tiles only five are coloured, the
 // rest are inert grey with dimmed labels, and the tiles separate by fill
-// with no stroke at all. v1 lifted the swatches and spent them evenly;
-// 2.0 spends them the way the app does.
+// with no stroke at all. Sorbet lifted the swatches and spent them
+// evenly; Granita spends them the way the app does.
 //
 // Three consequences, in order of how much they change the theme:
 //
@@ -802,37 +843,43 @@ const headsTheme: MadeTheme = {
 //    tiles that TAKE YOU SOMEWHERE (Kassaoppgjør, Backoffice, Åpne
 //    kasse) and mint marks the ones that COMMIT (Opprett kunde, Hent
 //    parkert). A terminal accent is navigational — focus ring, active
-//    tab, cursor — so periwinkle is the honest mapping and v1 had it
+//    tab, cursor — so periwinkle is the honest mapping and Sorbet had it
 //    inverted. Mint keeps its commit role as `surface.cyan`, the
 //    secondary signal.
 //
 // 2. The four authentic app colours live in the BRIGHT row, verbatim:
 //    mint #80e2ad, periwinkle #92bcff, pink #f4b4d1, coral #fd8183. The
 //    normal row is those same hues pulled down ~1.4-1.7x in luminance.
-//    So the true Heads palette appears exactly where the terminal itself
-//    says "this matters" — the same rationing, one layer down. v1
+//    So the true POS palette appears exactly where the terminal itself
+//    says "this matters" — the same rationing, one layer down. Sorbet
 //    scattered the four across both rows and invented yellow/cyan from
 //    nothing; here they are derived at the ramp's own lightness so they
-//    read as family, and every hue clears 4.5:1 on the canvas (v1's
+//    read as family, and every hue clears 4.5:1 on the canvas (Sorbet's
 //    pastels all sat at one lightness and smeared at 13px).
 //
-// 3. Neutrals carry a faint cool cast (#101315 vs v1's flat #131313) so
+// 3. Neutrals carry a faint cool cast (#101315 vs Sorbet's flat #131313) so
 //    the pastels read as emitted rather than pasted on, and `border`
 //    drops to #2b3033 — just above the tile it edges — because the app
 //    has no strokes. Separation comes from the fill steps; borderLight
 //    (#454b4e, the ghost-logo grey) is kept for edges that must be seen.
 //
 // radiusScale 2 is inherited: the pillowy 12px tile is the app's most
-// physical trait and the one thing v1 got exactly right.
+// physical trait and the one thing Sorbet got exactly right.
 //
 // Known hole, stated rather than hidden: the white ToggleSwitch thumb
 // sits at 1.93:1 on the periwinkle track. That is short of 3:1, but it
-// is better than v1's 1.57:1 on mint, and the track colour change still
-// carries the state.
+// is better than Sorbet's 1.57:1 on mint, and the track colour change
+// still carries the state.
+//
+// Deliberately NOT given a `tabActive` override the way Sorbet is: its own
+// bg→surface step is just as shallow (1.10:1), but that was a scoped fix
+// asked for on Sorbet alone. Left as a known, stated gap rather than
+// silently widened here.
 
+// `id` stays "heads2" for the persisted-value reason given on Carbon above.
 const heads2Theme: MadeTheme = {
   id: "heads2",
-  name: "Heads 2.0",
+  name: "Granita",
   radiusScale: 2,
   terminal: {
     background: "#101315",
@@ -1370,36 +1417,58 @@ export function getActivePaneBg(
   themeId: string,
   tint: string | null = null,
   tintAmount: number = PROJECT_TINT_AMOUNT,
+  overrides: ColorOverrides | null = null,
 ): string {
-  return activeShade(projectTintBg(getTheme(themeId).surface.bg, tint, tintAmount));
+  return activeShade(
+    projectTintBg(overrides?.background ?? getTheme(themeId).surface.bg, tint, tintAmount),
+  );
 }
 
 /** Container bg for an INACTIVE CLI pane. Without a tint this is a CSS var
  *  (identical to today's untinted container); with one it must become a
- *  concrete hex so the wash can blend into the theme surface. */
+ *  concrete hex so the wash can blend into the theme surface. A background
+ *  override also forces the hex — `--ezy-bg` stays the CHROME background, so
+ *  falling through to it would seam against the overridden canvas. */
 export function getInactivePaneBg(
   themeId: string,
   tint: string | null,
   tintAmount: number = PROJECT_TINT_AMOUNT,
+  overrides: ColorOverrides | null = null,
 ): string {
-  return tint ? projectTintBg(getTheme(themeId).surface.bg, tint, tintAmount) : "var(--ezy-bg)";
+  const bg = overrides?.background ?? getTheme(themeId).surface.bg;
+  if (tint) return projectTintBg(bg, tint, tintAmount);
+  return overrides?.background ? bg : "var(--ezy-bg)";
 }
 
-/** Returns the effective terminal theme, optionally with vibrant colors overlaid and an active-pane lift. */
+/** ITheme plus MADE's own colorable extras. `link`/`searchMatch`/
+ *  `searchMatchActive` exist only when a user color preset sets them —
+ *  absence means each renderer keeps its built-in behavior. */
+export interface EffectiveTerminalTheme extends ITheme {
+  link?: string;
+  searchMatch?: string;
+  searchMatchActive?: string;
+}
+
+/** Returns the effective terminal theme, optionally with vibrant colors overlaid and an active-pane lift.
+ *  Layer order: base theme → vibrant/light adaptation → user preset overrides → project tint → active lift. */
 export function getEffectiveTerminalTheme(
   themeId: string,
   vibrant: boolean,
   isActive: boolean = false,
   tint: string | null = null,
   tintAmount: number = PROJECT_TINT_AMOUNT,
-): ITheme {
+  overrides: ColorOverrides | null = null,
+): EffectiveTerminalTheme {
   const base = getTheme(themeId).terminal;
-  const light = isLightBackground(base.background);
+  // Chrome badge tokens (diffAdd/diffRemove) never reach the terminal theme.
+  const termOv = terminalOverrides(overrides);
   // On a light canvas the 256-color cube has to be inverted or CLI output is
   // unreadable — see the light-background adaptation block above. The theme's
   // own 16 are already authored for the polarity, so only the vibrant overlay
-  // needs flipping.
-  const canvas = base.background ?? "#000000";
+  // needs flipping. Polarity follows the OVERRIDDEN background: overriding a
+  // dark theme to paper must get the light-adapted cube.
+  const canvas = termOv?.background ?? base.background ?? "#000000";
+  const light = isLightBackground(canvas);
   const withVibrant = vibrant
     ? {
         ...base,
@@ -1409,11 +1478,24 @@ export function getEffectiveTerminalTheme(
     : light
       ? { ...base, extendedAnsi: lightExtendedAnsi(canvas, false) }
       : base;
+  // User layer: an explicit pick beats the vibrant overlay per key, while
+  // untouched keys keep their vibrant/adapted values. An overridden selection
+  // also drives the unfocused selection (Sorbet's own alpha convention) so
+  // xterm's inactive selection can't show the stale theme color.
+  const withUser: EffectiveTerminalTheme = termOv
+    ? {
+        ...withVibrant,
+        ...termOv,
+        ...(termOv.selectionBackground
+          ? { selectionInactiveBackground: `${termOv.selectionBackground}88` }
+          : {}),
+      }
+    : withVibrant;
   // Project tint blends BEFORE the active lift so both pane states share the
   // wash and the active pane keeps exactly today's lift on top of it.
   const tinted = tint
-    ? { ...withVibrant, background: projectTintBg(withVibrant.background ?? "#000000", tint, tintAmount) }
-    : withVibrant;
+    ? { ...withUser, background: projectTintBg(withUser.background ?? "#000000", tint, tintAmount) }
+    : withUser;
   if (!isActive) return tinted;
   return {
     ...tinted,
@@ -1424,8 +1506,13 @@ export function getEffectiveTerminalTheme(
 
 // ─── Exports ─────────────────────────────────────────────────────────
 
+// Order here IS the order of the Settings → Appearance picker. Sorbet leads
+// because it is what MADE ships in (DEFAULT_THEME_ID below) — the theme a
+// fresh install is already looking at should be the first one in the list.
+// Every other entry keeps its long-standing position.
 export const THEMES: MadeTheme[] = [
-  defaultTheme,
+  headsTheme,
+  carbonTheme,
   nordTheme,
   draculaTheme,
   cyberpunkTheme,
@@ -1438,7 +1525,6 @@ export const THEMES: MadeTheme[] = [
   blackSteelTheme,
   graphiteTheme,
   goldphiteTheme,
-  headsTheme,
   heads2Theme,
   paniniTheme,
   porcelainTheme,
@@ -1449,13 +1535,89 @@ export const THEMES_MAP: Record<string, MadeTheme> = Object.fromEntries(
   THEMES.map((t) => [t.id, t])
 );
 
-// MADE ships in Heads. Note this is the id of the theme a FRESH install lands
-// on — `merge()` in store/index.ts spreads persisted state last, so anyone with
-// a saved themeId keeps it and switches in Settings → Appearance instead.
+// MADE ships in Sorbet (id "heads" — the id predates the name and is frozen,
+// because it is the persisted value in every existing install and there is no
+// migration). Note this is the id of the theme a FRESH install lands on —
+// `merge()` in store/index.ts spreads persisted state last, so anyone with a
+// saved themeId keeps it and switches in Settings → Appearance instead.
 // index.css's `:root` block mirrors headsTheme.surface so the pre-hydration
 // frame matches; change both together or launch flashes the old palette.
 export const DEFAULT_THEME_ID = "heads";
 
+// Unknown/corrupt ids resolve to the SHIPPING theme, not to Carbon. Carbon was
+// this fallback back when it was called "Default"; once Sorbet became what MADE
+// ships in, falling back to a different palette than a fresh install gets was
+// just a second, contradictory default.
 export function getTheme(id: string): MadeTheme {
-  return THEMES_MAP[id] ?? defaultTheme;
+  return THEMES_MAP[id] ?? headsTheme;
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Reading ON the accent                                                  */
+/* ---------------------------------------------------------------------- */
+
+/** The two marks that can sit on a solid `--ezy-accent` fill. */
+export const ON_ACCENT_LIGHT = "#ffffff";
+/** Not pure black — matches the darkest surface any shipping theme uses. */
+export const ON_ACCENT_DARK = "#131313";
+
+/** WCAG relative luminance of a `#rgb` / `#rrggbb` colour. */
+function relativeLuminance(hex: string): number {
+  let h = hex.trim().replace("#", "");
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  if (h.length !== 6) return 0;
+  const chan = (i: number) => {
+    const v = parseInt(h.slice(i * 2, i * 2 + 2), 16) / 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * chan(0) + 0.7152 * chan(1) + 0.0722 * chan(2);
+}
+
+function contrastWith(luminance: number, otherHex: string): number {
+  const other = relativeLuminance(otherHex);
+  const [hi, lo] = luminance > other ? [luminance, other] : [other, luminance];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/**
+ * Which mark reads on top of this theme's accent — picked by contrast, not by
+ * assuming the accent is dark.
+ *
+ * MADE's accents run from `#dc2626` to `#a6e22e`, so there is no single answer:
+ * a white tick on the lime accent is 1.8:1 (invisible) and on the red one 4.8:1
+ * (correct). Both spellings shipped by hand around the app; this decides once,
+ * and `--ezy-on-accent` carries the winner to anything drawn on an accent fill.
+ *
+ * Returned as a TONE rather than only a colour because the checkbox tick is an
+ * SVG data-URI in `index.css`, which cannot read a custom property — the
+ * stylesheet keeps both marks and `:root[data-accent-tone]` selects one.
+ */
+export function accentTone(accentHex: string): "light" | "dark" {
+  const l = relativeLuminance(accentHex);
+  return contrastWith(l, ON_ACCENT_DARK) > contrastWith(l, ON_ACCENT_LIGHT)
+    ? "dark"
+    : "light";
+}
+
+/**
+ * The three companion tokens a theme ships alongside its accent, derived for a
+ * USER-PICKED accent (Settings > Appearance > Terminal colors > "Accent").
+ *
+ * The picker sets one color, but `--ezy-accent-hover` / `-dim` / `-glow` are
+ * separate vars all over the chrome — leaving them on the theme's values makes
+ * a hover state jump back to the old accent. Hover lifts toward white, dim
+ * sinks toward black (the direction every shipping theme authors them in), and
+ * the glow is the accent at ~8% alpha, which reads as a tinted halo instead of
+ * the themes' neutral white bloom.
+ */
+export function deriveAccentShades(accent: string): {
+  hover: string;
+  dim: string;
+  glow: string;
+} {
+  return {
+    hover: blendHex(accent, "#ffffff", 0.15),
+    dim: blendHex(accent, "#000000", 0.25),
+    glow: `${accent}14`,
+  };
 }

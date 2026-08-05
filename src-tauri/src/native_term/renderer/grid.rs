@@ -18,7 +18,7 @@ use super::super::parser_bridge::TermListener;
 use super::damage::DamageTracker;
 use super::glyph_atlas::GlyphStack;
 use super::quad_pipeline::QuadInstance;
-use super::ThemeColors;
+use super::{RenderTuning, ThemeColors};
 
 /// Hard-coded fallback selection overlay used when the live theme has not yet
 /// been swapped in. Matches the previous `SELECTION_BG` constant so a freshly
@@ -58,8 +58,8 @@ fn rgb3(rgba: [u8; 4]) -> [u8; 3] {
     [rgba[0], rgba[1], rgba[2]]
 }
 
-/// SGR 2 (dim / faint): fade a resolved foreground halfway to the background
-/// it sits on.
+/// SGR 2 (dim / faint): fade a resolved foreground toward the background it
+/// sits on by `strength` (0 = no fade, 1 = invisible).
 ///
 /// `alacritty_terminal` parses SGR 2 into `Flags::DIM`, but the color
 /// resolution above is flag-blind — so every dim run painted at FULL
@@ -67,18 +67,111 @@ fn rgb3(rgba: [u8; 4]) -> [u8; 3] {
 /// suggestion looked like text the user had already typed (reported
 /// 2026-07-26).
 ///
-/// Halfway-to-background rather than alacritty's `* 0.66`: xterm.js draws dim
-/// as 50% alpha over the cell background, and MADE runs both renderers side by
+/// Toward-the-background rather than alacritty's `* 0.66`: xterm.js draws dim
+/// as alpha over the cell background, and MADE runs both renderers side by
 /// side, so parity beats matching alacritty. It is also the only one of the
 /// two that stays correct on light themes — a multiply drives text toward
 /// black, i.e. toward MORE contrast on light paper, which is backwards.
+///
+/// `strength` is user-tunable (`RenderTuning::dim_strength`); the default 0.5
+/// reproduces the historical halfway blend EXACTLY — `floor` of the linear
+/// interpolation equals the old `(fg + bg) / 2` integer division for every
+/// byte pair, and both operands are small enough to be exact in f32.
 #[inline]
-fn dim_toward(fg: [u8; 3], bg: [u8; 3]) -> [u8; 3] {
-    [
-        ((fg[0] as u16 + bg[0] as u16) / 2) as u8,
-        ((fg[1] as u16 + bg[1] as u16) / 2) as u8,
-        ((fg[2] as u16 + bg[2] as u16) / 2) as u8,
-    ]
+fn dim_toward(fg: [u8; 3], bg: [u8; 3], strength: f32) -> [u8; 3] {
+    let mix = |f: u8, b: u8| -> u8 {
+        (f as f32 + (b as f32 - f as f32) * strength)
+            .floor()
+            .clamp(0.0, 255.0) as u8
+    };
+    [mix(fg[0], bg[0]), mix(fg[1], bg[1]), mix(fg[2], bg[2])]
+}
+
+/// `boldIsBright`: promote an ANSI 0..=7 foreground to its bright twin
+/// (slot i + 8) for BOLD cells. Anything else — a 256-color index, a truecolor
+/// spec, `Foreground`/`Background`/`Cursor` — is returned untouched, so the
+/// promotion can only ever affect the eight colors that HAVE a bright variant.
+///
+/// Applied to the cell's fg attribute BEFORE the INVERSE swap: xterm brightens
+/// the foreground the SGR selected, not whichever color ends up as ink.
+#[inline]
+fn bright_ansi(c: AnsiColor) -> AnsiColor {
+    match c {
+        AnsiColor::Named(n) => {
+            let bright = match n {
+                NamedColor::Black => NamedColor::BrightBlack,
+                NamedColor::Red => NamedColor::BrightRed,
+                NamedColor::Green => NamedColor::BrightGreen,
+                NamedColor::Yellow => NamedColor::BrightYellow,
+                NamedColor::Blue => NamedColor::BrightBlue,
+                NamedColor::Magenta => NamedColor::BrightMagenta,
+                NamedColor::Cyan => NamedColor::BrightCyan,
+                NamedColor::White => NamedColor::BrightWhite,
+                _ => return c,
+            };
+            AnsiColor::Named(bright)
+        }
+        AnsiColor::Indexed(i) if i < 8 => AnsiColor::Indexed(i + 8),
+        _ => c,
+    }
+}
+
+/// sRGB → linear for one channel, per the WCAG 2.x relative-luminance
+/// definition.
+#[inline]
+fn srgb_to_linear(v: u8) -> f32 {
+    let s = v as f32 / 255.0;
+    if s <= 0.03928 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[inline]
+fn relative_luminance(c: [u8; 3]) -> f32 {
+    0.2126 * srgb_to_linear(c[0]) + 0.7152 * srgb_to_linear(c[1]) + 0.0722 * srgb_to_linear(c[2])
+}
+
+/// WCAG contrast ratio between two opaque colors — 1.0 (identical) to 21.0
+/// (black on white).
+#[inline]
+fn contrast_ratio(a: [u8; 3], b: [u8; 3]) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Raise `fg` until it reaches `target` contrast against `bg`, by stepping it
+/// toward white on a dark background or toward black on a light one — the
+/// direction that can actually gain contrast. Bounded to 8 steps so the cost
+/// per cell stays flat; the last step IS the endpoint, so this always returns
+/// the best available color even when the target is unreachable (e.g. 21:1
+/// against mid-grey).
+///
+/// Callers must skip this entirely when `target <= 1.0`: every color pair
+/// already clears 1.0, so the pass would be pure cost.
+fn enforce_min_contrast(fg: [u8; 3], bg: [u8; 3], target: f32) -> [u8; 3] {
+    if contrast_ratio(fg, bg) >= target {
+        return fg;
+    }
+    let end: [u8; 3] = if relative_luminance(bg) < 0.5 {
+        [0xFF, 0xFF, 0xFF]
+    } else {
+        [0x00, 0x00, 0x00]
+    };
+    const STEPS: u8 = 8;
+    for step in 1..=STEPS {
+        let t = step as f32 / STEPS as f32;
+        let mix = |a: u8, b: u8| -> u8 {
+            (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+        };
+        let candidate = [mix(fg[0], end[0]), mix(fg[1], end[1]), mix(fg[2], end[2])];
+        if contrast_ratio(candidate, bg) >= target {
+            return candidate;
+        }
+    }
+    end
 }
 
 /// Map an xterm 256-color index to RGB. Caller guarantees `i >= 16`.
@@ -285,6 +378,17 @@ pub struct TermFrameInfo {
     /// the raw cursor sat on the trailing WIDE_CHAR_SPACER half (mirrors
     /// alacritty's RenderableCursor), so consumers never see the spacer col.
     pub cursor_wide: bool,
+    /// The character sitting in the (spacer-normalized) cursor cell, with the
+    /// empty-cell NUL mapped to a space. Read only by the OPAQUE block cursor,
+    /// which re-draws it in `cursor_accent` on top of the block — the
+    /// translucent block leaves the row's own glyph showing through and
+    /// ignores this.
+    pub cursor_char: char,
+    /// SGR weight/slant of the cursor cell, so the re-drawn inverse glyph
+    /// matches the row's own rendering of it. Without these a bold prompt
+    /// visibly thins out under the cursor as it moves across.
+    pub cursor_bold: bool,
+    pub cursor_italic: bool,
 }
 
 /// One Buffer per visible row, kept across frames so cosmic-text can reuse
@@ -317,6 +421,10 @@ pub struct CellGrid {
     /// snapshot_rows / sync_from_term can resolve named/indexed ansi colors
     /// against the current theme. Updated atomically by `Renderer::set_theme`.
     theme: Arc<RwLock<ThemeColors>>,
+    /// Shared rendering tunables, same ownership + snapshot discipline as
+    /// `theme`. Updated atomically by `Renderer::set_render_opts`, which also
+    /// invalidates every row so the resolved colors re-derive.
+    tuning: Arc<RwLock<RenderTuning>>,
     /// P6a scrollback: `display_offset` of the most recent `sync_from_term`.
     /// The per-row caches above are keyed by ROW SLOT (viewport position),
     /// not by grid line — when the offset changes, `rotate_for_offset_delta`
@@ -336,6 +444,7 @@ impl CellGrid {
         cols: usize,
         rows: usize,
         theme: Arc<RwLock<ThemeColors>>,
+        tuning: Arc<RwLock<RenderTuning>>,
     ) -> Self {
         let row_buffers = (0..rows).map(|_| Vec::new()).collect();
         let row_runs = vec![Vec::new(); rows];
@@ -350,6 +459,7 @@ impl CellGrid {
             row_block,
             row_valid: vec![false; rows],
             theme,
+            tuning,
             last_display_offset: 0,
             damage: DamageTracker::new(rows),
             cols,
@@ -638,11 +748,14 @@ impl CellGrid {
         term: &Arc<Mutex<Term<TermListener>>>,
     ) -> (Vec<RowSnapshot>, TermFrameInfo) {
         // Snapshot theme under its own (very short) read lock. We copy the
-        // struct (~88 bytes, or ~1KB once a theme carries an adapted 256-color
+        // struct (~100 bytes, or ~1KB once a theme carries an adapted 256-color
         // palette) so the inner loop reads from the stack — avoids
         // holding both the term mutex and a theme RwLock guard at once and
         // keeps the per-cell hot path allocation-free.
         let theme = *self.theme.read().expect("theme poisoned");
+        // Same discipline as the theme: one short read lock, copied by value
+        // so the per-cell loop reads the stack copy.
+        let tuning = *self.tuning.read().expect("tuning poisoned");
         let fg_default_rgb = rgb3(theme.foreground);
         let bg_default_rgb = rgb3(theme.background);
         let selection_rgb = {
@@ -656,6 +769,9 @@ impl CellGrid {
                 SELECTION_BG_FALLBACK
             }
         };
+        // User preset extras (`None` = pre-preset behavior; see ThemeColors).
+        let selection_fg_rgb = theme.selection_foreground.map(rgb3);
+        let link_rgb = theme.link.map(rgb3);
         let t = term.lock().expect("CellGrid::snapshot_rows: term poisoned");
         let grid = t.grid();
         let visible_rows = grid.screen_lines();
@@ -678,9 +794,11 @@ impl CellGrid {
         {
             cursor_col -= 1;
         }
-        let cursor_wide = grid[cursor_point.line][Column(cursor_col)]
-            .flags
-            .contains(Flags::WIDE_CHAR);
+        let cursor_cell = &grid[cursor_point.line][Column(cursor_col)];
+        let cursor_wide = cursor_cell.flags.contains(Flags::WIDE_CHAR);
+        let cursor_char = if cursor_cell.c == '\u{0}' { ' ' } else { cursor_cell.c };
+        let cursor_bold = cursor_cell.flags.contains(Flags::BOLD);
+        let cursor_italic = cursor_cell.flags.contains(Flags::ITALIC);
         let info = TermFrameInfo {
             cursor_col,
             cursor_line: cursor_point.line.0,
@@ -689,6 +807,9 @@ impl CellGrid {
             show_cursor: t.mode().contains(TermMode::SHOW_CURSOR),
             display_offset: grid.display_offset(),
             cursor_wide,
+            cursor_char,
+            cursor_bold,
+            cursor_italic,
         };
         // P6a scrollback: visible row y shows grid line (y - display_offset).
         // Offset 0 pins the live screen (lines 0..screen_lines); scrolling
@@ -762,7 +883,11 @@ impl CellGrid {
                 let ch = if cell.c == '\u{0}' { ' ' } else { cell.c };
                 let mut attrs = CellAttrs::from_flags(cell.flags);
                 // Always-on link underline (see the row pre-pass above).
-                if link_cols[x] {
+                // OSC 8 hyperlinked cells join the link set ONLY when a user
+                // link color exists — without one they keep their historical
+                // no-visual treatment (hover cursor + click only).
+                let osc8_link = link_rgb.is_some() && cell.hyperlink().is_some();
+                if link_cols[x] || osc8_link {
                     attrs.underline = true;
                 }
                 let inverse = cell.flags.contains(Flags::INVERSE);
@@ -785,7 +910,15 @@ impl CellGrid {
 
                 // Resolve fg / bg with INVERSE applied AFTER color resolution
                 // (xterm semantics: swap the two final colors, not the inputs).
-                let raw_fg = ansi_color_to_rgb(cell.fg, fg_default_rgb, &theme);
+                // `boldIsBright` rewrites the fg ATTRIBUTE first, so a bold
+                // cell picks the bright slot before any swap — and only when
+                // the attribute is one of the eight that has a bright twin.
+                let cell_fg = if tuning.bold_uses_bright && cell.flags.contains(Flags::BOLD) {
+                    bright_ansi(cell.fg)
+                } else {
+                    cell.fg
+                };
+                let raw_fg = ansi_color_to_rgb(cell_fg, fg_default_rgb, &theme);
                 let raw_bg = ansi_color_to_rgb_bg(cell.bg, &theme);
                 let (mut fg, mut bg) = if inverse { (raw_bg, raw_fg) } else { (raw_fg, raw_bg) };
 
@@ -797,7 +930,17 @@ impl CellGrid {
                 // on the resolved colour, so a dim span splits from its
                 // neighbours here without needing a flag in `CellAttrs`.
                 if cell.flags.contains(Flags::DIM) {
-                    fg = dim_toward(fg, bg);
+                    fg = dim_toward(fg, bg, tuning.dim_strength);
+                }
+
+                // User link color: recolor link text (auto-detected + OSC 8).
+                // The underline/strike runs copy `fg`, so the underline
+                // follows for free. Applied BEFORE the selection override so
+                // selected links keep the selection's own contrast pair.
+                if link_cols[x] || osc8_link {
+                    if let Some(lc) = link_rgb {
+                        fg = lc;
+                    }
                 }
 
                 // R3-mouse: selection overlay. Override bg to the selection
@@ -809,7 +952,24 @@ impl CellGrid {
                     let p = Point::new(line, Column(x));
                     if range.contains(p) {
                         bg = selection_rgb;
+                        // Selection foreground repaints selected TEXT too —
+                        // xterm parity (every theme authors it; native used
+                        // to silently drop it).
+                        if let Some(sf) = selection_fg_rgb {
+                            fg = sf;
+                        }
                     }
+                }
+
+                // Minimum contrast, applied LAST — after dim, the link
+                // recolor and the selection override, so it judges the pair
+                // that actually reaches the screen. Gated on the tunable
+                // being on: every color pair already clears 1.0, and the
+                // luminance maths is the most expensive thing in this loop.
+                // Runs are keyed on the resolved color, so a lifted cell
+                // splits from its neighbours for free.
+                if tuning.min_contrast > 1.0 {
+                    fg = enforce_min_contrast(fg, bg, tuning.min_contrast);
                 }
 
                 // --- block elements (U+2580..=U+259F) ---
@@ -1062,13 +1222,20 @@ impl CellGrid {
     /// Underlines sit just below the baseline; strikeouts cross the x-height.
     /// Both use the same instance buffer as bg quads but get drawn AFTER the
     /// glyph pass so they overlay the glyph pixels.
-    pub fn build_decor_quads(&self, cell_w: f32, line_h: f32) -> Vec<QuadInstance> {
-        // Heuristic placement against the line box. cosmic-text doesn't give
-        // us a baseline directly here; ~85% from top for underline and ~55%
-        // for strikeout is a reasonable monospace default.
-        let underline_y_offset = (line_h * 0.85).round();
-        let strike_y_offset = (line_h * 0.55).round();
-        let thickness = (line_h * 0.07).max(1.0).round();
+    /// `text_h` is the UNSCALED glyph line box — equal to `line_h` at the
+    /// default line-height scale, smaller once the user stretches the cell.
+    /// cosmic-text centers the glyph box inside the taller line box
+    /// (`centering_offset` in its `LayoutRunIter`), so the decorations have to
+    /// be measured against the glyph box and shifted by the same amount, or an
+    /// underline drifts toward the bottom of the cell as the scale grows.
+    pub fn build_decor_quads(&self, cell_w: f32, line_h: f32, text_h: f32) -> Vec<QuadInstance> {
+        // Heuristic placement against the glyph box. cosmic-text doesn't give
+        // us a baseline directly here; ~85% from its top for underline and
+        // ~55% for strikeout is a reasonable monospace default.
+        let center_offset = ((line_h - text_h) * 0.5).max(0.0);
+        let underline_y_offset = (center_offset + text_h * 0.85).round();
+        let strike_y_offset = (center_offset + text_h * 0.55).round();
+        let thickness = (text_h * 0.07).max(1.0).round();
         let mut out = Vec::new();
         for (y, segs) in self.row_decor.iter().enumerate() {
             for s in segs {

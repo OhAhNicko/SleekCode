@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SearchAddon } from "@xterm/addon-search";
 import type { EditorView } from "@codemirror/view";
 import {
@@ -35,13 +35,33 @@ const XTERM_DECORATIONS = {
 
 /**
  * Drives the @xterm/addon-search API and returns PaneSearchBar-compatible state.
+ * `matchBackground`/`activeMatchBackground` let a user color preset recolor the
+ * decorations; omitted = the long-standing Carbon-derived defaults above.
  */
-export function useXtermSearch(searchAddon: SearchAddon | null): PaneSearchState {
+export function useXtermSearch(
+  searchAddon: SearchAddon | null,
+  matchBackground?: string,
+  activeMatchBackground?: string,
+): PaneSearchState {
   const [query, setQuery] = useState("");
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [regex, setRegex] = useState(false);
   const [wholeWord, setWholeWord] = useState(false);
   const [matchInfo, setMatchInfo] = useState<{ index: number; count: number } | null>(null);
+
+  const decorations = useMemo(
+    () => ({
+      ...XTERM_DECORATIONS,
+      ...(matchBackground ? { matchBackground } : {}),
+      ...(activeMatchBackground
+        ? {
+            activeMatchBackground,
+            activeMatchColorOverviewRuler: activeMatchBackground,
+          }
+        : {}),
+    }),
+    [matchBackground, activeMatchBackground],
+  );
 
   useEffect(() => {
     if (!searchAddon) return;
@@ -63,9 +83,9 @@ export function useXtermSearch(searchAddon: SearchAddon | null): PaneSearchState
       regex,
       wholeWord,
       incremental,
-      decorations: XTERM_DECORATIONS,
+      decorations,
     }),
-    [caseSensitive, regex, wholeWord],
+    [caseSensitive, regex, wholeWord, decorations],
   );
 
   useEffect(() => {
