@@ -47,6 +47,26 @@ export default function PaneNotificationStack() {
     if (!notifEnabled) usePaneNotificationsStore.getState().clear();
   }, [notifEnabled]);
 
+  // Seeing the pane IS the acknowledgement: when a card's pane becomes the
+  // active pane of the active tab with the window visible, the user is looking
+  // at the very thing the card announced — drop it. Same condition that stops
+  // these cards being CREATED (isSuppressed in lib/pane-notifications.ts), so
+  // a card can never coexist with its pane being on screen.
+  useEffect(() => {
+    if (cards.length === 0) return;
+    const sweep = () => {
+      const s = useAppStore.getState();
+      if (s.windowMinimized) return;
+      for (const c of usePaneNotificationsStore.getState().cards) {
+        if (s.terminals[c.terminalId]?.isActive === true && c.tabId === s.activeTabId) {
+          usePaneNotificationsStore.getState().dismiss(c.id);
+        }
+      }
+    };
+    sweep();
+    return useAppStore.subscribe(sweep);
+  }, [cards]);
+
   useOverlayViewportPopup({
     id: "pane-notif-stack",
     kind: "notif-stack",
