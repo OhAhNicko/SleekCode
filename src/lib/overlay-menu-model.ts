@@ -27,7 +27,7 @@ export type OverlayMenuItem = {
    * `checked`) — the open menu just re-renders with the new state.
    *
    * Use for toggles that the user may want to flip and then keep using the
-   * menu (the "Native renderer (beta)" mode row in the Add-pane dropdown).
+   * menu (e.g. the editor tab's "Word wrap" row in providers/rows.ts).
    * Without this, a toggle click ran the normal close path — overlay drops
    * the popup, the window hides, and the app blinks while the user has to
    * reopen the menu just to see the checkmark.

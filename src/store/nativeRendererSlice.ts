@@ -37,18 +37,14 @@ export interface NativeRendererSlice {
    *  SINGLE request — approving re-issues the download so it can pick up cookies,
    *  which a one-time-token or POST download will not survive. */
   browserAskBeforeDownload: boolean;
+  /** Default ON: native (wgpu) panes are the standard renderer. Turning it off
+   *  falls back to xterm panes. */
   useNativeTerminalRenderer: boolean;
-  /** EXPERIMENTAL: native panes share ONE wgpu Device/Queue instead of building
-   *  their own. Much faster to open a pane; the trade is that a lost device
-   *  takes every shared pane with it rather than one. Applies to panes opened
-   *  after the flip — existing panes keep the device they were built with. */
+  /** Native panes share ONE wgpu Device/Queue instead of building their own.
+   *  Much faster to open a pane; the trade is that a lost device takes every
+   *  shared pane with it rather than one. Applies to panes opened after the
+   *  flip — existing panes keep the device they were built with. */
   nativeSharedGpu: boolean;
-  /** Sticky mode for the tab bar's "Add pane" dropdown: when on, panes opened
-   * from that menu are stamped `renderer: "native"` on their layout leaf. Does
-   * NOT touch already-open panes — that's the whole point of it existing
-   * alongside `useNativeTerminalRenderer`. Ctrl+clicking a menu item forces
-   * native for that one pane regardless of this flag. */
-  newPaneNativeRenderer: boolean;
   /** Velocity acceleration when dragging a native pane's fullscreen-TUI
    * scrollbar: a fast drag scrolls further per pixel than a slow one. On by
    * default (it makes a long scrollback reachable without a huge drag), but
@@ -111,7 +107,6 @@ export interface NativeRendererSlice {
   setBrowserAskBeforeDownload: (v: boolean) => void;
   setUseNativeTerminalRenderer: (v: boolean) => void;
   setNativeSharedGpu: (v: boolean) => void;
-  setNewPaneNativeRenderer: (v: boolean) => void;
   setScrollThumbAcceleration: (v: boolean) => void;
   setWheelAcceleration: (v: boolean) => void;
   setTermProgram: (v: string) => void;
@@ -137,9 +132,8 @@ export const createNativeRendererSlice: StateCreator<
   browserIframeForLocalhost: true,
   browserViewFocused: false,
   browserAskBeforeDownload: true,
-  useNativeTerminalRenderer: false,
-  nativeSharedGpu: false,
-  newPaneNativeRenderer: false,
+  useNativeTerminalRenderer: true,
+  nativeSharedGpu: true,
   scrollThumbAcceleration: true,
   wheelAcceleration: true,
   termProgram: "ghostty",
@@ -170,8 +164,6 @@ export const createNativeRendererSlice: StateCreator<
   setUseNativeTerminalRenderer: (v) => set({ useNativeTerminalRenderer: v }),
 
   setNativeSharedGpu: (v) => set({ nativeSharedGpu: v }),
-
-  setNewPaneNativeRenderer: (v) => set({ newPaneNativeRenderer: v }),
 
   setScrollThumbAcceleration: (v) => set({ scrollThumbAcceleration: v }),
 
