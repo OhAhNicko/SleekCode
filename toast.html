@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MADE Notifications</title>
+    <style>
+      /* Custom OS notification popup window. OPAQUE on purpose — transparent
+         WebView2 windows are a documented minefield here (see the overlay
+         saga); the window is sized to the card column, so the background IS
+         the app surface color and there is nothing to see through. */
+      html,
+      body,
+      #toast-root {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        background: var(--ezy-bg, #131313);
+        overflow: hidden;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="toast-root"></div>
+    <script type="module" src="/src/toast-main.tsx"></script>
+  </body>
+</html>

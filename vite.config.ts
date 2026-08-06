@@ -13,14 +13,16 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react(), tailwindcss()],
   clearScreen: false,
-  // Multi-page build: the main app (index.html → main.tsx) plus the transparent
-  // overlay webview (overlay.html → overlay-main.tsx). The overlay has its own
-  // entry so it never runs main.tsx's import-time side effects.
+  // Multi-page build: the main app (index.html → main.tsx), the transparent
+  // overlay webview (overlay.html → overlay-main.tsx) and the custom
+  // notification popup window (toast.html → toast-main.tsx). The extra
+  // entries never run main.tsx's import-time side effects.
   build: {
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("./index.html", import.meta.url)),
         overlay: fileURLToPath(new URL("./overlay.html", import.meta.url)),
+        toast: fileURLToPath(new URL("./toast.html", import.meta.url)),
       },
     },
   },

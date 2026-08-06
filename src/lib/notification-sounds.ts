@@ -166,27 +166,41 @@ const RECIPES: Record<SoundId, Recipe> = {
   },
 };
 
-function play(id: SoundId, volume: number): void {
+/** Gap between the two hits of the urgent (permission) variant. Long enough
+ * that even the slowest recipe's attack reads as two distinct strikes, short
+ * enough to phrase as ONE "da-DA" event rather than two notifications. */
+const URGENT_GAP_S = 0.22;
+
+function play(id: SoundId, volume: number, hits: 1 | 2 = 1): void {
   try {
     const ctx = ensureContext();
     // Perceptual curve: linear gain makes 50% sound nearly as loud as 100%.
     const v = Math.max(0, Math.min(100, volume));
     master!.gain.setValueAtTime(Math.pow(v / 100, 2), ctx.currentTime);
-    RECIPES[id](ctx, master!, ctx.currentTime + 0.01);
+    const t0 = ctx.currentTime + 0.01;
+    RECIPES[id](ctx, master!, t0);
+    if (hits === 2) RECIPES[id](ctx, master!, t0 + URGENT_GAP_S);
   } catch (e) {
     console.debug("[notif-sound] play failed", e);
   }
 }
 
+/** What produced the notification — shapes the sound. One rule, learnable by
+ * ear: same melody = same project; DOUBLED = the CLI is blocked waiting on
+ * input. "finished" and "jira" both play the base recipe once — informational
+ * events must never masquerade as a blocked CLI. */
+export type NotifSoundKind = "permission" | "finished" | "jira";
+
 /** Notification-time playback. The caller has already checked notifSoundEnabled. */
-export function playNotificationSound(id: SoundId): void {
-  play(id, useAppStore.getState().notifSoundVolume ?? 50);
+export function playNotificationSound(id: SoundId, kind: NotifSoundKind = "finished"): void {
+  play(id, useAppStore.getState().notifSoundVolume ?? 50, kind === "permission" ? 2 : 1);
 }
 
 /** Preview from the picker/settings. Plays even while the sound toggle is OFF
- * (auditioning is an explicit user action), but respects the volume setting. */
-export function previewSound(id: SoundId): void {
-  play(id, useAppStore.getState().notifSoundVolume ?? 50);
+ * (auditioning is an explicit user action), but respects the volume setting.
+ * `urgent` auditions the permission double-hit. */
+export function previewSound(id: SoundId, urgent = false): void {
+  play(id, useAppStore.getState().notifSoundVolume ?? 50, urgent ? 2 : 1);
 }
 
 /**

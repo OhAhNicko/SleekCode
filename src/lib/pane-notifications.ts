@@ -91,7 +91,7 @@ const SNIPPET_RETRY_MS = 1000;
  * Desktop Windows grants this without a prompt; the dance is for API parity. */
 let osNotifGranted: boolean | null = null;
 
-async function sendOsToast(title: string, body: string): Promise<void> {
+export async function sendOsToast(title: string, body: string): Promise<void> {
   try {
     if (osNotifGranted === null) {
       osNotifGranted = await isPermissionGranted();
@@ -112,12 +112,14 @@ async function sendOsToast(title: string, body: string): Promise<void> {
 function isSuppressed(terminalId: string, tabId: string): boolean {
   const s = useAppStore.getState();
   // The active pane of the active tab is already on screen — announcing it is
-  // noise. Unless the window is minimized: then nothing is on screen, and the
-  // card must survive for the user's return.
+  // noise. Unless the window is minimized OR the app is unfocused: then the
+  // user isn't looking at it, the card must exist (it is what the custom OS
+  // popup window shows), and it survives for their return.
   return (
     s.terminals[terminalId]?.isActive === true &&
     tabId === s.activeTabId &&
-    !s.windowMinimized
+    !s.windowMinimized &&
+    s.appWindowFocused
   );
 }
 
@@ -211,10 +213,11 @@ export async function addPaneNotification(src: PaneNotificationSource): Promise<
   // Per-project sound, resolved lazily on first notification. Deliberately
   // AFTER add() — the sound announces a card that actually exists. Minimized
   // is NOT suppressed (isSuppressed exempts it — that's the point). Toggle
-  // off skips even the lazy assignment.
+  // off skips even the lazy assignment. The kind doubles the hit for
+  // permission prompts — blocked-on-input must be tellable by ear.
   if (fresh.notifSoundEnabled ?? true) {
     const soundId = ensureProjectSound(tab.workingDir || src.workingDir);
-    if (soundId) playNotificationSound(soundId);
+    if (soundId) playNotificationSound(soundId, kind);
   }
 
   // Auto-switch while minimized (Settings > Terminal > Notifications):

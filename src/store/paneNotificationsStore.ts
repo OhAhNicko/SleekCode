@@ -17,10 +17,15 @@ export interface PaneNotifCard {
   /** Session name when known — tells panes of the same project apart. */
   paneLabel?: string;
   body: string;
-  kind: "permission" | "finished";
+  kind: "permission" | "finished" | "jira";
   /** Absolute finish time, 24h "HH:MM" — stamped at event receipt. */
   timeHHMM: string;
   addedAt: number;
+  /** Overrides the default focus-the-pane click. Verb string parsed by
+   *  PaneNotificationStack's onAction — currently `jira-open:<KEY>` (Jira
+   *  update cards, whose "pane" is synthetic). Resolved before `add`, like
+   *  everything else on the card. */
+  clickAction?: string;
 }
 
 /** Backstop only — one card per pane already bounds the stack naturally. */

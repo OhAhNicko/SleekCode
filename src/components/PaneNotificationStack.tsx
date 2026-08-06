@@ -13,27 +13,20 @@
  * single keepalive + ghost-sweep entry instead of one per card.
  */
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useOverlayViewportPopup } from "../lib/useOverlayToast";
 import { usePaneNotificationsStore } from "../store/paneNotificationsStore";
 import { useAnyModalOpen } from "../store/modalCoordinationSlice";
 import { useAppStore } from "../store";
-import { getTerminalFocus } from "../store/terminalSlice";
-import { findAllTerminalLeaves } from "../lib/layout-utils";
-
-/** Retry delay for focusing a pane that is still mounting (hibernated tab
- * wake respawns its panes a tick after setActiveTab). */
-const FOCUS_RETRY_MS = 350;
+import { handleNotifCardAction } from "../lib/notif-actions";
 
 export default function PaneNotificationStack() {
   const cards = usePaneNotificationsStore((s) => s.cards);
-  const dismiss = usePaneNotificationsStore((s) => s.dismiss);
   const notifEnabled = useAppStore((s) => s.notifEnabled ?? true);
   const notifAutoDismiss = useAppStore((s) => s.notifAutoDismiss ?? false);
   const notifAutoDismissSeconds = useAppStore((s) => s.notifAutoDismissSeconds ?? 30);
   // Hook order must be stable — called unconditionally (see useOverlayPopupAnchor).
   const anyModalOpen = useAnyModalOpen();
-  const retryTimerRef = useRef(0);
 
   // useOverlayViewportPopup has no modal suppression of its own; without this
   // gate the stack would paint over fullscreen modals in the overlay window,
@@ -56,7 +49,9 @@ export default function PaneNotificationStack() {
     if (cards.length === 0) return;
     const sweep = () => {
       const s = useAppStore.getState();
-      if (s.windowMinimized) return;
+      // "On screen" now also requires the app to be FOCUSED — with the custom
+      // OS popups, an unfocused MADE counts as "the user can't see it".
+      if (s.windowMinimized || !s.appWindowFocused) return;
       for (const c of usePaneNotificationsStore.getState().cards) {
         if (s.terminals[c.terminalId]?.isActive === true && c.tabId === s.activeTabId) {
           usePaneNotificationsStore.getState().dismiss(c.id);
@@ -79,49 +74,14 @@ export default function PaneNotificationStack() {
         timeHHMM: c.timeHHMM,
         body: c.body,
         kind: c.kind,
+        hasAction: !!c.clickAction,
       })),
     },
     onAction: (action) => {
       // Outside-click "dismissal" — meaningless for a persistent stack.
       if (action === "__dismiss__") return;
-      const sep = action.indexOf(":");
-      if (sep === -1) return;
-      const verb = action.slice(0, sep);
-      const cardId = action.slice(sep + 1);
-      if (verb === "dismiss") {
-        dismiss(cardId);
-        return;
-      }
-      if (verb !== "focus") return;
-      const card = usePaneNotificationsStore.getState().cards.find((c) => c.id === cardId);
-      dismiss(cardId);
-      if (!card) return;
-
-      const s = useAppStore.getState();
-      const tab = s.tabs.find((t) => t.id === card.tabId);
-      // Tab gone, or the pane was closed since the card fired — nothing to go to.
-      if (!tab?.layout) return;
-      if (!findAllTerminalLeaves(tab.layout).some((l) => l.terminalId === card.terminalId)) return;
-
-      if (s.activeTabId !== tab.id) s.setActiveTab(tab.id); // wakes hibernated tabs
-      const focusPane = () =>
-        window.dispatchEvent(
-          new CustomEvent("made:focus-terminal", {
-            detail: { terminalId: card.terminalId, takeFocus: true },
-          }),
-        );
-      requestAnimationFrame(() => {
-        focusPane();
-        // Hibernated wake: panes register their focus fn a tick later — one
-        // bounded retry so the click still lands.
-        if (!getTerminalFocus(card.terminalId)) {
-          if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-          retryTimerRef.current = window.setTimeout(() => {
-            retryTimerRef.current = 0;
-            focusPane();
-          }, FOCUS_RETRY_MS);
-        }
-      });
+      // Shared with the custom OS popup window (lib/notif-actions).
+      handleNotifCardAction(action);
     },
   });
 
@@ -137,13 +97,6 @@ export default function PaneNotificationStack() {
     );
     return () => timers.forEach((t) => clearTimeout(t));
   }, [cards, notifAutoDismiss, notifAutoDismissSeconds]);
-
-  useEffect(
-    () => () => {
-      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-    },
-    [],
-  );
 
   return null;
 }

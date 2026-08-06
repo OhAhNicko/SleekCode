@@ -1,6 +1,7 @@
 mod browser_view;
 mod cli_install;
 mod debug_log;
+mod jira_poll;
 mod preview_proxy;
 mod pty;
 mod native_term;
@@ -110,6 +111,8 @@ mod win32_border {
     const WM_DPICHANGED: u32 = 0x02E0;
     const WM_DWMCOMPOSITIONCHANGED: u32 = 0x031E;
     const WM_DWMCOLORIZATIONCOLORCHANGED: u32 = 0x0320;
+    const WM_SETTINGCHANGE: u32 = 0x001A;
+    const WM_THEMECHANGED: u32 = 0x031A;
     const WM_APP: u32 = 0x8000;
     const WM_SYNC_WEBVIEW_BOUNDS: u32 = WM_APP + 0x4D;
     const WM_FORCE_NC_RECOMPOSITE: u32 = WM_APP + 0x4E;
@@ -146,12 +149,6 @@ mod win32_border {
         rc_monitor: RECT,
         rc_work: RECT,
         dw_flags: u32,
-    }
-
-    #[repr(C)]
-    struct NCCALCSIZE_PARAMS {
-        rgrc: [RECT; 3],
-        lppos: *mut c_void,
     }
 
     struct BorderSubclassState {
@@ -589,6 +586,25 @@ mod win32_border {
         if msg == WM_SETTEXT || msg == WM_SETICON {
             return def_subclass_proc_with_redraw_lock(hwnd, msg, wparam, lparam);
         }
+        //    WM_SETTINGCHANGE / WM_THEMECHANGED: tao's handler (inside
+        //    DefSubclassProc) calls update_theme → refresh_titlebar_theme_color,
+        //    which ACTIVELY sets DWMWA_USE_IMMERSIVE_DARK_MODE = FALSE whenever
+        //    its probe reports a light OS theme (tao 0.34.6 dark_mode.rs; the
+        //    registry-read failure path is unwrap_or(false) = light, and
+        //    high-contrast forces light) — silently arming a LIGHT-theme frame
+        //    for the next transient DWM composite. The re-assert must run
+        //    AFTER the chain returns: the generic reapply list below runs
+        //    before DefSubclassProc, so tao's flip would win. tauri.conf.json
+        //    pins "theme": "Dark" so tao's flip normally never fires; this arm
+        //    is the in-proc backstop.
+        if msg == WM_SETTINGCHANGE || msg == WM_THEMECHANGED {
+            let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+            apply_border_suppression(hwnd);
+            if !state_ptr.is_null() {
+                queue_nc_recomposite(hwnd, &mut *state_ptr);
+            }
+            return result;
+        }
 
         // Re-apply DWMWA_COLOR_NONE + immersive dark on every window state
         // change. Windows can reset DWMWA_BORDER_COLOR during transitions
@@ -693,6 +709,11 @@ mod win32_border {
                         // without keyboard focus; kick it into the webview
                         // once the restore burst settles.
                         SetTimer(hwnd, FOCUS_KICK_TIMER, FOCUS_KICK_MS, std::ptr::null());
+                        // Restore-from-taskbar plays a DWM animation with no
+                        // WM_EXITSIZEMOVE and no retry armed — settle it.
+                        // (Covers restore-to-maximized too; duplicate queues
+                        // collapse via recomposite_pending + timer reset.)
+                        queue_nc_recomposite(hwnd, state);
                     }
                     state.was_minimized = false;
                     queue_webview_bounds_sync(hwnd, state);
@@ -703,6 +724,14 @@ mod win32_border {
                 if wparam == SIZE_MAXIMIZED {
                     if !state_ptr.is_null() {
                         let state = &mut *state_ptr;
+                        // Transition edge only (mirrors was_minimized): plain
+                        // maximize plays a DWM animation that outlasts the
+                        // synchronous re-assert, and no retry was armed here —
+                        // a stale default frame stuck until the next geometry
+                        // change. (maximize→restore already queues below.)
+                        if !state.was_maximized {
+                            queue_nc_recomposite(hwnd, state);
+                        }
                         state.was_maximized = true;
                     }
                     let corner_pref = DWMWCP_DONOTROUND;
@@ -741,9 +770,17 @@ mod win32_border {
             }
         }
 
-        if msg == WM_NCCALCSIZE && wparam == 1 {
-            let params = &mut *(lparam as *mut NCCALCSIZE_PARAMS);
-            let r = &mut params.rgrc[0];
+        // Both wparam forms are claimed: wparam==1 passes NCCALCSIZE_PARAMS,
+        // wparam==0 a bare RECT — rgrc[0] sits at offset 0, so one pointer
+        // serves both (Chromium's HWNDMessageHandler relies on the same
+        // aliasing). A wparam==0 pass MUST NOT reach DefWindowProc: tao keeps
+        // WS_CAPTION|WS_SYSMENU on the live style of every undecorated
+        // top-level window, so DefWindowProc would carve a caption-height NC
+        // strip at the top that the swallowed WM_NCPAINT/UAH handlers then
+        // never repaint — a default light title-bar band over the dark app.
+        // (The overlay guard already claims both forms; main was asymmetric.)
+        if msg == WM_NCCALCSIZE {
+            let r = &mut *(lparam as *mut RECT);
             // Resolve the monitor from the PROPOSED rect, not the current window
             // position — during maximize/display transitions they can disagree.
             let monitor = MonitorFromRect(r as *const RECT, MONITOR_DEFAULTTONEAREST);
@@ -821,12 +858,18 @@ mod win32_border {
                 was_maximized: false,
                 last_synced_px: None,
             });
+            let state_ptr = Box::into_raw(state);
             SetWindowSubclass(
                 hwnd,
                 Some(subclass_proc),
                 SUBCLASS_ID,
-                Box::into_raw(state) as usize,
+                state_ptr as usize,
             );
+            // The window-state plugin restores size/position/maximized —
+            // with a DWM animation for a previously-maximized session —
+            // BEFORE this subclass existed, and nothing corrected whatever
+            // default frame that composited. One settle pass now.
+            queue_nc_recomposite(hwnd, &mut *state_ptr);
 
             // 4) Align the initial WebView2 bounds with the new client rect.
             //    No WS_THICKFRAME is added: the native sizing frame is exactly
@@ -849,6 +892,162 @@ fn minimize_from_maximized(window: tauri::Window) {
 #[tauri::command]
 fn minimize_from_maximized() {
     // No-op on non-Windows — custom minimize only needed for Windows frameless windows
+}
+
+/// Win32 glue for the custom notification popup window ("toast" label).
+/// Self-contained externs, same pattern as overlay::win32 — the popup is a
+/// plain opaque top-level window, so none of the border/NC machinery applies.
+#[cfg(target_os = "windows")]
+mod toast_win32 {
+    use std::ffi::c_void;
+
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_EX_NOACTIVATE: isize = 0x0800_0000;
+    const SPI_GETWORKAREA: u32 = 0x0030;
+    const SWP_NOACTIVATE: u32 = 0x0010;
+    const SWP_SHOWWINDOW: u32 = 0x0040;
+    const SW_HIDE: i32 = 0;
+    const SW_RESTORE: i32 = 9;
+    const HWND_TOPMOST: isize = -1;
+
+    #[repr(C)]
+    struct RECT {
+        left: i32,
+        top: i32,
+        right: i32,
+        bottom: i32,
+    }
+
+    extern "system" {
+        fn GetWindowLongPtrW(hwnd: *mut c_void, index: i32) -> isize;
+        fn SetWindowLongPtrW(hwnd: *mut c_void, index: i32, value: isize) -> isize;
+        fn SystemParametersInfoW(action: u32, param: u32, pv: *mut c_void, ini: u32) -> i32;
+        fn SetWindowPos(
+            hwnd: *mut c_void,
+            insert_after: *mut c_void,
+            x: i32,
+            y: i32,
+            cx: i32,
+            cy: i32,
+            flags: u32,
+        ) -> i32;
+        fn ShowWindow(hwnd: *mut c_void, cmd: i32) -> i32;
+        fn IsIconic(hwnd: *mut c_void) -> i32;
+        fn SetForegroundWindow(hwnd: *mut c_void) -> i32;
+    }
+
+    /// WS_EX_NOACTIVATE — clicking a toast must never steal focus from the
+    /// app the user is working in (clicking a CARD deliberately does, via
+    /// main_window_restore_focus — an explicit user intent).
+    pub fn prepare(hwnd: isize) {
+        unsafe {
+            let h = hwnd as *mut c_void;
+            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+            SetWindowLongPtrW(h, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE);
+        }
+    }
+
+    /// Size + park the popup at the bottom-right of the PRIMARY work area and
+    /// show it WITHOUT activation. `w`/`h` are physical px.
+    pub fn place(hwnd: isize, w: i32, h: i32) {
+        unsafe {
+            let mut rc = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rc as *mut RECT as *mut c_void, 0);
+            let x = rc.right - w - 16;
+            let y = rc.bottom - h - 16;
+            SetWindowPos(
+                hwnd as *mut c_void,
+                HWND_TOPMOST as *mut c_void,
+                x,
+                y,
+                w,
+                h,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+        }
+    }
+
+    pub fn hide(hwnd: isize) {
+        unsafe {
+            ShowWindow(hwnd as *mut c_void, SW_HIDE);
+        }
+    }
+
+    /// Restore + foreground the main window — the click-through target when
+    /// the user acts on a toast card. Legitimate SetForegroundWindow: it runs
+    /// in direct response to the user's click on OUR window.
+    pub fn restore_focus_main(hwnd: isize) {
+        unsafe {
+            let h = hwnd as *mut c_void;
+            if IsIconic(h) != 0 {
+                ShowWindow(h, SW_RESTORE);
+            }
+            SetForegroundWindow(h);
+        }
+    }
+}
+
+/// Place + show the custom notification popup ("toast" window) at the
+/// work-area corner. `width`/`height` are LOGICAL px from the toast webview's
+/// self-measurement; scaled here by its monitor scale factor.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn toast_window_place(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    use tauri::Manager;
+    let Some(win) = app.get_webview_window("toast") else {
+        return Err("toast window missing".into());
+    };
+    let scale = win.scale_factor().unwrap_or(1.0);
+    let hwnd = win.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    toast_win32::place(
+        hwnd,
+        (width * scale).round() as i32,
+        (height * scale).round() as i32,
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn toast_window_hide(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(win) = app.get_webview_window("toast") {
+        if let Ok(h) = win.hwnd() {
+            toast_win32::hide(h.0 as isize);
+        }
+    }
+    Ok(())
+}
+
+/// Restore + foreground the MAIN window (toast card click-through).
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn main_window_restore_focus(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let Some(win) = app.get_webview_window("main") else {
+        return Err("main window missing".into());
+    };
+    let hwnd = win.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    toast_win32::restore_focus_main(hwnd);
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn toast_window_place(_width: f64, _height: f64) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn toast_window_hide() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn main_window_restore_focus() -> Result<(), String> {
+    Ok(())
 }
 
 /// Register this app's AppUserModelID under HKCU so WinRT toast notifications
@@ -1401,6 +1600,42 @@ async fn ssh_read_file(
     String::from_utf8(output.stdout).map_err(|e| format!("File is not valid UTF-8: {}", e))
 }
 
+/// Binary-safe counterpart to `ssh_read_file` for images: reads a REMOTE file
+/// over ssh and returns it as a data URI, so remote images can open in the
+/// screenshot viewer. Same 16MB cap and ext→mime map as `read_image_data_uri`.
+#[tauri::command]
+async fn ssh_read_image_data_uri(
+    host: String,
+    username: String,
+    path: String,
+    identity_file: Option<String>,
+) -> Result<String, String> {
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
+    let mime = image_mime_for(&path).ok_or_else(|| "Unsupported image type".to_string())?;
+
+    let user_host = format!("{}@{}", username, host);
+    let mut cmd = Command::new("ssh");
+    cmd.args(["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5"]);
+    if let Some(ref key) = identity_file {
+        cmd.args(["-i", key]);
+    }
+    cmd.arg(&user_host);
+    cmd.arg(format!("cat -- {}", shell_escape(&path)));
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Failed to run ssh: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("SSH read failed: {}", stderr.trim()));
+    }
+    if output.stdout.len() > MAX_BYTES {
+        return Err(format!("Image too large ({} bytes)", output.stdout.len()));
+    }
+    Ok(format!("data:{};base64,{}", mime, STANDARD.encode(&output.stdout)))
+}
+
 #[tauri::command]
 async fn ssh_write_file(
     host: String,
@@ -1613,25 +1848,32 @@ async fn read_image_data_uri(path: String) -> Result<String, String> {
         return Err(format!("Image too large ({} bytes)", meta.len()));
     }
 
-    let mime = match std::path::Path::new(&path)
+    let mime = image_mime_for(&path).ok_or_else(|| "Unsupported image type".to_string())?;
+
+    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;
+    Ok(format!("data:{};base64,{}", mime, STANDARD.encode(&bytes)))
+}
+
+/// Ext→mime map shared by the local and SSH image readers. Wider than the
+/// capture pipeline's png/jpg/bmp list — the viewer only has to render,
+/// never header-parse.
+fn image_mime_for(path: &str) -> Option<&'static str> {
+    match std::path::Path::new(path)
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .as_deref()
     {
-        Some("png") => "image/png",
-        Some("jpg") | Some("jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("svg") => "image/svg+xml",
-        Some("bmp") => "image/bmp",
-        Some("ico") => "image/x-icon",
-        Some("avif") => "image/avif",
-        _ => return Err("Unsupported image type".to_string()),
-    };
-
-    let bytes = std::fs::read(&path).map_err(|e| format!("Failed to read image: {}", e))?;
-    Ok(format!("data:{};base64,{}", mime, STANDARD.encode(&bytes)))
+        Some("png") => Some("image/png"),
+        Some("jpg") | Some("jpeg") => Some("image/jpeg"),
+        Some("gif") => Some("image/gif"),
+        Some("webp") => Some("image/webp"),
+        Some("svg") => Some("image/svg+xml"),
+        Some("bmp") => Some("image/bmp"),
+        Some("ico") => Some("image/x-icon"),
+        Some("avif") => Some("image/avif"),
+        _ => None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -4077,7 +4319,7 @@ async fn open_folder(path: String) -> Result<(), String> {
 /// Returns the file path and a data URI for thumbnail preview.
 #[tauri::command]
 async fn save_clipboard_image() -> Result<ClipboardImageResult, String> {
-    let dir = std::env::temp_dir().join("made");
+    let dir = screenshots::made_temp_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create temp dir: {}", e))?;
 
@@ -4204,7 +4446,7 @@ async fn save_annotated_image(base64_png: String) -> Result<ClipboardImageResult
         return Err("Image too large (max 20MB)".to_string());
     }
 
-    let dir = std::env::temp_dir().join("made");
+    let dir = screenshots::made_temp_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create temp dir: {}", e))?;
 
     let timestamp = std::time::SystemTime::now()
@@ -4227,7 +4469,7 @@ async fn save_annotated_image(base64_png: String) -> Result<ClipboardImageResult
 #[tauri::command]
 async fn cleanup_clipboard_images(max_age_secs: Option<u64>) -> Result<(), String> {
     let max_age = std::time::Duration::from_secs(max_age_secs.unwrap_or(86400));
-    let dir = std::env::temp_dir().join("made");
+    let dir = screenshots::made_temp_dir();
 
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
@@ -8289,10 +8531,11 @@ fn merge_claude_setting(path: &std::path::Path, key: &str, value: serde_json::Va
     std::fs::write(path, pretty).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-/// Locate `~/.claude/settings.json` inside WSL over the \\wsl.localhost UNC
+/// Locate `~/<dot_dir>/settings.json` inside WSL over the \\wsl.localhost UNC
 /// path. Mirrors `resolve_wsl_session_jsonl`: the distro and the linux user are
-/// both unknown, so candidates are enumerated.
-fn resolve_wsl_claude_settings(distro: Option<&str>) -> Option<std::path::PathBuf> {
+/// both unknown, so candidates are enumerated. The dot dir must already exist
+/// (no CLI installed → no config to edit).
+fn resolve_wsl_home_settings(distro: Option<&str>, dot_dir: &str) -> Option<std::path::PathBuf> {
     let distro_name = distro.unwrap_or("").trim().to_string();
     let mut found: Option<std::path::PathBuf> = None;
     let mut try_distro = |d: &str, found: &mut Option<std::path::PathBuf>| {
@@ -8301,7 +8544,7 @@ fn resolve_wsl_claude_settings(distro: Option<&str>) -> Option<std::path::PathBu
             let base = std::path::PathBuf::from(format!("{}\\{}\\home", prefix, d));
             if let Ok(users) = std::fs::read_dir(&base) {
                 for u in users.filter_map(|e| e.ok()) {
-                    let dir = u.path().join(".claude");
+                    let dir = u.path().join(dot_dir);
                     if dir.is_dir() {
                         *found = Some(dir.join("settings.json"));
                         return;
@@ -8319,11 +8562,59 @@ fn resolve_wsl_claude_settings(distro: Option<&str>) -> Option<std::path::PathBu
     }
     if found.is_none() {
         if let Ok(home) = std::env::var("HOME") {
-            let dir = std::path::PathBuf::from(&home).join(".claude");
+            let dir = std::path::PathBuf::from(&home).join(dot_dir);
             if dir.is_dir() { found = Some(dir.join("settings.json")); }
         }
     }
     found
+}
+
+fn resolve_wsl_claude_settings(distro: Option<&str>) -> Option<std::path::PathBuf> {
+    resolve_wsl_home_settings(distro, ".claude")
+}
+
+/// Read `general.enableNotifications` from Gemini's `settings.json`.
+/// `Ok(None)` = file or key absent — Gemini's default, notifications OFF.
+/// `Err` only on unparseable JSON (same contract as `merge_claude_setting`).
+fn read_gemini_notifications(path: &std::path::Path) -> Result<Option<bool>, String> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(r) if !r.trim().is_empty() => r,
+        _ => return Ok(None),
+    };
+    let root: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| format!("settings.json is not valid JSON: {e}"))?;
+    Ok(root
+        .get("general")
+        .and_then(|g| g.get("enableNotifications"))
+        .and_then(|v| v.as_bool()))
+}
+
+/// Set `general.enableNotifications` in Gemini's `settings.json`, preserving
+/// everything else. Same conservative contract as `merge_claude_setting`:
+/// unparseable or non-object JSON is left completely alone.
+fn merge_gemini_notifications(path: &std::path::Path, enabled: bool) -> Result<(), String> {
+    let mut root: serde_json::Value = match std::fs::read_to_string(path) {
+        Ok(raw) if !raw.trim().is_empty() => match serde_json::from_str(&raw) {
+            Ok(v) => v,
+            Err(e) => return Err(format!("settings.json is not valid JSON, leaving it untouched: {e}")),
+        },
+        _ => serde_json::json!({}),
+    };
+    let Some(obj) = root.as_object_mut() else {
+        return Err("settings.json is not a JSON object, leaving it untouched".to_string());
+    };
+    let general = obj
+        .entry("general".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    let Some(gobj) = general.as_object_mut() else {
+        return Err("settings.json 'general' is not an object, leaving it untouched".to_string());
+    };
+    gobj.insert("enableNotifications".to_string(), serde_json::Value::Bool(enabled));
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
+    std::fs::write(path, pretty).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 /* ------------------------------------------------------------------ */
@@ -9135,6 +9426,60 @@ async fn set_claude_notif_channel_native(channel: String) -> Result<String, Stri
     Ok(path.display().to_string())
 }
 
+/// Gemini desktop notifications (`general.enableNotifications`) — read, WSL.
+/// `None` = key absent, which Gemini treats as OFF.
+#[tauri::command]
+async fn get_gemini_notifications(distro: Option<String>) -> Result<Option<bool>, String> {
+    let Some(path) = resolve_wsl_home_settings(distro.as_deref(), ".gemini") else {
+        return Err("could not locate ~/.gemini in WSL".to_string());
+    };
+    read_gemini_notifications(&path)
+}
+
+/// Gemini desktop notifications — read, Windows native.
+#[tauri::command]
+async fn get_gemini_notifications_windows() -> Result<Option<bool>, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let path = std::path::PathBuf::from(home).join(".gemini").join("settings.json");
+    read_gemini_notifications(&path)
+}
+
+/// Gemini desktop notifications — read, macOS/Linux native.
+#[tauri::command]
+async fn get_gemini_notifications_native() -> Result<Option<bool>, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let path = std::path::PathBuf::from(home).join(".gemini").join("settings.json");
+    read_gemini_notifications(&path)
+}
+
+/// Gemini desktop notifications — write, WSL.
+#[tauri::command]
+async fn set_gemini_notifications(enabled: bool, distro: Option<String>) -> Result<String, String> {
+    let Some(path) = resolve_wsl_home_settings(distro.as_deref(), ".gemini") else {
+        return Err("could not locate ~/.gemini in WSL".to_string());
+    };
+    merge_gemini_notifications(&path, enabled)?;
+    Ok(path.display().to_string())
+}
+
+/// Gemini desktop notifications — write, Windows native.
+#[tauri::command]
+async fn set_gemini_notifications_windows(enabled: bool) -> Result<String, String> {
+    let home = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE not set".to_string())?;
+    let path = std::path::PathBuf::from(home).join(".gemini").join("settings.json");
+    merge_gemini_notifications(&path, enabled)?;
+    Ok(path.display().to_string())
+}
+
+/// Gemini desktop notifications — write, macOS/Linux native.
+#[tauri::command]
+async fn set_gemini_notifications_native(enabled: bool) -> Result<String, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let path = std::path::PathBuf::from(home).join(".gemini").join("settings.json");
+    merge_gemini_notifications(&path, enabled)?;
+    Ok(path.display().to_string())
+}
+
 /// All user prompts for a session (Windows native).
 #[tauri::command]
 async fn read_session_prompts_windows(project_path: String, session_id: String) -> Result<Vec<String>, String> {
@@ -9705,7 +10050,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_unlock_keychain, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, cli_install::cli_probe, cli_install::cli_install_start, cli_install::cli_install_cancel, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, set_app_icon_variant, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_status_ssh, jira_mcp_install, jira_mcp_install_direct, jira_mcp_install_ssh, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, port_check, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_render_opts, native_term::native_term_list_mono_fonts, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_unlock_keychain, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_read_image_data_uri, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, cli_install::cli_probe, cli_install::cli_install_start, cli_install::cli_install_cancel, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, set_app_icon_variant, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, get_gemini_notifications, get_gemini_notifications_windows, get_gemini_notifications_native, set_gemini_notifications, set_gemini_notifications_windows, set_gemini_notifications_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_status_ssh, jira_mcp_install, jira_mcp_install_direct, jira_mcp_install_ssh, jira_poll::jira_poll, jira_poll::jira_test_auth, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, toast_window_place, toast_window_hide, main_window_restore_focus, port_check, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_render_opts, native_term::native_term_list_mono_fonts, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
         .setup(|app| {
             // A3: build the shared wgpu Instance+Adapter on a background thread
             // NOW, so the one-time driver/DXGI enumeration (~534ms measured on
@@ -9777,6 +10122,7 @@ pub fn run() {
                         fn AllocConsole() -> i32;
                         fn GetConsoleWindow() -> *mut std::ffi::c_void;
                         fn ShowWindow(hwnd: *mut std::ffi::c_void, cmd: i32) -> i32;
+                        fn DisableProcessWindowsGhosting();
                     }
                     unsafe {
                         AllocConsole();
@@ -9784,6 +10130,14 @@ pub fn run() {
                         if !hwnd.is_null() {
                             ShowWindow(hwnd, 0); // SW_HIDE
                         }
+                        // A ≥5s UI-thread stall makes DWM swap in its hang-ghost
+                        // replica — a separate OS-drawn HWND wearing the STOCK
+                        // light frame skeleton that no subclass or DWM attribute
+                        // on the real window can touch. Per-process, must run on
+                        // a GUI thread before any hang; cannot be re-enabled.
+                        // Trade-off: a truly hung window freezes as-is instead
+                        // of getting the movable "(Not Responding)" ghost.
+                        DisableProcessWindowsGhosting();
                     }
                 }
 
@@ -9925,6 +10279,41 @@ pub fn run() {
                     }
                 }
 
+                // Custom OS notification popups: a tiny OPAQUE always-on-top
+                // window at the work-area corner that keeps showing the
+                // notification cards while the main window is minimized or
+                // unfocused. Deliberately OWNERLESS — an owned window hides
+                // with its owner's minimize, which is exactly the moment this
+                // one must appear. Opaque sidesteps the transparent-window
+                // minefield documented on the overlay above. Hidden until
+                // OsToastHost places it (toast_window_place).
+                let toast_res = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "toast",
+                    tauri::WebviewUrl::App("toast.html".into()),
+                )
+                .title("MADE")
+                .decorations(false)
+                .shadow(false)
+                .resizable(false)
+                .skip_taskbar(true)
+                .always_on_top(true)
+                .focused(false)
+                .visible(false)
+                .inner_size(340.0, 120.0)
+                .build();
+                match toast_res {
+                    Ok(toast) => {
+                        if let Ok(h) = toast.hwnd() {
+                            // WS_EX_NOACTIVATE: clicks act without stealing
+                            // focus from whatever app the user is in — the
+                            // same contract as the overlay's popups.
+                            toast_win32::prepare(h.0 as isize);
+                        }
+                    }
+                    Err(e) => eprintln!("[made] toast window creation failed: {e}"),
+                }
+
                 // Keep a persistent WSL process alive — boots the WSL VM and
                 // keeps it warm so subsequent wsl.exe calls are fast.
                 // Uses /bin/cat which blocks on stdin indefinitely.
@@ -9948,8 +10337,18 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|_app_handle, _event| {
+            // Debug builds keep their clipboard cache in %TEMP%\made-dev and
+            // leave nothing behind on a clean exit. RunEvent::Exit — not
+            // ExitRequested, which can be vetoed and may fire while the app
+            // lives on — is the last event before the loop ends.
+            #[cfg(debug_assertions)]
+            if matches!(_event, tauri::RunEvent::Exit) {
+                screenshots::cleanup_dev_temp_dir();
+            }
+        });
 }
 
 #[cfg(test)]

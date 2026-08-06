@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useAppStore } from "./store";
 import { getTheme, SEMANTIC_DIFF_ADD, SEMANTIC_DIFF_REMOVE, accentTone, deriveAccentShades, ON_ACCENT_DARK, ON_ACCENT_LIGHT } from "./lib/themes";
-import { uiFontStack, UI_FONT_SIZE_DEFAULT } from "./lib/ui-fonts";
+import { uiFontStack, uiFontTracking, UI_FONT_SIZE_DEFAULT } from "./lib/ui-fonts";
 import { fetchReleaseNotes } from "./lib/release-notes";
 import TabBar from "./components/TabBar";
 import VerticalTabBar from "./components/VerticalTabBar";
@@ -46,6 +46,7 @@ import PromptHistorySearch from "./components/PromptHistorySearch";
 import DevServerTerminalHost from "./components/DevServerTerminalHost";
 import DevServerRestoreToast from "./components/DevServerRestoreToast";
 import PaneNotificationStack from "./components/PaneNotificationStack";
+import OsToastHost from "./components/OsToastHost";
 import SoundPickerHost from "./components/SoundPickerHost";
 import { installAudioUnlock } from "./lib/notification-sounds";
 import SettingsPane from "./components/SettingsPane";
@@ -61,6 +62,7 @@ import NewJiraTicketModal from "./components/NewJiraTicketModal";
 import TooltipHost from "./components/TooltipHost";
 import WslHealthCheck from "./components/WslHealthCheck";
 import HibernationEngine from "./components/HibernationEngine";
+import JiraNotifyEngine from "./components/JiraNotifyEngine";
 import UpdateBanner from "./components/UpdateBanner";
 import ChangelogModal from "./components/ChangelogModal";
 import VoiceHud from "./components/VoiceHud";
@@ -772,6 +774,10 @@ export default function App() {
       // persisted id outlives the font list, and an unknown one must fall back
       // to the default instead of writing "undefined" into the var.
       "--ezy-font-ui": uiFontStack(uiFont),
+      // Tracking is part of the face, so it ships on the same channel and from
+      // the same registry entry — a font that reached the overlay without its
+      // spacing would be the family bug over again, one property down.
+      "--ezy-tracking-ui": uiFontTracking(uiFont),
       // Not a style — a setting, carried on the only channel that reaches the
       // overlay. Its own tooltips (menu rows, session picker) read it at hover
       // time, so "Hover tooltips: off" means off everywhere, not everywhere
@@ -1419,9 +1425,11 @@ export default function App() {
       <JiraMcpStartupCheck />
       <WslHealthCheck />
       <HibernationEngine />
+      <JiraNotifyEngine />
       <DevServerTerminalHost />
       <DevServerRestoreToast />
       <PaneNotificationStack />
+      <OsToastHost />
       <SoundPickerHost />
       {!onboardingCompleted && (
         <WelcomeModal
