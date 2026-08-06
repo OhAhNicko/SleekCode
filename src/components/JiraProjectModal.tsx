@@ -3,6 +3,8 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../store";
 import { useModal } from "../store/modalCoordinationSlice";
 import { createJiraProjectAt, jiraFileExists } from "../lib/jira-project";
+import { defaultJiraSiteIn } from "../lib/jira-sites";
+import { jiraSiteName } from "../lib/jira";
 import RemoteFileBrowser from "./RemoteFileBrowser";
 import { MODAL_BACKDROP } from "../lib/modal-layout";
 
@@ -17,9 +19,11 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
   useModal("jira-project-modal");
   const servers = useAppStore((s) => s.servers);
   const jiraTemplatePath = useAppStore((s) => s.defaultJiraClaudeMdPath);
+  const jiraSites = useAppStore((s) => s.jiraSites ?? []);
 
   // "local" or a RemoteServer id.
   const [locationId, setLocationId] = useState<string>("local");
+  const [siteId, setSiteId] = useState<string>(() => defaultJiraSiteIn(useAppStore.getState()));
   const [folder, setFolder] = useState("");
   const [showRemoteBrowser, setShowRemoteBrowser] = useState(false);
   const [addTemplate, setAddTemplate] = useState(!!jiraTemplatePath);
@@ -81,13 +85,14 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
         serverId: remoteServer?.id,
         claudeTemplatePath:
           addTemplate && jiraTemplatePath && !hasExistingClaudeMd ? jiraTemplatePath : undefined,
+        siteId: siteId || undefined,
       });
       onClose();
     } catch (e) {
       setError(String(e));
       setCreating(false);
     }
-  }, [canCreate, folder, remoteServer, addTemplate, jiraTemplatePath, hasExistingClaudeMd, onClose]);
+  }, [canCreate, folder, remoteServer, addTemplate, jiraTemplatePath, hasExistingClaudeMd, siteId, onClose]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -192,6 +197,37 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
                     This server needs a working SSH key first — set one up in the Servers panel.
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Jira site — only when there is a real choice to make. One site
+                per project; new tickets in this project open on it. */}
+            {jiraSites.length > 1 && (
+              <div style={{ marginBottom: 14 }}>
+                <div style={labelStyle}>Jira site</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {jiraSites.map((origin) => (
+                    <div
+                      key={origin}
+                      onClick={() => setSiteId(origin)}
+                      data-tooltip={origin}
+                      style={{
+                        padding: "5px 12px",
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                        fontWeight: 600,
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                        cursor: "pointer",
+                        color: siteId === origin ? "#fff" : "var(--ezy-text-muted)",
+                        backgroundColor: siteId === origin ? "var(--ezy-accent-dim)" : "var(--ezy-surface)",
+                        border: `1px solid ${siteId === origin ? "var(--ezy-accent-dim)" : "var(--ezy-border)"}`,
+                        transition: "all 120ms ease",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {jiraSiteName(origin) ?? origin}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 

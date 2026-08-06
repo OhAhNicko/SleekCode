@@ -24,6 +24,7 @@ export type SurfaceRole =
   | "browser"
   | "sidebar"
   | "jira-ticket"
+  | "jira-assigned"
   | "game-sidebar";
 
 export type SurfaceActions = Record<string, (id: string) => void>;

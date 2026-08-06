@@ -572,8 +572,17 @@ export default function BrowserPreview({
       setHistoryIndex((prev) => prev + 1);
       setUrl(target);
       setInputUrl(target);
+      // Native surface: navigate IMPERATIVELY, not just via the url-state
+      // effect. SPA sites (Jira) move between pages without MADE's url state
+      // ever changing, so an explicit navigation back to the CURRENT state
+      // value (the "Ticket home" button after browsing inside Jira) is a
+      // state no-op — the effect never fires and only the address bar moved.
+      if (browserViewId != null) {
+        lastNavigatedRef.current = target;
+        void browserViewNavigate(browserViewId, target).catch(() => {});
+      }
     },
-    [historyIndex],
+    [historyIndex, browserViewId],
   );
 
   // Native surface: history depth comes from the page's Navigation API
@@ -966,13 +975,26 @@ export default function BrowserPreview({
     track(
       subscribeBrowserNavigated(browserViewId, (e) => {
         setInputUrl(e.url);
-        // Learn the Jira site the first time one is seen, so a Jira project
-        // doesn't have to be told an address it could just watch you visit.
-        // Only fills a BLANK setting — never overrides a configured one.
+        // Learn Jira sites by watching you visit them. With NO sites at all,
+        // any Jira-looking origin seeds the list (first-run, as always). Once
+        // sites exist, a NEW origin is only added on the strong signal — an
+        // actual /browse/<KEY> ticket URL — so a stray atlassian.net homepage
+        // visit can never grow the list.
         const store = useAppStore.getState();
-        if (!store.jiraBaseUrl?.trim()) {
-          const origin = jiraOriginFromUrl(e.url);
-          if (origin) store.setJiraBaseUrl(origin);
+        const origin = jiraOriginFromUrl(e.url);
+        if (origin) {
+          const sites = store.jiraSites ?? [];
+          if (sites.length === 0) {
+            store.addJiraSite(origin);
+          } else if (!sites.includes(origin)) {
+            try {
+              if (/\/browse\/[A-Za-z][A-Za-z0-9_]*-\d+/.test(new URL(e.url).pathname)) {
+                store.addJiraSite(origin);
+              }
+            } catch {
+              /* unparseable URL — nothing to learn */
+            }
+          }
         }
       }),
     );

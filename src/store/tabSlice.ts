@@ -64,7 +64,10 @@ export interface TabSlice {
   tabs: Tab[];
   activeTabId: string;
   addTab: (name: string, workingDir: string, serverId?: string) => void;
-  addTabWithLayout: (name: string, workingDir: string, layout: PaneLayout | null, serverId?: string, options?: { isJiraProject?: boolean }) => string;
+  addTabWithLayout: (name: string, workingDir: string, layout: PaneLayout | null, serverId?: string, options?: { isJiraProject?: boolean; jiraSiteId?: string }) => string;
+  /** Jira project: re-point which site NEW tickets in this tab open on
+   *  (rail-header switcher; open pairs keep their persisted URLs). */
+  setTabJiraSite: (tabId: string, siteId: string) => void;
   removeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabLayout: (tabId: string, layout: PaneLayout | null) => void;
@@ -181,7 +184,7 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
     set((state) => ({
       tabs: [
         ...state.tabs,
-        { id: tabId, name, workingDir, layout, serverId, backend, isJiraProject: options?.isJiraProject } as Tab,
+        { id: tabId, name, workingDir, layout, serverId, backend, isJiraProject: options?.isJiraProject, jiraSiteId: options?.jiraSiteId } as Tab,
       ],
       activeTabId: tabId,
       ...(workingDir ? { lastActiveProjectPath: workingDir } : {}),
@@ -189,6 +192,11 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
     window.scrollTo(0, 0);
     return tabId;
   },
+
+  setTabJiraSite: (tabId, siteId) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, jiraSiteId: siteId } : t)),
+    })),
 
   removeTab: (tabId) => {
     if (tabId === DEV_SERVER_TAB_ID || tabId === SERVERS_TAB_ID || tabId === KANBAN_TAB_ID || tabId === SETTINGS_TAB_ID) return;

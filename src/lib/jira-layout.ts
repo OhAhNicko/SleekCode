@@ -16,6 +16,11 @@ export const jiraTermPaneId = (instKey: string) => `pane-jira-term-${instKey}`;
  *  back OUT of its id — the pane is all a BrowserPreview knows about itself. */
 export const JIRA_BROWSER_PANE_PREFIX = "pane-jira-browser-";
 export const jiraBrowserPaneId = (ticket: string) => `${JIRA_BROWSER_PANE_PREFIX}${ticket}`;
+/** Assigned-tab browser-only preview (never part of a pair, never in
+ *  tab.layout). A DISTINCT prefix keeps it out of pair detection and out of
+ *  the pasted-ticket logic, both of which key on the prefixes above. */
+export const JIRA_ASSIGNED_PANE_PREFIX = "pane-jira-assigned-";
+export const jiraAssignedPaneId = (ticket: string) => `${JIRA_ASSIGNED_PANE_PREFIX}${ticket}`;
 
 const CONTAINER_ID_PREFIX = "pane-jira-root-";
 const TERM_GROUP_PREFIX = "pane-jira-terms-";

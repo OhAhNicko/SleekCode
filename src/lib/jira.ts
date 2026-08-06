@@ -72,6 +72,23 @@ export function buildTicketUrl(baseUrl: string, ticket: string): string | null {
 }
 
 /**
+ * Human site label out of a base URL — "acme" for https://acme.atlassian.net,
+ * the bare host for self-hosted. Multi-site-ready on purpose: callers hand it
+ * ONE site and render per site; nothing in here assumes the global setting.
+ */
+export function jiraSiteName(baseUrl: string): string | null {
+  const b = baseUrl.trim();
+  if (!b) return null;
+  try {
+    const host = new URL(/^https?:\/\//i.test(b) ? b : `https://${b}`).hostname;
+    const m = host.match(/^([^.]+)\.atlassian\.net$/i);
+    return m ? m[1] : host;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Pull the site origin out of a URL that looks like Jira, for the base-URL
  * auto-discovery in the browser pane. Returns null for anything we are not
  * confident about — a wrong guess here silently sends every later ticket to the

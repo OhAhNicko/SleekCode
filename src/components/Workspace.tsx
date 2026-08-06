@@ -40,7 +40,12 @@ import {
   removeJiraInstanceTerm,
   jiraBaseTicket,
   jiraInstKeyOfTermPaneId,
+  jiraAssignedPaneId,
+  JIRA_ASSIGNED_PANE_PREFIX,
 } from "../lib/jira-layout";
+import { buildTicketUrl } from "../lib/jira";
+import { siteForTabIn, splitJiraQK } from "../lib/jira-sites";
+import { useJiraNotifyStore } from "../store/jiraNotifyStore";
 import JiraStackedPair from "./JiraStackedPair";
 import { resolveTicketColor } from "../lib/jira-colors";
 import { clearTicketForTerminal, nameTicketSession } from "../lib/jira-session";
@@ -116,6 +121,17 @@ export default function Workspace({ tab }: WorkspaceProps) {
   const jiraStacked = tab.isJiraProject && jiraSubticketMode === "stacked";
   const jiraStackCollapsed = useAppStore((s) => s.jiraStackCollapsed);
   const toggleJiraStackCollapsed = useAppStore((s) => s.toggleJiraStackCollapsed);
+  // Assigned-tab browser-only preview (Settings > Jira > "My assigned
+  // tickets"): a synthetic browser pane rendered OUTSIDE tab.layout — the
+  // pair-layout invariant (isJiraPairLayout migration above) must never see
+  // it, and an assigned ticket must not grow a CLI pane by being previewed.
+  const jiraAssignedMode = useAppStore((s) => s.jiraAssignedMode ?? false);
+  const tabSite = useAppStore((s) => (tab.isJiraProject ? siteForTabIn(s, tab) : ""));
+  const railTab = useJiraNotifyStore((s) =>
+    jiraAssignedMode ? (s.railTab[tab.id] ?? "tickets") : "tickets",
+  );
+  const assignedPreview = useJiraNotifyStore((s) => s.assignedPreview[tab.id]);
+  const assignedActive = tab.isJiraProject && jiraAssignedMode && railTab === "assigned";
   const displayJiraPair = useMemo(() => {
     if (!tab.isJiraProject || !tab.layout || !tab.selectedJiraTicket) return null;
     // Selection is an INSTANCE key ("SUPPORT-1" or "SUPPORT-1#2" for a
@@ -156,9 +172,12 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // once, and each of those panes has to count as "on screen" or its HWND
   // stays hidden and the pane renders as an empty box.
   const displayedJiraTerminalIds = useMemo(() => {
+    // Assigned preview fills the canvas: EVERY ticket pane must count as off
+    // screen, or its native HWND keeps painting over the preview.
+    if (assignedActive) return new Set<string>();
     if (!displayJiraPair) return null;
     return new Set(findAllTerminalLeaves(displayJiraPair).map((l) => l.terminalId));
-  }, [displayJiraPair]);
+  }, [displayJiraPair, assignedActive]);
 
   // Each ticket's Claude pane is tinted with its ticket color — the same
   // color the rail row's left edge shows. Null for non-Jira tabs keeps the
@@ -293,11 +312,21 @@ export default function Workspace({ tab }: WorkspaceProps) {
     return el;
   }, []);
 
-  // Active browser panes derived from layout (used to drive portal mounts)
-  const allBrowserPanes = useMemo(
-    () => (tab.layout ? findAllBrowserPanes(tab.layout) : []),
-    [tab.layout]
-  );
+  // Active browser panes derived from layout (used to drive portal mounts).
+  // The assigned preview rides in as a synthetic entry so the existing slot
+  // machinery (mount, position sync, reap) handles it with zero extra work.
+  const allBrowserPanes = useMemo(() => {
+    const panes = tab.layout ? findAllBrowserPanes(tab.layout) : [];
+    if (assignedActive && assignedPreview) {
+      // assignedPreview is a QUALIFIED key — the row's own site builds the
+      // URL (a foreign-site row previews its own site). Pane id keeps the
+      // bare key: only one preview exists per tab at a time.
+      const { siteId, key } = splitJiraQK(assignedPreview);
+      const url = buildTicketUrl(siteId || tabSite, key);
+      if (url) panes.push({ type: "browser", id: jiraAssignedPaneId(key), url });
+    }
+    return panes;
+  }, [tab.layout, assignedActive, assignedPreview, tabSite]);
 
   // Cleanup slots for removed browser panes
   useEffect(() => {
@@ -952,7 +981,9 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // A Jira project with no panes yet: the rail already offers "new ticket", so
   // the middle just says so. The generic launchers below would spawn panes that
   // aren't tickets, which would sit outside the rail's model entirely.
-  if (tab.isJiraProject && !displayJiraPair) {
+  // (Assigned mode falls through — its preview renders in the main return so
+  // the terminal portals stay mounted and background sessions keep running.)
+  if (tab.isJiraProject && !displayJiraPair && !assignedActive) {
     return withRail(
       <div
         className="h-full w-full flex items-center justify-center"
@@ -1042,7 +1073,33 @@ export default function Workspace({ tab }: WorkspaceProps) {
 
   return withRail(
     <div className="h-full w-full workspace-enter">
-      {jiraStacked && displayJiraPair ? (
+      {assignedActive ? (
+        assignedPreview ? (
+          // Placeholder the slot-sync effect positions the preview onto —
+          // same anchor idiom as the layout's browser panes.
+          <div
+            className="h-full w-full"
+            style={{ backgroundColor: "var(--ezy-bg)" }}
+            data-browser-pane-id={jiraAssignedPaneId(splitJiraQK(assignedPreview).key)}
+          />
+        ) : (
+          <div
+            className="h-full w-full flex items-center justify-center"
+            style={{ backgroundColor: "var(--ezy-bg)" }}
+          >
+            <div
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                color: "var(--ezy-text-muted)",
+                textAlign: "center",
+                lineHeight: 1.6,
+              }}
+            >
+              Select an assigned ticket to preview it.
+            </div>
+          </div>
+        )
+      ) : jiraStacked && displayJiraPair ? (
         <JiraStackedPair
           tabId={tab.id}
           pair={displayJiraPair}
@@ -1058,11 +1115,13 @@ export default function Workspace({ tab }: WorkspaceProps) {
           getTerminalSlot={getSlotEl}
         />
       )}
-      <FloatingPanesLayer
-        layout={tab.isJiraProject ? displayJiraPair! : tab.layout}
-        callbacks={floatingCallbacks}
-        paneTitleFor={paneTitleFor}
-      />
+      {!assignedActive && (
+        <FloatingPanesLayer
+          layout={tab.isJiraProject ? displayJiraPair! : tab.layout}
+          callbacks={floatingCallbacks}
+          paneTitleFor={paneTitleFor}
+        />
+      )}
       {/* Render terminal panes via portals into persistent slot elements.
           This keeps them mounted even when the layout tree restructures. */}
       {allTerminalIds.map((termId) => {
@@ -1128,14 +1187,26 @@ export default function Workspace({ tab }: WorkspaceProps) {
           Keeps the iframe alive when the layout tree restructures. */}
       {allBrowserPanes.map((pane) => {
         const slotEl = getBrowserSlotEl(pane.id);
+        const isAssignedPreview = pane.id.startsWith(JIRA_ASSIGNED_PANE_PREFIX);
         return createPortal(
           <BrowserPreview
             initialUrl={pane.url}
             linkedTabId={pane.linkedTabId}
-            onClose={() => handlePaneClose(pane.id)}
+            onClose={() =>
+              // The assigned preview lives outside tab.layout — closing it
+              // just clears the selection, never a layout edit.
+              isAssignedPreview
+                ? useJiraNotifyStore.getState().setAssignedPreview(tab.id, undefined)
+                : handlePaneClose(pane.id)
+            }
             paneId={pane.id}
             // Jira ticket browsers are reading surfaces — strip dev tooling.
-            chrome={tab.isJiraProject && pane.id.startsWith("pane-jira-browser-") ? "minimal" : "full"}
+            chrome={
+              tab.isJiraProject &&
+              (pane.id.startsWith("pane-jira-browser-") || isAssignedPreview)
+                ? "minimal"
+                : "full"
+            }
           />,
           slotEl,
           pane.id

@@ -14,6 +14,7 @@ import { useAppStore } from "../store";
 import type { PaneLayout, ProjectSession } from "../types";
 import { setPendingPrompt, clearPendingPrompt } from "../store/terminalSlice";
 import { rememberTicketForTerminal, clearTicketForTerminal, parkedTicketName } from "./jira-session";
+import { defaultJiraSiteIn, siteForTab } from "./jira-sites";
 import { generateTerminalId } from "./layout-utils";
 import {
   addJiraTermToPair,
@@ -90,6 +91,9 @@ export interface CreateJiraProjectOptions {
    *  when the folder already has a CLAUDE.md — Jira projects point at existing
    *  repos, so an existing file always wins. */
   claudeTemplatePath?: string;
+  /** Which Jira site this project's tickets live on. Defaults to the default
+   *  site (one site per project by design). */
+  siteId?: string;
 }
 
 export type JiraTemplateOutcome = "written" | "skipped-exists" | "none";
@@ -131,11 +135,19 @@ export async function createJiraProjectAt(
   }
 
   const folder = opts.path.split(/[\\/]/).filter(Boolean).pop() || "Jira";
+  const siteId = opts.siteId || defaultJiraSiteIn(store);
   const tabId = store.addTabWithLayout(`Jira · ${folder}`, opts.path, null, opts.serverId, {
     isJiraProject: true,
+    jiraSiteId: siteId || undefined,
   });
 
-  store.addRecentProject({ path: opts.path, name: folder, serverId: opts.serverId, isJira: true });
+  store.addRecentProject({
+    path: opts.path,
+    name: folder,
+    serverId: opts.serverId,
+    isJira: true,
+    jiraSiteId: siteId || undefined,
+  });
   return { tabId, template };
 }
 
@@ -254,7 +266,10 @@ export function openJiraTicket(tabId: string, opts: OpenTicketOptions): void {
     // shared by every instance.
     store.updateTabLayout(tabId, addJiraTermToPair(tab.layout, opts.ticket, term));
   } else {
-    const url = buildTicketUrl(store.jiraBaseUrl, opts.ticket) ?? "about:blank";
+    // The tab's site is baked into the pair's browser URL here — and the URL
+    // persists with the layout, which is what lets open pairs keep their site
+    // when the project is later re-pointed.
+    const url = buildTicketUrl(siteForTab(tab), opts.ticket) ?? "about:blank";
     const pair = buildJiraPair(opts.ticket, term, url, store.jiraClaudeSide ?? "left");
     store.updateTabLayout(tabId, appendJiraPair(tab.layout, pair));
   }
@@ -415,6 +430,6 @@ export function navigateToTicket(tabId: string, ticket: string): void {
   }
   // No pair open for this ticket (closed session row) — open it externally
   // rather than mutating the pair layout.
-  const url = buildTicketUrl(store.jiraBaseUrl, ticket);
+  const url = buildTicketUrl(siteForTab(tab), ticket);
   if (url) window.open(url, "_blank", "noopener,noreferrer");
 }

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
-import { isTicketKey, normalizeTicketKey, normalizeJiraBaseUrl } from "../lib/jira";
+import { isTicketKey, normalizeTicketKey } from "../lib/jira";
 import type { JiraCli } from "../lib/jira-mcp";
 import { MODAL_BACKDROP } from "../lib/modal-layout";
 
@@ -90,8 +90,7 @@ export default function NewJiraTicketModal() {
 
   const acronyms = useAppStore((s) => s.jiraAcronyms ?? []);
   const acronymCounts = useAppStore((s) => s.jiraAcronymCounts ?? {});
-  const jiraBaseUrl = useAppStore((s) => s.jiraBaseUrl ?? "");
-  const needsBaseUrl = !jiraBaseUrl.trim();
+  const needsBaseUrl = useAppStore((s) => (s.jiraSites ?? []).length === 0);
   const acronymBoxRef = useRef<HTMLDivElement>(null);
 
   // Quick-pick tiles: the 4 MOST-USED acronyms, EXCLUDING the one already in
@@ -167,7 +166,8 @@ export default function NewJiraTicketModal() {
       if (swedish !== store.jiraReplyInSwedish) store.setJiraReplyInSwedish(swedish);
       if (english !== store.jiraReplyInEnglish) store.setJiraReplyInEnglish(english);
       if (needsBaseUrl && baseUrlValue.trim()) {
-        store.setJiraBaseUrl(normalizeJiraBaseUrl(baseUrlValue));
+        // First site ever — addJiraSite normalizes and makes it the default.
+        store.addJiraSite(baseUrlValue);
       }
       if (cli !== store.jiraCli) store.setJiraCli(cli);
       if (modelByCli.claude !== store.jiraClaudeModel) store.setJiraClaudeModel(modelByCli.claude);

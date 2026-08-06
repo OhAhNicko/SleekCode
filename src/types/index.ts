@@ -227,6 +227,10 @@ export interface Tab {
   isJiraProject?: boolean;
   /** Jira project: which ticket's pane pair the canvas currently shows. */
   selectedJiraTicket?: string;
+  /** Jira project: the site this tab's tickets live on (normalized origin —
+   *  the site ID). Absent on legacy tabs → siteForTab falls back to the
+   *  project's site, then the default site. One site per tab by design. */
+  jiraSiteId?: string;
   isPinned?: boolean;
   customName?: string;
   serverId?: string;

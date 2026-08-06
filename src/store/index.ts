@@ -10,6 +10,7 @@ import { createSnippetSlice, type SnippetSlice } from "./snippetSlice";
 import { createHistorySlice, type HistorySlice } from "./historySlice";
 import { createSidebarSlice, type SidebarSlice } from "./sidebarSlice";
 import { createRecentProjectsSlice, type RecentProjectsSlice } from "./recentProjectsSlice";
+import { normalizeJiraBaseUrl } from "../lib/jira";
 import { createGameSlice, type GameSlice } from "./gameSlice";
 import { createSessionSlice, type SessionSlice } from "./sessionSlice";
 import { createAiTimeSlice, type AiTimeSlice } from "./aiTimeSlice";
@@ -94,7 +95,8 @@ export const useAppStore = create<AppStore>()(
         confirmQuit: state.confirmQuit,
         confirmReloadPanes: state.confirmReloadPanes,
         claudeNotifChannel: state.claudeNotifChannel,
-        jiraBaseUrl: state.jiraBaseUrl,
+        jiraSites: state.jiraSites,
+        jiraDefaultSiteId: state.jiraDefaultSiteId,
         jiraPromptTemplate: state.jiraPromptTemplate,
         jiraReplyInSwedish: state.jiraReplyInSwedish,
         jiraReplyInEnglish: state.jiraReplyInEnglish,
@@ -114,6 +116,14 @@ export const useAppStore = create<AppStore>()(
         jiraDetectPastedTickets: state.jiraDetectPastedTickets,
         jiraAutoSwitchToDetected: state.jiraAutoSwitchToDetected,
         jiraArchivedTicketAction: state.jiraArchivedTicketAction,
+        jiraApiEmail: state.jiraApiEmail,
+        jiraApiToken: state.jiraApiToken,
+        jiraMyAccountId: state.jiraMyAccountId,
+        jiraNotifEnabled: state.jiraNotifEnabled,
+        jiraAssignedMode: state.jiraAssignedMode,
+        jiraAssignedTickets: state.jiraAssignedTickets,
+        jiraTicketSnapshots: state.jiraTicketSnapshots,
+        jiraHeaderShow: state.jiraHeaderShow,
         codeReviewCollapseAll: state.codeReviewCollapseAll,
         perProjectEditor: state.perProjectEditor,
         editorWordWrap: state.editorWordWrap,
@@ -125,8 +135,10 @@ export const useAppStore = create<AppStore>()(
         notifAutoDismissSeconds: state.notifAutoDismissSeconds,
         notifAutoSwitchMinimized: state.notifAutoSwitchMinimized,
         notifSystemMinimized: state.notifSystemMinimized,
+        notifOsPopupsEnabled: state.notifOsPopupsEnabled,
         notifSoundEnabled: state.notifSoundEnabled,
         notifSoundVolume: state.notifSoundVolume,
+        geminiNotifSeeded: state.geminiNotifSeeded,
         openPanesInBackground: state.openPanesInBackground,
         wideGridLayout: state.wideGridLayout,
         redistributeOnClose: state.redistributeOnClose,
@@ -204,7 +216,6 @@ export const useAppStore = create<AppStore>()(
         browserAskBeforeDownload: state.browserAskBeforeDownload,
         useNativeTerminalRenderer: state.useNativeTerminalRenderer,
         nativeSharedGpu: state.nativeSharedGpu,
-        newPaneNativeRenderer: state.newPaneNativeRenderer,
         scrollThumbAcceleration: state.scrollThumbAcceleration,
         wheelAcceleration: state.wheelAcceleration,
         termProgram: state.termProgram,
@@ -290,6 +301,40 @@ export const useAppStore = create<AppStore>()(
               ? { ...p, serverCommands: [p.serverCommand] }
               : p,
           );
+        }
+
+        // One-shot migration (2026-08): multi-site Jira. The legacy scalar
+        // `jiraBaseUrl` becomes jiraSites[0] + the default. Legacy Jira
+        // projects/tabs/assigned rows are stamped with that site NOW, while
+        // the single-site truth is unambiguous — a later default-site change
+        // must not silently re-point old projects. Snapshots are NOT
+        // migrated: first poll rebaselines qualified keys silently, and the
+        // first clean prune drops the bare leftovers.
+        {
+          const legacyBase =
+            typeof persAny.jiraBaseUrl === "string" ? persAny.jiraBaseUrl.trim() : "";
+          if ((!state.jiraSites || state.jiraSites.length === 0) && legacyBase) {
+            state.jiraSites = [normalizeJiraBaseUrl(legacyBase)];
+          }
+          if (!state.jiraDefaultSiteId && state.jiraSites?.length) {
+            state.jiraDefaultSiteId = state.jiraSites[0];
+          }
+          const defSite = state.jiraDefaultSiteId ?? "";
+          if (defSite) {
+            if (Array.isArray(state.recentProjects)) {
+              state.recentProjects = state.recentProjects.map((p) =>
+                p.isJira && !p.jiraSiteId ? { ...p, jiraSiteId: defSite } : p,
+              );
+            }
+            filteredTabs = filteredTabs.map((t) =>
+              t.isJiraProject && !t.jiraSiteId ? { ...t, jiraSiteId: defSite } : t,
+            );
+            if (Array.isArray(state.jiraAssignedTickets)) {
+              state.jiraAssignedTickets = state.jiraAssignedTickets.map((t) =>
+                (t as { siteId?: string }).siteId ? t : { ...t, siteId: defSite },
+              );
+            }
+          }
         }
         filteredTabs = filteredTabs.map((t) => {
           if (t.backend !== "windows") return t;

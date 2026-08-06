@@ -4,6 +4,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { useJiraNotifyStore } from "../store/jiraNotifyStore";
 import { confirmAction, promptForInput } from "../lib/prompt-modal";
 import { getCachedDistro, clearWslCliCache, resolveWslCliPaths } from "../lib/wsl-cache";
 import { getTerminalActions } from "../lib/terminal-actions";
@@ -11,7 +12,12 @@ import { findAllTerminalIds } from "../lib/layout-utils";
 import { RELEASES_REPO } from "../lib/release-notes";
 import { open } from "@tauri-apps/plugin-dialog";
 import { KNOWN_TERM_PROGRAMS } from "../lib/terminal-config";
-import { setClaudeNotifChannel, type ClaudeNotifChannel } from "../lib/sessions-index";
+import {
+  setClaudeNotifChannel,
+  getGeminiNotifications,
+  setGeminiNotifications,
+  type ClaudeNotifChannel,
+} from "../lib/sessions-index";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
@@ -42,7 +48,7 @@ import {
   type JiraMcpStatus,
 } from "../lib/jira-mcp";
 import { pickExecShell } from "../lib/remote-cli-shells";
-import { normalizeJiraBaseUrl } from "../lib/jira";
+import { jiraSiteName } from "../lib/jira";
 import {
   AI_CLIS,
   AI_CLI_LABEL,
@@ -1018,7 +1024,10 @@ function Dropdown<T extends string>({
 }: {
   value: T;
   onChange: (v: T) => void;
-  options: { value: T; label: string }[];
+  /** `fontFamily` renders that row — and the closed button, when selected — in
+   *  its own face. Used by the UI-font picker, where the list is a set of
+   *  specimens and a font name set in some other font tells you nothing. */
+  options: { value: T; label: string; fontFamily?: string }[];
   width?: number;
   placeholder?: string;
 }) {
@@ -1097,7 +1106,7 @@ function Dropdown<T extends string>({
           // by side without looking mismatched.
           padding: "5px 8px",
           fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
-          fontFamily: "inherit",
+          fontFamily: current?.fontFamily ?? "inherit",
           textAlign: "left",
           color: current ? "var(--ezy-text)" : "var(--ezy-text-muted)",
           backgroundColor: "var(--ezy-surface)",
@@ -1170,6 +1179,7 @@ function Dropdown<T extends string>({
                 style={{
                   padding: "5px 10px",
                   fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                  fontFamily: o.fontFamily ?? "inherit",
                   cursor: "pointer",
                   whiteSpace: "nowrap",
                   overflow: "hidden",
@@ -1202,6 +1212,7 @@ function TextInput({
   onBlurValue,
   placeholder,
   monospace,
+  password,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -1210,10 +1221,12 @@ function TextInput({
   onBlurValue?: (v: string) => void;
   placeholder?: string;
   monospace?: boolean;
+  /** Masked input for secrets (the Jira API token). */
+  password?: boolean;
 }) {
   return (
     <input
-      type="text"
+      type={password ? "password" : "text"}
       value={value}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
@@ -1901,6 +1914,8 @@ export default function SettingsPane() {
   const notifAutoSwitchMinimized = useAppStore((s) => s.notifAutoSwitchMinimized ?? false);
   const setNotifAutoSwitchMinimized = useAppStore((s) => s.setNotifAutoSwitchMinimized);
   const notifSystemMinimized = useAppStore((s) => s.notifSystemMinimized ?? true);
+  const notifOsPopupsEnabled = useAppStore((s) => s.notifOsPopupsEnabled ?? true);
+  const setNotifOsPopupsEnabled = useAppStore((s) => s.setNotifOsPopupsEnabled);
   const setNotifSystemMinimized = useAppStore((s) => s.setNotifSystemMinimized);
   const notifSoundEnabled = useAppStore((s) => s.notifSoundEnabled ?? true);
   const setNotifSoundEnabled = useAppStore((s) => s.setNotifSoundEnabled);
@@ -1962,8 +1977,45 @@ export default function SettingsPane() {
   const setCommitMsgMode = useAppStore((s) => s.setCommitMsgMode);
   const shadowAiCli = useAppStore((s) => s.shadowAiCli ?? "claude");
   const setShadowAiCli = useAppStore((s) => s.setShadowAiCli);
-  const jiraBaseUrl = useAppStore((s) => s.jiraBaseUrl ?? "");
-  const setJiraBaseUrl = useAppStore((s) => s.setJiraBaseUrl);
+  const jiraSitesList = useAppStore((s) => s.jiraSites ?? []);
+  const jiraDefaultSiteId = useAppStore((s) => s.jiraDefaultSiteId ?? "");
+  const addJiraSite = useAppStore((s) => s.addJiraSite);
+  const removeJiraSite = useAppStore((s) => s.removeJiraSite);
+  const setJiraDefaultSite = useAppStore((s) => s.setJiraDefaultSite);
+  const jiraApiEmail = useAppStore((s) => s.jiraApiEmail ?? "");
+  const setJiraApiEmail = useAppStore((s) => s.setJiraApiEmail);
+  const jiraApiToken = useAppStore((s) => s.jiraApiToken ?? "");
+  const setJiraApiToken = useAppStore((s) => s.setJiraApiToken);
+  const jiraNotifEnabled = useAppStore((s) => s.jiraNotifEnabled ?? true);
+  const setJiraNotifEnabled = useAppStore((s) => s.setJiraNotifEnabled);
+  const jiraAssignedMode = useAppStore((s) => s.jiraAssignedMode ?? false);
+  const setJiraAssignedMode = useAppStore((s) => s.setJiraAssignedMode);
+  const jiraHeaderShow = useAppStore(
+    (s) => s.jiraHeaderShow ?? { status: true, summary: true, assignee: false, myTickets: true },
+  );
+  const setJiraHeaderShow = useAppStore((s) => s.setJiraHeaderShow);
+  const jiraSiteAuthErrors = useJiraNotifyStore((s) => s.siteAuthErrors);
+  const [jiraCredPing, setJiraCredPing] = useState<PingState>({ status: "idle" });
+  const [newJiraSite, setNewJiraSite] = useState("");
+  const testJiraCreds = async () => {
+    setJiraCredPing({ status: "checking" });
+    const t0 = performance.now();
+    try {
+      const me = await invoke<{ displayName: string; accountId: string }>("jira_test_auth", {
+        // One Atlassian account spans every site — testing the default site
+        // validates the credential pair for all of them.
+        baseUrl: jiraDefaultSiteId,
+        email: jiraApiEmail,
+        token: jiraApiToken,
+      });
+      useAppStore.getState().setJiraMyAccountId(me.accountId);
+      useJiraNotifyStore.getState().clearSiteAuthErrors();
+      setJiraCredPing({ status: "ok", ms: Math.round(performance.now() - t0) });
+    } catch (err) {
+      const e = err as { message?: string };
+      setJiraCredPing({ status: "fail", error: e?.message ?? String(err) });
+    }
+  };
   const jiraPromptTemplate = useAppStore((s) => s.jiraPromptTemplate ?? "");
   const setJiraPromptTemplate = useAppStore((s) => s.setJiraPromptTemplate);
   const jiraReplyInSwedish = useAppStore((s) => s.jiraReplyInSwedish ?? false);
@@ -2097,6 +2149,21 @@ export default function SettingsPane() {
   const [notifChannelState, setNotifChannelState] = useState<
     { status: "idle" | "ok" | "fail"; msg?: string }
   >({ status: "idle" });
+  // Gemini notifications row: live read-back of general.enableNotifications
+  // (unlike Claude's channel, which is setter-only) so a Gemini-side /settings
+  // change shows here truthfully. "off" covers both explicit false and the
+  // absent key — Gemini treats both as off.
+  const [geminiNotif, setGeminiNotif] = useState<
+    "loading" | "unavailable" | "on" | "off"
+  >("loading");
+  const [geminiNotifApply, setGeminiNotifApply] = useState<
+    { status: "idle" | "fail"; msg?: string }
+  >({ status: "idle" });
+  useEffect(() => {
+    void getGeminiNotifications("wsl")
+      .then((v) => setGeminiNotif(v === true ? "on" : "off"))
+      .catch(() => setGeminiNotif("unavailable"));
+  }, []);
   const setTermProgramVersion = useAppStore((s) => s.setTermProgramVersion);
   const setWheelAcceleration = useAppStore((s) => s.setWheelAcceleration);
   const setScrollThumbAcceleration = useAppStore((s) => s.setScrollThumbAcceleration);
@@ -2479,7 +2546,7 @@ export default function SettingsPane() {
                   font, so it lives beside it instead of as its own row. */}
               <SettingsRow
                 label="UI font"
-                description="Atkinson Hyperlegible is built for low-vision reading, with an unslashed zero. Size scales every label, menu and panel; terminal text stays Hack, sized per CLI below."
+                description="Each name is set in its own face. Atkinson Hyperlegible is built for low-vision reading, with an unslashed zero. Size scales every label, menu and panel; terminal text stays Hack, sized per CLI below."
               >
                 <div
                   style={{
@@ -2490,10 +2557,16 @@ export default function SettingsPane() {
                     gap: 6,
                   }}
                 >
-                  <SegmentedControl<UiFont>
+                  {/* A dropdown rather than the segmented row this used to be:
+                      six faces split a segmented control into strips too narrow
+                      to read a name in, which defeats setting each option in
+                      its own face. 150px fits the longest name ("Schibsted
+                      Grotesk") and still leaves the stepper on the same line. */}
+                  <Dropdown<UiFont>
                     options={UI_FONT_OPTIONS}
                     value={uiFont}
                     onChange={setUiFont}
+                    width={150}
                   />
                   <FontSizeStepper
                     value={uiFontSize}
@@ -3021,11 +3094,11 @@ export default function SettingsPane() {
               ))}
             </SettingsSection>
             <SettingsSection id="native-renderer" title="Native renderer">
-              <SettingsRow label="Native terminal renderer (beta)" description="GPU renderer instead of xterm panes. Open terminals reload.">
+              <SettingsRow label="Native terminal renderer" description="GPU renderer instead of xterm panes. Open terminals reload.">
                 <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
               </SettingsRow>
               <SettingsRow
-                label="Share one GPU device (experimental)"
+                label="Share one GPU device"
                 description="Native panes share a single GPU device instead of building their own — measured ~4x faster to open a pane. The trade: a driver reset affects every shared pane at once instead of one. Applies to panes you open after flipping this; open panes keep the device they started with."
               >
                 <ToggleSwitch checked={nativeSharedGpu} onChange={setNativeSharedGpu} />
@@ -3118,6 +3191,83 @@ export default function SettingsPane() {
                       data-tooltip={notifChannelState.msg}
                     >
                       {notifChannelState.status === "ok" ? "Applied" : "Failed"}
+                    </span>
+                  )}
+                </div>
+              </SettingsRow>
+              <SettingsRow
+                label="Gemini notifications"
+                description="Gemini ships desktop notifications off; enabled, a finished Gemini pane toasts like Claude and Codex. Applies to new sessions."
+              >
+                <div className="flex items-center gap-2">
+                  {geminiNotif === "unavailable" ? (
+                    <span
+                      style={{
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                        color: "var(--ezy-text-muted)",
+                      }}
+                    >
+                      Gemini not detected
+                    </span>
+                  ) : geminiNotif === "on" ? (
+                    <span
+                      style={{
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                        color: "var(--ezy-accent)",
+                      }}
+                    >
+                      Enabled
+                    </span>
+                  ) : geminiNotif === "off" ? (
+                    <>
+                      <span
+                        style={{
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                          color: "var(--ezy-text-muted)",
+                        }}
+                      >
+                        Disabled in Gemini
+                      </span>
+                      <button
+                        onClick={() => {
+                          setGeminiNotifApply({ status: "idle" });
+                          void setGeminiNotifications(true, "wsl")
+                            .then(() => setGeminiNotif("on"))
+                            .catch((e) =>
+                              setGeminiNotifApply({ status: "fail", msg: String(e) }),
+                            );
+                        }}
+                        style={{
+                          height: 24,
+                          padding: "0 10px",
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                          border: "none",
+                          background: "var(--ezy-accent-dim)",
+                          color: "#fff",
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                          fontWeight: 500,
+                          cursor: "pointer",
+                        }}
+                        onMouseEnter={(e) =>
+                          (e.currentTarget.style.backgroundColor = "var(--ezy-accent-hover)")
+                        }
+                        onMouseLeave={(e) =>
+                          (e.currentTarget.style.backgroundColor = "var(--ezy-accent-dim)")
+                        }
+                      >
+                        Enable
+                      </button>
+                    </>
+                  ) : null}
+                  {geminiNotifApply.status === "fail" && (
+                    <span
+                      style={{
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                        color: "var(--ezy-red)",
+                      }}
+                      data-tooltip={geminiNotifApply.msg}
+                    >
+                      Failed
                     </span>
                   )}
                 </div>
@@ -3256,6 +3406,14 @@ export default function SettingsPane() {
                       <path d="M4.75 2.57a.75.75 0 011.14-.64l8 5.43a.75.75 0 010 1.28l-8 5.43a.75.75 0 01-1.14-.64V2.57z" />
                     </svg>
                   </div>
+                </SettingsRow>
+              )}
+              {notifEnabled && (
+                <SettingsRow
+                  label="Notification popups outside the app"
+                  description="MADE's own cards at the screen corner while the app is minimized or another app is in front."
+                >
+                  <ToggleSwitch checked={notifOsPopupsEnabled} onChange={setNotifOsPopupsEnabled} />
                 </SettingsRow>
               )}
               {notifEnabled && (
@@ -3570,15 +3728,193 @@ export default function SettingsPane() {
                 <JiraPluginRow key={cli} cli={cli} />
               ))}
               <SettingsRow
-                label="Jira address"
-                description="Company name is enough — it becomes https://<company>.atlassian.net. Full addresses also work (self-hosted)."
+                vertical
+                label="Jira sites"
+                description="Company name is enough — it becomes https://<company>.atlassian.net. Full addresses also work (self-hosted). New Jira projects are born on the default site."
               >
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, width: 380, maxWidth: "100%" }}>
+                  {jiraSitesList.map((origin) => (
+                    <div
+                      key={origin}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "5px 8px",
+                        border: "1px solid var(--ezy-border)",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                        backgroundColor: "var(--ezy-surface)",
+                      }}
+                    >
+                      <span
+                        data-tooltip={origin}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                          color: "var(--ezy-text)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {jiraSiteName(origin) ?? origin}
+                      </span>
+                      <label
+                        className="flex items-center gap-1.5"
+                        style={{
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                          color: "var(--ezy-text-muted)",
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <input
+                          type="radio"
+                          name="jira-default-site"
+                          checked={jiraDefaultSiteId === origin}
+                          onChange={() => setJiraDefaultSite(origin)}
+                        />
+                        Default
+                      </label>
+                      {/* Bare svg — a <button> inflates the 26px row. */}
+                      <svg
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Remove ${origin}`}
+                        data-tooltip="Remove site"
+                        onClick={() => removeJiraSite(origin)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            removeJiraSite(origin);
+                          }
+                        }}
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        style={{ color: "var(--ezy-text-muted)", cursor: "pointer", flexShrink: 0, outline: "none" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-red)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ezy-text-muted)")}
+                      >
+                        <line x1="4" y1="4" x2="12" y2="12" />
+                        <line x1="12" y1="4" x2="4" y2="12" />
+                      </svg>
+                    </div>
+                  ))}
+                  <div className="flex items-center gap-2">
+                    <TextInput
+                      value={newJiraSite}
+                      onChange={setNewJiraSite}
+                      placeholder="yourcompany — or a full address"
+                    />
+                    <button
+                      onClick={() => {
+                        if (!newJiraSite.trim()) return;
+                        addJiraSite(newJiraSite);
+                        setNewJiraSite("");
+                      }}
+                      style={{
+                        height: 24,
+                        padding: "0 10px",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                        border: "none",
+                        background: "var(--ezy-accent-dim)",
+                        color: "#fff",
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-hover)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-dim)")}
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              </SettingsRow>
+              <SettingsRow label="Jira account email">
                 <TextInput
-                  value={jiraBaseUrl}
-                  onChange={setJiraBaseUrl}
-                  onBlurValue={(v) => setJiraBaseUrl(normalizeJiraBaseUrl(v))}
-                  placeholder="yourcompany"
+                  value={jiraApiEmail}
+                  onChange={setJiraApiEmail}
+                  placeholder="you@company.com"
                 />
+              </SettingsRow>
+              <SettingsRow
+                label="Jira API token"
+                description="Create one at id.atlassian.com → Security → API tokens. Powers ticket-update notifications and the Assigned tab; stored on this machine."
+              >
+                <div className="flex items-center gap-2">
+                  <TextInput
+                    value={jiraApiToken}
+                    onChange={setJiraApiToken}
+                    placeholder="API token"
+                    password
+                  />
+                  <TestButton onClick={() => void testJiraCreds()} state={jiraCredPing} />
+                </div>
+              </SettingsRow>
+              {Object.entries(jiraSiteAuthErrors).map(([siteId, msg]) => (
+                <div
+                  key={siteId}
+                  style={{
+                    padding: "0 0 6px",
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                    color: "var(--ezy-red)",
+                  }}
+                >
+                  Polling paused for {jiraSiteName(siteId) ?? siteId}: {msg}
+                </div>
+              ))}
+              <SettingsRow
+                label="Ticket update notifications"
+                description="Card, sound and (minimized) system toast when a watched ticket gets a reply, status change or edit. Checked about once a minute."
+              >
+                <ToggleSwitch checked={jiraNotifEnabled} onChange={setJiraNotifEnabled} />
+              </SettingsRow>
+              <SettingsRow
+                label="My assigned tickets"
+                description="Adds an Assigned tab to the ticket rail with everything assigned to you. Opening one shows only its Jira page — Investigate promotes it to a full ticket."
+              >
+                <ToggleSwitch checked={jiraAssignedMode} onChange={setJiraAssignedMode} />
+              </SettingsRow>
+              <SettingsRow
+                label="Ticket pane header"
+                description="Live Jira info in a ticket's CLI pane header, refreshed by the update poll."
+              >
+                <div className="flex items-center gap-3" style={{ flexWrap: "wrap" }}>
+                  {(
+                    [
+                      ["status", "Status"],
+                      ["summary", "Summary"],
+                      ["assignee", "Assignee"],
+                      ["myTickets", "My tickets button"],
+                    ] as const
+                  ).map(([k, label]) => (
+                    <label
+                      key={k}
+                      className="flex items-center gap-1.5"
+                      style={{
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                        color: "var(--ezy-text)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={jiraHeaderShow[k]}
+                        onChange={(e) => setJiraHeaderShow({ [k]: e.target.checked })}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
               </SettingsRow>
               <SettingsRow
                 label="Claude pane side"

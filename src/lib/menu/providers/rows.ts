@@ -874,6 +874,53 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
   ];
 }
 
+/** Assigned-tab rows (Settings > Jira > "My assigned tickets"): tickets
+ * assigned to the user, usually with no investigation yet. A plain click shows
+ * the browser-only preview, so the menu carries the promotion (Investigate —
+ * the ONLY path from an assigned row to a CLI pane) and the browser escape
+ * hatch. Deliberately small: these rows are not sessions, so rename / color /
+ * archive / delete have nothing to act on and are HIDDEN, not disabled. */
+function jiraAssigned(ctx: RowCtx): MenuGroup[] {
+  // ctx.id is the QUALIFIED key (`<origin>|<KEY>`) — the surface actions
+  // split it. The bare key rides data-ctx-ticket for copy/sublabel.
+  const qkey = ctx.id;
+  const bare = (ctx.data.ctxTicket as string | undefined) ?? ctx.label;
+  // One site per tab: a foreign-site row can only be investigated from a tab
+  // on its own site (the row advertises it — see renderAssignedRow).
+  const foreign = ctx.data.ctxForeign === "1";
+  return [
+    {
+      id: "target",
+      items: [
+        actionItem("jira-assigned", "investigate", qkey, {
+          id: "row.jiraAssigned.investigate",
+          label: "Investigate ticket",
+          unavailable: foreign
+            ? { reason: "This ticket lives on another Jira site — open a project on that site first" }
+            : undefined,
+        }),
+        actionItem("jira-assigned", "openInBrowser", qkey, {
+          id: "row.jiraAssigned.browser",
+          label: "Open in Jira",
+          iconId: "external-link",
+        }),
+      ],
+    },
+    {
+      id: "edit",
+      items: [
+        {
+          id: "row.jiraAssigned.copyKey",
+          label: "Copy ticket number",
+          iconId: "copy",
+          sublabel: bare || undefined,
+          run: () => copy(bare),
+        },
+      ],
+    },
+  ];
+}
+
 const rowProvider: MenuProvider<"row"> = {
   id: "row",
   surface: "row",
@@ -898,6 +945,8 @@ const rowProvider: MenuProvider<"row"> = {
         return sidebarBackground(ctx);
       case "jira-ticket":
         return jiraTicket(ctx);
+      case "jira-assigned":
+        return jiraAssigned(ctx);
       case "game-sidebar":
         return gameSidebar(ctx);
       default:

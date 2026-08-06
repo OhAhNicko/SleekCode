@@ -13,7 +13,9 @@ import {
 } from "../lib/jira-project";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import { pasteTextToTerminal } from "../lib/terminal-paste";
-import { buildJiraPrompt, DEFAULT_JIRA_PROMPT } from "../lib/jira";
+import { buildJiraPrompt, buildTicketUrl, jiraSiteName, DEFAULT_JIRA_PROMPT } from "../lib/jira";
+import { useJiraNotifyStore } from "../store/jiraNotifyStore";
+import { jiraQK, splitJiraQK, siteForTabIn } from "../lib/jira-sites";
 import { chooseOption, confirmAction, promptForInput } from "../lib/prompt-modal";
 import { clearTicketForTerminal, parkedTicketName } from "../lib/jira-session";
 import { jiraCliOfSession, JIRA_CLI_LABEL } from "../lib/jira-mcp";
@@ -61,6 +63,21 @@ const customNameOf = (s: ProjectSession) => {
 const RAIL_WIDTH = 208;
 const ROW_HEIGHT = 28;
 
+/** 6px solid accent dot marking a ticket with unseen updates. Static on
+ *  purpose — no pulse/ping. Cleared by viewing the ticket, never by time. */
+const unseenDot = () => (
+  <span
+    style={{
+      width: 6,
+      height: 6,
+      borderRadius: "50%",
+      backgroundColor: "var(--ezy-accent)",
+      display: "inline-block",
+      flexShrink: 0,
+    }}
+  />
+);
+
 interface JiraTicketRailProps {
   tab: Tab;
   onFocusTerminal: (terminalId: string) => void;
@@ -86,6 +103,16 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
   const searchInputRef = useRef<HTMLInputElement>(null);
   const jiraTicketColors = useAppStore((s) => s.jiraTicketColors);
   const fullColor = useAppStore((s) => s.jiraRowFullColor ?? false);
+  // Assigned-tickets mode (Settings > Jira). The rail tab lives in the
+  // session-only jiraNotifyStore so a notification click can switch it.
+  const assignedMode = useAppStore((s) => s.jiraAssignedMode ?? false);
+  const assignedTickets = useAppStore((s) => s.jiraAssignedTickets);
+  const jiraSites = useAppStore((s) => s.jiraSites ?? []);
+  const tabSite = useAppStore((s) => siteForTabIn(s, tab));
+  const siteName = useMemo(() => jiraSiteName(tabSite), [tabSite]);
+  const ticketSnapshots = useAppStore((s) => s.jiraTicketSnapshots);
+  const railTab = useJiraNotifyStore((s) => (assignedMode ? (s.railTab[tab.id] ?? "tickets") : "tickets"));
+  const assignedPreview = useJiraNotifyStore((s) => s.assignedPreview[tab.id]);
 
   const projectKey = tab.workingDir.replace(/\\/g, "/");
   // Select the raw slice and derive below — filtering inside the selector
@@ -315,6 +342,18 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     };
   }, [tab.id, tab.workingDir, tab.backend, tab.serverId, projectKey]);
 
+  const assignedFiltered = useMemo(() => {
+    if (railTab !== "assigned") return [];
+    const q = query.trim().toLowerCase();
+    if (!q) return assignedTickets;
+    return assignedTickets.filter(
+      (t) =>
+        t.key.toLowerCase().includes(q) ||
+        t.summary.toLowerCase().includes(q) ||
+        (jiraSiteName(t.siteId) ?? "").toLowerCase().includes(q),
+    );
+  }, [railTab, assignedTickets, query]);
+
   const toggleGroupCollapsed = (ticket: string) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -499,6 +538,40 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id, tab.workingDir]);
 
+  // Assigned-tab rows are their own surface: not sessions, so almost none of
+  // the ticket-row actions apply. Investigate is the promotion path — the ONLY
+  // way an assigned ticket ever spawns a CLI pane.
+  useEffect(() => {
+    registerSurfaceActions("jira-assigned", {
+      investigate: (qkey) => {
+        const { siteId, key } = splitJiraQK(qkey);
+        const store = useAppStore.getState();
+        const site = siteId || siteForTabIn(store, tab);
+        // One site per tab: a foreign-site row can't grow a pane HERE. The
+        // menu already disables it with a reason — this is belt-and-braces.
+        if (site !== siteForTabIn(store, tab)) return;
+        openJiraTicket(tab.id, {
+          ticket: key,
+          cli: store.jiraCli ?? "claude",
+          swedish: store.jiraReplyInSwedish,
+          english: store.jiraReplyInEnglish,
+        });
+        store.markJiraTicketSeen(jiraQK(site, key));
+        const notify = useJiraNotifyStore.getState();
+        notify.setRailTab(tab.id, "tickets");
+        notify.setAssignedPreview(tab.id, undefined);
+      },
+      openInBrowser: (qkey) => {
+        const { siteId, key } = splitJiraQK(qkey);
+        const store = useAppStore.getState();
+        const url = buildTicketUrl(siteId || siteForTabIn(store, tab), key);
+        if (url) window.open(url);
+      },
+    });
+    return () => unregisterSurfaceActions("jira-assigned");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab.id]);
+
   /** Close ONE instance's pane if it is open. The ticket's shared browser
    *  goes away only with the last instance; the canvas falls back to a
    *  sibling instance first, then any other open ticket. */
@@ -561,16 +634,116 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           flexShrink: 0,
         }}
       >
-        <span
-          style={{
-            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            color: "var(--ezy-text-muted)",
-          }}
-        >
-          Tickets
-        </span>
+        {assignedMode ? (
+          // Two-segment switcher — same 10px uppercase voice as the plain
+          // heading; the active segment simply carries the text color.
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            {(["tickets", "assigned"] as const).map((seg) => {
+              const active = railTab === seg;
+              const dot =
+                seg === "assigned" &&
+                assignedTickets.some(
+                  (t) => ticketSnapshots?.[jiraQK(t.siteId, t.key)]?.unseen,
+                );
+              return (
+                <span
+                  key={seg}
+                  role="tab"
+                  aria-selected={active}
+                  tabIndex={0}
+                  onClick={() => useJiraNotifyStore.getState().setRailTab(tab.id, seg)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      useJiraNotifyStore.getState().setRailTab(tab.id, seg);
+                    }
+                  }}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+                    letterSpacing: "0.08em",
+                    textTransform: "uppercase",
+                    color: active ? "var(--ezy-text)" : "var(--ezy-text-muted)",
+                    cursor: "pointer",
+                    userSelect: "none",
+                    outline: "none",
+                  }}
+                >
+                  {seg === "tickets" ? "Tickets" : "Assigned"}
+                  {dot && unseenDot()}
+                </span>
+              );
+            })}
+          </div>
+        ) : (
+          <span
+            style={{
+              fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--ezy-text-muted)",
+            }}
+          >
+            Tickets
+          </span>
+        )}
+        {/* Site name — which Jira this TAB's tickets live on. With more than
+            one site configured it is the per-project switcher. */}
+        {siteName && (
+          <span
+            data-tooltip={jiraSites.length > 1 ? `Switch Jira site (now ${tabSite})` : tabSite}
+            role={jiraSites.length > 1 ? "button" : undefined}
+            tabIndex={jiraSites.length > 1 ? 0 : undefined}
+            onClick={
+              jiraSites.length > 1
+                ? () => {
+                    void chooseOption({
+                      title: "Jira site",
+                      detail:
+                        "Applies to new tickets in this project. Open tickets keep the site they were opened on.",
+                      choices: jiraSites.map((origin) => ({
+                        id: origin,
+                        label: jiraSiteName(origin) ?? origin,
+                        detail: origin,
+                      })),
+                    }).then((picked) => {
+                      if (!picked || picked === tabSite) return;
+                      const store = useAppStore.getState();
+                      store.setTabJiraSite(tab.id, picked);
+                      store.setProjectJiraSite(tab.workingDir, tab.serverId, picked);
+                    });
+                  }
+                : undefined
+            }
+            onMouseEnter={
+              jiraSites.length > 1
+                ? (e) => (e.currentTarget.style.color = "var(--ezy-text)")
+                : undefined
+            }
+            onMouseLeave={
+              jiraSites.length > 1
+                ? (e) => (e.currentTarget.style.color = "var(--ezy-text-muted)")
+                : undefined
+            }
+            style={{
+              marginLeft: "auto",
+              marginRight: 6,
+              maxWidth: 64,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+              color: "var(--ezy-text-muted)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              flexShrink: 1,
+              cursor: jiraSites.length > 1 ? "pointer" : undefined,
+              outline: "none",
+            }}
+          >
+            {siteName}
+          </span>
+        )}
         {/* Bare svg, not a button: a <button> inherits line-height 1.5 and
             silently inflates a 28px header to 36px. */}
         <svg
@@ -657,6 +830,25 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
       </div>
 
       {/* List */}
+      {railTab === "assigned" ? (
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: 8 }}>
+          {assignedFiltered.length === 0 && (
+            <div
+              style={{
+                padding: "8px 10px",
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                lineHeight: 1.5,
+                color: "var(--ezy-text-muted)",
+              }}
+            >
+              {assignedTickets.length === 0
+                ? "No assigned tickets. They appear here once Jira credentials are set in Settings > Jira."
+                : "No assigned ticket matches that search."}
+            </div>
+          )}
+          {assignedFiltered.map(renderAssignedRow)}
+        </div>
+      ) : (
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: 8 }}>
         {filtered.length === 0 && (
           <div
@@ -711,6 +903,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           </>
         )}
       </div>
+      )}
     </div>
   );
 
@@ -722,7 +915,8 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
    *  the dispatch (menu build is synchronous inside it), so an actual
    *  right-click on the row still gets the full menu. */
   function openRowMenu(anchor: Element): void {
-    const rowEl = anchor.closest('[data-ctx-surface="jira-ticket"]');
+    // Both rail surfaces — ticket rows and assigned rows — share this path.
+    const rowEl = anchor.closest("[data-ctx-surface]");
     if (!rowEl) return;
     const r = anchor.getBoundingClientRect();
     rowEl.setAttribute("data-ctx-compact", "1");
@@ -822,6 +1016,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         >
           {ticket}
         </span>
+        {ticketSnapshots?.[jiraQK(tabSite, ticket)]?.unseen && unseenDot()}
       </div>
     );
   }
@@ -912,12 +1107,16 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           e.currentTarget.style.filter = restingFilter ?? "";
         }}
       >
+        {ticket && ticketSnapshots?.[jiraQK(tabSite, ticket)]?.unseen && unseenDot()}
         <span
           style={{
             flex: 1,
             minWidth: 0,
             fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
-            fontWeight: isOpen ? 600 : 400,
+            fontWeight:
+              isOpen || (ticket && ticketSnapshots?.[jiraQK(tabSite, ticket)]?.unseen)
+                ? 600
+                : 400,
             fontVariantNumeric: "tabular-nums",
             overflow: "hidden",
             textOverflow: "ellipsis",
@@ -972,6 +1171,156 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
             backgroundColor: "transparent",
             // Includes opacity — an inline transition list replaces the
             // .jira-row-menu class's, which owns the hover fade-in.
+            transition: "background-color 0.15s, color 0.15s, opacity 100ms ease",
+            outline: "none",
+            flexShrink: 0,
+            opacity: isActive ? 1 : undefined,
+          }}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+          >
+            <line x1="3" y1="4.5" x2="13" y2="4.5" />
+            <line x1="3" y1="8" x2="13" y2="8" />
+            <line x1="3" y1="11.5" x2="13" y2="11.5" />
+          </svg>
+        </div>
+      </div>
+    );
+  }
+
+  /** Assigned-tab row: a ticket assigned to the user with (usually) no
+   *  investigation yet. Click shows the browser-only preview — the ONLY way
+   *  it grows a CLI pane is the menu's explicit Investigate. */
+  function renderAssignedRow(t: {
+    key: string;
+    summary: string;
+    status: string;
+    updatedIso: string;
+    siteId: string;
+  }) {
+    const qk = jiraQK(t.siteId, t.key);
+    const unseen = !!ticketSnapshots?.[qk]?.unseen;
+    const isActive = assignedPreview === qk;
+    const foreign = t.siteId !== tabSite;
+    return (
+      <div
+        key={qk}
+        data-ctx-surface="jira-assigned"
+        data-ctx-id={qk}
+        data-ctx-label={t.key}
+        data-ctx-ticket={t.key}
+        data-ctx-foreign={foreign ? "1" : undefined}
+        onClick={() => {
+          useJiraNotifyStore.getState().setAssignedPreview(tab.id, qk);
+          useAppStore.getState().markJiraTicketSeen(qk);
+        }}
+        data-tooltip={t.summary || undefined}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          height: ROW_HEIGHT,
+          padding: "0 10px 0 8px",
+          cursor: "pointer",
+          backgroundColor: isActive ? "var(--ezy-surface)" : undefined,
+          boxShadow: isActive ? "inset -2px 0 0 var(--ezy-accent)" : undefined,
+          color: "var(--ezy-text)",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.backgroundColor = isActive
+            ? "var(--ezy-surface)"
+            : "transparent";
+        }}
+      >
+        {unseen && unseenDot()}
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+            fontWeight: unseen ? 600 : 400,
+            fontVariantNumeric: "tabular-nums",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {t.key}
+        </span>
+        {jiraSites.length > 1 && (
+          <span
+            data-tooltip={t.siteId}
+            style={{
+              fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+              color: "var(--ezy-text-muted)",
+              flexShrink: 0,
+              maxWidth: 48,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {jiraSiteName(t.siteId) ?? t.siteId}
+          </span>
+        )}
+        <span
+          style={{
+            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+            color: "var(--ezy-text-muted)",
+            flexShrink: 0,
+            maxWidth: 72,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {t.status}
+        </span>
+        <div
+          className="jira-row-menu"
+          role="button"
+          tabIndex={0}
+          aria-label="Ticket options"
+          data-tooltip="Ticket options"
+          onClick={(e) => {
+            e.stopPropagation();
+            openRowMenu(e.currentTarget);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              e.stopPropagation();
+              openRowMenu(e.currentTarget);
+            }
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = "var(--ezy-border)";
+            e.currentTarget.style.color = "var(--ezy-text)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = "transparent";
+            e.currentTarget.style.color = "var(--ezy-text-muted)";
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+            cursor: "pointer",
+            color: "var(--ezy-text-muted)",
+            backgroundColor: "transparent",
             transition: "background-color 0.15s, color 0.15s, opacity 100ms ease",
             outline: "none",
             flexShrink: 0,

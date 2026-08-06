@@ -130,6 +130,7 @@ export type SurfaceRoleName =
   | "browser"
   | "sidebar"
   | "jira-ticket"
+  | "jira-assigned"
   | "game-sidebar";
 
 export type AppCtx = Base & {
@@ -273,7 +274,7 @@ const resolveByCtxAttr: Resolver = (el, point) => {
       const ROLES = [
         "kanban-card", "kanban-col", "review-file", "server",
         "devserver", "editor-tab", "browser", "sidebar", "jira-ticket",
-        "game-sidebar",
+        "jira-assigned", "game-sidebar",
       ] as const;
       if (!(ROLES as readonly string[]).includes(surface)) return null;
       const data: Record<string, string> = {};

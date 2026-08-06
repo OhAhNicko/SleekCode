@@ -28,6 +28,7 @@ import {
 } from "./jira-layout";
 import { jiraCliOfSession } from "./jira-mcp";
 import { openJiraTicket, rememberedModel } from "./jira-project";
+import { siteForTab } from "./jira-sites";
 
 /**
  * The ticket in what someone typed into the address bar, or null for "this is
@@ -48,32 +49,44 @@ import { openJiraTicket, rememberedModel } from "./jira-project";
  */
 export function ticketFromOmniboxInput(
   raw: string,
-  baseUrl: string,
+  siteOrigins: readonly string[],
   knownPrefixes: ReadonlySet<string>,
-): string | null {
+): { key: string; siteId: string | null } | null {
   const typed = raw.trim();
   if (!typed) return null;
 
   const upper = typed.toUpperCase();
   if (isTicketKey(upper)) {
-    return knownPrefixes.has(upper.slice(0, upper.lastIndexOf("-"))) ? upper : null;
+    // Bare keys carry no site — the caller resolves them to the SOURCE
+    // pane's tab site (one site per tab).
+    return knownPrefixes.has(upper.slice(0, upper.lastIndexOf("-")))
+      ? { key: upper, siteId: null }
+      : null;
   }
 
-  // Everything else has to parse as a URL on the Jira site. A schemeless
-  // `acme.atlassian.net/browse/X` is accepted the same way the address bar
-  // itself accepts it.
+  // Everything else has to parse as a URL on one of the CONFIGURED Jira
+  // sites. A schemeless `acme.atlassian.net/browse/X` is accepted the same
+  // way the address bar itself accepts it. The matched site is returned so
+  // the caller can enforce the one-site-per-tab rule.
   const absolute = /^https?:\/\//i.test(typed) ? typed : `https://${typed}`;
   let origin: string;
-  let baseOrigin: string;
   try {
     origin = new URL(absolute).origin.toLowerCase();
-    baseOrigin = new URL(baseUrl.trim()).origin.toLowerCase();
   } catch {
     return null;
   }
-  if (!origin || origin === "null" || origin !== baseOrigin) return null;
+  if (!origin || origin === "null") return null;
+  const matched = siteOrigins.find((s) => {
+    try {
+      return new URL(s.trim()).origin.toLowerCase() === origin;
+    } catch {
+      return false;
+    }
+  });
+  if (!matched) return null;
 
-  return normalizeTicketKey(absolute);
+  const key = normalizeTicketKey(absolute);
+  return key ? { key, siteId: matched } : null;
 }
 
 /** Ticket prefixes this project demonstrably uses: the remembered new-ticket
@@ -143,24 +156,29 @@ export function consumeJiraTicketPaste(paneId: string | undefined, raw: string):
   const store = useAppStore.getState();
   if (!store.jiraDetectPastedTickets) return false;
 
-  // Without a site there is nowhere to point the new ticket's browser, and a
-  // pair on about:blank is worse than a plain navigation.
-  const baseUrl = store.jiraBaseUrl?.trim();
-  if (!baseUrl) return false;
-
   // The owning tab is resolved BEFORE the input is parsed: the bare-key form is
-  // gated on prefixes this project uses, which only the project can supply.
+  // gated on prefixes this project uses, which only the project can supply —
+  // and the tab is what carries the site (one site per tab).
   const sourceTicket = paneId.slice(JIRA_BROWSER_PANE_PREFIX.length);
   const tab = findOwningTab(sourceTicket);
   if (!tab?.workingDir) return false;
   const projectKey = tab.workingDir.replace(/\\/g, "/");
 
-  const ticket = ticketFromOmniboxInput(
+  // Without a site there is nowhere to point the new ticket's browser, and a
+  // pair on about:blank is worse than a plain navigation.
+  const tabSite = siteForTab(tab);
+  if (!tabSite) return false;
+
+  const result = ticketFromOmniboxInput(
     raw,
-    baseUrl,
+    store.jiraSites ?? [],
     knownTicketPrefixes(projectKey, sourceTicket),
   );
-  if (!ticket) return false;
+  if (!result) return false;
+  // A URL from ANOTHER configured site is a plain navigation, never a ticket
+  // open — opening it here would violate one-site-per-tab.
+  if (result.siteId && result.siteId !== tabSite) return false;
+  const ticket = result.key;
 
   // This pane's own ticket is "go home", not a new ticket.
   if (ticket === sourceTicket) return false;

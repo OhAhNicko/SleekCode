@@ -12,6 +12,10 @@ import { truncateSessionTitle } from "../lib/session-title";
 import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { useAppStore } from "../store";
+import { useJiraNotifyStore } from "../store/jiraNotifyStore";
+import { findAllTerminalLeaves } from "../lib/layout-utils";
+import { jiraInstKeyOfTermPaneId, jiraBaseTicket } from "../lib/jira-layout";
+import { jiraQK, siteForTabIn } from "../lib/jira-sites";
 import { FaChevronDown } from "react-icons/fa";
 import { FaXmark, FaGripVertical } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
@@ -615,6 +619,31 @@ export default function TerminalHeader({
   const sessionNameRef = useRef<HTMLDivElement>(null);
   const isResumable = supportsSessionResume(terminalType);
 
+  // Live-Jira header segment: derive this pane's ticket from the layouts
+  // (pane id prefix carries the instance key) instead of threading a prop
+  // through both renderers. Primitive result — the memo recompute per tabs
+  // change is a cheap walk over few leaves.
+  const allTabs = useAppStore((s) => s.tabs);
+  const jiraOwner = useMemo(() => {
+    for (const t of allTabs) {
+      if (!t.isJiraProject || !t.layout) continue;
+      for (const leaf of findAllTerminalLeaves(t.layout)) {
+        if (leaf.terminalId === terminalId) {
+          const inst = jiraInstKeyOfTermPaneId(leaf.id);
+          return inst ? { ticket: jiraBaseTicket(inst), tab: t } : undefined;
+        }
+      }
+    }
+    return undefined;
+  }, [allTabs, terminalId]);
+  const jiraTicket = jiraOwner?.ticket;
+  const jiraSnapshot = useAppStore((s) =>
+    jiraOwner
+      ? (s.jiraTicketSnapshots ?? {})[jiraQK(siteForTabIn(s, jiraOwner.tab), jiraOwner.ticket)]
+      : undefined,
+  );
+  const jiraHeaderShow = useAppStore((s) => s.jiraHeaderShow);
+
   // Read sessions for this project + type from the store
   const normalizedDir = workingDir?.replace(/\\/g, "/") ?? "";
   const allSessions = useAppStore((s) => s.projectSessions[normalizedDir]);
@@ -956,6 +985,118 @@ export default function TerminalHeader({
             <path d="M1.5 6h9" stroke="#4ade80" strokeWidth="1" />
           </svg>
         </span>
+      )}
+
+      {/* Live-Jira segment (ticket panes only, per-element toggles in
+          Settings > Jira). Populated from jiraTicketSnapshots, so it appears
+          after the first poll and tracks changes at poll cadence. */}
+      {jiraTicket && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            marginLeft: 6,
+            minWidth: 0,
+            flexShrink: 1,
+            overflow: "hidden",
+          }}
+        >
+          {jiraHeaderShow?.status !== false && jiraSnapshot?.statusName && (
+            <span
+              data-tooltip={`Jira status: ${jiraSnapshot.statusName}`}
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+                fontWeight: 600,
+                lineHeight: 1.2,
+                padding: "1px 5px",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                background: "var(--ezy-border)",
+                color: "var(--ezy-text)",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+              }}
+            >
+              {jiraSnapshot.statusName}
+            </span>
+          )}
+          {jiraHeaderShow?.summary !== false && jiraSnapshot?.summary && (
+            <span
+              data-tooltip={jiraSnapshot.summary}
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+                color: "var(--ezy-text-muted)",
+                lineHeight: 1.2,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {jiraSnapshot.summary}
+            </span>
+          )}
+          {jiraHeaderShow?.assignee === true && jiraSnapshot?.assigneeName && (
+            <span
+              data-tooltip="Assignee"
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+                color: "var(--ezy-text-muted)",
+                lineHeight: 1.2,
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+              }}
+            >
+              · {jiraSnapshot.assigneeName}
+            </span>
+          )}
+          {jiraHeaderShow?.myTickets !== false && (
+            <span
+              role="button"
+              aria-label="My assigned tickets"
+              data-tooltip="My assigned tickets"
+              onClick={(e) => {
+                e.stopPropagation();
+                const s = useAppStore.getState();
+                if (!(s.jiraAssignedMode ?? false)) s.setJiraAssignedMode(true);
+                if (s.activeTabId) {
+                  useJiraNotifyStore.getState().setRailTab(s.activeTabId, "assigned");
+                }
+              }}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: 3,
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                flexShrink: 0,
+                cursor: "pointer",
+                color: "var(--ezy-text-muted)",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "var(--ezy-border)";
+                e.currentTarget.style.color = "var(--ezy-text)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "transparent";
+                e.currentTarget.style.color = "var(--ezy-text-muted)";
+              }}
+            >
+              <svg
+                width="12"
+                height="12"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              >
+                <circle cx="8" cy="5.5" r="2.75" />
+                <path d="M2.5 13.5c1.2-2.4 3.2-3.5 5.5-3.5s4.3 1.1 5.5 3.5" />
+              </svg>
+            </span>
+          )}
+        </div>
       )}
 
       {/* Model name + context usage indicator — CLI panes only (collapses when pane is narrow) */}

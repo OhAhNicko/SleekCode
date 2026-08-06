@@ -1,7 +1,7 @@
 import type { StateCreator } from "zustand";
 import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, ComposerExpansion, PaneLayout, Tab } from "../types";
 import { getDefaultBackend, detectBackendForPath } from "../lib/platform";
-import { DEFAULT_JIRA_PROMPT } from "../lib/jira";
+import { DEFAULT_JIRA_PROMPT, normalizeJiraBaseUrl } from "../lib/jira";
 
 export interface RecentProjectTemplate {
   templateId: string;
@@ -60,6 +60,10 @@ export interface RecentProject {
   /** Jira project (ticket rail + per-ticket canvas). Reopens as a Jira tab and
    *  carries a JIRA badge in the recent menu. */
   isJira?: boolean;
+  /** Which Jira site this project's tickets live on (normalized origin — the
+   *  site ID). Absent on legacy projects → resolvers fall back to the default
+   *  site. One site per project by design. */
+  jiraSiteId?: string;
   /** Sticky per-project terminal backend. Set on first add via path detection; user-overridable. */
   preferredBackend?: TerminalBackend;
   /**
@@ -217,6 +221,28 @@ export function autoAssignSound(existing: Record<string, ProjectSoundId>): Proje
 export const DEFAULT_CLI_FONT_SIZE = 16;
 
 /** User-registered .md scaffold template (besides built-in CLAUDE/AGENTS/GEMINI). */
+/** Last-observed state of one Jira ticket — the diff baseline for update
+ *  notifications. See jiraTicketSnapshots on the slice. */
+export interface JiraTicketSnapshot {
+  updatedIso: string;
+  lastCommentId?: string;
+  statusName?: string;
+  assigneeAccountId?: string;
+  assigneeName?: string;
+  /** Ticket title — shown in the pane header, refreshed every poll. */
+  summary?: string;
+  /** True while there are updates the user hasn't viewed — rail highlight. */
+  unseen?: boolean;
+}
+
+/** Which live-Jira elements a ticket's CLI pane header shows. */
+export interface JiraHeaderShow {
+  status: boolean;
+  summary: boolean;
+  assignee: boolean;
+  myTickets: boolean;
+}
+
 export interface CustomScaffold {
   id: string;
   /** Destination filename inside the new project, e.g. "STYLE.md" */
@@ -319,12 +345,23 @@ export interface RecentProjectsSlice {
   notifAutoSwitchMinimized: boolean;
   setNotifAutoSwitchMinimized: (value: boolean) => void;
   /** Show a Windows toast for pane notifications while the window is
-   *  minimized (in-app cards are invisible then). Default ON. */
+   *  minimized (in-app cards are invisible then). Default ON. Runs ALONGSIDE
+   *  the custom popups below — its job is the Action Center history entry. */
   notifSystemMinimized: boolean;
   setNotifSystemMinimized: (value: boolean) => void;
+  /** MADE's own notification popups (the corner "toast" window) while the app
+   *  is minimized or unfocused. Default ON. */
+  notifOsPopupsEnabled: boolean;
+  setNotifOsPopupsEnabled: (value: boolean) => void;
   /** Play a per-project sound when a notification card is added. Default ON. */
   notifSoundEnabled: boolean;
   setNotifSoundEnabled: (value: boolean) => void;
+  /** One-time Gemini notification seed already ran (lib/gemini-notifications).
+   *  Gemini ships desktop notifications OFF; MADE turns them on ONCE when the
+   *  key is absent — an explicit Gemini-side `false` is a user choice and is
+   *  never overridden, so this flag stops every later silent write. */
+  geminiNotifSeeded: boolean;
+  setGeminiNotifSeeded: (value: boolean) => void;
   /** Notification sound volume, 0-100. Default 50. */
   notifSoundVolume: number;
   setNotifSoundVolume: (value: number) => void;
@@ -357,10 +394,26 @@ export interface RecentProjectsSlice {
   settingsPanelOpen: boolean;
   toggleSettingsPanel: () => void;
   setSettingsPanelOpen: (value: boolean) => void;
-  /** Jira site origin, e.g. `https://acme.atlassian.net`. "" until set by hand
-   *  or learned from the browser pane's first navigation to a Jira page. */
-  jiraBaseUrl: string;
-  setJiraBaseUrl: (value: string) => void;
+  /** Configured Jira site origins, add order. THE SITE ID IS THE ORIGIN
+   *  (normalized, e.g. `https://acme.atlassian.net`) — self-describing, and
+   *  `|` can appear in neither an origin nor a ticket key, so qualified keys
+   *  (`<origin>|<KEY>`, lib/jira-sites.ts) are unambiguous. Grown from the
+   *  Settings list editor, the ticket dialog's first run, or the browser
+   *  pane's auto-learn. */
+  jiraSites: string[];
+  /** Normalize → dedupe → append. The FIRST site added also becomes the
+   *  default. */
+  addJiraSite: (raw: string) => void;
+  /** Default falls back to the first remaining site (or "") when the default
+   *  itself is removed. Snapshots of a removed site rebaseline silently if it
+   *  is ever re-added — no cleanup needed here. */
+  removeJiraSite: (siteId: string) => void;
+  /** "" until a site exists. New Jira projects are born on this site. */
+  jiraDefaultSiteId: string;
+  setJiraDefaultSite: (siteId: string) => void;
+  /** Re-point a project's site (rail-header switcher). Applies to NEW
+   *  tickets; open pairs keep the browser URLs persisted in their layout. */
+  setProjectJiraSite: (path: string, serverId: string | undefined, siteId: string) => void;
   /** Investigation prompt sent when a ticket pane opens. `{ticket}` is the
    *  placeholder. Editable so the wording can be tuned without a release. */
   jiraPromptTemplate: string;
@@ -444,6 +497,56 @@ export interface RecentProjectsSlice {
    *  must never be silent. */
   jiraArchivedTicketAction: "resume" | "new";
   setJiraArchivedTicketAction: (value: "resume" | "new") => void;
+  /** Jira REST credentials for the background update poller (JiraNotifyEngine).
+   *  Basic auth = account email + API token (id.atlassian.com). Stored in the
+   *  persisted store like the rest of the Jira settings — the token is
+   *  revocable per-token at Atlassian's end (precedent: RemoteServer's
+   *  claudeOauthToken persists the same way). */
+  jiraApiEmail: string;
+  setJiraApiEmail: (value: string) => void;
+  jiraApiToken: string;
+  setJiraApiToken: (value: string) => void;
+  /** Own Atlassian accountId (captured via jira_test_auth) — filters own
+   *  comments out of the "new reply" notifications. */
+  jiraMyAccountId: string;
+  setJiraMyAccountId: (value: string) => void;
+  /** Master switch for Jira ticket-update notifications (cards/toast/sound).
+   *  Polling itself also serves the Assigned tab, so this gates EMISSION only. */
+  jiraNotifEnabled: boolean;
+  setJiraNotifEnabled: (value: boolean) => void;
+  /** "My assigned tickets" mode: adds an Assigned tab to the ticket rail.
+   *  Assigned rows open browser-only previews — never a CLI pane. */
+  jiraAssignedMode: boolean;
+  setJiraAssignedMode: (value: boolean) => void;
+  /** Last-known assignee=currentUser() list, ALL sites merged (sorted by
+   *  updatedIso desc, each row tagged with its site) — persisted so the
+   *  Assigned tab renders instantly on boot; polls refresh it per site. */
+  jiraAssignedTickets: Array<{
+    key: string;
+    summary: string;
+    status: string;
+    updatedIso: string;
+    siteId: string;
+  }>;
+  /** Replace ONE site's rows, keep every other site's — a per-site poll must
+   *  never clobber the merged list. */
+  setJiraAssignedTicketsForSite: (
+    siteId: string,
+    value: Array<{ key: string; summary: string; status: string; updatedIso: string; siteId: string }>,
+  ) => void;
+  /** Change-detection baseline per QUALIFIED ticket key
+   *  (`<origin>|<KEY>`, lib/jira-sites.ts). `unseen` drives the rail
+   *  highlight and survives restarts; a key with no entry notifies nothing on
+   *  its first poll (baseline write, storm-proof). */
+  jiraTicketSnapshots: Record<string, JiraTicketSnapshot>;
+  setJiraTicketSnapshot: (key: string, snap: JiraTicketSnapshot) => void;
+  markJiraTicketSeen: (key: string) => void;
+  pruneJiraTicketSnapshots: (keep: string[]) => void;
+  /** Per-element visibility for the ticket pane header's live-Jira segment.
+   *  Defaults: status/summary/myTickets on, assignee off (least value per
+   *  pixel — the summary usually implies the owner context). */
+  jiraHeaderShow: JiraHeaderShow;
+  setJiraHeaderShow: (patch: Partial<JiraHeaderShow>) => void;
   projectsDir: string;
   defaultClaudeMdPath: string;
   defaultAgentsMdPath: string;
@@ -476,7 +579,7 @@ export interface RecentProjectsSlice {
   statuslineToggles: Partial<Record<TerminalType, Record<string, boolean>>>;
   setStatuslineToggle: (cliType: TerminalType, key: string, value: boolean) => void;
   setProjectColor: (workingDir: string, colorId: ProjectColorId) => void;
-  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string; noDevServer?: boolean; serverId?: string; isJira?: boolean }) => void;
+  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string; noDevServer?: boolean; serverId?: string; isJira?: boolean; jiraSiteId?: string }) => void;
   removeRecentProject: (path: string, serverId?: string) => void;
   clearRecentProjects: () => void;
   setAlwaysShowTemplatePicker: (value: boolean) => void;
@@ -589,10 +692,14 @@ export const createRecentProjectsSlice: StateCreator<
   setNotifAutoSwitchMinimized: (value) => set({ notifAutoSwitchMinimized: value }),
   notifSystemMinimized: true,
   setNotifSystemMinimized: (value) => set({ notifSystemMinimized: value }),
+  notifOsPopupsEnabled: true,
+  setNotifOsPopupsEnabled: (value) => set({ notifOsPopupsEnabled: value }),
   notifSoundEnabled: true,
   setNotifSoundEnabled: (value) => set({ notifSoundEnabled: value }),
   notifSoundVolume: 50,
   setNotifSoundVolume: (value) => set({ notifSoundVolume: value }),
+  geminiNotifSeeded: false,
+  setGeminiNotifSeeded: (value) => set({ geminiNotifSeeded: value }),
   projectSounds: {},
   openPanesInBackground: false,
   wideGridLayout: true,
@@ -615,8 +722,39 @@ export const createRecentProjectsSlice: StateCreator<
   settingsPanelOpen: false,
   toggleSettingsPanel: () => set((s) => ({ settingsPanelOpen: !s.settingsPanelOpen })),
   setSettingsPanelOpen: (value) => set({ settingsPanelOpen: value }),
-  jiraBaseUrl: "",
-  setJiraBaseUrl: (value) => set({ jiraBaseUrl: value }),
+  jiraSites: [],
+  addJiraSite: (raw) =>
+    set((state) => {
+      const origin = normalizeJiraBaseUrl(raw).trim();
+      if (!origin) return {};
+      const sites = state.jiraSites ?? [];
+      if (sites.includes(origin)) return {};
+      return {
+        jiraSites: [...sites, origin],
+        jiraDefaultSiteId: state.jiraDefaultSiteId || origin,
+      };
+    }),
+  removeJiraSite: (siteId) =>
+    set((state) => {
+      const sites = (state.jiraSites ?? []).filter((s) => s !== siteId);
+      return {
+        jiraSites: sites,
+        jiraDefaultSiteId:
+          state.jiraDefaultSiteId === siteId ? (sites[0] ?? "") : state.jiraDefaultSiteId,
+      };
+    }),
+  jiraDefaultSiteId: "",
+  setJiraDefaultSite: (siteId) => set({ jiraDefaultSiteId: siteId }),
+  setProjectJiraSite: (path, serverId, siteId) => {
+    const normalized = normalizePath(path);
+    set((state) => ({
+      recentProjects: state.recentProjects.map((p) =>
+        normalizePath(p.path) === normalized && p.serverId === serverId
+          ? { ...p, jiraSiteId: siteId }
+          : p,
+      ),
+    }));
+  },
   jiraPromptTemplate: DEFAULT_JIRA_PROMPT,
   setJiraPromptTemplate: (value) => set({ jiraPromptTemplate: value }),
   jiraReplyInSwedish: false,
@@ -667,6 +805,63 @@ export const createRecentProjectsSlice: StateCreator<
   setJiraAutoSwitchToDetected: (value) => set({ jiraAutoSwitchToDetected: value }),
   jiraArchivedTicketAction: "resume",
   setJiraArchivedTicketAction: (value) => set({ jiraArchivedTicketAction: value }),
+  jiraApiEmail: "",
+  setJiraApiEmail: (value) => set({ jiraApiEmail: value }),
+  jiraApiToken: "",
+  setJiraApiToken: (value) => set({ jiraApiToken: value }),
+  jiraMyAccountId: "",
+  setJiraMyAccountId: (value) => set({ jiraMyAccountId: value }),
+  jiraNotifEnabled: true,
+  setJiraNotifEnabled: (value) => set({ jiraNotifEnabled: value }),
+  jiraAssignedMode: false,
+  setJiraAssignedMode: (value) => set({ jiraAssignedMode: value }),
+  jiraAssignedTickets: [],
+  setJiraAssignedTicketsForSite: (siteId, value) =>
+    set((state) => ({
+      jiraAssignedTickets: [
+        ...(state.jiraAssignedTickets ?? []).filter((t) => t.siteId !== siteId),
+        ...value,
+      ].sort((a, b) => (a.updatedIso < b.updatedIso ? 1 : -1)),
+    })),
+  jiraTicketSnapshots: {},
+  setJiraTicketSnapshot: (key, snap) =>
+    set((state) => ({
+      jiraTicketSnapshots: { ...(state.jiraTicketSnapshots ?? {}), [key]: snap },
+    })),
+  markJiraTicketSeen: (key) =>
+    set((state) => {
+      const cur = (state.jiraTicketSnapshots ?? {})[key];
+      if (!cur?.unseen) return {};
+      return {
+        jiraTicketSnapshots: {
+          ...state.jiraTicketSnapshots,
+          [key]: { ...cur, unseen: false },
+        },
+      };
+    }),
+  pruneJiraTicketSnapshots: (keep) =>
+    set((state) => {
+      const cur = state.jiraTicketSnapshots ?? {};
+      const keepSet = new Set(keep);
+      const stale = Object.keys(cur).filter((k) => !keepSet.has(k));
+      if (stale.length === 0) return {};
+      const next = { ...cur };
+      for (const k of stale) delete next[k];
+      return { jiraTicketSnapshots: next };
+    }),
+  jiraHeaderShow: { status: true, summary: true, assignee: false, myTickets: true },
+  setJiraHeaderShow: (patch) =>
+    set((state) => ({
+      jiraHeaderShow: {
+        ...(state.jiraHeaderShow ?? {
+          status: true,
+          summary: true,
+          assignee: false,
+          myTickets: true,
+        }),
+        ...patch,
+      },
+    })),
   jiraAcronyms: [],
   jiraAcronymCounts: {},
   addJiraAcronym: (acronym) =>
@@ -742,7 +937,7 @@ export const createRecentProjectsSlice: StateCreator<
     }));
   },
 
-  addRecentProject: ({ path, name, template, serverCommand, noDevServer, serverId, isJira }) => {
+  addRecentProject: ({ path, name, template, serverCommand, noDevServer, serverId, isJira, jiraSiteId }) => {
     const normalized = normalizePath(path);
     const matches = (p: RecentProject) =>
       normalizePath(p.path) === normalized && p.serverId === serverId;
@@ -772,6 +967,7 @@ export const createRecentProjectsSlice: StateCreator<
             serverCommands: nextCommand ? [nextCommand, ...rest] : undefined,
             noDevServer: noDevServer ?? p.noDevServer,
             isJira: isJira ?? p.isJira,
+            jiraSiteId: jiraSiteId ?? p.jiraSiteId,
           };
         });
       } else {
@@ -793,6 +989,7 @@ export const createRecentProjectsSlice: StateCreator<
           serverId,
           preferredBackend,
           isJira,
+          jiraSiteId,
         };
         updated = [newEntry, ...state.recentProjects];
       }
