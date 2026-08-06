@@ -14,6 +14,7 @@ import type { TerminalType } from "../types";
 import { DEFAULT_CLI_FONT_SIZE, getProjectColor } from "../store/recentProjectsSlice";
 import { CommandBlockParser, type CommandBlock } from "../lib/command-block-parser";
 import { addPaneNotification, parseNotifyOsc } from "../lib/pane-notifications";
+import { ensureGeminiNotificationsSeeded } from "../lib/gemini-notifications";
 import { shouldInjectShellIntegration } from "../lib/shell-integration";
 import {
   registerPaneStateProbe,
@@ -282,6 +283,11 @@ export default function TerminalPane({
   // it needs a ref to see the latest serverId without remounting.
   const serverIdRef = useRef(serverId);
   serverIdRef.current = serverId;
+
+  // One-time Gemini notification seed — see lib/gemini-notifications.
+  useEffect(() => {
+    if (terminalType === "gemini" && !serverId) ensureGeminiNotificationsSeeded(backend);
+  }, [terminalType, backend, serverId]);
   // isActive may change between effect schedule and async initTerminal completion;
   // the ref lets initTerminal decide whether to focus without stale closure.
   const isActiveRef = useRef(isActive);

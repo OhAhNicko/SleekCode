@@ -51,6 +51,7 @@ import {
   clearPaneState,
 } from "../lib/pane-state-registry";
 import { registerTerminalActions, unregisterTerminalActions } from "../lib/terminal-actions";
+import { ensureGeminiNotificationsSeeded } from "../lib/gemini-notifications";
 import { findPromptLines, promptLineText } from "../lib/prompt-lines";
 import { usePtyNative } from "../hooks/usePtyNative";
 import type { NativeRendererSlice } from "../store/nativeRendererSlice";
@@ -756,6 +757,11 @@ export default function TerminalPaneNative({
   // the DOM "No connection" card be seen at all.
   const preflight = useCliPreflight({ terminalType, backend, serverId });
   const paneAllowed = preflight.gate === "ok" && !sshOffline;
+
+  // One-time Gemini notification seed — see lib/gemini-notifications.
+  useEffect(() => {
+    if (terminalType === "gemini" && !serverId) ensureGeminiNotificationsSeeded(backend);
+  }, [terminalType, backend, serverId]);
 
   // ── HWND lifecycle ────────────────────────────────────────────────────
   useLayoutEffect(() => {

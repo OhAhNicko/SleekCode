@@ -188,6 +188,42 @@ export async function setClaudeNotifChannel(
 }
 
 /**
+ * Gemini desktop notifications — `general.enableNotifications` in
+ * `~/.gemini/settings.json`. Unlike Claude's channel (setter-only), Gemini has
+ * a read-back so the Settings row can show the LIVE state, including a
+ * Gemini-side `/settings` change MADE never made.
+ *
+ * `null` = key (or file) absent — Gemini's default, notifications OFF.
+ * SSH is unsupported (no remote config edit); callers skip that backend.
+ */
+export async function getGeminiNotifications(
+  backend: TerminalBackend,
+): Promise<boolean | null> {
+  if (backend === "native") {
+    return await invoke<boolean | null>("get_gemini_notifications_native");
+  } else if (backend === "windows") {
+    return await invoke<boolean | null>("get_gemini_notifications_windows");
+  }
+  const distro = getCachedDistro();
+  return await invoke<boolean | null>("get_gemini_notifications", { distro: distro || null });
+}
+
+/** Same conservative write contract as setClaudeNotifChannel: resolves to the
+ * path written; unparseable JSON throws and nothing is modified. */
+export async function setGeminiNotifications(
+  enabled: boolean,
+  backend: TerminalBackend,
+): Promise<string> {
+  if (backend === "native") {
+    return await invoke<string>("set_gemini_notifications_native", { enabled });
+  } else if (backend === "windows") {
+    return await invoke<string>("set_gemini_notifications_windows", { enabled });
+  }
+  const distro = getCachedDistro();
+  return await invoke<string>("set_gemini_notifications", { enabled, distro: distro || null });
+}
+
+/**
  * Every user prompt in a session, oldest first (truncated to 200 chars each).
  *
  * Used to give the fullscreen-TUI scrollbar an EXACT position: Claude renders
