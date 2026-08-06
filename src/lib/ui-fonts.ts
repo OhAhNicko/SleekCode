@@ -4,25 +4,34 @@
  * ─── ADDING A FONT ────────────────────────────────────────────────────────
  *
  * 1. Drop the woff2 (+ its license) in `src/fonts/`. Prefer a variable file —
- *    one request covers the whole 200–800 weight range the UI spans.
+ *    one request covers the whole 200–800 weight range the UI spans. Take it
+ *    from the upstream fontsource build (latin + latin-ext) and copy its
+ *    unicode-ranges verbatim, so fallback behaves like the faces already here.
+ *    Vendor the file; do not add a fourth npm font dependency, and note that
+ *    `npm install` cannot be run from WSL in this repo anyway.
  * 2. Add the @font-face block(s) to `src/fonts/ui-fonts.css`. That file is
  *    imported by BOTH webviews, so one block is enough; do not re-declare it
  *    in index.css or overlay.css.
  * 3. Append one entry to UI_FONTS below.
  *
  * That is the whole change. The `UiFont` type, the persisted store value, the
- * settings picker and the `--ezy-font-ui` injection all derive from the array,
- * so nothing else needs editing and TypeScript will not let the union drift out
- * of sync with the registry.
+ * settings picker and the `--ezy-font-ui` / `--ezy-tracking-ui` injection all
+ * derive from the array, so nothing else needs editing and TypeScript will not
+ * let the union drift out of sync with the registry.
  *
- * Two things to keep in mind:
+ * Three things to keep in mind:
  *
  * - End every stack with the DEFAULT face, not with system-ui. If a woff2 ever
  *   fails to load, the app should fall back to its own typography rather than
  *   to whatever Segoe UI or San Francisco happens to be.
- * - `SegmentedControl` stops being the right control past about three entries —
- *   its options split the row evenly and get cramped. At that point move the
- *   row in SettingsPane to a dropdown; the registry itself does not change.
+ * - Declare the @font-face in `src/fonts/ui-fonts.css` and NOWHERE else. A face
+ *   declared in index.css exists only in the main webview, so the overlay
+ *   renders context menus in a fallback while the app looks correct — which is
+ *   invisible until someone screenshots a menu. Inter itself shipped that way.
+ * - The picker is a `Dropdown`, not a `SegmentedControl`; it outgrew the
+ *   segmented row at six entries. Adding a face needs no change there — but do
+ *   keep the option rendering in its own face, since the point of the list is
+ *   that each row is a specimen.
  *
  * NOT part of this system: the terminal face (Hack) and the Sora wordmark.
  * Hack is wired through TERMINAL_FONT_FAMILY and the native renderer's bundled
@@ -38,6 +47,18 @@ export interface UiFontDef {
   readonly label: string;
   /** Full CSS font-family stack, ending in the default face. */
   readonly stack: string;
+  /**
+   * Optional `letter-spacing` for this face, as a CSS length.
+   *
+   * Tracking belongs to a TYPEFACE, not to the app: the value that makes Inter
+   * look drawn-on-purpose makes a low-vision face harder to read. So it rides
+   * in the registry entry next to the stack and switches with it, rather than
+   * living as one global rule the font picker silently invalidates.
+   *
+   * Omit it and the face renders at its designed spacing — which is the right
+   * answer for most of them, and the reason this is optional rather than `0`.
+   */
+  readonly tracking?: string;
 }
 
 const INTER_STACK = '"Inter Variable", "Inter", system-ui, -apple-system, sans-serif';
@@ -47,11 +68,40 @@ export const UI_FONTS = [
     id: "inter",
     label: "Inter",
     stack: INTER_STACK,
+    /* Measured, not taste: overlaying MADE's Inter on a screenshot of a
+       shipping product's UI, the glyphs matched outline-for-outline while the
+       word ran ~2% wider — the difference was all tracking. Inter's own
+       designer ships the same guidance, and the app has been drawing it a
+       notch loose since the day it was made the default. */
+    tracking: "-0.011em",
   },
   {
     id: "atkinson",
     label: "Atkinson",
     stack: `"Atkinson Hyperlegible Next Zero", ${INTER_STACK}`,
+    /* Deliberately untracked. The whole point of this face is letterform
+       separation for low-vision reading; tightening it undoes the feature it
+       was picked for. */
+  },
+  {
+    id: "geist",
+    label: "Geist",
+    stack: `"Geist Variable", ${INTER_STACK}`,
+  },
+  {
+    id: "plex",
+    label: "IBM Plex Sans",
+    stack: `"IBM Plex Sans Variable", ${INTER_STACK}`,
+  },
+  {
+    id: "schibsted",
+    label: "Schibsted Grotesk",
+    stack: `"Schibsted Grotesk Variable", ${INTER_STACK}`,
+  },
+  {
+    id: "publicsans",
+    label: "Public Sans",
+    stack: `"Public Sans Variable", ${INTER_STACK}`,
   },
 ] as const satisfies readonly UiFontDef[];
 
@@ -89,6 +139,28 @@ export function uiFontStack(id: string): string {
     UI_FONTS.find((f) => f.id === id)?.stack ??
     UI_FONTS.find((f) => f.id === DEFAULT_UI_FONT)!.stack
   );
+}
+
+/**
+ * Tracking for a persisted id, as a CSS `letter-spacing` value.
+ *
+ * Returns "normal" for a face that declares none — never "" and never
+ * `undefined`. Both of those reach the CSS var as an empty or literal-undefined
+ * token, at which point `letter-spacing` is invalid and the declaration is
+ * dropped, so the PREVIOUS font's tracking stays on screen until something else
+ * repaints. Switching to an untracked face has to actively say "normal".
+ *
+ * Unknown ids resolve like uiFontStack does — through the default, not through
+ * the raw id.
+ */
+export function uiFontTracking(id: string): string {
+  // Widened to UiFontDef on purpose. `as const satisfies` keeps each entry's
+  // literal type, so an entry that omits `tracking` has no such property at all
+  // and the union cannot be read through — the interface is where the field is
+  // optional.
+  const font: UiFontDef =
+    UI_FONTS.find((f) => f.id === id) ?? UI_FONTS.find((f) => f.id === DEFAULT_UI_FONT)!;
+  return font.tracking ?? "normal";
 }
 
 /** Picker options. Each label renders in the face it selects, so the choice

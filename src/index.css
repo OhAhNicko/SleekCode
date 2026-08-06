@@ -1,7 +1,8 @@
 @import "tailwindcss";
 @import "@xterm/xterm/css/xterm.css";
-@import "@fontsource-variable/inter";
 @import "@fontsource-variable/sora";
+/* Inter moved INTO ui-fonts.css — it is a selectable UI face and the overlay
+   webview needs it too. See the note on the @import there. */
 @import "./fonts/ui-fonts.css";
 
 @font-face {
@@ -200,10 +201,32 @@ body,
     -apple-system,
     sans-serif
   );
+  /* Tracking travels WITH the face, not with the app — injected from the same
+     registry entry as --ezy-font-ui, so switching font switches both. Inter is
+     drawn tight in the wild and ships a little loose by default; Atkinson is a
+     low-vision face and is never tightened. `normal` is the fallback so an
+     unset var reads as "this face wants its designed tracking". */
+  letter-spacing: var(--ezy-tracking-ui, normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: "kern" 1, "liga" 1;
+}
+
+/* Monospace opts OUT of UI tracking, and this is load-bearing rather than
+   cosmetic. xterm sizes its grid by measuring one reference glyph in
+   .xterm-char-measure-element and dividing; an inherited letter-spacing widens
+   that measurement, every cell inherits the error, and the columns walk off the
+   text by a pixel per character — with the WebGL renderer drawing from the bad
+   cell width while the DOM keeps the real one. The code/kbd rules are the same
+   principle applied for looks: tightening a monospace run is exactly what
+   monospace is for not doing. */
+.xterm,
+.xterm *,
+.ezy-md code,
+.ezy-md pre,
+.ezy-md kbd {
+  letter-spacing: normal;
 }
 
 /* Scrollbar styling */
@@ -294,6 +317,19 @@ body,
 }
 .workspace-enter {
   animation: fade-in 120ms ease-out;
+}
+
+/* Work-in-progress spinner for a retry the user just asked for. Bound to an
+   in-flight action and stops the moment it resolves — never an idle attention
+   grabber, which is why this is a rotation and not a pulse. */
+@keyframes ezy-spin {
+  to { transform: rotate(360deg); }
+}
+.ezy-spin {
+  animation: ezy-spin 900ms linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ezy-spin { animation: none; }
 }
 
 /* Copy-confirmed check mark — single-fire pop-in (screenshots viewer).
