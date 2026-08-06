@@ -164,7 +164,12 @@ export default function ClipboardImageStrip({ orientation = "horizontal" }: Clip
     return registerScreenshotViewerOpener((imageId) => setViewer({ imageId }));
   }, []);
 
-  const latestThumbnails = images.slice(0, isVertical ? 4 : 5);
+  // Project images opened from the file tree (source "external") live in the
+  // viewer only — the strip stays captures-only so a repo asset never claims
+  // a thumbnail slot.
+  const latestThumbnails = images
+    .filter((im) => im.source !== "external")
+    .slice(0, isVertical ? 4 : 5);
 
   const attachToPrompt = (imgId: string, targetTerminalId?: string) => {
     const img = images.find((i) => i.id === imgId);

@@ -619,9 +619,11 @@ export default function ScreenshotAnnotationToolbar({
       <div
         role="button"
         tabIndex={0}
-        aria-disabled={!dirty || saving}
+        // saveTargets 0 = nothing in-place save may overwrite (a project
+        // image opened from the file tree) \u2014 only "Save as new" applies.
+        aria-disabled={!dirty || saving || saveTargets === 0}
         onClick={() => {
-          if (!dirty || saving) return;
+          if (!dirty || saving || saveTargets === 0) return;
           if (armSave) {
             setArmSave(false);
             onSave();
@@ -630,11 +632,13 @@ export default function ScreenshotAnnotationToolbar({
           }
         }}
         data-tooltip={
-          !dirty
-            ? "Draw something first"
-            : armSave
-              ? "Click again to overwrite. There is no undo and nothing goes to the Recycle Bin."
-              : "Overwrites this screenshot in Pictures\\Screenshots and in temp \u2014 the original is not kept"
+          saveTargets === 0
+            ? "This image is a project file \u2014 MADE only overwrites its own captures. Use Save as new."
+            : !dirty
+              ? "Draw something first"
+              : armSave
+                ? "Click again to overwrite. There is no undo and nothing goes to the Recycle Bin."
+                : "Overwrites this screenshot in Pictures\\Screenshots and in temp \u2014 the original is not kept"
         }
         style={{
           height: 26,
@@ -644,15 +648,15 @@ export default function ScreenshotAnnotationToolbar({
           gap: 6,
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
           border: "none",
-          backgroundColor: !dirty
+          backgroundColor: !dirty || saveTargets === 0
             ? "var(--ezy-surface)"
             : armSave
               ? "var(--ezy-red, #dc2626)"
               : "var(--ezy-accent)",
-          color: dirty ? "#fff" : "var(--ezy-text-muted)",
+          color: dirty && saveTargets > 0 ? "#fff" : "var(--ezy-text-muted)",
           fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
           fontWeight: 600,
-          cursor: dirty && !saving ? "pointer" : "default",
+          cursor: dirty && !saving && saveTargets > 0 ? "pointer" : "default",
           opacity: saving ? 0.6 : 1,
           transition: "background-color 120ms ease, color 120ms ease",
         }}

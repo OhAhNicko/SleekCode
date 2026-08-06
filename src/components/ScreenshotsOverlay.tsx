@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { useClipboardImageStore, type ClipboardImage } from "../store/clipboardImageStore";
@@ -49,6 +49,11 @@ const ZOOM_STOPS = [0.25, 0.5, 1, 2, 4];
 const THUMB_HEIGHT = 60;
 /** How long a destructive button stays armed before it disarms itself. */
 const ARM_MS = 3500;
+/**
+ * Wait before a single click on a name row fires, so a double-click can win.
+ * Keep in step with ClipboardImageStrip's CLICK_RESOLVE_MS.
+ */
+const CLICK_RESOLVE_MS = 200;
 
 /**
  * Size floor for the viewer window. Below this the filmstrip, the stage and the
@@ -139,15 +144,27 @@ export default function ScreenshotsOverlay({
    */
   const [copied, setCopied] = useState(0);
   const copiedTimerRef = useRef<number | null>(null);
+  /**
+   * Which inspector name row just copied — keys an inline check beside that
+   * name, same counter-remount trick as `copied`.
+   */
+  const [nameCopied, setNameCopied] = useState<{ key: "temp" | "original"; n: number } | null>(
+    null,
+  );
+  const nameCopiedTimerRef = useRef<number | null>(null);
+  const nameClickTimerRef = useRef<number | null>(null);
 
   // The check confirms THIS image was copied — moving through the filmstrip
   // or reopening the viewer goes back to the plain copy icon immediately.
   useEffect(() => {
     setCopied(0);
+    setNameCopied(null);
   }, [activeId, open]);
   useEffect(
     () => () => {
       if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+      if (nameCopiedTimerRef.current !== null) window.clearTimeout(nameCopiedTimerRef.current);
+      if (nameClickTimerRef.current !== null) window.clearTimeout(nameClickTimerRef.current);
     },
     [],
   );
@@ -579,6 +596,59 @@ export default function ScreenshotsOverlay({
     });
   }, []);
 
+  /** Pending single-click on a name row — cancelled when a double-click lands. */
+  const cancelPendingNameClick = useCallback(() => {
+    if (nameClickTimerRef.current !== null) {
+      window.clearTimeout(nameClickTimerRef.current);
+      nameClickTimerRef.current = null;
+    }
+  }, []);
+
+  const flashNameCopied = useCallback((key: "temp" | "original") => {
+    setNameCopied((prev) => ({ key, n: (prev?.n ?? 0) + 1 }));
+    if (nameCopiedTimerRef.current !== null) window.clearTimeout(nameCopiedTimerRef.current);
+    nameCopiedTimerRef.current = window.setTimeout(() => {
+      nameCopiedTimerRef.current = null;
+      setNameCopied(null);
+    }, 1800);
+  }, []);
+
+  const nameRowClick = useCallback(
+    (withPath: boolean, path: string, key: "temp" | "original") => {
+      if (withPath) {
+        // Ctrl+Click copies the full path. Unambiguous — fire now, and make
+        // sure no queued plain click follows it.
+        cancelPendingNameClick();
+        void resolveImagePath(path, "clipboard").then((p) => {
+          if (p) {
+            navigator.clipboard
+              .writeText(p)
+              .then(() => flashNameCopied(key))
+              .catch(() => {});
+          }
+        });
+        return;
+      }
+      cancelPendingNameClick();
+      nameClickTimerRef.current = window.setTimeout(() => {
+        nameClickTimerRef.current = null;
+        navigator.clipboard
+          .writeText(fileNameOf(path))
+          .then(() => flashNameCopied(key))
+          .catch(() => {});
+      }, CLICK_RESOLVE_MS);
+    },
+    [cancelPendingNameClick, flashNameCopied],
+  );
+
+  const nameRowReveal = useCallback(
+    (path: string) => {
+      cancelPendingNameClick();
+      void invoke("reveal_in_explorer", { path }).catch(() => {});
+    },
+    [cancelPendingNameClick],
+  );
+
   const doDelete = useCallback(
     (img: ClipboardImage | null) => {
       if (!img) return;
@@ -971,6 +1041,9 @@ export default function ScreenshotsOverlay({
     el?.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
   }, [open, active?.id]);
 
+  // Decided at menu-build time — the menu must never change after it opens.
+  const ctxIsExternal =
+    !!ctxMenu && images.find((im) => im.id === ctxMenu.imgId)?.source === "external";
   useOverlayMenu({
     id: `screenshots-overlay-ctx-${overlayKey}`,
     open: !!ctxMenu,
@@ -989,7 +1062,13 @@ export default function ScreenshotsOverlay({
                 { actionId: "copy", label: "Copy image" },
                 { actionId: "copy-path", label: "Copy filepath" },
                 { actionId: "reveal", label: "Show in folder" },
-                { actionId: "delete", label: "Delete", danger: true },
+                // Project images are viewed, not owned — removing the row
+                // never touches the file, and the label must say so.
+                {
+                  actionId: "delete",
+                  label: ctxIsExternal ? "Remove from list" : "Delete",
+                  danger: !ctxIsExternal,
+                },
               ],
             },
           ],
@@ -1024,7 +1103,24 @@ export default function ScreenshotsOverlay({
   const sized = !!natural && stage.w > 0 && stage.h > 0;
   const overflows = sized && (dispW > stage.w + 1 || dispH > stage.h + 1);
   const zoomPct = Math.round(scale * 100);
-  const totalFiles = images.reduce((n, im) => n + fileCount(im), 0);
+  // External (project) rows are excluded: "Clear all" removes their rows but
+  // never their files, so they must not inflate the "Delete N files?" count.
+  const totalFiles = images.reduce(
+    (n, im) => n + (im.source === "external" ? 0 : fileCount(im)),
+    0,
+  );
+
+  // The names the inspector shows. A capture matched to the Screenshots folder
+  // exists as TWO files — the OS original ("Skärmbild …") and the %TEMP% copy
+  // MADE actually attaches — and showing only one misled about what's on disk.
+  const nameRows: { key: "temp" | "original"; path: string }[] = [];
+  if (active) {
+    if (active.originalPath) nameRows.push({ key: "original", path: active.originalPath });
+    if (active.tempPath && active.tempPath !== active.originalPath) {
+      nameRows.push({ key: "temp", path: active.tempPath });
+    }
+    if (nameRows.length === 0) nameRows.push({ key: "temp", path: active.winPath });
+  }
 
   return createPortal(
     <div
@@ -1153,7 +1249,9 @@ export default function ScreenshotsOverlay({
                       cursor: "pointer",
                     }}
                   >
-                    Delete {totalFiles} {totalFiles === 1 ? "file" : "files"}?
+                    {totalFiles === 0
+                      ? "Clear list?"
+                      : `Delete ${totalFiles} ${totalFiles === 1 ? "file" : "files"}?`}
                   </button>
                   <GhostButton onClick={() => setArmClear(false)}>Cancel</GhostButton>
                 </div>
@@ -1397,7 +1495,9 @@ export default function ScreenshotsOverlay({
                     .then(() => setSelectedShapeId(null))
                     .finally(() => setSaving(false));
                 }}
-                saveTargets={active ? fileCount(active) : 0}
+                // 0 for project images — the overwrite guards only admit
+                // MADE's own captures, so in-place save can never land there.
+                saveTargets={active && active.source !== "external" ? fileCount(active) : 0}
                 onSaveAsNew={() => void flushMarkup(active)}
               />
             )}
@@ -1560,12 +1660,73 @@ export default function ScreenshotsOverlay({
             >
               {/* Identity + metadata */}
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div
-                  className="truncate"
-                  style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text)" }}
-                  data-tooltip={active?.originalPath ?? active?.winPath}
-                >
-                  {active ? fileNameOf(active.originalPath ?? active.winPath) : ""}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                  {nameRows.map((row, i) => (
+                    <Fragment key={row.key}>
+                      {i > 0 && (
+                        <span
+                          aria-hidden="true"
+                          style={{
+                            color: "var(--ezy-text-muted)",
+                            flexShrink: 0,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                          }}
+                        >
+                          ·
+                        </span>
+                      )}
+                      <span
+                        className="truncate"
+                        data-tooltip={row.path}
+                        // A rooted POSIX path (remote/WSL image) has no local
+                        // folder Explorer could show — don't promise one.
+                        data-tooltip-hint={
+                          row.path.startsWith("/")
+                            ? "Click copies the name · Ctrl+Click copies the full path"
+                            : "Click copies the name · Double-click shows in folder · Ctrl+Click copies the full path"
+                        }
+                        style={{
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                          color: i === 0 ? "var(--ezy-text)" : "var(--ezy-text-secondary)",
+                          cursor: "pointer",
+                          minWidth: 0,
+                          flex: "0 1 auto",
+                          // A double-click must open the folder, not select the name.
+                          userSelect: "none",
+                        }}
+                        onClick={(e) => nameRowClick(e.ctrlKey || e.metaKey, row.path, row.key)}
+                        onDoubleClick={() => nameRowReveal(row.path)}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.textDecoration = "underline";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.textDecoration = "";
+                        }}
+                      >
+                        {fileNameOf(row.path)}
+                      </span>
+                      {nameCopied?.key === row.key && (
+                        <svg
+                          key={nameCopied.n}
+                          width="10"
+                          height="10"
+                          viewBox="0 0 12 12"
+                          aria-hidden="true"
+                          className="check-pop-in"
+                          style={{ flexShrink: 0 }}
+                        >
+                          <path
+                            d="M2.5 6.5 L5 9 L9.5 3.5"
+                            stroke="#3fb950"
+                            strokeWidth="1.6"
+                            fill="none"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      )}
+                    </Fragment>
+                  ))}
                 </div>
                 <div
                   style={{
@@ -1756,20 +1917,29 @@ export default function ScreenshotsOverlay({
                       cursor: "pointer",
                     }}
                     data-tooltip={
-                      active && fileCount(active) > 1
-                        ? "Deletes the temp copy and the original in your Screenshots folder"
-                        : "Deletes the temp copy only — no original was matched"
+                      active?.source === "external"
+                        ? "The file on disk is not touched — it belongs to your project"
+                        : active && fileCount(active) > 1
+                          ? "Deletes the temp copy and the original in your Screenshots folder"
+                          : "Deletes the temp copy only — no original was matched"
                     }
                   >
-                    Delete {active ? fileCount(active) : 0}{" "}
-                    {active && fileCount(active) === 1 ? "file" : "files"}?
+                    {active?.source === "external"
+                      ? "Remove from list?"
+                      : `Delete ${active ? fileCount(active) : 0} ${
+                          active && fileCount(active) === 1 ? "file" : "files"
+                        }?`}
                   </button>
                 ) : (
                   <GhostButton
                     onClick={() => setArmDelete(true)}
                     square
                     danger
-                    tooltip="Delete from disk (Del)"
+                    tooltip={
+                      active?.source === "external"
+                        ? "Remove from list (Del)"
+                        : "Delete from disk (Del)"
+                    }
                     aria-label="Delete screenshot"
                   >
                     <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">

@@ -64,7 +64,7 @@ export function useClipboardWatcher() {
           // just wrote is an orphan nothing points at. Unlink it now instead of
           // leaving it for the 24h sweep — a clipboard that keeps getting
           // touched would otherwise strew a copy of the same image across
-          // %TEMP%\made every poll.
+          // the MADE temp dir every poll.
           if (!added) {
             void invoke("screenshots_delete", { tempPath: result.image.path }).catch(
               () => {},

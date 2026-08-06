@@ -11,6 +11,7 @@ import {
   openOrUpdateBrowserPane,
 } from "../lib/layout-utils";
 import { useAppStore } from "../store";
+import { isImagePath, openImageFileInViewer } from "../lib/screenshots";
 import { snapshotPane } from "../store/undoCloseStore";
 import { TerminalSlotHost, BrowserSlotHost, useSplitterDragging } from "./PaneSlotHost";
 import EditorPane from "./EditorPane";
@@ -261,6 +262,31 @@ export default function PaneGrid({
       const detail = (e as CustomEvent).detail;
       if (!detail?.filePath) return;
       const filePath: string = detail.filePath;
+
+      // Images route to the screenshot viewer — the fileviewer pane reads
+      // UTF-8 and can only error on them. This chokepoint covers every
+      // emitter at once: terminal file links (both renderers), markdown
+      // links, code review rows, search results, the file menu's "Open".
+      // Every mounted grid runs this handler, so a flag on the SHARED event
+      // object keeps the viewer from opening once per project tab. An
+      // unreadable image (over the 16MB cap, vanished) re-dispatches with
+      // `skipImageViewer` and opens in the pane as before.
+      if (isImagePath(filePath) && !detail.skipImageViewer) {
+        const ev = e as CustomEvent & { madeImageHandled?: boolean };
+        if (!ev.madeImageHandled) {
+          ev.madeImageHandled = true;
+          void openImageFileInViewer(filePath).then((opened) => {
+            if (!opened) {
+              window.dispatchEvent(
+                new CustomEvent("made:open-file", {
+                  detail: { ...detail, skipImageViewer: true },
+                }),
+              );
+            }
+          });
+        }
+        return;
+      }
 
       // Opening a file also opens the file sidebar with the file highlighted
       // (closable as ever). Every mounted grid runs this handler — gate on

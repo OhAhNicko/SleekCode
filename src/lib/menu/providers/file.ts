@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "../../../store";
 import { getPtyWrite } from "../../../store/terminalSlice";
 import { promptForInput, confirmAction } from "../../prompt-modal";
+import { isImagePath, openImageFileInViewer } from "../../screenshots";
 import { registerMenuProvider } from "../registry";
 import type { FileCtx } from "../context";
 import type { MenuGroup, MenuItemSpec, MenuProvider } from "../types";
@@ -105,6 +106,16 @@ const fileProvider: MenuProvider<"file"> = {
     const open: MenuItemSpec[] = [];
 
     if (!ctx.isDir) {
+      // For images the viewer is the primary open — the file pane reads UTF-8
+      // and can only show an error for them.
+      if (isImagePath(ctx.path)) {
+        open.push({
+          id: "file.openImageViewer",
+          label: "Open in screenshot viewer",
+          iconId: "image",
+          run: (c) => void openImageFileInViewer((c as FileCtx).path),
+        });
+      }
       open.push(
         {
           id: "file.open",

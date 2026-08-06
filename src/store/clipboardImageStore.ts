@@ -13,7 +13,10 @@ export interface ClipboardImage {
    * is tracked separately for deleting and revealing.
    */
   winPath: string;
-  /** `%TEMP%\made\clipboard-<ms>.png` — set when the clipboard produced this. */
+  /**
+   * `%TEMP%\made\clipboard-<ms>.png` (`%TEMP%\made-dev` in debug builds) — set
+   * when the clipboard produced this.
+   */
   tempPath?: string;
   /** The OS Screenshots-folder original, when we've matched or watched one. */
   originalPath?: string;
@@ -26,8 +29,12 @@ export interface ClipboardImage {
   height?: number;
   /** File size in bytes. */
   bytes?: number;
-  /** Where we first saw it. */
-  source?: "clipboard" | "folder";
+  /**
+   * Where we first saw it. `external` = a project file opened from the file
+   * tree — viewed, never owned: it stays out of the TabBar strip and delete
+   * only removes the row, never the file.
+   */
+  source?: "clipboard" | "folder" | "external";
 }
 
 /** A file the folder watcher reported (mirrors Rust's `ScreenshotEntry`). */
@@ -108,6 +115,14 @@ interface ClipboardImageStore {
    * select it.
    */
   addDerivedImage: (image: Omit<ClipboardImage, "id" | "timestamp">) => string;
+  /**
+   * Add a project image opened from the file tree (source "external").
+   *
+   * Dedupes by path, not bytes: re-opening the same file after an edit must
+   * refresh the existing row's pixels rather than stack a second row for the
+   * same path. Returns the row's id so the caller can open the viewer at it.
+   */
+  addExternalImage: (image: Omit<ClipboardImage, "id" | "timestamp">) => string;
   /**
    * Swap in new pixels for an entry whose FILES were just rewritten in place.
    *
@@ -265,6 +280,41 @@ export const useClipboardImageStore = create<ClipboardImageStore>((set, get) => 
     // existing row instead of stacking identical screenshots.
     const twin = get().images.find((im) => im.dataUri === image.dataUri);
     if (twin) return twin.id;
+
+    const id = crypto.randomUUID();
+    set((state) => ({
+      images: [
+        { ...image, id, timestamp: Date.now() },
+        ...state.images,
+      ].slice(0, MAX_CLIPBOARD_IMAGES),
+    }));
+    return id;
+  },
+  addExternalImage: (image) => {
+    const existing = get().images.find(
+      (im) =>
+        im.winPath === image.winPath ||
+        im.originalPath === image.winPath ||
+        im.tempPath === image.winPath,
+    );
+    if (existing) {
+      // The file may have changed on disk since last open — refresh the pixels
+      // but keep the row's identity (annotations and selection key off the id).
+      set((state) => ({
+        images: state.images.map((im) =>
+          im.id === existing.id
+            ? {
+                ...im,
+                dataUri: image.dataUri,
+                width: image.width,
+                height: image.height,
+                bytes: image.bytes,
+              }
+            : im,
+        ),
+      }));
+      return existing.id;
+    }
 
     const id = crypto.randomUUID();
     set((state) => ({

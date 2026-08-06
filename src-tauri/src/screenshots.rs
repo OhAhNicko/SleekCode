@@ -3,7 +3,8 @@
 //! MADE learns about screenshots two ways and they describe the SAME capture:
 //!
 //! 1. **Clipboard** — `poll_clipboard_image` re-encodes whatever is on the
-//!    clipboard into `%TEMP%\made\clipboard-<ms>.png`.
+//!    clipboard into `%TEMP%\made\clipboard-<ms>.png` (`made-dev` in debug
+//!    builds — see `made_temp_dir`).
 //! 2. **The OS Screenshots folder** — Windows' Snipping Tool also writes the
 //!    original to `Pictures\Screenshots` (Settings → "Automatically save
 //!    screenshots"), and that copy is permanent where ours is not.
@@ -19,8 +20,8 @@
 //!
 //! `screenshots_delete` is the only command in MADE that unlinks a file the
 //! user did not name, so it refuses any path that is not a DIRECT child of one
-//! of two roots: `%TEMP%\made` (and named `clipboard-*.png`), or the resolved
-//! screenshots folder. Both sides are canonicalised before comparison, so `..`
+//! of two roots: the MADE temp dir (`made_temp_dir()`, and named
+//! `clipboard-*.png`), or the resolved screenshots folder. Both sides are canonicalised before comparison, so `..`
 //! cannot walk out. Widening this guard would hand the WebView an arbitrary
 //! file-delete primitive — don't.
 
@@ -48,6 +49,40 @@ const REEMIT_SUPPRESS_MS: u64 = 5_000;
 
 /// PNG file signature — the only format this module will write.
 const PNG_MAGIC: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+/// Clipboard-image cache dir: `%TEMP%\made` in release builds, `%TEMP%\made-dev`
+/// in debug builds.
+///
+/// Split per profile for the same reason as `debug_log.rs`'s
+/// `made-<profile>.log`: a `tauri dev` instance (window titled MADE_debug)
+/// running beside the installed production MADE would otherwise duplicate every
+/// clipboard capture into — and on cleanup sweep — the production cache.
+pub fn made_temp_dir() -> PathBuf {
+    std::env::temp_dir().join(if cfg!(debug_assertions) { "made-dev" } else { "made" })
+}
+
+/// Debug builds only: sweep the dev clipboard cache on clean exit.
+///
+/// Best-effort by design — a crash leaves the files, and the 24h
+/// `cleanup_clipboard_images` sweep on the next launch collects them. Only
+/// files this app plausibly wrote are touched (same `clipboard-` guard as
+/// `screenshots_delete`, plus `screenshots_overwrite`'s `.made-tmp` atomic-write
+/// siblings); the dir itself goes only when that leaves it empty — never a
+/// recursive delete.
+#[cfg(debug_assertions)]
+pub fn cleanup_dev_temp_dir() {
+    let dir = made_temp_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("clipboard-")
+            && (name.ends_with(".png") || name.ends_with(".made-tmp"))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    let _ = std::fs::remove_dir(&dir); // fails harmlessly when not empty
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -466,7 +501,7 @@ pub fn screenshots_delete(
 
     if let Some(raw) = temp_path.filter(|s| !s.trim().is_empty()) {
         let path = PathBuf::from(&raw);
-        let root = std::env::temp_dir().join("made");
+        let root = made_temp_dir();
         let name_ok = path
             .file_name()
             .and_then(|n| n.to_str())
@@ -516,8 +551,8 @@ pub struct OverwriteReport {
 /// a new file, so the un-annotated picture is gone afterwards.
 ///
 /// Same root guards as `screenshots_delete` — the WebView may only name files
-/// inside `%TEMP%\made` (called `clipboard-*.png`) or inside the resolved
-/// screenshots folder. Two additions on top of those:
+/// inside the MADE temp dir (`made_temp_dir()`, called `clipboard-*.png`) or
+/// inside the resolved screenshots folder. Two additions on top of those:
 ///
 /// - **PNG magic is validated before anything is opened.** Without it this is a
 ///   write-arbitrary-bytes-anywhere primitive.
@@ -560,7 +595,7 @@ pub fn screenshots_overwrite(
 
     if let Some(raw) = temp_path.filter(|s| !s.trim().is_empty()) {
         let path = PathBuf::from(&raw);
-        let root = std::env::temp_dir().join("made");
+        let root = made_temp_dir();
         let name_ok = path
             .file_name()
             .and_then(|n| n.to_str())

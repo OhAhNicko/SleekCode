@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { openImageFileInViewer } from "../lib/screenshots";
 
 /**
  * Rendered markdown for FileViewerPane's MD toggle.
@@ -119,7 +120,19 @@ function MarkdownImage({
     );
   }
   if (!resolved) return null;
-  return <img {...rest} src={resolved} alt={alt} loading="lazy" />;
+  // Local images open in the screenshot viewer on click; external/data: URIs
+  // have no file to open.
+  const clickPath = isInline ? null : resolveRelative(baseDir, raw);
+  return (
+    <img
+      {...rest}
+      src={resolved}
+      alt={alt}
+      loading="lazy"
+      onClick={clickPath ? () => void openImageFileInViewer(clickPath) : undefined}
+      style={clickPath ? { ...rest.style, cursor: "zoom-in" } : rest.style}
+    />
+  );
 }
 
 /** Flatten React children to plain text so headings can be slugged. */

@@ -7,6 +7,7 @@ import {
 } from "../store/clipboardImageStore";
 import { useAnnotationStore } from "../store/screenshotAnnotationStore";
 import { flattenToPng, isRealCrop, saveAnnotated } from "./annotations";
+import { openScreenshotViewer } from "./screenshot-viewer";
 
 /** Mirrors Rust's `DeleteReport`. */
 export interface DeleteReport {
@@ -76,6 +77,14 @@ export function filesFor(img: ClipboardImage): { tempPath?: string; originalPath
  * Rust validates both paths against their roots — see `screenshots_delete`.
  */
 export async function deleteScreenshot(img: ClipboardImage): Promise<DeleteReport> {
+  // Project images opened from the file tree are viewed, not owned — removing
+  // one from the list must never unlink a repo asset. (Rust's root guards
+  // would skip the unlink anyway; this branch makes the no-op explicit so the
+  // UI can label it "Remove from list".)
+  if (img.source === "external") {
+    useClipboardImageStore.getState().removeImage(img.id);
+    return { deleted: [], skipped: [] };
+  }
   const { tempPath, originalPath } = filesFor(img);
   let report: DeleteReport = { deleted: [], skipped: [] };
   try {
@@ -95,6 +104,8 @@ export async function deleteScreenshot(img: ClipboardImage): Promise<DeleteRepor
 export async function deleteAllScreenshots(images: ClipboardImage[]): Promise<DeleteReport> {
   const results = await Promise.all(
     images.map(async (img) => {
+      // Same rule as deleteScreenshot: external rows leave the file alone.
+      if (img.source === "external") return { deleted: [], skipped: [] } as DeleteReport;
       const { tempPath, originalPath } = filesFor(img);
       try {
         return await invoke<DeleteReport>("screenshots_delete", {
@@ -281,4 +292,80 @@ export function relativeTime(timestamp: number, now = Date.now()): string {
 
 export function fileNameOf(path: string): string {
   return path.split(/[\\/]/).pop() || path;
+}
+
+/**
+ * Extensions the screenshot viewer can display — the set `read_image_data_uri`
+ * accepts (wider than the capture pipeline's png/jpg/bmp: the viewer only has
+ * to render, never header-parse).
+ */
+const VIEWABLE_IMAGE_EXTS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "bmp",
+  "ico",
+  "avif",
+]);
+
+/** Whether a path names an image the screenshot viewer can open. */
+export function isImagePath(path: string): boolean {
+  const name = fileNameOf(path);
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return VIEWABLE_IMAGE_EXTS.has(name.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * Open an arbitrary on-disk image (a project file from the file tree) in the
+ * screenshot viewer. The image joins the session list as an `external` row —
+ * visible in the viewer's filmstrip, kept out of the TabBar capture strip.
+ *
+ * Returns false when the file can't be read (unsupported type, over the 16MB
+ * cap, gone) or no viewer is mounted — the caller decides the fallback.
+ */
+export async function openImageFileInViewer(path: string): Promise<boolean> {
+  const dataUri = await readImageDataUri(path);
+  return addExternalAndOpen(path, dataUri);
+}
+
+/**
+ * Same as `openImageFileInViewer` for a file on an SSH server: the bytes come
+ * over `ssh_read_image_data_uri` (binary-safe, unlike `ssh_read_file`), the
+ * row keeps the remote path.
+ */
+export async function openRemoteImageInViewer(
+  server: { host: string; username: string; identityFile: string | null },
+  path: string,
+): Promise<boolean> {
+  let dataUri: string | null = null;
+  try {
+    dataUri = await invoke<string>("ssh_read_image_data_uri", {
+      host: server.host,
+      username: server.username,
+      path,
+      identityFile: server.identityFile,
+    });
+  } catch {
+    dataUri = null;
+  }
+  return addExternalAndOpen(path, dataUri);
+}
+
+async function addExternalAndOpen(path: string, dataUri: string | null): Promise<boolean> {
+  if (!dataUri) return false;
+  const dims = await measureDataUri(dataUri);
+  const id = useClipboardImageStore.getState().addExternalImage({
+    winPath: path,
+    originalPath: path,
+    dataUri,
+    width: dims?.width,
+    height: dims?.height,
+    bytes: dataUriBytes(dataUri),
+    source: "external",
+  });
+  return openScreenshotViewer(id);
 }

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
+import { isImagePath } from "../lib/screenshots";
 import type { FileEntry } from "../types";
 
 interface FileExplorerProps {
@@ -79,9 +80,17 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
           onClick={() => {
             if (entry.is_directory) {
               handleToggle(entry.path);
-            } else {
+            } else if (!isImagePath(entry.path)) {
+              // Images open in the screenshot viewer on DOUBLE-click — the
+              // file pane reads UTF-8 and can only error on them.
               onOpenFile(entry.path);
             }
+          }}
+          onDoubleClick={() => {
+            if (entry.is_directory || !isImagePath(entry.path)) return;
+            // The normal open channel: PaneGrid's image guard routes it to
+            // the screenshot viewer, falling back to the pane if unreadable.
+            onOpenFile(entry.path);
           }}
         >
           {/* Chevron for directories */}
