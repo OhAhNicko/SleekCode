@@ -12,140 +12,90 @@
 #   - Paths that are missing, clean, or gitignored are skipped silently, so a
 #     slightly stale manifest still works.
 #   - Order here is the order the commits are made in.
+#
+# Several files carry work from more than one workstream (SettingsPane, TabBar,
+# store/index). Each is filed under the stream that dominates its diff.
 
-fix(notifications): report focus-out to pane CLIs on minimize so Claude notifies while the window is minimized
-  src-tauri/src/native_term/window/mod.rs
-  src-tauri/src/native_term/window/win32.rs
-  src-tauri/src/native_term/registry.rs
-  src-tauri/src/native_term/mod.rs
-
-fix(notifications): register MADE's toast identity (AUMID) so Windows system notifications display on shortcut-less installs
-  src-tauri/src/lib.rs
-
-feat(notifications): auto-dismiss a pane's notification card once its pane is back on screen
-  src/components/PaneNotificationStack.tsx
-
-fix(window): typing works immediately after restoring the window via Win+D
-  docs/architecture.md
-  tasks/todo.md
-  docs/session-prompts.txt
-
-feat(theme): terminal color presets — override core, ANSI and chrome colors per preset
-  src/lib/color-overrides.ts
-  src/components/ColorSwatchPicker.tsx
-  src/store/themeSlice.ts
-  src/lib/themes.ts
-  src/hooks/usePaneSearch.ts
-  src/components/TerminalColorsPreview.tsx
-  src-tauri/src/native_term/renderer/grid.rs
-  src-tauri/src/native_term/renderer/pipeline.rs
-
-feat(settings): appearance batch — render options (bold-bright, min contrast, dim, cursor opacity, line height), terminal fonts, scrollback and accent presets with preview + import/export
-  src/components/SettingsPane.tsx
-  src-tauri/src/native_term/renderer/mod.rs
-  src-tauri/src/native_term/renderer/glyph_atlas.rs
-  src/lib/terminal-fonts.ts
-  src/lib/settings-section.ts
-  src-tauri/icons/variants/
-  src/lib/app-icon.ts
-  src/components/AppIconPreview.tsx
-  src/components/TerminalPaneNative.tsx
-  src/components/TerminalPaneXterm.tsx
-  src/components/TerminalPane.tsx
-  src/components/TerminalHeader.tsx
-  src/lib/terminal-config.ts
-  src/lib/native-term-bridge.ts
-  src/store/index.ts
-
-fix(ui): theme-branded checkboxes app-wide with contrast-picked ticks
-  src/index.css
-  src/App.tsx
-
-feat(ui): UI font scale setting applied app-wide
-  src/lib/ui-fonts.ts
-  src/components/GamePane.tsx
-  src/components/games/
-  src/components/CommandPalette.tsx
-  src/components/KanbanBoard.tsx
-  src/components/DevServerTab.tsx
-  src/components/DevServerTerminalHost.tsx
-  src/lib/dev-server-actions.ts
-  src/components/CommandHistory.tsx
-  src/components/CommitPopover.tsx
-  src/components/CommandBlockOverlay.tsx
-  src/components/ChangelogModal.tsx
-  src/components/ClaudeTokenWizardModal.tsx
-  src/components/ClearDataModal.tsx
-  src/components/ClipboardImageStrip.tsx
-  src/components/CodeReviewDiffView.tsx
-  src/components/ConnectToGitHubModal.tsx
-  src/components/CreateProjectModal.tsx
-  src/components/CreatePullRequestModal.tsx
-  src/components/EmptyTabLauncher.tsx
-  src/components/FileExplorer.tsx
-  src/components/GitStatusBar.tsx
-  src/components/GlobalSearch.tsx
-  src/components/KeyboardShortcutsModal.tsx
-  src/components/MarkdownPreview.tsx
-  src/components/PromptComposer.tsx
-  src/components/PromptHistorySearch.tsx
-  src/components/PromptModal.tsx
-  src/components/ReleaseModal.tsx
-  src/components/ScreenshotAnnotationToolbar.tsx
-  src/components/ScreenshotsOverlay.tsx
-  src/components/Sidebar.tsx
-  src/components/SnippetEditor.tsx
-  src/components/SnippetPanel.tsx
-  src/components/TaskCard.tsx
-  src/components/TemplatePicker.tsx
-  src/components/ToolSelector.tsx
-  src/components/UpdateBanner.tsx
-  src/components/WelcomeModal.tsx
-  src/components/Workspace.tsx
-  src/components/XtermTuiScrollbar.tsx
-  src/components/EditorPane.tsx
-  src/components/FileViewerPane.tsx
-  src/components/PaneGrid.tsx
-  src/components/PaneSearchBar.tsx
-  src/components/PaneSlotHost.tsx
-  src/components/ServersPanel.tsx
-  src/components/AppErrorBoundary.tsx
-  src/components/BrowserPreview.tsx
-
-feat(jira): CLI-agnostic Jira setup and a send-ticket-prompt row action
-  src/components/JiraDetectedTicketToast.tsx
-  src/components/JiraMcpStartupCheck.tsx
+feat(jira): multi-site Jira — per-site projects and tabs, ticket-update polling, an assigned-tickets rail with browser preview, and a live ticket header on each pane
+  src-tauri/src/jira_poll.rs
+  src/components/JiraNotifyEngine.tsx
+  src/lib/jira-notify.ts
+  src/lib/jira-sites.ts
+  src/store/jiraNotifyStore.ts
   src/components/JiraProjectModal.tsx
-  src/components/JiraStackedPair.tsx
   src/components/JiraTicketRail.tsx
   src/components/NewJiraTicketModal.tsx
-  src/lib/jira-mcp.ts
+  src/lib/jira.ts
   src/lib/jira-omnibox.ts
   src/lib/jira-project.ts
-  src/lib/jira-session.ts
   src/lib/jira-layout.ts
-  src/store/jiraTicketToastStore.ts
+  src/store/recentProjectsSlice.ts
+  src/store/index.ts
+  src/store/tabSlice.ts
+  src/types/index.ts
+  src/components/TerminalHeader.tsx
+  src/components/Workspace.tsx
+  src/components/SettingsPane.tsx
+  src/components/BrowserPreview.tsx
   src/lib/menu/providers/rows.ts
+  src/lib/menu/context.ts
+  src/lib/surface-actions.ts
 
-feat(ssh): remote keychain unlock flow (masked prompt, PTY sentinel, session cache)
-  src/lib/keychain.ts
-  src/components/UnlockKeychainModal.tsx
-  src/lib/unlock-keychain-modal.ts
-  src/lib/ssh-reachability.ts
-  src/components/RemoteFileBrowser.tsx
+feat(notifications): custom notification popups outside the app — a dedicated toast window that appears when MADE is minimized or unfocused, with per-kind sounds and click-through actions
+  toast.html
+  src/toast-main.tsx
+  src/toast
+  src/components/OsToastHost.tsx
+  src-tauri/capabilities/toast.json
+  src-tauri/src/lib.rs
+  src-tauri/tauri.conf.json
+  vite.config.ts
+  src/overlay/NotifCardVisual.tsx
+  src/lib/notif-actions.ts
+  src/lib/notification-sounds.ts
+  src/lib/pane-notifications.ts
+  src/store/paneNotificationsStore.ts
+  src/components/PaneNotificationStack.tsx
+  src/App.tsx
+
+feat(gemini): read and write Gemini's own notification setting from MADE, seeded once per Gemini pane
+  src/lib/gemini-notifications.ts
+  src/lib/sessions-index.ts
+  src/components/TerminalPaneNative.tsx
+  src/components/TerminalPaneXterm.tsx
+
+feat(images): images open in the screenshot viewer from everywhere — terminal file links, markdown, the file trees and the file menu route through one guard, and the viewer's inspector shows both files on disk
+  src/components/PaneGrid.tsx
+  src/lib/screenshots.ts
+  src/components/ScreenshotsOverlay.tsx
+  src/components/ScreenshotAnnotationToolbar.tsx
+  src/components/FileExplorer.tsx
+  src/components/MarkdownPreview.tsx
+  src/lib/menu/providers/file.ts
+  src/lib/menu-icons.tsx
+  src/store/clipboardImageStore.ts
+  src/components/ClipboardImageStrip.tsx
+  src/hooks/useClipboardWatcher.ts
+  src-tauri/src/screenshots.rs
+
+feat(ssh): the remote project tree retries on its own backoff and reports the result, with a retry button on the project tab and remote images opening in the viewer
   src/components/RemoteFileExplorer.tsx
-  src/components/SshKeySetupWizardModal.tsx
-  src/lib/session-exists.ts
-
-feat(cli): missing-CLI detection with guided install
-  src-tauri/src/cli_install.rs
-  src/components/CliInstallModal.tsx
-  src/components/CliMissingCard.tsx
-  src/lib/cli-availability.ts
-  src/lib/cli-install.ts
-  src/lib/cli-install-modal.ts
-  src/hooks/useCliPreflight.ts
-
-fix(tabs): hover no longer darkens the active sidebar and dev-server toggles
+  src/store/remoteBrowseStore.ts
   src/components/TabBar.tsx
-  src/components/VerticalTabBar.tsx
+  src/components/Sidebar.tsx
+
+feat(ui): UI font picker — Geist, IBM Plex Sans, Public Sans and Schibsted Grotesk bundled, each shipping its own letter-spacing to the overlay too
+  src/fonts/
+  src/lib/ui-fonts.ts
+  src/index.css
+
+fix(ui): a tooltip can no longer paint over an open menu, including menus raised from native panes and the browser view
+  src/components/TooltipHost.tsx
+  src/lib/overlay-bridge.ts
+  src/lib/useOverlayMenu.ts
+  src/overlay/OverlayRoot.tsx
+  src/overlay/overlay.css
+
+feat(terminal): native GPU panes are the default renderer — the add-pane dropdown's renderer toggle is gone and the beta/experimental labels are dropped
+  src/store/nativeRendererSlice.ts
+  src/lib/overlay-menu-model.ts
