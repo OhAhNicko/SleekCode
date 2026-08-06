@@ -1,13 +1,32 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
+import {
+  useRemoteBrowseStore,
+  registerRemoteReloader,
+} from "../store/remoteBrowseStore";
+import { checkServerReachable } from "../lib/ssh-reachability";
+import { isImagePath, openRemoteImageInViewer } from "../lib/screenshots";
 import type { RemoteServer } from "../types";
 
 interface RemoteFileExplorerProps {
   server: RemoteServer;
   rootDir: string;
+  /** The tab this tree belongs to. Its load status is published under this key
+   *  so the project tab can offer a retry (store/remoteBrowseStore.ts). */
+  tabId: string;
   onOpenFile: (filePath: string) => void;
 }
+
+/**
+ * Gaps between automatic retries after the project root fails to load, then
+ * capped at the last value.
+ *
+ * The usual failure is "the server isn't up YET" — a laptop still waking, a VPN
+ * still negotiating — so the first retries come quickly and it then settles
+ * into a heartbeat instead of running ssh every few seconds all afternoon.
+ */
+const RETRY_BACKOFF_MS = [5_000, 10_000, 20_000, 30_000];
 
 interface RemoteEntry {
   name: string;
@@ -30,12 +49,16 @@ function parseEntries(raw: string[], parentPath: string): RemoteEntry[] {
   return [...dirs, ...files];
 }
 
-export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: RemoteFileExplorerProps) {
+export default function RemoteFileExplorer({ server, rootDir, tabId, onOpenFile }: RemoteFileExplorerProps) {
   const expandedRemoteDirs = useAppStore((s) => s.expandedRemoteDirs);
   const toggleExpandRemoteDir = useAppStore((s) => s.toggleExpandRemoteDir);
   const [cache, setCache] = useState<Record<string, RemoteEntry[]>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [error, setError] = useState<string | null>(null);
+  const status = useRemoteBrowseStore((s) => s.byTab[tabId]);
+  const setStatus = useRemoteBrowseStore((s) => s.setStatus);
+  /** Guards against a load that resolves after the project changed under it. */
+  const loadSeq = useRef(0);
 
   const identityFile = server.authMethod === "ssh-key" && server.sshKeyPath ? server.sshKeyPath : null;
 
@@ -56,6 +79,88 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
     }
     setLoading((prev) => ({ ...prev, [path]: false }));
   }, [cache, server.host, server.username, identityFile]);
+
+  /**
+   * (Re)load the project root — the one directory whose failure means the tree
+   * has nothing at all to show.
+   *
+   * Separate from `loadDir` because it must be able to run AGAIN over a path it
+   * has already tried: `loadDir` early-returns on anything cached, and a retry
+   * has to drop the previous attempt first. It also publishes the outcome to
+   * remoteBrowseStore, which is what puts the retry button on the project tab.
+   */
+  const loadRoot = useCallback(async () => {
+    if (!rootDir) return;
+    const seq = ++loadSeq.current;
+    setStatus(tabId, { state: "loading", rootDir });
+    setCache((prev) => {
+      if (!(rootDir in prev)) return prev;
+      const next = { ...prev };
+      delete next[rootDir];
+      return next;
+    });
+    try {
+      const raw = await invoke<string[]>("ssh_ls", {
+        host: server.host,
+        username: server.username,
+        path: rootDir,
+        identityFile,
+      });
+      if (seq !== loadSeq.current) return;
+      setCache((prev) => ({ ...prev, [rootDir]: parseEntries(raw, rootDir) }));
+      setError(null);
+      setStatus(tabId, { state: "ok", rootDir });
+    } catch (e) {
+      if (seq !== loadSeq.current) return;
+      setStatus(tabId, { state: "failed", rootDir, error: String(e) });
+    }
+  }, [tabId, rootDir, server.host, server.username, identityFile, setStatus]);
+
+  // Let the project tab's retry button drive this tree while it is mounted.
+  useEffect(() => registerRemoteReloader(tabId, () => { void loadRoot(); }), [tabId, loadRoot]);
+
+  const failed = status?.state === "failed" && status.rootDir === rootDir;
+
+  /**
+   * Recover on our own once the server comes back.
+   *
+   * The probe (`checkServerReachable`, BatchMode + ConnectTimeout=5) is cheaper
+   * and quieter than a speculative `ls`, and publishing through it is what also
+   * turns the Servers panel's dot green — the sidebar's own traffic answers the
+   * question, so there is no second mechanism to keep in step.
+   */
+  useEffect(() => {
+    if (!failed) return;
+    let cancelled = false;
+    let attempt = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      if (cancelled) return;
+      const reachable = await checkServerReachable(server);
+      if (cancelled) return;
+      // `false` = it definitively did not answer, so don't waste an ls on it.
+      // `true` = go. `null` = password auth, which BatchMode can never prove
+      // either way — for those the `ls` IS the probe.
+      if (reachable !== false) await loadRoot();
+      if (cancelled) return;
+      // On success `failed` flips and this effect is torn down, cancelling the
+      // timer we are about to set; on failure the loop simply carries on.
+      schedule();
+    };
+
+    const schedule = () => {
+      const ms = RETRY_BACKOFF_MS[Math.min(attempt, RETRY_BACKOFF_MS.length - 1)];
+      attempt += 1;
+      timer = setTimeout(() => void tick(), ms);
+    };
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [failed, server, loadRoot]);
 
   const handleToggle = useCallback((path: string) => {
     const isExpanded = expandedRemoteDirs.includes(path);
@@ -83,8 +188,24 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
           onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)")}
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
           onClick={() => {
-            if (entry.isDirectory) handleToggle(entry.path);
-            else onOpenFile(entry.path);
+            if (entry.isDirectory) {
+              handleToggle(entry.path);
+            } else if (!isImagePath(entry.path)) {
+              // Images open in the screenshot viewer on DOUBLE-click, same as
+              // the local tree — the remote editor is text-only.
+              onOpenFile(entry.path);
+            }
+          }}
+          onDoubleClick={() => {
+            if (entry.isDirectory || !isImagePath(entry.path)) return;
+            void openRemoteImageInViewer(
+              { host: server.host, username: server.username, identityFile },
+              entry.path,
+            ).then((opened) => {
+              // Unreadable (over the 16MB cap, ssh hiccup): fall back to the
+              // remote editor so the double-click never lands on nothing.
+              if (!opened) onOpenFile(entry.path);
+            });
           }}
         >
           {entry.isDirectory ? (
@@ -138,7 +259,7 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
   // Auto-load project root when server / root changes, and auto-expand it.
   useEffect(() => {
     if (!rootDir) return;
-    loadDir(rootDir);
+    void loadRoot();
     if (!expandedRemoteDirs.includes(rootDir)) toggleExpandRemoteDir(rootDir);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootDir, server.id]);
@@ -183,13 +304,62 @@ export default function RemoteFileExplorer({ server, rootDir, onOpenFile }: Remo
           {rootDir}
         </span>
       </div>
-      {error && (
-        <div style={{ padding: "8px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-red)" }}>{error}</div>
-      )}
-      {cache[rootDir] ? (
-        cache[rootDir].map((entry) => renderEntry(entry, 0))
+      {/* Three explicit states. The root load previously left the pane showing
+          its error AND a "Loading…" that never resolved, because nothing ever
+          retried and nothing ever landed in the cache. */}
+      {failed ? (
+        <div style={{ padding: "12px", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", fontWeight: 500, color: "var(--ezy-red)" }}>
+            Can’t reach {server.name}
+          </div>
+          {status?.error && (
+            <div
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                color: "var(--ezy-text-muted)",
+                lineHeight: 1.5,
+                wordBreak: "break-word",
+              }}
+            >
+              {status.error}
+            </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={() => void loadRoot()}
+              style={{
+                padding: "3px 10px",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                backgroundColor: "var(--ezy-neutral-700, #404040)",
+                color: "#ffffff",
+                border: "none",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                transition: "background-color 120ms ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-neutral-600, #525252)")}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-neutral-700, #404040)")}
+            >
+              Retry
+            </button>
+            <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
+              Retrying automatically.
+            </span>
+          </div>
+        </div>
       ) : (
-        <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Loading…</div>
+        <>
+          {/* Sub-directory failures only — the root's error lives above. */}
+          {error && (
+            <div style={{ padding: "8px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-red)" }}>{error}</div>
+          )}
+          {cache[rootDir] ? (
+            cache[rootDir].map((entry) => renderEntry(entry, 0))
+          ) : (
+            <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Loading…</div>
+          )}
+        </>
       )}
     </div>
   );

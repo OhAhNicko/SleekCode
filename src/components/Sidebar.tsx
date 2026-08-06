@@ -153,10 +153,11 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
             <FileExplorer rootDir={rootDir} onOpenFile={(path) => onOpenFile(path)} />
           </div>
         )}
-        {sidebarTab === "remote-files" && activeServer && (
+        {sidebarTab === "remote-files" && activeServer && activeTab && (
           <RemoteFileExplorer
             server={activeServer}
             rootDir={rootDir}
+            tabId={activeTab.id}
             onOpenFile={handleRemoteOpen}
           />
         )}

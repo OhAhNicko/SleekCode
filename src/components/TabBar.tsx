@@ -11,6 +11,7 @@ import { isTerminalActive } from "../lib/terminal-activity";
 import { isWindows, detectBackendForPath } from "../lib/platform";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
 import { useModalWhen } from "../store/modalCoordinationSlice";
+import { useRemoteBrowseStore, requestRemoteReload } from "../store/remoteBrowseStore";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import type { RemoteServer, TerminalType } from "../types";
@@ -22,7 +23,7 @@ import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 import GitStatusBar from "./GitStatusBar";
 import { FaChevronDown, FaCheck } from "react-icons/fa";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
-import { FaXmark, FaPlus, FaGear, FaServer } from "react-icons/fa6";
+import { FaXmark, FaPlus, FaGear, FaServer, FaArrowRotateRight } from "react-icons/fa6";
 import { PiKanbanDuotone, PiGameControllerDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
 import { BiSidebar } from "react-icons/bi";
@@ -56,9 +57,11 @@ export default function TabBar() {
   const addRecentProject = useAppStore((s) => s.addRecentProject);
   const removeRecentProject = useAppStore((s) => s.removeRecentProject);
   const servers = useAppStore((s) => s.servers);
+  // Whether each tab's remote project loaded in the file sidebar. Selecting the
+  // record itself (never a .filter()/.map(), which would return a fresh array
+  // every render and loop) — the map is only rebuilt when a status changes.
+  const remoteBrowse = useRemoteBrowseStore((s) => s.byTab);
   const cliYolo = useAppStore((s) => s.cliYolo);
-  const newPaneNativeRenderer = useAppStore((s) => s.newPaneNativeRenderer);
-  const setNewPaneNativeRenderer = useAppStore((s) => s.setNewPaneNativeRenderer);
   const hoverOpenAddPaneMenu = useAppStore((s) => s.hoverOpenAddPaneMenu);
   const toggleProjectQuickOpen = useAppStore((s) => s.toggleProjectQuickOpen);
   const setProjectBackend = useAppStore((s) => s.setProjectBackend);
@@ -135,22 +138,6 @@ export default function TabBar() {
           hoverTracking: hoverOpenAddPaneMenu,
           sections: [
             {
-              // Sticky renderer mode: `sticky` keeps the menu OPEN, so the
-              // checkmark flips in place and the user can pick a pane type in
-              // the same visit. (Closing it here used to drop the overlay
-              // popup — menu gone + an app blink — for a mode change that
-              // adds no pane.)
-              items: [
-                {
-                  actionId: "toggle-native-renderer",
-                  label: "Native renderer (beta)",
-                  sublabel: "Ctrl+click a pane type to open native once",
-                  checked: newPaneNativeRenderer,
-                  sticky: true,
-                },
-              ],
-            },
-            {
               title: "Add pane",
               items: (["claude", "codex", "gemini", "shell"] as const).map(
                 (type) => ({
@@ -169,7 +156,7 @@ export default function TabBar() {
           ],
         }
       : null,
-    onAction: (actionId, data) => {
+    onAction: (actionId) => {
       if (actionId === "__hoverin__") {
         cancelHoverClose();
         return;
@@ -178,25 +165,18 @@ export default function TabBar() {
         scheduleHoverClose();
         return;
       }
-      if (actionId === "toggle-native-renderer") {
-        setNewPaneNativeRenderer(!newPaneNativeRenderer);
-        return;
-      }
       const [verb, type] = actionId.split(":");
-      // Ctrl (or Cmd) forces native for this one pane, regardless of the sticky
-      // mode. The overlay forwards the modifier for both the row and its
-      // trailing split-down button.
-      const ctrl = !!(data as { ctrl?: boolean } | undefined)?.ctrl;
-      const renderer =
-        newPaneNativeRenderer || ctrl ? ("native" as const) : undefined;
+      // No per-pane renderer stamp: new panes follow the global
+      // `useNativeTerminalRenderer` setting (native by default). A pane can
+      // still be flipped after the fact via paneRendererOverride.
       if (verb === "split") {
         window.dispatchEvent(
-          new CustomEvent("made:split-terminal", { detail: { type, renderer } }),
+          new CustomEvent("made:split-terminal", { detail: { type } }),
         );
       } else if (verb === "split-down") {
         window.dispatchEvent(
           new CustomEvent("made:split-terminal", {
-            detail: { type, direction: "vertical", renderer },
+            detail: { type, direction: "vertical" },
           }),
         );
       }
@@ -479,7 +459,11 @@ export default function TabBar() {
           // never through the template picker or layout restore, which would
           // recreate them as plain grids.
           if (project.isJira) {
-            void createJiraProjectAt({ path: project.path, serverId: project.serverId });
+            void createJiraProjectAt({
+              path: project.path,
+              serverId: project.serverId,
+              siteId: project.jiraSiteId,
+            });
             break;
           }
           if ((!!project.lastLayout || !!project.lastTemplate) && isQuickOpenEnabled(project)) {
@@ -657,6 +641,7 @@ export default function TabBar() {
         {/* Sidebar toggle (Warp-style) — hidden in Jira mode on Jira tabs */}
         {!hideJiraChrome && (
           <div
+            data-tooltip="File explorer" aria-label="File explorer"
             style={{
               display: "flex",
               alignItems: "center",
@@ -685,7 +670,7 @@ export default function TabBar() {
           const runningCount = devServers.filter((s) => s.status === "running" || s.status === "starting").length;
           return (
             <div
-              data-tooltip="Dev Servers"
+              data-tooltip="Dev servers" aria-label="Dev servers"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -731,7 +716,7 @@ export default function TabBar() {
 
         {/* Settings toggle */}
         <div
-         
+          data-tooltip="Settings" aria-label="Settings"
           style={{
             display: "flex",
             alignItems: "center",
@@ -1083,6 +1068,47 @@ export default function TabBar() {
                           <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="currentColor" strokeWidth="1" />
                           <path d="M1.5 6h9" stroke="currentColor" strokeWidth="1" />
                         </svg>
+                      </span>
+                    );
+                  })()}
+
+                  {/* Remote project the file sidebar could not load. The tree
+                      retries on its own, but only while it is mounted — with
+                      the sidebar closed this button is the only way back, and
+                      it is also how you skip the backoff when you KNOW the
+                      server just came up. Shown only while failed: reserving
+                      the width on every remote tab (as the dev-server icon
+                      does) would cost every tab, always, for a rare state.
+                      Colour-only hover, matching that icon — a hover box here
+                      collides with the pane-count badge's overhanging dot. */}
+                  {tab.serverId && remoteBrowse[tab.id]?.state === "failed" && (() => {
+                    const retrying = !!remoteBrowse[tab.id]?.retrying;
+                    const server = servers.find((s) => s.id === tab.serverId);
+                    return (
+                      <span
+                        role="button"
+                        aria-label="Retry loading remote project"
+                        data-tooltip={`Can’t reach ${server?.name ?? "the server"} — click to retry`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void requestRemoteReload(tab.id, server);
+                        }}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          width: 14,
+                          height: 14,
+                          flexShrink: 0,
+                          marginLeft: 2,
+                          cursor: retrying ? "default" : "pointer",
+                          color: "var(--ezy-red)",
+                          transition: "color 120ms ease",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-text)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ezy-red)")}
+                      >
+                        <FaArrowRotateRight size={9} className={retrying ? "ezy-spin" : undefined} />
                       </span>
                     );
                   })()}
