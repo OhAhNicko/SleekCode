@@ -61,6 +61,9 @@ body {
      WebView2 default instead of the app's face. Fallback matches what the
      popups asked for before --ezy-font-ui existed. */
   font-family: var(--ezy-font-ui, Inter, system-ui, sans-serif);
+  /* Same var, same channel, same reason as the family above: a menu row set one
+     notch looser than the row it was launched from reads as a different app. */
+  letter-spacing: var(--ezy-tracking-ui, normal);
 }
 
 /*

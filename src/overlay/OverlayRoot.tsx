@@ -18,6 +18,7 @@ import {
   listenOverlayTheme,
   type OverlayPopupMsg,
 } from "../lib/overlay-bridge";
+import { NotifCardVisual } from "./NotifCardVisual";
 import {
   CTX_ICONS,
 } from "../lib/menu-icons";
@@ -78,8 +79,37 @@ const SHADOW_PAD_KINDS = new Set([
   "sound-picker",
 ]);
 
-/** Room for the menu drop shadow inside the clip region (CSS px). */
-const MENU_SHADOW_PAD = 36;
+/**
+ * The ONE drop shadow every menu-class panel wears.
+ *
+ * It is a constant, not a per-component literal, because the clip region has to
+ * be sized to it: the region is a 1-bit Win32 mask, so wherever it ends the
+ * shadow is truncated to nothing in a single pixel — a dead-straight seam, not
+ * a fade. Six panels carrying six different shadows meant the pad could only
+ * ever be right for one of them.
+ *
+ * Sizing rule for any change here: a CSS blur radius r is a Gaussian with
+ * σ = r/2, so the shadow is still worth ~`bgLuma × alpha × Φ(-d/σ)` at d px
+ * outside its shape. Below ~2.8σ from the edge it is not yet invisible. The
+ * pads below are derived from exactly that, so blur and pad move together.
+ */
+const MENU_SHADOW =
+  "0 8px 24px rgba(0,0,0,0.5), 0 2px 6px rgba(0,0,0,0.35)";
+
+/**
+ * Room for that shadow inside the clip region (CSS px), PER EDGE.
+ *
+ * Directional because the shadow is: an 8px downward offset means the bottom
+ * needs 8px more than the sides and the top 8px less. One scalar had to be the
+ * max of the four, over-reserving on three edges to serve one — and the top is
+ * the expensive edge to over-reserve, because that is where the trigger button
+ * usually sits (see the anchor trim in the region driver).
+ *
+ * From σ = 12 (24px blur) and the 2.8σ ≈ 34px rule above: sides 34, bottom
+ * 34 + 8, top 34 − 8, each rounded up for margin. The second shadow layer
+ * (σ = 3, 2px offset) reaches ~10px and is contained everywhere.
+ */
+const MENU_SHADOW_PAD = { top: 28, right: 36, bottom: 44, left: 36 };
 
 /**
  * The overlay webview's popup host.
@@ -329,16 +359,19 @@ export function OverlayRoot() {
         // full-screen backdrop div covers it and dismisses on pointerdown.
         const popup = popupsRef.current.get(id);
         const kind = popup?.kind;
-        const pad = kind && SHADOW_PAD_KINDS.has(kind) ? MENU_SHADOW_PAD : 0;
-        let x = r.left - pad;
-        let y = r.top - pad;
-        let w = r.width + pad * 2;
-        let h = r.height + pad * 2;
+        const padded = !!kind && SHADOW_PAD_KINDS.has(kind);
+        const pad = padded
+          ? MENU_SHADOW_PAD
+          : { top: 0, right: 0, bottom: 0, left: 0 };
+        let x = r.left - pad.left;
+        let y = r.top - pad.top;
+        let w = r.width + pad.left + pad.right;
+        let h = r.height + pad.top + pad.bottom;
 
         // The ring must never cover the control that opened the popup.
         //
-        // Menus open flush against their anchor (a 2px gap), so a 36px ring
-        // reaches ~34px back OVER the button. The overlay is a separate window:
+        // Menus open flush against their anchor (a 2px gap), so the ring
+        // reaches back OVER the button. The overlay is a separate window:
         // once its region covers those pixels, the main webview stops seeing
         // the pointer there. For hover-opened menus that is a feedback loop —
         // open → region covers the button → button fires `mouseleave` →
@@ -351,7 +384,7 @@ export function OverlayRoot() {
         // the side pressed against the button, where there is no shadow to
         // show anyway.
         const a = popup?.rect;
-        if (pad > 0 && a) {
+        if (padded && a) {
           const aRight = a.x + a.width;
           const aBottom = a.y + a.height;
           if (r.top >= aBottom) {
@@ -841,7 +874,10 @@ interface NotifStackCard {
   paneLabel: string;
   timeHHMM: string;
   body: string;
-  kind: "permission" | "finished";
+  kind: "permission" | "finished" | "jira";
+  /** Card click routes through the main webview's clickAction (`open:` verb)
+   *  instead of the pane-focus path. Jira update cards set this. */
+  hasAction?: boolean;
 }
 
 /** Below the 38px tab bar plus a deliberate 12px gap. Never smaller: the
@@ -981,7 +1017,6 @@ function NotifStack({
       }}
     >
       {display.map((card) => {
-        const permission = card.kind === "permission";
         return (
           // Outer div: REGISTERED region element — static geometry, never
           // animated. Ghosts keep pointer events off so a fading card can't
@@ -989,17 +1024,24 @@ function NotifStack({
           <div
             key={card.id}
             ref={(el) => registerEl(`${msg.id}::n-${card.id}`, el)}
-            onClick={card.leaving ? undefined : () => act(`focus:${card.id}`)}
+            onClick={
+              card.leaving
+                ? undefined
+                : () => act(`${card.hasAction ? "open" : "focus"}:${card.id}`)
+            }
             style={{
               width: 320,
               pointerEvents: card.leaving ? "none" : "auto",
               cursor: card.leaving ? undefined : "pointer",
             }}
           >
-          {/* Inner div: the visible card — the only thing that animates
-              (opacity + ≤3% scale, always inside the outer rect). */}
-          <div
-            ref={(el) => {
+          {/* Inner card: shared visual (NotifCardVisual — same source as the
+              custom OS popup window); the WAAPI enter animation attaches via
+              innerRef and animates only the card, never the region rect. */}
+          <NotifCardVisual
+            card={card}
+            onDismiss={() => act(`dismiss:${card.id}`)}
+            innerRef={(el) => {
               if (el) {
                 innerElsRef.current.set(card.id, el);
                 if (!enteredRef.current.has(card.id)) {
@@ -1020,111 +1062,7 @@ function NotifStack({
                 innerElsRef.current.delete(card.id);
               }
             }}
-            style={{
-              transformOrigin: "top right",
-              background: "var(--ezy-surface-raised, #1c2128)",
-              boxShadow: "inset 0 0 0 1px var(--ezy-border, rgba(255,255,255,0.12))",
-              borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
-              padding: "9px 12px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 5,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-              <span
-                style={{
-                  fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
-                  fontWeight: 600,
-                  lineHeight: "16px",
-                  padding: "0 6px",
-                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
-                  background: permission
-                    ? "var(--ezy-red, #dc2626)"
-                    : "var(--ezy-accent, #10a37f)",
-                  color: "#ffffff",
-                  flexShrink: 0,
-                }}
-              >
-                {permission ? "Permission" : "Done"}
-              </span>
-              <span
-                style={{
-                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
-                  fontWeight: 600,
-                  color: "var(--ezy-text, #e6edf3)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                  minWidth: 0,
-                  flex: 1,
-                }}
-              >
-                {card.projectName}
-              </span>
-              <span
-                style={{
-                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
-                  color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-                  fontVariantNumeric: "tabular-nums",
-                  flexShrink: 0,
-                }}
-              >
-                {card.timeHHMM}
-              </span>
-              <svg
-                onClick={(e) => {
-                  e.stopPropagation();
-                  act(`dismiss:${card.id}`);
-                }}
-                role="button"
-                aria-label="Dismiss notification"
-                width="12"
-                height="12"
-                viewBox="0 0 12 12"
-                fill="none"
-                style={{
-                  cursor: "pointer",
-                  color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-                  flexShrink: 0,
-                }}
-              >
-                <path
-                  d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </div>
-            {card.paneLabel && (
-              <div
-                style={{
-                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
-                  color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {card.paneLabel}
-              </div>
-            )}
-            <div
-              style={{
-                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
-                lineHeight: 1.45,
-                color: "var(--ezy-text-secondary, rgba(230,237,243,0.8))",
-                display: "-webkit-box",
-                WebkitLineClamp: 3,
-                WebkitBoxOrient: "vertical",
-                overflow: "hidden",
-                wordBreak: "break-word",
-              }}
-            >
-              {card.body}
-            </div>
-          </div>
+          />
           </div>
         );
       })}
@@ -1791,10 +1729,10 @@ function AnchoredMenu({
         <div
           style={{
             position: "absolute",
-            top: top - MENU_SHADOW_PAD,
-            left: left - MENU_SHADOW_PAD,
-            width: menuSize.w + MENU_SHADOW_PAD * 2,
-            height: menuSize.h + MENU_SHADOW_PAD * 2,
+            top: top - MENU_SHADOW_PAD.top,
+            left: left - MENU_SHADOW_PAD.left,
+            width: menuSize.w + MENU_SHADOW_PAD.left + MENU_SHADOW_PAD.right,
+            height: menuSize.h + MENU_SHADOW_PAD.top + MENU_SHADOW_PAD.bottom,
             pointerEvents: "auto",
           }}
           onPointerDown={dismiss}
@@ -1821,7 +1759,7 @@ function AnchoredMenu({
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.08))",
-          boxShadow: "0 10px 30px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.35)",
+          boxShadow: MENU_SHADOW,
           color: "var(--ezy-text, #e6edf3)",
           fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
           // REQUIRED: the wrapper is now `pointerEvents: none` (see above), and
@@ -2749,7 +2687,7 @@ function SwatchMenu({
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           padding: 8,
-          boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
+          boxShadow: MENU_SHADOW,
           fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
         }}
       >
@@ -3050,7 +2988,7 @@ function SoundPickerMenu({
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
-          boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+          boxShadow: MENU_SHADOW,
           color: "var(--ezy-text, #e6edf3)",
           fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
         }}
@@ -3188,7 +3126,7 @@ function RecentMenu({
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
-          boxShadow: "0 16px 48px rgba(0,0,0,0.6)",
+          boxShadow: MENU_SHADOW,
           color: "var(--ezy-text, #e6edf3)",
           fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
           // Flex + per-child `order`: CREATE and OPEN render first, the recent
@@ -4083,7 +4021,7 @@ function GitBranchMenu({
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
-          boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+          boxShadow: MENU_SHADOW,
           fontFamily: "var(--ezy-font-ui, system-ui, -apple-system, sans-serif)",
         }}
       >
@@ -4522,7 +4460,7 @@ function SessionPickerMenu({
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)",
           overflow: "hidden",
-          boxShadow: "0 12px 36px rgba(0,0,0,0.5)",
+          boxShadow: MENU_SHADOW,
           maxHeight: 340,
           fontFamily: "var(--ezy-font-ui, system-ui, -apple-system, sans-serif)",
         }}

@@ -51,7 +51,68 @@ export const OVERLAY_INTERACTION_EVENT = "overlay:interaction";
 
 // ---- main side --------------------------------------------------------------
 
+/**
+ * Popup kinds that are MENUS — a panel the user is about to read and click
+ * through. Mirrors the backdrop-popup cases in OverlayRoot's `OverlayPopup`
+ * switch; keep the two in step when adding a menu kind, or the new menu
+ * silently loses tooltip suppression (see `subscribeMenuOpen`).
+ *
+ * "swatch-menu" is deliberately absent — it was folded into "anchored-menu"
+ * (see overlay-menu-model.ts) and nothing emits it any more.
+ */
+const MENU_KINDS = new Set([
+  "anchored-menu",
+  "git-branch-menu",
+  "session-picker",
+  "recent-menu",
+  "sound-picker",
+]);
+
+/** Ids of the menu-kind popups currently open. */
+const openMenus = new Set<string>();
+const menuOpenHandlers = new Set<(open: boolean) => void>();
+
+/**
+ * Is any menu open right now?
+ *
+ * The one consumer today is TooltipHost: a hover tooltip must never paint over
+ * a menu, and the tooltip state machine cannot learn about menus any other way
+ * — a menu opened from a native pane arrives as a SYNTHESIZED `contextmenu`
+ * with no `pointerdown` behind it, so the tooltip's own dismiss listeners never
+ * fire. Tracking it here rather than in the tooltip means the answer is
+ * correct for every menu, including ones opened by code that has never heard
+ * of tooltips.
+ */
+export function isMenuOpen(): boolean {
+  return openMenus.size > 0;
+}
+
+/** Fires on empty <-> non-empty transitions only. Returns an unsubscribe. */
+export function subscribeMenuOpen(cb: (open: boolean) => void): () => void {
+  menuOpenHandlers.add(cb);
+  return () => {
+    menuOpenHandlers.delete(cb);
+  };
+}
+
+/**
+ * Track a menu's open state by ID, not by count. `anchored-menu` re-emits
+ * `open: true` on a 750ms keepalive and again on every anchor-rect change
+ * (useOverlayMenu), so a counter would run away within seconds of a menu
+ * opening and never return to zero.
+ */
+function noteMenuState(msg: OverlayPopupMsg): void {
+  if (!MENU_KINDS.has(msg.kind)) return;
+  const before = openMenus.size > 0;
+  if (msg.open && msg.rect) openMenus.add(msg.id);
+  else openMenus.delete(msg.id);
+  const after = openMenus.size > 0;
+  if (before === after) return;
+  for (const h of [...menuOpenHandlers]) h(after);
+}
+
 export function emitOverlayPopup(msg: OverlayPopupMsg): void {
+  noteMenuState(msg);
   void emit(OVERLAY_POPUP_EVENT, msg.open ? { ...msg, _ts: Date.now() } : msg);
 }
 

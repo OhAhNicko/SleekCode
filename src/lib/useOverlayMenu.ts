@@ -123,6 +123,14 @@ export function useOverlayMenu(opts: {
     let disposed = false;
     listenOverlayAction((msg) => {
       if (msg.id !== id) return;
+      // Hover-tracking pings (hoverTracking payload flag) are pointer
+      // telemetry, not item picks — forward them, never close on them.
+      // Closing here made hover-opened menus impossible to enter: the
+      // pointer touching the dropdown emitted __hoverin__, which closed it.
+      if (msg.action === "__hoverin__" || msg.action === "__hoverout__") {
+        onActionRef.current(msg.action, msg.data);
+        return;
+      }
       if (msg.action !== "__dismiss__") onActionRef.current(msg.action, msg.data);
       if (stickyIdsRef.current.has(msg.action)) return;
       onCloseRef.current();

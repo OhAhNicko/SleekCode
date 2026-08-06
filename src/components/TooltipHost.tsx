@@ -28,6 +28,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppStore } from "../store";
 import { useOverlayViewportPopup } from "../lib/useOverlayToast";
+import { isMenuOpen, subscribeMenuOpen } from "../lib/overlay-bridge";
 
 /**
  * Dwell before a tooltip appears. 400ms was too eager once these became themed
@@ -91,6 +92,19 @@ export default function TooltipHost() {
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastHiddenAt = useRef(0);
   const visibleRef = useRef(false);
+  /**
+   * The element a deliberate interaction just dismissed a tooltip on. It may
+   * not show again until the pointer genuinely LEAVES it.
+   *
+   * Without this, clicking a toolbar button re-showed its own tooltip a frame
+   * later, on top of whatever the click opened: `hideNow` nulls `anchorRef`
+   * and stamps `lastHiddenAt`, so the very next `pointerover` — which the
+   * button's own SVG child fires on the smallest pointer movement — saw an
+   * element that was "not the current anchor" during the WARM window and
+   * re-showed with no dwell at all. Suppressing the element rather than
+   * suppressing time is what makes it stay gone.
+   */
+  const suppressedAnchor = useRef<HTMLElement | null>(null);
 
   useOverlayViewportPopup({
     id: "app-tooltip",
@@ -121,6 +135,9 @@ export default function TooltipHost() {
   }, [clearTimers]);
 
   const show = useCallback((el: HTMLElement) => {
+    // A tooltip must never paint over a menu. Checked here as well as at hover
+    // time because a menu can open DURING the dwell.
+    if (isMenuOpen()) return;
     const text = el.getAttribute("data-tooltip");
     if (!text) return;
     if (repeatsVisibleText(el, text)) return;
@@ -150,18 +167,27 @@ export default function TooltipHost() {
       // getState() rather than a dep: the handler must see the live flag
       // without re-registering the document listeners on every toggle.
       if (!useAppStore.getState().hoverTooltips) return;
+      // A menu owns the screen while it is open — no tooltip may compete with
+      // it for the pixels the user is reading, or for their next click.
+      if (isMenuOpen()) return;
       const target = e.target as HTMLElement | null;
       const el = target?.closest?.("[data-tooltip]") as HTMLElement | null;
 
       if (!el || !el.getAttribute("data-tooltip")) {
         // Left every tooltip element — close, but on a delay so crossing a 1px
         // gap between two adjacent buttons doesn't blink.
+        suppressedAnchor.current = null;
         if (anchorRef.current && !hideTimer.current) {
           clearTimers();
           hideTimer.current = setTimeout(hideNow, HIDE_DELAY_MS);
         }
         return;
       }
+
+      // Still on the element whose tooltip was just dismissed (the pointer only
+      // crossed onto its icon child). Stay quiet until it is genuinely left.
+      if (el === suppressedAnchor.current) return;
+      suppressedAnchor.current = null;
 
       if (el === anchorRef.current) {
         // Re-entered the same element (e.g. moved onto its icon child) — cancel
@@ -191,7 +217,18 @@ export default function TooltipHost() {
 
     // Any deliberate interaction dismisses instantly: once you have clicked,
     // typed or scrolled, the label has served its purpose and is just in the way.
+    // It also arms the suppression above, so the element under the pointer
+    // cannot immediately show it again over whatever the interaction opened.
     const onDismiss = () => {
+      if (anchorRef.current) suppressedAnchor.current = anchorRef.current;
+      if (anchorRef.current || visibleRef.current) hideNow();
+    };
+
+    // The pointer left this webview — usually onto the overlay window sitting
+    // above it. No further `pointerover` will ever arrive to close the tooltip,
+    // so it would hang on screen until something else happened to dismiss it.
+    // Deliberately NOT arming suppression: coming back is a fresh hover.
+    const onLeave = () => {
       if (anchorRef.current || visibleRef.current) hideNow();
     };
 
@@ -201,7 +238,15 @@ export default function TooltipHost() {
     document.addEventListener("wheel", onDismiss, true);
     // Scroll does not bubble — capture catches it from any scroller.
     document.addEventListener("scroll", onDismiss, true);
+    document.addEventListener("pointerleave", onLeave);
     window.addEventListener("blur", onDismiss);
+
+    // A menu opening is the one dismissal the listeners above cannot see: menus
+    // raised from a native pane or the browser view arrive as a SYNTHESIZED
+    // `contextmenu` event, with no real `pointerdown` anywhere in this webview.
+    const unsubMenu = subscribeMenuOpen((open) => {
+      if (open) onLeave();
+    });
 
     return () => {
       document.removeEventListener("pointerover", onOver, true);
@@ -209,7 +254,9 @@ export default function TooltipHost() {
       document.removeEventListener("keydown", onDismiss, true);
       document.removeEventListener("wheel", onDismiss, true);
       document.removeEventListener("scroll", onDismiss, true);
+      document.removeEventListener("pointerleave", onLeave);
       window.removeEventListener("blur", onDismiss);
+      unsubMenu();
       clearTimers();
     };
   }, [clearTimers, hideNow, show]);
