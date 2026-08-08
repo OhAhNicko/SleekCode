@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useId } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { GitBranchInfo, GitDiffStats, GitAheadBehind } from "../types";
+import type { GitOverview } from "../types";
 import { setCachedBranch } from "../lib/git-branch-cache";
-import { gitIsRepo, gitBranches, gitDiffStats, gitAheadBehind } from "../lib/git-invoke";
+import { gitOverview } from "../lib/git-invoke";
+import { getGitOverviewSnapshot, setGitOverviewSnapshot } from "../lib/git-status-cache";
 import { useAppStore } from "../store";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
 import { validateBranchName } from "../lib/git-branch-validate";
@@ -27,10 +28,27 @@ interface GitPullResult {
 export default function GitStatusBar({ workingDir, serverId, compact = false }: Props) {
   /** Remote projects get the read-only bar: branch, dirty counts, ahead/behind. */
   const readOnly = !!serverId;
-  const [isGitRepo, setIsGitRepo] = useState(false);
-  const [branches, setBranches] = useState<GitBranchInfo | null>(null);
-  const [diffStats, setDiffStats] = useState<GitDiffStats | null>(null);
-  const [aheadBehind, setAheadBehind] = useState<GitAheadBehind | null>(null);
+  // One instance per directory (both mount sites key on serverId:workingDir),
+  // seeded SYNCHRONOUSLY from the snapshot cache: a tab switch paints the new
+  // directory's last-known numbers on the same frame instead of showing the
+  // previous tab's data for the whole fetch round trip.
+  const [overview, setOverview] = useState<GitOverview | null>(() =>
+    getGitOverviewSnapshot(workingDir, serverId),
+  );
+  const isGitRepo = overview?.isRepo ?? false;
+  const branches = overview?.isRepo
+    ? { current: overview.current, branches: overview.branches }
+    : null;
+  const diffStats = overview?.isRepo
+    ? {
+        filesChanged: overview.filesChanged,
+        insertions: overview.insertions,
+        deletions: overview.deletions,
+      }
+    : null;
+  const aheadBehind = overview?.isRepo
+    ? { ahead: overview.ahead, behind: overview.behind, hasRemote: overview.hasRemote }
+    : null;
   const [showDropdown, setShowDropdown] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [switchError, setSwitchError] = useState("");
@@ -53,30 +71,23 @@ export default function GitStatusBar({ workingDir, serverId, compact = false }: 
 
   const fetchAll = useCallback(async () => {
     try {
-      const repo = await gitIsRepo(workingDir, serverId);
-      setIsGitRepo(repo);
-      // Publish to the shared branch cache so the right-click menu can show the
-      // branch synchronously instead of filling it in after the menu is open.
-      if (!repo) setCachedBranch(workingDir, { isRepo: false });
-      if (!repo) return;
-
-      const [br, ds, ab] = await Promise.allSettled([
-        gitBranches(workingDir, serverId),
-        gitDiffStats(workingDir, serverId),
-        gitAheadBehind(workingDir, serverId),
-      ]);
-      if (br.status === "fulfilled") {
-        setBranches(br.value);
-        setCachedBranch(workingDir, { isRepo: true, branch: br.value.current });
-      }
-      if (ds.status === "fulfilled") {
-        setDiffStats(ds.value);
-      } else {
-        setDiffStats({ filesChanged: 0, insertions: 0, deletions: 0 });
-      }
-      if (ab.status === "fulfilled") setAheadBehind(ab.value);
+      const ov = await gitOverview(workingDir, serverId);
+      // Publish to the caches FIRST, and unconditionally: a fetch whose tab
+      // was switched away mid-flight still warms the snapshot for the next
+      // visit — it must never touch the live bar, though (mountedRef), or a
+      // slow old-tab response would clobber the new tab's numbers.
+      setGitOverviewSnapshot(workingDir, serverId, ov);
+      // Shared branch cache: lets the right-click menu show the branch
+      // synchronously instead of filling it in after the menu is open.
+      setCachedBranch(
+        workingDir,
+        ov.isRepo ? { isRepo: true, branch: ov.current } : { isRepo: false },
+      );
+      if (mountedRef.current) setOverview(ov);
     } catch {
-      setIsGitRepo(false);
+      // Hide the live bar, but keep the snapshot: a transient invoke failure
+      // shouldn't cost the warm start on the next visit.
+      if (mountedRef.current) setOverview(null);
     }
   }, [workingDir, serverId]);
 

@@ -5,6 +5,7 @@ import type {
   GitBranchInfo,
   GitDiffStats,
   GitFileStatus,
+  GitOverview,
 } from "../types";
 
 /**
@@ -101,6 +102,53 @@ export function gitAheadBehind(directory: string, serverId?: string): Promise<Gi
   return t
     ? invoke<GitAheadBehind>("git_ahead_behind_ssh", { ...t, directory })
     : missingServer(serverId);
+}
+
+const NOT_REPO_OVERVIEW: GitOverview = {
+  isRepo: false,
+  current: "",
+  branches: [],
+  filesChanged: 0,
+  insertions: 0,
+  deletions: 0,
+  ahead: 0,
+  behind: 0,
+  hasRemote: false,
+};
+
+/**
+ * The status bar's whole refresh in one call. Local projects hit the
+ * consolidated `git_overview` command (one process spawn instead of six; see
+ * lib.rs). Remote projects have no combined backend command, so this composes
+ * the same shape from the per-command `_ssh` reads — still sequential-poll
+ * safe, and callers get one code path either way.
+ */
+export async function gitOverview(directory: string, serverId?: string): Promise<GitOverview> {
+  if (!serverId) return invoke<GitOverview>("git_overview", { directory });
+
+  const isRepo = await gitIsRepo(directory, serverId);
+  if (!isRepo) return NOT_REPO_OVERVIEW;
+  const [br, ds, ab] = await Promise.allSettled([
+    gitBranches(directory, serverId),
+    gitDiffStats(directory, serverId),
+    gitAheadBehind(directory, serverId),
+  ]);
+  const branches = br.status === "fulfilled" ? br.value : { current: "HEAD", branches: [] };
+  const stats =
+    ds.status === "fulfilled" ? ds.value : { filesChanged: 0, insertions: 0, deletions: 0 };
+  const aheadBehind =
+    ab.status === "fulfilled" ? ab.value : { ahead: 0, behind: 0, hasRemote: false };
+  return {
+    isRepo: true,
+    current: branches.current,
+    branches: branches.branches,
+    filesChanged: stats.filesChanged,
+    insertions: stats.insertions,
+    deletions: stats.deletions,
+    ahead: aheadBehind.ahead,
+    behind: aheadBehind.behind,
+    hasRemote: aheadBehind.hasRemote,
+  };
 }
 
 export function gitDiff(
