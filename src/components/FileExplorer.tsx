@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { useAppStore } from "../store";
 import { isImagePath } from "../lib/screenshots";
 import type { FileEntry } from "../types";
@@ -9,10 +10,34 @@ interface FileExplorerProps {
   onOpenFile: (filePath: string) => void;
 }
 
+// `/mnt/c/...` → `c:/...` so links emitted by WSL panes still resolve
+// against the Windows-style rootDir.
+const norm = (p: string) =>
+  p.replace(/\\/g, "/").replace(/^\/mnt\/([a-z])\//i, (_, d: string) => `${d}:/`).toLowerCase();
+
+// Listing cache shared across mounts. The component's own state dies with
+// every unmount (sidebar tab switch, sidebar close) while expandedDirs is
+// persisted — this module-level mirror is what lets a remounted tree paint
+// its expanded folders instantly instead of flashing per-row loading states.
+// Session-only by design: a fresh launch re-lists everything.
+let sharedCache: Record<string, FileEntry[]> = {};
+
 export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps) {
   const expandedDirs = useAppStore((s) => s.expandedDirs);
   const toggleExpandDir = useAppStore((s) => s.toggleExpandDir);
-  const [cache, setCache] = useState<Record<string, FileEntry[]>>({});
+  const [cache, setCacheState] = useState<Record<string, FileEntry[]>>(sharedCache);
+  // Every cache write goes through here so the module-level mirror stays in
+  // step with the state React renders from.
+  const setCache = useCallback(
+    (updater: (prev: Record<string, FileEntry[]>) => Record<string, FileEntry[]>) => {
+      setCacheState((prev) => {
+        const next = updater(prev);
+        sharedCache = next;
+        return next;
+      });
+    },
+    [],
+  );
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   // File revealed via requestRevealFile — rendered as a selected row.
   const [highlightedPath, setHighlightedPath] = useState<string | null>(null);
@@ -21,17 +46,25 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
   const [scrollNonce, setScrollNonce] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const loadDir = useCallback(async (path: string) => {
-    if (cache[path]) return;
-    setLoading((prev) => ({ ...prev, [path]: true }));
+  // `revalidate` re-lists a dir that is already cached and swaps the fresh
+  // entries in silently — the stale listing keeps rendering meanwhile, so
+  // there is never a loading placeholder for a folder the user has seen.
+  const loadDir = useCallback(async (path: string, revalidate = false) => {
+    if (cache[path] && !revalidate) return;
+    const firstLoad = !cache[path];
+    if (firstLoad) setLoading((prev) => ({ ...prev, [path]: true }));
     try {
       const entries = await invoke<FileEntry[]>("list_dir", { path });
       setCache((prev) => ({ ...prev, [path]: entries }));
     } catch {
-      // Failed to load
+      // Unlistable (deleted since it was expanded, permissions): collapse it
+      // so the chevron matches reality and the reconcile effect below stops
+      // retrying it. Live store read — this closure outlives the render.
+      const s = useAppStore.getState();
+      if (s.expandedDirs.includes(path)) s.toggleExpandDir(path);
     }
-    setLoading((prev) => ({ ...prev, [path]: false }));
-  }, [cache]);
+    if (firstLoad) setLoading((prev) => ({ ...prev, [path]: false }));
+  }, [cache, setCache]);
 
   const handleToggle = useCallback((path: string) => {
     const isExpanded = expandedDirs.includes(path);
@@ -47,7 +80,6 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
     // stack-overflow crash of the whole app.
     if (depth > 32) return null;
     const isExpanded = expandedDirs.includes(entry.path);
-    const isLoading = loading[entry.path];
     const isHighlighted = entry.path === highlightedPath;
 
     return (
@@ -131,28 +163,47 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
             {entry.name}
           </span>
         </div>
-        {/* Children */}
+        {/* Children. No loading placeholder: a cached listing paints
+            instantly, and a first-time list lands within a frame or two on
+            the local FS — the rotating chevron is the click feedback. */}
         {entry.is_directory && isExpanded && (
           <div>
-            {isLoading && !cache[entry.path] ? (
-              <div style={{ padding: "3px 8px", paddingLeft: 8 + (depth + 1) * 16, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
-                Loading...
-              </div>
-            ) : (
-              cache[entry.path]?.map((child) => renderEntry(child, depth + 1))
-            )}
+            {cache[entry.path]?.map((child) => renderEntry(child, depth + 1))}
           </div>
         )}
       </div>
     );
   };
 
-  // Load root dir when it changes
+  // On mount / project switch: load the root and silently revalidate every
+  // cached expanded dir. The shared cache paints the tree instantly; fresh
+  // listings swap in underneath so changes made while the tree was unmounted
+  // still show up. Uncached expanded dirs are the reconcile effect's job.
   useEffect(() => {
-    if (rootDir && !cache[rootDir]) {
-      loadDir(rootDir);
+    if (!rootDir) return;
+    loadDir(rootDir, true);
+    const rootPrefix = norm(rootDir) + "/";
+    for (const dir of expandedDirs) {
+      if (norm(dir).startsWith(rootPrefix) && cache[dir]) loadDir(dir, true);
     }
   }, [rootDir]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reconcile listings with expandedDirs. The expansion set is persisted
+  // store state and outlives this component; the cache above dies with every
+  // unmount (sidebar closed, tab switched away). Without this, a remounted
+  // tree rendered rotated chevrons over folders with no children. Scoped to
+  // this project's root — other projects' entries stay untouched — and gated
+  // on the root listing so a dead rootDir never fans out child loads. A dir
+  // that fails to list is collapsed by loadDir, so this can't retry-loop.
+  useEffect(() => {
+    if (!rootDir || !cache[rootDir]) return;
+    const rootPrefix = norm(rootDir) + "/";
+    for (const dir of expandedDirs) {
+      if (!norm(dir).startsWith(rootPrefix)) continue;
+      if (cache[dir] || loading[dir]) continue;
+      loadDir(dir);
+    }
+  }, [expandedDirs, cache, loading, rootDir, loadDir]);
 
   // Reveal-in-sidebar requests (file opened from a pane, editor header's
   // "Reveal in file sidebar"). Walks the tree down from the root, expanding
@@ -163,10 +214,6 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
   const revealRequest = useAppStore((s) => s.revealFileRequest);
   useEffect(() => {
     if (!revealRequest || !rootDir) return;
-    // `/mnt/c/...` → `c:/...` so links emitted by WSL panes still resolve
-    // against the Windows-style rootDir.
-    const norm = (p: string) =>
-      p.replace(/\\/g, "/").replace(/^\/mnt\/([a-z])\//i, (_, d: string) => `${d}:/`).toLowerCase();
     const target = norm(revealRequest.path);
     // Outside this project's tree (or the root itself) — nothing to reveal.
     if (!target.startsWith(norm(rootDir) + "/")) return;
@@ -219,28 +266,41 @@ export default function FileExplorer({ rootDir, onOpenFile }: FileExplorerProps)
   }, [scrollNonce, highlightedPath]);
 
   // Re-read the tree after a context-menu mutation (rename / delete / create).
-  // `loadDir` early-returns on a cached path, so dropping the cache is what
-  // actually forces the re-read.
+  // Visible dirs (root + expanded) revalidate IN PLACE — the old listing keeps
+  // rendering until the fresh one swaps in, so the tree never blanks or shows
+  // a loading state. Collapsed dirs under this root just drop their stale
+  // listings; they re-list on next expand. Other projects' entries survive.
   useEffect(() => {
     const handler = () => {
-      setCache({});
-      if (rootDir) {
-        invoke<FileEntry[]>("list_dir", { path: rootDir })
-          .then((entries) => setCache({ [rootDir]: entries }))
-          .catch(() => {});
+      if (!rootDir) return;
+      const rootNorm = norm(rootDir);
+      const rootPrefix = rootNorm + "/";
+      const expanded = useAppStore.getState().expandedDirs;
+      setCache((prev) => {
+        const next: Record<string, FileEntry[]> = {};
+        for (const [key, entries] of Object.entries(prev)) {
+          const n = norm(key);
+          const underRoot = n === rootNorm || n.startsWith(rootPrefix);
+          if (!underRoot || key === rootDir || expanded.includes(key)) next[key] = entries;
+        }
+        return next;
+      });
+      loadDir(rootDir, true);
+      for (const dir of expanded) {
+        if (norm(dir).startsWith(rootPrefix)) loadDir(dir, true);
       }
     };
     window.addEventListener("made:file-tree-refresh", handler);
     return () => window.removeEventListener("made:file-tree-refresh", handler);
-  }, [rootDir]);
+  }, [rootDir, loadDir, setCache]);
 
   return (
-    <div ref={containerRef} style={{ overflowY: "auto", height: "100%" }}>
+    <div ref={containerRef} style={{ overflowY: "auto", height: "100%", paddingTop: 6 }}>
       {cache[rootDir] ? (
         cache[rootDir].map((entry) => renderEntry(entry, 0))
       ) : (
         <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>
-          Loading...
+          <LoadingDots />
         </div>
       )}
     </div>

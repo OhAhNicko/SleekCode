@@ -27,6 +27,11 @@ export interface SidebarSlice {
    *  the sidebar is still closed is consumed when FileExplorer mounts a
    *  frame later. */
   requestRevealFile: (path: string) => void;
+  /** Highlight `path` in the Files tree WITHOUT opening the sidebar or
+   *  switching its tab — for opens the user did not aim at the explorer
+   *  (pane links). The request waits in the store, so if the user opens the
+   *  Files tab afterwards the file is already highlighted. */
+  markRevealFile: (path: string) => void;
 }
 
 export const createSidebarSlice: StateCreator<
@@ -80,6 +85,12 @@ export const createSidebarSlice: StateCreator<
           : [...state.expandedDirs, path],
       };
     });
+  },
+
+  markRevealFile: (path) => {
+    set((state) => ({
+      revealFileRequest: { path, nonce: (state.revealFileRequest?.nonce ?? 0) + 1 },
+    }));
   },
 
   requestRevealFile: (path) => {

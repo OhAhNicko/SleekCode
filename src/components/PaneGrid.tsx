@@ -12,6 +12,7 @@ import {
 } from "../lib/layout-utils";
 import { useAppStore } from "../store";
 import { isImagePath, openImageFileInViewer } from "../lib/screenshots";
+import { isMemoryFilePath } from "../lib/knowledge/keys";
 import { snapshotPane } from "../store/undoCloseStore";
 import { TerminalSlotHost, BrowserSlotHost, useSplitterDragging } from "./PaneSlotHost";
 import EditorPane from "./EditorPane";
@@ -288,11 +289,20 @@ export default function PaneGrid({
         return;
       }
 
-      // Opening a file also opens the file sidebar with the file highlighted
-      // (closable as ever). Every mounted grid runs this handler — gate on
-      // the active tab so the request fires exactly once.
-      if (useAppStore.getState().activeTabId === tabId) {
-        useAppStore.getState().requestRevealFile(filePath);
+      // Opening a file marks it for highlight in the Files tree — WITHOUT
+      // opening the sidebar or switching its tab (user, 2026-08-08: a pane
+      // link must not summon the explorer; but if the explorer is open, or
+      // gets opened later, the file is already highlighted there). Every
+      // mounted grid runs this handler — gate on the active tab so the mark
+      // fires exactly once. Two exceptions: shared-memory files, which live
+      // in the Knowledge surface, and images/screenshots — including one
+      // that fell back to a pane open after the image viewer refused it.
+      if (
+        useAppStore.getState().activeTabId === tabId &&
+        !isMemoryFilePath(filePath) &&
+        !isImagePath(filePath)
+      ) {
+        useAppStore.getState().markRevealFile(filePath);
       }
 
       // Check if a fileviewer pane already exists — if so, add the file to it
@@ -306,10 +316,11 @@ export default function PaneGrid({
 
       const existingId = findFileViewer(layout);
       if (existingId) {
-        // Dispatch add-file event to existing viewer
+        // Dispatch add-file event to existing viewer. The whole detail is
+        // forwarded so flags like `toggle` survive the relay.
         window.dispatchEvent(
           new CustomEvent("made:fileviewer-add", {
-            detail: { filePath, viewerId: existingId },
+            detail: { ...detail, filePath, viewerId: existingId },
           })
         );
         return;
