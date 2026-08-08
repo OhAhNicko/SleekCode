@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
 import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
@@ -12,6 +12,8 @@ import { truncateSessionTitle } from "../lib/session-title";
 import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { useAppStore } from "../store";
+import { getProjectColor } from "../store/recentProjectsSlice";
+import { getTheme, projectTintBg } from "../lib/themes";
 import { useJiraNotifyStore } from "../store/jiraNotifyStore";
 import { findAllTerminalLeaves } from "../lib/layout-utils";
 import { jiraInstKeyOfTermPaneId, jiraBaseTicket } from "../lib/jira-layout";
@@ -495,6 +497,18 @@ export default function TerminalHeader({
   /** Check if a statusline feature is shown (falls back to the per-key default). */
   const sl = (key: string) => slToggles?.[key] ?? getStatuslineDefault(key);
 
+  const showPromptHistoryButton =
+    sl("promptHistory") &&
+    (terminalType === "claude" || terminalType === "codex" || terminalType === "gemini") &&
+    !!getPromptEntries;
+  // Buttons are 20px boxes (p-1 + 12px icon) at gap-0.5 (2px), plus the 6px
+  // expanded padding-left: 22n + 4. Passed to CSS as the slide-in transition
+  // target so the 150ms is all visible motion regardless of how many buttons
+  // this pane renders — a fixed worst-case max-width would spend half the
+  // collapse as dead time on two-button shell panes.
+  const headerButtonCount = 2 + (showPromptHistoryButton ? 1 : 0) + (onRestart ? 1 : 0);
+  const headerControlsMaxPx = 22 * headerButtonCount + 4; // 48 / 70 / 92
+
   // WSL/WIN badge — shell panes on a Windows host only (SSH shells run remote
   // bash, macOS/Linux run zsh; neither has a PowerShell mode to toggle).
   // The selector mirrors shellPsModeFor (per-project override, else the
@@ -646,6 +660,25 @@ export default function TerminalHeader({
 
   // Read sessions for this project + type from the store
   const normalizedDir = workingDir?.replace(/\\/g, "/") ?? "";
+
+  // Project-color wash for the header surface ("Project color header tint") —
+  // independent of the pane canvas tint. Same color source as the pane tint:
+  // projectColors keyed by the slash-normalized working dir. Without a tint
+  // the CSS vars below are kept verbatim, so the toggle off = today's header.
+  const projectHeaderTint = useAppStore((s) => s.projectHeaderTint);
+  const projectHeaderTintStrength = useAppStore((s) => s.projectHeaderTintStrength);
+  const themeId = useAppStore((s) => s.themeId);
+  const headerColorId = useAppStore((s) => s.projectColors[normalizedDir] ?? null);
+  const headerTintColor = projectHeaderTint ? getProjectColor(headerColorId) : null;
+  const headerBg = headerTintColor
+    ? projectTintBg(
+        isActive ? getTheme(themeId).surface.surfaceRaised : getTheme(themeId).surface.surface,
+        headerTintColor,
+        projectHeaderTintStrength / 100,
+      )
+    : isActive
+      ? "var(--ezy-surface-raised)"
+      : "var(--ezy-surface)";
   const allSessions = useAppStore((s) => s.projectSessions[normalizedDir]);
   const sessions = useMemo(
     () => (allSessions ?? []).filter((sess) => sess.type === terminalType),
@@ -684,11 +717,11 @@ export default function TerminalHeader({
   };
   return (
     <div
-      className="flex items-center select-none group"
+      className="flex items-center select-none ezy-pane-header"
       style={{
         height: 28,
-        backgroundColor: isActive ? "var(--ezy-surface-raised)" : "var(--ezy-surface)",
-        borderBottom: `2px solid ${isActive ? CLI_BRAND_COLORS[terminalType] : "var(--ezy-border)"}`,
+        backgroundColor: headerBg,
+        borderBottom: `1px solid ${isActive ? CLI_BRAND_COLORS[terminalType] : "var(--ezy-border)"}`,
         padding: "0 6px 0 0",
         transition: "border-color 200ms ease, background-color 200ms ease",
       }}
@@ -1103,7 +1136,7 @@ export default function TerminalHeader({
       {contextPercent != null && contextInfo && (
         <div
           className="ml-auto flex items-center gap-2"
-          style={{ marginRight: 6, minWidth: 0, overflow: "hidden" }}
+          style={{ minWidth: 0, overflow: "hidden" }}
         >
           {sl("model") && contextInfo.model && (
             <span
@@ -1466,55 +1499,58 @@ export default function TerminalHeader({
         </div>
       )}
 
-      {/* Prompt history button — revealed on header hover, like expand /
-          restart / close below. `opacity`, not conditional rendering: the
-          button keeps its box either way, so the header's layout (and the
-          `ml-auto` spacing that depends on it) never shifts as it fades.
-          Stays lit while its dropdown is open — the menu is anchored to this
-          button, so letting it fade out from under its own popup would read as
-          a glitch. */}
-      {sl("promptHistory") && (terminalType === "claude" || terminalType === "codex" || terminalType === "gemini") && getPromptEntries && (
-        <button
-          ref={promptHistoryBtnRef}
-          onClick={() => {
-            if (showPromptHistory) {
-              setShowPromptHistory(false);
-            } else {
-              // Native panes resolve their entries over IPC — await before
-              // opening so the dropdown never renders an empty first frame.
-              void Promise.resolve(getPromptEntries()).then((entries) => {
-                setPromptEntries(entries);
-                setShowPromptHistory(true);
-              });
-            }
-          }}
-          data-tooltip="Prompt history" aria-label="Prompt history"
-          // `transition`, not `transition-colors transition-opacity`: those are
-          // both `transition-property` utilities, so whichever lands later in
-          // the stylesheet wins and the other animation is silently dropped.
-          className={`p-1 rounded transition hover:bg-[var(--ezy-border)] ${
-            showPromptHistory ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-          } ${contextPercent == null ? "ml-auto" : ""}`}
-          style={{ flexShrink: 0 }}
-        >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="var(--ezy-text-muted)"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+      {/* Right: prompt history + expand + restart + close. Collapsed to zero
+          width until the header is hovered (max-width + overflow hidden in
+          `.ezy-header-controls`, index.css) so the stats / path content owns
+          the full row; on hover the cluster slides in from under the fixed
+          right edge, pushing the content aside with an animated reflow rather
+          than overlaying it. `data-pinned` holds it open while the prompt
+          history dropdown is up — the menu is anchored to that button's rect,
+          and collapsing out from under an open popup would read as a glitch.
+          The expanded width rides in as a CSS variable so the transition
+          duration is honest for 2-, 3- and 4-button panes alike. */}
+      <div
+        className={`ezy-header-controls flex items-center gap-0.5 ${contextPercent == null ? "ml-auto" : ""}`}
+        data-pinned={showPromptHistory ? "" : undefined}
+        style={{ flexShrink: 0, "--ezy-header-controls-max": `${headerControlsMaxPx}px` } as CSSProperties}
+      >
+        {showPromptHistoryButton && (
+          <button
+            ref={promptHistoryBtnRef}
+            onClick={() => {
+              if (showPromptHistory) {
+                setShowPromptHistory(false);
+              } else {
+                // Native panes resolve their entries over IPC — await before
+                // opening so the dropdown never renders an empty first frame.
+                void Promise.resolve(getPromptEntries!()).then((entries) => {
+                  setPromptEntries(entries);
+                  setShowPromptHistory(true);
+                });
+              }
+            }}
+            data-tooltip="Prompt history" aria-label="Prompt history"
+            // `transition`, not `transition-colors transition-opacity`: those are
+            // both `transition-property` utilities, so whichever lands later in
+            // the stylesheet wins and the other animation is silently dropped.
+            className="p-1 rounded transition hover:bg-[var(--ezy-border)]"
+            style={{ flexShrink: 0 }}
           >
-            <circle cx="8" cy="8" r="6.5" />
-            <polyline points="8,4 8,8 11,10" />
-          </svg>
-        </button>
-      )}
-
-      {/* Right: expand + restart + close (visible on header hover) */}
-      <div className={`flex items-center gap-0.5 ${contextPercent == null && !(terminalType === "claude" || terminalType === "codex" || terminalType === "gemini") ? "ml-auto" : ""} opacity-0 group-hover:opacity-100 transition-opacity`} style={{ flexShrink: 0 }}>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="var(--ezy-text-muted)"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="8" cy="8" r="6.5" />
+              <polyline points="8,4 8,8 11,10" />
+            </svg>
+          </button>
+        )}
         <PaneExpandButton />
         {onRestart && (
           <button

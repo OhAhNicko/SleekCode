@@ -281,7 +281,8 @@ export interface RecentProjectsSlice {
   /** Dev-server quick-open icon in every terminal pane header (while running). */
   devServerButtonInHeader: boolean;
   setDevServerButtonInHeader: (value: boolean) => void;
-  /** Dev-server quick-open icon on project tabs (while running):
+  /** Dev-server quick-open on project tabs (while running): the tab NAME is
+   *  the click target, underlined on hover like a link.
    *  "all" = every tab with a running server, "active" = active tab only,
    *  "off" = never. Off + header toggle off = feature fully disabled. */
   devServerTabIcon: DevServerTabIconMode;
@@ -575,6 +576,10 @@ export interface RecentProjectsSlice {
   wslDistro: string | null;
   commitMsgMode: CommitMsgMode;
   shadowAiCli: ShadowAiCli;
+  /** Tab "AI working" badge: true = detect from the CLI's live status line
+   *  (stream markers + bursts), false = byte-rate bursts with hysteresis. */
+  aiWorkingMarkerDetection: boolean;
+  setAiWorkingMarkerDetection: (value: boolean) => void;
   projectColors: Record<string, ProjectColorId>;
   statuslineToggles: Partial<Record<TerminalType, Record<string, boolean>>>;
   setStatuslineToggle: (cliType: TerminalType, key: string, value: boolean) => void;
@@ -911,6 +916,7 @@ export const createRecentProjectsSlice: StateCreator<
   wslDistro: null,
   commitMsgMode: "simple",
   shadowAiCli: "claude",
+  aiWorkingMarkerDetection: false,
   projectColors: {},
   statuslineToggles: {},
 
@@ -1211,6 +1217,9 @@ export const createRecentProjectsSlice: StateCreator<
   },
   setShadowAiCli: (value) => {
     set({ shadowAiCli: value });
+  },
+  setAiWorkingMarkerDetection: (value) => {
+    set({ aiWorkingMarkerDetection: value });
   },
 
   addCustomServerCommand: (command) => {

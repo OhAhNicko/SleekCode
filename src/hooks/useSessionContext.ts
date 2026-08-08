@@ -27,6 +27,7 @@ import { truncateSessionTitle } from "../lib/session-title";
 import { findStatuslineContext } from "../lib/cli-statusline";
 import { toWslPath } from "../lib/terminal-config";
 import { getCachedDistro } from "../lib/wsl-cache";
+import * as knowledgeApi from "../lib/knowledge/api";
 import {
   claimedSessionIds,
   claimSessionId,
@@ -106,6 +107,56 @@ export function useSessionContext({
   const [contextInfo, setContextInfo] = useState<ContextInfo | null>(null);
   const readScreenLinesRef = useRef(readScreenLines);
   readScreenLinesRef.current = readScreenLines;
+
+  /**
+   * Feed the knowledge service this pane's identity.
+   *
+   * This hook is where a CLI's own session id is first RESOLVED (late detection
+   * and drift both land here, and both re-render with a new `sessionResumeId`),
+   * which makes it the one place that knows the full tuple. It is also shared by
+   * both renderers, so there is exactly one feed rather than two that drift.
+   *
+   * Deliberately keyed on the identity, not on the poll: the poll runs every 5
+   * seconds and almost always resolves to the same session, so firing per tick
+   * would be a steady stream of updates saying nothing changed.
+   *
+   * Entirely best-effort — a rejection here must never disturb session
+   * detection, which is the feature this hook actually exists for.
+   */
+  const identityRef = useRef({ terminalId, terminalType, workingDir });
+  identityRef.current = { terminalId, terminalType, workingDir };
+
+  useEffect(() => {
+    if (!contextSupported(terminalType) || !workingDir) return;
+    void knowledgeApi
+      .paneUpdate({
+        paneId: terminalId,
+        projectPath: workingDir,
+        agentKind: terminalType,
+        sessionId: sessionResumeId || null,
+        status: "active",
+      })
+      .catch(() => {});
+  }, [terminalId, terminalType, workingDir, sessionResumeId]);
+
+  // Closed is reported on unmount ONLY. Putting it in the effect above would
+  // make every session-id change emit a spurious close for a pane that is still
+  // very much alive, since React runs the cleanup on each dep change.
+  useEffect(() => {
+    return () => {
+      const { terminalId: id, terminalType: type, workingDir: dir } = identityRef.current;
+      if (!contextSupported(type) || !dir) return;
+      void knowledgeApi
+        .paneUpdate({
+          paneId: id,
+          projectPath: dir,
+          agentKind: type,
+          sessionId: null,
+          status: "closed",
+        })
+        .catch(() => {});
+    };
+  }, []);
 
   /**
    * Overlay the CLI's OWN context reading on top of the transcript-derived one.

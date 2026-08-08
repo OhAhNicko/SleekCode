@@ -48,6 +48,7 @@ import {
   setPaneSelection,
   setPaneAltScreen,
   setPaneExited,
+  getPaneState,
   clearPaneState,
 } from "../lib/pane-state-registry";
 import { registerTerminalActions, unregisterTerminalActions } from "../lib/terminal-actions";
@@ -75,7 +76,7 @@ import {
 import TerminalHeader, { type PromptEntry } from "./TerminalHeader";
 import CliMissingCard, { RemoteOfflineCard } from "./CliMissingCard";
 import { useCliPreflight } from "../hooks/useCliPreflight";
-import { SshSpawnFailureWatch } from "../lib/ssh-reachability";
+import { SshSpawnFailureWatch, sshWatchLog } from "../lib/ssh-reachability";
 import { isAiCli } from "../lib/cli-availability";
 import PromptComposer from "./PromptComposer";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
@@ -719,6 +720,15 @@ export default function TerminalPaneNative({
   const resumeHealTriedRef = useRef(false);
   // handleRestart is declared far below; the exit handler reaches it via ref.
   const restartRef = useRef<() => void>(() => {});
+  // Corroboration timer for data-time verdicts, and the "matched but the pane
+  // stayed alive" latch (the error text can appear INSIDE a healthy pane —
+  // Claude running ssh in its Bash tool — so a match alone must never act).
+  const sshVerdictTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sshFalseAlarmRef = useRef(false);
+  const sshFirstDataLoggedRef = useRef(false);
+  useEffect(() => () => {
+    if (sshVerdictTimerRef.current) clearTimeout(sshVerdictTimerRef.current);
+  }, []);
   // Phase 1 overlay migration: the "[Process exited]" banner now renders in the
   // transparent OVERLAY webview (above the native panes — no hole cut). We emit
   // the pane anchor rect while `exited` so the overlay draws the banner at the
@@ -1417,6 +1427,14 @@ export default function TerminalPaneNative({
     // over the bus) re-ran this effect and yanked Win32 focus back to the
     // pane the instant the search bar opened.
     if (useAppStore.getState().overlayFocused) return;
+    // Fullscreen modals (screenshot viewer, palette, search) own the keyboard
+    // while open — same bail as claimKeyboardFocus. Without it, the
+    // appWindowFocused dip-and-recover that a pane→webview click can produce
+    // re-ran this effect AFTER a modal opened; activeElement was <body>
+    // (modals need not focus anything), every guard passed, and Win32 focus
+    // was yanked to the HIDDEN pane HWND — the modal's window keydown
+    // listener went silent (screenshot viewer arrow keys, 2026-08-08).
+    if (useAppStore.getState().openFullscreenModals.size > 0) return;
     void nativeTermFocusKeyboard(termId).catch(() => {});
   }, [termId, isActive, isTabActive, appWindowFocused]);
 
@@ -1476,10 +1494,66 @@ export default function TerminalPaneNative({
   // Native mode: bytes route to Rust via R's pty_route::sender_for(id)
   // branch in pty.rs. The JS-side onData channel stays live during rollout
   // (plan hard requirement) — we just don't write into a JS renderer.
+  // Apply the watch's verdict to a pane that is KNOWN dead: resume-id
+  // rejection → drop the id and respawn fresh once; ssh connect failure →
+  // the "No connection" card. Called from handlePtyExit and from the
+  // data-time corroboration timer below.
+  const applySshVerdict = useCallback(() => {
+    const w = sshWatchRef.current;
+    if (!w) return;
+    const deadId = sessionResumeIdPropRef.current;
+    if (deadId && !resumeHealTriedRef.current && w.resumeFailure(deadId)) {
+      resumeHealTriedRef.current = true;
+      sshWatchLog(`${terminalId} verdict: heal ${deadId.slice(0, 8)} — respawning fresh`);
+      useAppStore.getState().removeProjectSession(workingDir || "", deadId);
+      setSessionTrusted(false);
+      sessionResumeIdPropRef.current = undefined;
+      onSessionResumeIdRef.current?.("");
+      restartRef.current();
+      return;
+    }
+    const connectFailure = w.failure();
+    if (connectFailure) {
+      sshWatchLog(`${terminalId} verdict: offline "${connectFailure}"`);
+      setSshOffline(connectFailure);
+      setComposerOpen(false);
+      return;
+    }
+    sshWatchLog(
+      `${terminalId} verdict: none raw=${w.rawLength()} sample="${w.sample()}"`,
+    );
+  }, [workingDir, terminalId]);
+
   const handlePtyData = useCallback((data: Uint8Array) => {
-    // Remote panes: keep the first bytes so an exit can tell "ssh never
-    // connected" apart from a normal process end. Self-retires after ~4KB.
-    sshWatchRef.current?.note(data);
+    // Remote panes: watch the spawn's earliest output for fatal verdicts —
+    // AT data time, because on_data and on_exit are separate IPC channels
+    // with no cross-channel ordering guarantee, so the exit event can land
+    // in JS BEFORE the final chunk that carries the error and an exit-only
+    // check misses it. A match alone must never act, though: the same text
+    // can appear inside a healthy pane (Claude running ssh in its Bash
+    // tool), so the verdict only applies if the pane is dead 1.2s later —
+    // ssh exits within milliseconds of printing these.
+    const sshWatch = sshWatchRef.current;
+    if (sshWatch) {
+      sshWatch.note(data);
+      if (!sshFirstDataLoggedRef.current) {
+        sshFirstDataLoggedRef.current = true;
+        sshWatchLog(`${terminalId} first data len=${data.length}`);
+      }
+      if (!sshFalseAlarmRef.current && sshVerdictTimerRef.current == null) {
+        const deadId = sessionResumeIdPropRef.current;
+        if (sshWatch.failure() || (deadId && sshWatch.resumeFailure(deadId))) {
+          sshWatchLog(`${terminalId} match at data time — corroborating in 1.2s`);
+          sshVerdictTimerRef.current = setTimeout(() => {
+            sshVerdictTimerRef.current = null;
+            const dead = getPaneState(terminalId).exited;
+            sshWatchLog(`${terminalId} corroborate: exited=${dead}`);
+            if (dead) applySshVerdict();
+            else sshFalseAlarmRef.current = true;
+          }, 1200);
+        }
+      }
+    }
     // Native side RENDERS bytes directly via the attached pty_id, but the
     // JS onData channel is still the tap for cross-cutting consumers that
     // must see raw output regardless of renderer:
@@ -1495,7 +1569,7 @@ export default function TerminalPaneNative({
     // auto-refresh, and ai-time tracking. recordTerminalActivity self-gates to
     // AI CLI types and honors the write/resize lockouts set below (so the
     // user's own echo and resize redraws don't read as AI output).
-    recordTerminalActivity(terminalId, terminalTypeRef.current, data.length);
+    recordTerminalActivity(terminalId, terminalTypeRef.current, data.length, data);
     // This channel is also the "PTY is alive" signal: on first data from a
     // resumable CLI, look up the session ID from disk — mirrors
     // TerminalPaneXterm's initial detection (same floor, atomic claim, and
@@ -1660,35 +1734,15 @@ export default function TerminalPaneNative({
       setPaneExited(terminalId, true);
       clearTerminalActivity(terminalId);
       sessionRetryCancelRef.current?.();
-      // The CLI rejected this pane's resume id ("No conversation found with
-      // session ID: …") — the id has no transcript behind it, so dropping it
-      // loses nothing. Drop it and respawn fresh ONCE, exactly what the local
-      // branch's pre-spawn check does quietly (session-exists.ts).
-      // Remote-only: the watch exists only for ssh panes.
-      const deadId = sessionResumeIdPropRef.current;
-      if (deadId && !resumeHealTriedRef.current && sshWatchRef.current?.resumeFailure(deadId)) {
-        resumeHealTriedRef.current = true;
-        console.warn(
-          `[SessionResume] CLI rejected ${deadId.slice(0, 8)} — dropping the id and starting fresh`,
-        );
-        useAppStore.getState().removeProjectSession(workingDir || "", deadId);
-        setSessionTrusted(false);
-        sessionResumeIdPropRef.current = undefined;
-        onSessionResumeIdRef.current?.("");
-        onPtyExit?.(code);
-        restartRef.current();
-        return;
-      }
-      // ssh died before it ever connected → tear the HWND down and show the
-      // "No connection" card instead of a dead terminal holding one ssh error.
-      const connectFailure = sshWatchRef.current?.failure();
-      if (connectFailure) {
-        setSshOffline(connectFailure);
-        setComposerOpen(false);
-      }
+      // The pane is dead — apply any spawn verdict the watch has already
+      // seen (resume-id rejection → heal; connect failure → offline card).
+      // The data-time corroboration timer covers the opposite ordering,
+      // where this exit event outruns the final error-carrying data chunk.
+      if (sshWatchRef.current) sshWatchLog(`${terminalId} pty exit code=${code}`);
+      applySshVerdict();
       onPtyExit?.(code);
     },
-    [onPtyExit, terminalId],
+    [onPtyExit, terminalId, applySshVerdict],
   );
 
   // MADE assigned this Claude session's id at spawn (`--session-id`), so the
@@ -1757,6 +1811,12 @@ export default function TerminalPaneNative({
     if (termId == null) return;
     const id = termId;
     registerTerminalFocus(terminalId, () => {
+      // A fullscreen modal owns the keyboard. attachImage() requests this
+      // focus after an insert, and the screenshot viewer's context-menu
+      // "Attach to prompt" inserts WITHOUT closing the viewer — honouring
+      // the request would move Win32 focus to the hidden pane HWND and kill
+      // the viewer's keyboard.
+      if (useAppStore.getState().openFullscreenModals.size > 0) return;
       void nativeTermFocusKeyboard(id).catch(() => {});
     });
     return () => unregisterTerminalFocus(terminalId);
@@ -2177,6 +2237,12 @@ export default function TerminalPaneNative({
     // the (bumped) spawn effect runs against the fresh surface.
     sshWatchRef.current?.reset();
     setSshOffline(null);
+    sshFalseAlarmRef.current = false;
+    sshFirstDataLoggedRef.current = false;
+    if (sshVerdictTimerRef.current) {
+      clearTimeout(sshVerdictTimerRef.current);
+      sshVerdictTimerRef.current = null;
+    }
     setExited(false);
     setPaneExited(terminalId, false);
     setContextInfo(null);
@@ -2232,6 +2298,12 @@ export default function TerminalPaneNative({
       sshWatchRef.current?.reset();
       setSshOffline(null);
       resumeHealTriedRef.current = false;
+      sshFalseAlarmRef.current = false;
+    sshFirstDataLoggedRef.current = false;
+      if (sshVerdictTimerRef.current) {
+        clearTimeout(sshVerdictTimerRef.current);
+        sshVerdictTimerRef.current = null;
+      }
       onSwitchSession?.(sid);
       // Eagerly update the ref so the PTY spawn reads the correct session ID
       // before React delivers the prop update.

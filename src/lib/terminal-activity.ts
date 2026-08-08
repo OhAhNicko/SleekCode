@@ -1,17 +1,40 @@
 /**
  * Terminal activity tracker for AI terminals (claude, codex, gemini).
  *
- * Detection strategy: **sustained output with high data rate**.
+ * Detection strategy: **sustained output with high data rate**, plus a
+ * mode-dependent extension that keeps the badge lit through the quiet
+ * phases of a real turn (long shell command, extended thinking), where the
+ * TUI only repaints its spinner at ~40–150 B/s — under the 200 B/s burst
+ * floor but far above idle blink noise:
  * - User typing resets clock + sets lockout (suppresses TUI echo).
  * - Resize sets lockout for idle terminals (suppresses TUI redraw).
- * - Terminal is "active" only when output has been sustained for 1.5+ seconds
+ * - A burst is "confirmed" when output has been sustained for 1.5+ seconds
  *   AND has a data rate >= 200 bytes/sec (filters TUI idle output like
  *   cursor blinks which produce ~5-20 bytes/sec).
+ * - "hysteresis" (default): a confirmed burst anchors a sticky state that
+ *   survives while non-lockout output keeps crossing the trickle window;
+ *   12s of quiet drops it.
+ * - "markers": the badge also lights while the CLI's live status line
+ *   ("esc to interrupt", the spinner's token counter) keeps repainting.
+ *
+ * ONLY isTerminalActive changes with the mode. The burst lifecycle that
+ * feeds made:ai-done (AI-time stats, git auto-refresh) is untouched.
  */
 
 import type { TerminalType } from "../types";
+import { cleanOutput } from "./pty-text";
 
 const AI_TYPES: ReadonlySet<TerminalType> = new Set(["claude", "codex", "gemini"]);
+
+export type AiActivityDetectionMode = "hysteresis" | "markers";
+
+let detectionMode: AiActivityDetectionMode = "hysteresis";
+
+/** Pushed from React (App.tsx) — this module must not import the store
+ *  (store/terminalSlice imports us; a back-import would be a cycle). */
+export function setAiActivityDetectionMode(mode: AiActivityDetectionMode): void {
+  detectionMode = mode;
+}
 
 interface ActivityState {
   burstStart: number;
@@ -19,6 +42,19 @@ interface ActivityState {
   burstBytes: number;
   lockoutUntil: number;
   terminalType: TerminalType;
+  /** Last time a burst passed isConfirmedActive — the hysteresis anchor.
+   *  0 = no anchor; cleared when the sticky feed goes quiet. */
+  confirmedAt: number;
+  /** Last time output beyond the trickle window arrived OUTSIDE a typing/
+   *  resize lockout. Feeds the sticky state, never the kill-safety signals. */
+  stickyFedAt: number;
+  /** Markers mode: last time a live-only working marker matched. */
+  markerSeenAt: number;
+  /** Markers mode: rolling cleaned tail so a marker split across chunks
+   *  still matches. */
+  tail: string;
+  /** Markers mode: stateful decoder so split UTF-8 sequences survive. */
+  decoder?: TextDecoder;
 }
 
 const state = new Map<string, ActivityState>();
@@ -73,6 +109,39 @@ const TYPING_LOCKOUT_MS = 2000;
 /** Minimum average bytes/sec to count as real AI work. */
 const MIN_BYTES_PER_SEC = 200;
 
+/** Hysteresis: how long the sticky feed may go quiet before the anchor
+ *  drops. The feed refreshes on every chunk once the 10s trickle window has
+ *  accumulated its 500 bytes; at slow spinner rates (~60 B/s) the window
+ *  needs up to ~8s to re-cross after each reset, so 12s rides that out
+ *  while still clearing within seconds of a turn actually ending. */
+const STICKY_HOLD_MS = 12_000;
+
+/** Markers: the status line repaints at least once per second while the CLI
+ *  works (timer/token counter), so 5s of no marker means it is gone. */
+const MARKER_HOLD_MS = 5_000;
+
+/** How much cleaned text to keep for bridging a marker split across chunks.
+ *  Must exceed the longest marker match by a comfortable margin. */
+const TAIL_CHARS = 160;
+
+/**
+ * Live-only working markers per CLI. Every entry must be text the TUI shows
+ * ONLY while working and erases when done — text that survives in scrollback
+ * (completed tool summaries like "(1m 0s · 4 lines)") would false-fire on
+ * resize/scroll redraws.
+ */
+const WORKING_MARKERS: Partial<Record<TerminalType, RegExp[]>> = {
+  claude: [
+    /esc to interrupt/i,
+    /ctrl\+b to run in background/i,
+    // Spinner token counter: "(3m 26s · ↓ 9.2k tokens" — the "· ↓/↑ N tokens"
+    // part only exists on the live spinner line.
+    /·\s*[↓↑]\s*[\d.,]+k?\s*tokens/i,
+  ],
+  codex: [/esc to interrupt/i],
+  gemini: [/esc to cancel/i],
+};
+
 export function recordTerminalWrite(terminalId: string): void {
   lastInputAt.set(terminalId, Date.now());
   const s = state.get(terminalId);
@@ -98,7 +167,13 @@ export function recordTerminalResize(terminalId: string): void {
   }
 }
 
-export function recordTerminalActivity(terminalId: string, terminalType: TerminalType, dataSize: number): void {
+export function recordTerminalActivity(
+  terminalId: string,
+  terminalType: TerminalType,
+  dataSize: number,
+  bytes?: Uint8Array,
+): void {
+  let crossedTrickle = false;
   {
     const now = Date.now();
     lastOutputAt.set(terminalId, now);
@@ -108,15 +183,45 @@ export function recordTerminalActivity(terminalId: string, terminalType: Termina
       outWin.set(terminalId, w);
     }
     w.bytes += dataSize;
-    if (w.bytes >= MEANINGFUL_BYTES_PER_WINDOW) lastMeaningfulOutputAt.set(terminalId, now);
+    if (w.bytes >= MEANINGFUL_BYTES_PER_WINDOW) {
+      lastMeaningfulOutputAt.set(terminalId, now);
+      crossedTrickle = true;
+    }
   }
   if (!AI_TYPES.has(terminalType)) return;
 
   const now = Date.now();
   let s = state.get(terminalId);
   if (!s) {
-    s = { burstStart: 0, lastOutput: 0, burstBytes: 0, lockoutUntil: 0, terminalType };
+    s = {
+      burstStart: 0, lastOutput: 0, burstBytes: 0, lockoutUntil: 0, terminalType,
+      confirmedAt: 0, stickyFedAt: 0, markerSeenAt: 0, tail: "",
+    };
     state.set(terminalId, s);
+  }
+
+  // Hysteresis feed: output past the trickle window, outside lockouts, keeps
+  // an anchored sticky state alive. Lockout-gated so the user's own typing
+  // echo cannot stretch the badge past the end of a turn.
+  if (crossedTrickle && now >= s.lockoutUntil) s.stickyFedAt = now;
+
+  // Markers mode: match the CLI's live status line in the cleaned stream.
+  // Decode statefully (ConPTY splits UTF-8 and escape sequences mid-word)
+  // and keep a rolling tail so a marker split across chunks still matches.
+  if (detectionMode === "markers" && bytes) {
+    const markers = WORKING_MARKERS[terminalType];
+    if (markers) {
+      s.decoder ??= new TextDecoder("utf-8", { fatal: false });
+      const text = s.tail + cleanOutput(s.decoder.decode(bytes, { stream: true }));
+      if (markers.some((m) => m.test(text))) {
+        s.markerSeenAt = now;
+        // Consume the match: a marker left sitting in the tail would re-fire
+        // on every later chunk (even blink trickle) with no new repaint.
+        s.tail = "";
+      } else {
+        s.tail = text.length > TAIL_CHARS ? text.slice(-TAIL_CHARS) : text;
+      }
+    }
   }
 
   if (s.lastOutput > 0 && now - s.lastOutput > GAP_MS) {
@@ -136,6 +241,10 @@ export function recordTerminalActivity(terminalId: string, terminalType: Termina
   }
   s.lastOutput = now;
   s.burstBytes += dataSize;
+
+  // Anchor the hysteresis at data time — a burst must not need a badge poll
+  // to coincide with it to count.
+  if (isConfirmedActive(s, now)) s.confirmedAt = now;
 }
 
 export function clearTerminalActivity(terminalId: string): void {
@@ -185,5 +294,20 @@ function isConfirmedActive(s: ActivityState, now: number): boolean {
 export function isTerminalActive(terminalId: string): boolean {
   const s = state.get(terminalId);
   if (!s) return false;
-  return isConfirmedActive(s, Date.now());
+  const now = Date.now();
+
+  if (isConfirmedActive(s, now)) {
+    s.confirmedAt = now;
+    return true;
+  }
+
+  if (detectionMode === "markers") {
+    return s.markerSeenAt > 0 && now - s.markerSeenAt <= MARKER_HOLD_MS;
+  }
+
+  // Hysteresis: an anchored pane stays active while the sticky feed is
+  // fresh. Once the feed lapses the anchor is cleared for good — a later
+  // feed period cannot resurrect it without a new confirmed burst.
+  if (s.confirmedAt > 0 && now - s.stickyFedAt > STICKY_HOLD_MS) s.confirmedAt = 0;
+  return s.confirmedAt > 0;
 }

@@ -326,9 +326,30 @@ export function termProgramEnvPairs(program: string, version?: string): string[]
 /** MADE_PANE_ID values are `term-<ms>-<n>` (generateTerminalId), but the id is
  *  embedded in shell/PS command strings, so strip anything outside the known
  *  alphabet defensively rather than trusting the format forever. */
-function safePaneId(id: string): string {
+export function safePaneId(id: string): string {
   return id.replace(/[^A-Za-z0-9_-]/g, "");
 }
+
+/**
+ * Make MADE_PANE_ID cross back OUT of WSL, to Windows children.
+ *
+ * MADE_PANE_ID reaching the Linux process is only half the journey. The MCP
+ * adapter is a Windows binary that a WSL-side CLI launches over interop, and a
+ * Linux env var does not follow it there unless WSLENV names the variable with
+ * the `/w` flag. Without this, an agent's writes arrive with no pane identity
+ * and attribution degrades to "some Claude, somewhere".
+ *
+ * Appends rather than assigns, because WSLENV may already carry variables the
+ * user forwards — and a login profile can reset it, which is why this runs in
+ * the pane's own shell rather than relying solely on the value inherited from
+ * MADE's process. A duplicate entry is harmless: the interop layer translates
+ * the same variable twice to the same value.
+ *
+ * A plain single-quoted string on purpose — `${WSLENV:+…}` is bash parameter
+ * expansion, and inside a template literal it would be read as a TS
+ * substitution instead.
+ */
+const WSLENV_PANE_EXPORT = 'export WSLENV="${WSLENV:+$WSLENV:}MADE_PANE_ID/w"';
 
 /**
  * How a CLI takes its FIRST prompt at launch and still stays interactive.
@@ -482,7 +503,11 @@ export function getTerminalConfig(type: TerminalType, sessionResumeId?: string, 
     const fullCmd = [sh(execCmd), ...suffixParts.map(sh)].join(" ");
     const distroArgs = distro ? ["-d", distro] : [];
     const cdPart = wslCwd ? `cd ${sh(wslCwd)} && ` : "";
-    const paneExport = paneId ? ` MADE_PANE_ID=${safePaneId(paneId)}` : "";
+    // The WSLENV export is a SEPARATE statement after the joint export, so the
+    // `${WSLENV:+…}` expansion reads the value the login shell actually has.
+    const paneExport = paneId
+      ? ` MADE_PANE_ID=${safePaneId(paneId)}; ${WSLENV_PANE_EXPORT}`
+      : "";
     return {
       ...base,
       args: [...distroArgs, "--", "bash", "-lic", `export TERM=xterm-256color COLORTERM=truecolor${paneExport}; ${idExport}${cdPart}exec ${fullCmd}`],
@@ -563,7 +588,10 @@ export function getPooledInitCommand(type: TerminalType, wslCwd?: string, sessio
   // fresh AI panes, and the `--session-id` regression proved that a spawn
   // detail present only on the non-pooled path silently vanishes for most
   // panes (usePty.ts:150-156).
-  if (paneId) parts.push(`export MADE_PANE_ID=${safePaneId(paneId)}`);
+  if (paneId) {
+    parts.push(`export MADE_PANE_ID=${safePaneId(paneId)}`);
+    parts.push(WSLENV_PANE_EXPORT);
+  }
   if (wslCwd) {
     parts.push(`cd ${sh(wslCwd)}`);
   }

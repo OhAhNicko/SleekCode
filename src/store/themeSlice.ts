@@ -23,6 +23,14 @@ export interface ThemeSlice {
   /** Wash strength in whole percent (1–15). 4 = default subtle hint. */
   projectPaneTintStrength: number;
   setProjectPaneTintStrength: (v: number) => void;
+  /** Project-color wash on pane HEADERS, independent of the pane tint. */
+  projectHeaderTint: boolean;
+  setProjectHeaderTint: (v: boolean) => void;
+  /** Header wash strength in whole percent (1–30). Default 8 — header chrome
+   *  surfaces are lighter than the canvas, so the useful range sits higher
+   *  than the pane tint's. */
+  projectHeaderTintStrength: number;
+  setProjectHeaderTintStrength: (v: number) => void;
   /** false = active pane background stays identical to inactive; the pane
    *  header (surface-raised + brand border) remains the only active marker. */
   activePaneLift: boolean;
@@ -125,6 +133,10 @@ export const createThemeSlice: StateCreator<ThemeSlice, [], [], ThemeSlice> = (
   setProjectPaneTint: (v) => set({ projectPaneTint: v }),
   projectPaneTintStrength: 4,
   setProjectPaneTintStrength: (v) => set({ projectPaneTintStrength: v }),
+  projectHeaderTint: false,
+  setProjectHeaderTint: (v) => set({ projectHeaderTint: v }),
+  projectHeaderTintStrength: 8,
+  setProjectHeaderTintStrength: (v) => set({ projectHeaderTintStrength: v }),
   activePaneLift: true,
   setActivePaneLift: (v) => set({ activePaneLift: v }),
   radiusScaleOverride: null,

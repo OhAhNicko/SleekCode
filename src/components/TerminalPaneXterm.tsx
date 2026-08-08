@@ -19,6 +19,7 @@ import { shouldInjectShellIntegration } from "../lib/shell-integration";
 import {
   registerPaneStateProbe,
   setPaneExited,
+  getPaneState,
   clearPaneState,
 } from "../lib/pane-state-registry";
 import { supportsSessionResume } from "../lib/session-resume";
@@ -35,7 +36,7 @@ import TerminalHeader from "./TerminalHeader";
 import CliMissingCard, { RemoteOfflineCard } from "./CliMissingCard";
 import { useCliPreflight } from "../hooks/useCliPreflight";
 import { isAiCli } from "../lib/cli-availability";
-import { SshSpawnFailureWatch } from "../lib/ssh-reachability";
+import { SshSpawnFailureWatch, sshWatchLog } from "../lib/ssh-reachability";
 import CommandBlockOverlay from "./CommandBlockOverlay";
 import { useClipboardImagePaste } from "../hooks/useClipboardImagePaste";
 import PromptComposer from "./PromptComposer";
@@ -333,6 +334,45 @@ export default function TerminalPane({
   const resumeHealTriedRef = useRef(false);
   // handleRestart is declared far below; the exit handler reaches it via ref.
   const restartRef = useRef<() => void>(() => {});
+  // Corroboration timer for data-time verdicts, and the "matched but the pane
+  // stayed alive" latch (the error text can appear INSIDE a healthy pane —
+  // Claude running ssh in its Bash tool — so a match alone must never act).
+  const sshVerdictTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sshFalseAlarmRef = useRef(false);
+  const sshFirstDataLoggedRef = useRef(false);
+  useEffect(() => () => {
+    if (sshVerdictTimerRef.current) clearTimeout(sshVerdictTimerRef.current);
+  }, []);
+
+  // Apply the watch's verdict to a pane that is KNOWN dead: resume-id
+  // rejection → drop the id and respawn fresh once; ssh connect failure →
+  // the "No connection" card. Called from handlePtyExit and from the
+  // data-time corroboration timer in handlePtyData.
+  const applySshVerdict = useCallback(() => {
+    const w = sshWatchRef.current;
+    if (!w) return;
+    const deadId = sessionResumeIdPropRef.current;
+    if (deadId && !resumeHealTriedRef.current && w.resumeFailure(deadId)) {
+      resumeHealTriedRef.current = true;
+      sshWatchLog(`${terminalId} verdict: heal ${deadId.slice(0, 8)} — respawning fresh`);
+      useAppStore.getState().removeProjectSession(workingDirRef.current || "", deadId);
+      setSessionTrusted(false);
+      sessionResumeIdPropRef.current = undefined;
+      onSessionResumeIdRef.current?.("");
+      restartRef.current();
+      return;
+    }
+    const connectFailure = w.failure();
+    if (connectFailure) {
+      sshWatchLog(`${terminalId} verdict: offline "${connectFailure}"`);
+      setSshOffline(connectFailure);
+      setComposerOpen(false);
+      return;
+    }
+    sshWatchLog(
+      `${terminalId} verdict: none raw=${w.rawLength()} sample="${w.sample()}"`,
+    );
+  }, [terminalId]);
   const [zoomIndicator, setZoomIndicator] = useState<number | null>(null);
   const zoomIndicatorTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const searchAddonRef = useRef<SearchAddon | null>(null);
@@ -493,13 +533,37 @@ export default function TerminalPane({
     pendingBytesRef.current = 0;
 
     // Batch activity recording per flush instead of per chunk
-    recordTerminalActivity(terminalId, terminalTypeRef.current, totalBytes);
+    recordTerminalActivity(terminalId, terminalTypeRef.current, totalBytes, payload);
   }, [terminalId]);
 
   const handlePtyData = useCallback((data: Uint8Array) => {
-    // Remote panes: keep the first bytes so an exit can tell "ssh never
-    // connected" apart from a normal process end. Self-retires after ~4KB.
-    sshWatchRef.current?.note(data);
+    // Remote panes: watch the spawn's earliest output for fatal verdicts —
+    // AT data time, because on_data and on_exit are separate IPC channels
+    // with no cross-channel ordering guarantee, so the exit event can land
+    // in JS BEFORE the final chunk that carries the error and an exit-only
+    // check misses it. The 1.2s timer corroborates against pane death before
+    // acting — ssh exits within milliseconds of printing these.
+    const sshWatch = sshWatchRef.current;
+    if (sshWatch) {
+      sshWatch.note(data);
+      if (!sshFirstDataLoggedRef.current) {
+        sshFirstDataLoggedRef.current = true;
+        sshWatchLog(`${terminalId} first data len=${data.length}`);
+      }
+      if (!sshFalseAlarmRef.current && sshVerdictTimerRef.current == null) {
+        const deadId = sessionResumeIdPropRef.current;
+        if (sshWatch.failure() || (deadId && sshWatch.resumeFailure(deadId))) {
+          sshWatchLog(`${terminalId} match at data time — corroborating in 1.2s`);
+          sshVerdictTimerRef.current = setTimeout(() => {
+            sshVerdictTimerRef.current = null;
+            const dead = getPaneState(terminalId).exited;
+            sshWatchLog(`${terminalId} corroborate: exited=${dead}`);
+            if (dead) applySshVerdict();
+            else sshFalseAlarmRef.current = true;
+          }, 1200);
+        }
+      }
+    }
     // Queue data for batched write on next animation frame
     pendingChunksRef.current.push(new Uint8Array(data));
     pendingBytesRef.current += data.length;
@@ -704,35 +768,14 @@ export default function TerminalPane({
     clearTerminalActivity(terminalId);
     sessionRetryCancelRef.current?.();
     terminalRef.current?.write("\r\n\x1b[38;2;139;148;158m[Process exited]\x1b[0m\r\n");
-    // The CLI rejected this pane's resume id ("No conversation found with
-    // session ID: …") — the id has no transcript behind it, so dropping it
-    // loses nothing. Drop it and respawn fresh ONCE, exactly what the local
-    // branch's pre-spawn check does quietly (session-exists.ts). Remote-only:
-    // the watch exists only for ssh panes.
-    const deadId = sessionResumeIdPropRef.current;
-    if (deadId && !resumeHealTriedRef.current && sshWatchRef.current?.resumeFailure(deadId)) {
-      resumeHealTriedRef.current = true;
-      console.warn(
-        `[SessionResume] CLI rejected ${deadId.slice(0, 8)} — dropping the id and starting fresh`,
-      );
-      useAppStore.getState().removeProjectSession(workingDirRef.current || "", deadId);
-      setSessionTrusted(false);
-      sessionResumeIdPropRef.current = undefined;
-      onSessionResumeIdRef.current?.("");
-      onPtyExitRef.current?.(exitCode);
-      restartRef.current();
-      return;
-    }
-    // ssh died before it ever connected → the pane's only content is the ssh
-    // client's error. Cover it with the "No connection" card (the terminal
-    // hides while the card is up; Try again respawns).
-    const connectFailure = sshWatchRef.current?.failure();
-    if (connectFailure) {
-      setSshOffline(connectFailure);
-      setComposerOpen(false);
-    }
+    // The pane is dead — apply any spawn verdict the watch has already seen
+    // (resume-id rejection → heal; connect failure → offline card). The
+    // data-time corroboration timer in handlePtyData covers the opposite
+    // ordering, where this exit event outruns the error-carrying data chunk.
+    if (sshWatchRef.current) sshWatchLog(`${terminalId} pty exit code=${exitCode}`);
+    applySshVerdict();
     onPtyExitRef.current?.(exitCode);
-  }, [terminalId]);
+  }, [terminalId, applySshVerdict]);
 
   // MADE assigned this Claude session's id at spawn (`--session-id`), so the
   // detect-by-newest-jsonl-mtime dance is unnecessary: claim it directly.
@@ -1058,7 +1101,11 @@ export default function TerminalPane({
     // terminalRef was still null, swallowing focus. Re-focus now that
     // the terminal exists — skip when the pane was opened in background
     // (suppressed) or is no longer the active pane.
-    if (isActiveRef.current && !focusSuppressedRef.current) {
+    if (
+      isActiveRef.current &&
+      !focusSuppressedRef.current &&
+      useAppStore.getState().openFullscreenModals.size === 0
+    ) {
       term.focus();
     }
 
@@ -1860,7 +1907,13 @@ export default function TerminalPane({
   // Register xterm focus callback so external actions (e.g. clipboard paste path
   // from ImagePreviewModal) can return focus to this pane.
   useEffect(() => {
-    registerTerminalFocus(terminalId, () => terminalRef.current?.focus());
+    registerTerminalFocus(terminalId, () => {
+      // Fullscreen modals own the keyboard — e.g. the screenshot viewer's
+      // context-menu attach inserts without closing the viewer, and focusing
+      // the xterm textarea here would make the viewer drop every key.
+      if (useAppStore.getState().openFullscreenModals.size > 0) return;
+      terminalRef.current?.focus();
+    });
     return () => unregisterTerminalFocus(terminalId);
   }, [terminalId]);
 
@@ -1959,7 +2012,11 @@ export default function TerminalPane({
   // it until the tab is viewed would regress the background-open flow.
   useEffect(() => {
     if (isActive) {
-      if (isTabActive) {
+      // Never claim while a fullscreen modal (screenshot viewer, palette,
+      // search) is open — term.focus() lands on xterm's helper TEXTAREA,
+      // which the modal's keydown handlers treat as "user is typing" and
+      // drop every key.
+      if (isTabActive && useAppStore.getState().openFullscreenModals.size === 0) {
         focusRestorerRef.current?.();
         terminalRef.current?.focus();
       }
@@ -2179,6 +2236,12 @@ export default function TerminalPane({
     setLaunchedWithYolo(!!useAppStore.getState().cliYolo[terminalType]);
     sshWatchRef.current?.reset();
     setSshOffline(null);
+    sshFalseAlarmRef.current = false;
+    sshFirstDataLoggedRef.current = false;
+    if (sshVerdictTimerRef.current) {
+      clearTimeout(sshVerdictTimerRef.current);
+      sshVerdictTimerRef.current = null;
+    }
     setExited(false);
     setPaneExited(terminalId, false);
     setContextInfo(null);
@@ -2226,6 +2289,12 @@ export default function TerminalPane({
     sshWatchRef.current?.reset();
     setSshOffline(null);
     resumeHealTriedRef.current = false;
+    sshFalseAlarmRef.current = false;
+    sshFirstDataLoggedRef.current = false;
+    if (sshVerdictTimerRef.current) {
+      clearTimeout(sshVerdictTimerRef.current);
+      sshVerdictTimerRef.current = null;
+    }
     setExited(false);
     setPaneExited(terminalId, false);
     setContextInfo(null);
