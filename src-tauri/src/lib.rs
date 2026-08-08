@@ -161,12 +161,8 @@ mod win32_border {
     const SWP_ASYNCWINDOWPOS: u32 = 0x4000;
     const MONITOR_DEFAULTTONEAREST: u32 = 2;
     const SUBCLASS_ID: usize = 1;
-    const SM_CXSIZEFRAME: i32 = 32;
-    const SM_CYSIZEFRAME: i32 = 33;
-    const SM_CXPADDEDBORDER: i32 = 92;
     const GWL_STYLE: i32 = -16;
     const WS_VISIBLE: isize = 0x1000_0000;
-    const FRAME_CLAMP_TOLERANCE_PX: i32 = 3;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -246,10 +242,8 @@ mod win32_border {
         fn GetForegroundWindow() -> *mut c_void;
         fn MonitorFromRect(rect: *const RECT, flags: u32) -> *mut c_void;
         fn GetMonitorInfoW(monitor: *mut c_void, info: *mut MONITORINFO) -> i32;
-        fn GetDpiForWindow(hwnd: *mut c_void) -> u32;
         fn GetWindowLongPtrW(hwnd: *mut c_void, index: i32) -> isize;
         fn SetWindowLongPtrW(hwnd: *mut c_void, index: i32, value: isize) -> isize;
-        fn GetSystemMetricsForDpi(index: i32, dpi: u32) -> i32;
         fn PostMessageW(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> i32;
         fn ShowWindow(hwnd: *mut c_void, cmd_show: i32) -> i32;
         fn SetTimer(
@@ -496,51 +490,13 @@ mod win32_border {
         let _ = state.controller.NotifyParentWindowPositionChanged();
     }
 
-    #[inline]
-    unsafe fn frame_overshoot_limit(hwnd: *mut c_void) -> (i32, i32) {
-        let dpi = GetDpiForWindow(hwnd).max(96);
-        let fallback = ((8 * dpi as i32) + 95) / 96;
-
-        let frame_x = GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi)
-            + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-        let frame_y = GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi)
-            + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-
-        (
-            frame_x.max(fallback) + FRAME_CLAMP_TOLERANCE_PX,
-            frame_y.max(fallback) + FRAME_CLAMP_TOLERANCE_PX,
-        )
-    }
-
-    #[inline]
-    fn clamp_small_frame_overshoot(r: &mut RECT, work: RECT, max_x: i32, max_y: i32) {
-        let left_overshoot = work.left - r.left;
-        if left_overshoot > 0 && left_overshoot <= max_x {
-            r.left = work.left;
-        }
-
-        let right_overshoot = r.right - work.right;
-        if right_overshoot > 0 && right_overshoot <= max_x {
-            r.right = work.right;
-        }
-
-        let top_overshoot = work.top - r.top;
-        if top_overshoot > 0 && top_overshoot <= max_y {
-            r.top = work.top;
-        }
-
-        let bottom_overshoot = r.bottom - work.bottom;
-        if bottom_overshoot > 0 && bottom_overshoot <= max_y {
-            r.bottom = work.bottom;
-        }
-    }
-
     /// Window subclass proc that intercepts WM_NCCALCSIZE to remove the
     /// 1px top non-client border Windows draws on frameless windows.
     ///
-    /// Only tiny resize-frame overshoots are clamped to the monitor work area.
-    /// Large overshoots are left alone so a normal window can span monitors
-    /// without shrinking the client rect and exposing native background.
+    /// The client rect is the FULL window rect whenever the window is not
+    /// maximized — no per-edge work-area clamping (see the WM_NCCALCSIZE arm:
+    /// any inset edge becomes an unpainted NC strip showing default light
+    /// chrome). Maximized windows hard-set the client to the monitor work area.
     unsafe extern "system" fn subclass_proc(
         hwnd: *mut c_void,
         msg: u32,
@@ -815,28 +771,38 @@ mod win32_border {
         // (The overlay guard already claims both forms; main was asymmetric.)
         if msg == WM_NCCALCSIZE {
             let r = &mut *(lparam as *mut RECT);
-            // Resolve the monitor from the PROPOSED rect, not the current window
-            // position — during maximize/display transitions they can disagree.
-            let monitor = MonitorFromRect(r as *const RECT, MONITOR_DEFAULTTONEAREST);
-            let mut mi = MONITORINFO {
-                cb_size: std::mem::size_of::<MONITORINFO>() as u32,
-                rc_monitor: RECT { left: 0, top: 0, right: 0, bottom: 0 },
-                rc_work: RECT { left: 0, top: 0, right: 0, bottom: 0 },
-                dw_flags: 0,
-            };
-            if GetMonitorInfoW(monitor, &mut mi) != 0 {
-                if IsZoomed(hwnd) != 0 {
+            if IsZoomed(hwnd) != 0 {
+                // Resolve the monitor from the PROPOSED rect, not the current
+                // window position — during maximize/display transitions they
+                // can disagree.
+                let monitor = MonitorFromRect(r as *const RECT, MONITOR_DEFAULTTONEAREST);
+                let mut mi = MONITORINFO {
+                    cb_size: std::mem::size_of::<MONITORINFO>() as u32,
+                    rc_monitor: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                    rc_work: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+                    dw_flags: 0,
+                };
+                if GetMonitorInfoW(monitor, &mut mi) != 0 {
                     // Maximized: Windows sizes a WS_THICKFRAME window to the work
                     // area INFLATED by the frame width on every side. The client
                     // rect must be exactly the work area or content renders
                     // off-screen and clips at the edges (this is what tao's own
                     // NCCALCSIZE handler does; our subclass bypasses it).
                     *r = mi.rc_work;
-                } else {
-                    let (max_x, max_y) = frame_overshoot_limit(hwnd);
-                    clamp_small_frame_overshoot(r, mi.rc_work, max_x, max_y);
                 }
             }
+            // Restored windows claim the FULL window rect unconditionally —
+            // never clamp per-edge to the work area. The former
+            // clamp_small_frame_overshoot carved a real NC strip on exactly
+            // the edges that sat up to a frame-width past the work area
+            // (window nudged/restored slightly off the top-left corner), and
+            // with WM_NCPAINT/UAH swallowed NOTHING ever painted that strip:
+            // the OS's default light chrome showed there PERMANENTLY — the
+            // production "border skeleton" (pixel-measured 2026-08-08: 9px
+            // light band across the top + 9px stripe down the left, right and
+            // bottom flush, i.e. per-edge insets only the clamp could make).
+            // Content past a screen edge is simply clipped, the same behavior
+            // as every normal window. Maximized stays hard-set to rc_work.
             return 0;
         }
         // Default NC rendering is suppressed structurally above (WM_NCPAINT /
