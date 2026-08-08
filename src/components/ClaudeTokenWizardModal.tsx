@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { useModal } from "../store/modalCoordinationSlice";
 import { getClaudeSetupTokenCommand } from "../lib/terminal-config";
 import { cleanOutput } from "../lib/pty-text";
@@ -258,8 +259,10 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
         <div style={{ padding: 16 }}>
           {phase === "connecting" && (
             <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", padding: "8px 0", lineHeight: 1.5 }}>
-              Connecting to <strong style={{ color: "var(--ezy-text-secondary)" }}>{server.username}@{server.host}</strong> and
-              starting <code style={inlineCodeStyle}>claude setup-token</code>…
+              <LoadingDots>
+                Connecting to <strong style={{ color: "var(--ezy-text-secondary)" }}>{server.username}@{server.host}</strong> and
+                starting <code style={inlineCodeStyle}>claude setup-token</code>
+              </LoadingDots>
             </div>
           )}
 
@@ -325,7 +328,7 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
                   disabled={phase === "exchanging" || !code.trim()}
                   style={buttonStyle(true, phase === "exchanging" || !code.trim())}
                 >
-                  {phase === "exchanging" ? "Exchanging…" : "Submit code"}
+                  {phase === "exchanging" ? <LoadingDots>Exchanging</LoadingDots> : "Submit code"}
                 </button>
                 <button onClick={onClose} style={buttonStyle(false, false)}>
                   Cancel

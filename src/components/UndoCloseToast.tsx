@@ -29,15 +29,26 @@ export default function UndoCloseToast() {
     return () => clearTimeout(timer);
   }, [lastClosed, clear]);
 
-  // Ctrl+Z undo shortcut
+  // Ctrl+Z undo shortcut — but never stolen from a surface that owns the
+  // chord itself. While this toast is visible, an unguarded window listener
+  // made Ctrl+Z in the editor undo text AND resurrect the closed tab in one
+  // press, and in a terminal (where Ctrl+Z is the shell's SIGTSTP) it popped
+  // tabs back mid-command. The toast only takes the chord from neutral ground.
   useEffect(() => {
     if (!visible || !lastClosed) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === "z") {
-        e.preventDefault();
-        undoClose();
-        setVisible(false);
-      }
+      if (!e.ctrlKey || e.key !== "z") return;
+      const t = e.target as HTMLElement | null;
+      const owned =
+        !!t &&
+        (t.tagName === "INPUT" ||
+          t.tagName === "TEXTAREA" ||
+          t.isContentEditable ||
+          !!t.closest?.(".xterm"));
+      if (owned) return;
+      e.preventDefault();
+      undoClose();
+      setVisible(false);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);

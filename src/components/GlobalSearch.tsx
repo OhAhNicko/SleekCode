@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import type { SearchResult, RemoteServer } from "../types";
 
 interface GlobalSearchProps {
@@ -17,6 +18,7 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
   const [remoteResults, setRemoteResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   const doSearch = useCallback(async (q: string) => {
     if (!q.trim()) {
@@ -187,13 +189,15 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
             <line x1="11" y1="11" x2="14" y2="14" />
           </svg>
           <input
+            ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => handleChange(e.target.value)}
             placeholder={remoteServer ? `Search on ${remoteServer.name}…` : "Search in files…"}
             style={{
+              display: "block",
               width: "100%",
-              padding: "6px 8px 6px 28px",
+              padding: "6px 32px 6px 28px",
               backgroundColor: "var(--ezy-bg)",
               border: "1px solid var(--ezy-border)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
@@ -205,13 +209,56 @@ export default function GlobalSearch({ rootDir, onOpenFile, remoteServer, onOpen
             onFocus={(e) => (e.currentTarget.style.borderColor = "var(--ezy-accent)")}
             onBlur={(e) => (e.currentTarget.style.borderColor = "var(--ezy-border)")}
           />
+          {query && (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onClick={() => {
+                if (debounceRef.current) clearTimeout(debounceRef.current);
+                setQuery("");
+                setLocalResults([]);
+                setRemoteResults([]);
+                inputRef.current?.focus();
+              }}
+              style={{
+                position: "absolute",
+                right: 12,
+                top: "50%",
+                transform: "translateY(-50%)",
+                width: 16,
+                height: 16,
+                padding: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: "transparent",
+                border: "none",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                color: "var(--ezy-text-muted)",
+                cursor: "pointer",
+                transition: "background-color 120ms ease, color 120ms ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
+                e.currentTarget.style.color = "var(--ezy-text)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "transparent";
+                e.currentTarget.style.color = "var(--ezy-text-muted)";
+              }}
+            >
+              <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 3l10 10M13 3 3 13" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
       {/* Results */}
       <div style={{ flex: 1, overflowY: "auto" }}>
         {searching && (
-          <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Searching…</div>
+          <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}><LoadingDots>Searching</LoadingDots></div>
         )}
         {!searching && query && totalCount === 0 && (
           <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>No results found</div>

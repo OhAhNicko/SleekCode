@@ -8,6 +8,7 @@ import {
   type CSSProperties,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "../components/LoadingDots";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   emitOverlayAction,
@@ -803,7 +804,44 @@ function Toast({
           {p.title}
         </span>
       )}
-      {p.button && (
+      {p.buttons && p.buttons.length > 0 ? (
+        p.buttons.map((b) => {
+          const variant = b.variant ?? "quiet";
+          return (
+            <button
+              key={b.action}
+              onClick={(e) => {
+                e.stopPropagation();
+                act(b.action);
+              }}
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                fontWeight: 500,
+                padding: "4px 10px",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                background:
+                  variant === "primary"
+                    ? "var(--ezy-accent, #10a37f)"
+                    : variant === "danger"
+                      ? "var(--ezy-red, #e5484d)"
+                      : "var(--ezy-surface, rgba(255,255,255,0.06))",
+                color:
+                  variant === "quiet" ? "var(--ezy-text-secondary, rgba(230,237,243,0.8))" : "#fff",
+                border:
+                  variant === "quiet"
+                    ? "1px solid var(--ezy-border, rgba(255,255,255,0.12))"
+                    : "none",
+                cursor: "pointer",
+                flexShrink: 0,
+                whiteSpace: "nowrap",
+                fontFamily: "inherit",
+              }}
+            >
+              {b.label}
+            </button>
+          );
+        })
+      ) : p.button ? (
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -825,7 +863,7 @@ function Toast({
         >
           {p.button.label}
         </button>
-      )}
+      ) : null}
       {p.shortcutHint && (
         <span
           style={{
@@ -2052,6 +2090,7 @@ function VoiceHudCard({
   const p = (msg.payload ?? {}) as {
     state?: string;
     title?: string;
+    busy?: boolean;
     transcript?: string;
     tool?: string;
     error?: string;
@@ -2120,7 +2159,7 @@ function VoiceHudCard({
             transition: "opacity 200ms ease",
           }}
         />
-        <span style={{ fontWeight: 600 }}>{p.title ?? "Voice"}</span>
+        <span style={{ fontWeight: 600 }}>{p.busy ? <LoadingDots>{p.title ?? "Voice"}</LoadingDots> : (p.title ?? "Voice")}</span>
         {!isError && p.state && (
           <span
             style={{
@@ -4210,7 +4249,7 @@ function GitBranchMenu({
                     fontFamily: "inherit",
                   }}
                 >
-                  {p.creatingBusy ? "Creating…" : "Create"}
+                  {p.creatingBusy ? <LoadingDots>Creating</LoadingDots> : "Create"}
                 </button>
               </div>
               {(p.createError || nameErr) && (

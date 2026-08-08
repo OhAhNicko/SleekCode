@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { FaXmark } from "react-icons/fa6";
 import { useModal } from "../store/modalCoordinationSlice";
 import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
@@ -455,7 +456,7 @@ export default function CreatePullRequestModal({
               fontFamily: "inherit",
             }}
           >
-            {submitting ? "Creating…" : draft ? "Create draft PR" : "Create pull request"}
+            {submitting ? <LoadingDots>Creating</LoadingDots> : draft ? "Create draft PR" : "Create pull request"}
           </button>
         </div>
       </div>

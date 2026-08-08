@@ -23,6 +23,10 @@ export type OverlayToastPayload = {
   thumbnailUrl?: string;
   /** Action button (e.g. Undo) — `action` is bounced back via overlay:action. */
   button?: { label: string; action: string };
+  /** Multi-choice row (e.g. Approve / Always / Deny). Renders instead of
+   *  `button` when present. `primary` = accent fill, `danger` = red fill,
+   *  `quiet` = bordered surface. */
+  buttons?: Array<{ label: string; action: string; variant?: "primary" | "quiet" | "danger" }>;
   /** Small hint after the button, e.g. "Ctrl+Z". */
   shortcutHint?: string;
   /** Show an X button that bounces the "dismiss" action. */

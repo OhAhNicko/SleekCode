@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import LoadingDots from "./LoadingDots";
 import type { RemoteServer, TerminalBackend } from "../types";
 import { AI_CLI_LABEL, backendLabel, type AiCli } from "../lib/cli-availability";
 import { installCommands } from "../lib/cli-install";
@@ -194,6 +195,15 @@ export function RemoteOfflineCard({
 }) {
   const name = server?.name || server?.host || "this server";
   const address = server ? `${server.username}@${server.host}` : null;
+  // The ssh error's human tail ("Connection timed out"), folded into the body
+  // sentence — the full error in a mono row forced a horizontal scroll, which
+  // is more chrome than this state deserves.
+  const reason = (() => {
+    if (!detail) return null;
+    const tail = detail.split(": ").pop()?.trim();
+    if (!tail || tail.length > 60) return null;
+    return tail.charAt(0).toLowerCase() + tail.slice(1);
+  })();
   const [busy, setBusy] = useState(false);
   const [stillDown, setStillDown] = useState(false);
   const aliveRef = useRef(true);
@@ -239,7 +249,7 @@ export function RemoteOfflineCard({
         color: "var(--ezy-text)",
       }}
     >
-      <div style={{ width: 420, maxWidth: "100%" }}>
+      <div style={{ width: 420, maxWidth: "100%", textAlign: "center" }}>
         <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 14px)", fontWeight: 600 }}>
           No connection to {name}
         </div>
@@ -263,22 +273,23 @@ export function RemoteOfflineCard({
               . The pane will open once the connection is back.
             </>
           ) : (
-            <>The SSH connection failed before the pane could start.</>
+            <>
+              MADE can&rsquo;t reach {address ?? "the server"} —{" "}
+              {reason ?? "the SSH connection failed before the pane could start"}.
+            </>
           )}
         </div>
-
-        {variant === "spawn" && detail ? <CliCommandRow command={detail} /> : null}
 
         <div
           style={{
             display: "flex",
             alignItems: "center",
+            justifyContent: "center",
             gap: 8,
-            marginTop: variant === "spawn" && detail ? 14 : 0,
           }}
         >
           <button onClick={() => void retry()} disabled={busy} style={{ ...primaryButton, opacity: busy ? 0.6 : 1 }}>
-            {busy ? "Checking…" : "Try again"}
+            {busy ? <LoadingDots>Checking</LoadingDots> : "Try again"}
           </button>
           {onStartAnyway && (
             <button

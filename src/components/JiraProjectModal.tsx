@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import LoadingDots from "./LoadingDots";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../store";
 import { useModal } from "../store/modalCoordinationSlice";
@@ -339,7 +340,7 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
                 transition: "background-color 150ms ease",
               }}
             >
-              {creating ? "Creating..." : "Create Jira Project"}
+              {creating ? <LoadingDots>Creating</LoadingDots> : "Create Jira Project"}
             </button>
           </div>
         </div>

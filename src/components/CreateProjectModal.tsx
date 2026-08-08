@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../store";
 import { useModal } from "../store/modalCoordinationSlice";
@@ -539,7 +540,7 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
               transition: "background-color 150ms ease",
             }}
           >
-            {creating ? "Creating..." : "Create Project"}
+            {creating ? <LoadingDots>Creating</LoadingDots> : "Create Project"}
           </button>
         </div>
       </div>

@@ -111,3 +111,18 @@ body {
     }
   }
 }
+
+/* Loading dots — same definition as index.css; the overlay webview loads its
+   own stylesheet, so VoiceHud's states need the keyframes here too. */
+@keyframes ezy-dot-1 { 0%, 20% { opacity: 0; } 30%, 100% { opacity: 1; } }
+@keyframes ezy-dot-2 { 0%, 45% { opacity: 0; } 55%, 100% { opacity: 1; } }
+@keyframes ezy-dot-3 { 0%, 70% { opacity: 0; } 80%, 100% { opacity: 1; } }
+.ezy-dot {
+  animation: 1.6s linear infinite;
+}
+.ezy-dot-1 { animation-name: ezy-dot-1; }
+.ezy-dot-2 { animation-name: ezy-dot-2; }
+.ezy-dot-3 { animation-name: ezy-dot-3; }
+@media (prefers-reduced-motion: reduce) {
+  .ezy-dot { animation: none; }
+}

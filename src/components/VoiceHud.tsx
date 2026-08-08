@@ -4,12 +4,14 @@ import { useOverlayViewportPopup } from "../lib/useOverlayToast";
 import { runConfirmedCalls } from "../lib/voice/runner";
 import type { ToolCall } from "../lib/voice/llmClient";
 
+// No trailing ellipsis here: the overlay renders busy titles through
+// LoadingDots (payload.busy), which supplies the animated dots itself.
 const STATE_LABELS: Record<string, string> = {
-  listening: "Listening…",
-  transcribing: "Transcribing…",
-  thinking: "Thinking…",
-  executing: "Working…",
-  speaking: "Speaking…",
+  listening: "Listening",
+  transcribing: "Transcribing",
+  thinking: "Thinking",
+  executing: "Working",
+  speaking: "Speaking",
   error: "Error",
 };
 
@@ -17,6 +19,9 @@ const STATE_LABELS: Record<string, string> = {
 export type VoiceHudPayload = {
   state: string;
   title: string;
+  /** True while the title names in-flight work — the overlay appends the
+   *  animated loading dots to it. */
+  busy?: boolean;
   transcript?: string;
   tool?: string;
   error?: string;
@@ -71,6 +76,7 @@ export default function VoiceHud() {
           state,
           title:
             state === "error" ? "Voice agent" : (STATE_LABELS[state] ?? "Voice"),
+          busy: state !== "error" && STATE_LABELS[state] !== undefined,
           transcript:
             transcript && state !== "error" ? transcript : undefined,
           tool:

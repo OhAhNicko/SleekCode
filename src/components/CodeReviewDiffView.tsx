@@ -1,4 +1,5 @@
 import { useRef, useCallback, useState, useEffect } from "react";
+import LoadingDots from "./LoadingDots";
 import { FaCopy, FaRotateLeft, FaArrowUpRightFromSquare, FaPencil } from "react-icons/fa6";
 import { useAppStore } from "../store";
 import type { FileDiff, DiffHunk } from "../types";
@@ -106,7 +107,7 @@ export default function CodeReviewDiffView({
   if (loading && fileDiffs.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center" style={{ color: "var(--ezy-text-muted)" }}>
-        <div className="text-[12px]">Loading changes...</div>
+        <div className="text-[12px]"><LoadingDots>Loading changes</LoadingDots></div>
       </div>
     );
   }

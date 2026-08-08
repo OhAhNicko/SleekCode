@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import type { GitFileStatus, GitBranchInfo, GitAheadBehind } from "../types";
 import { useModal } from "../store/modalCoordinationSlice";
 import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
@@ -558,7 +559,7 @@ export default function ReleaseModal({
                   }}
                 >
                   {releasing
-                    ? "Releasing…"
+                    ? <LoadingDots>Releasing</LoadingDots>
                     : nextVersion
                       ? `Release v${nextVersion}`
                       : "Release"}
@@ -746,7 +747,7 @@ export default function ReleaseModal({
                           flexShrink: 0,
                         }}
                       >
-                        {publishing ? "Publishing..." : "Publish draft release"}
+                        {publishing ? <LoadingDots>Publishing</LoadingDots> : "Publish draft release"}
                       </button>
                     )}
                     {publishResult && (

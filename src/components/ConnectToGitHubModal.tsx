@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { useModal } from "../store/modalCoordinationSlice";
 import { MODAL_BACKDROP } from "../lib/modal-layout";
 
@@ -177,7 +178,7 @@ export default function ConnectToGitHubModal({
         <div style={{ padding: "16px" }}>
           {phase === "checking" && (
             <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", padding: "8px 0" }}>
-              Checking for the GitHub CLI...
+              <LoadingDots>Checking for the GitHub CLI</LoadingDots>
             </div>
           )}
 
@@ -346,7 +347,7 @@ export default function ConnectToGitHubModal({
                   disabled={!canCreate}
                   style={buttonStyle(true, !canCreate)}
                 >
-                  {phase === "creating" ? "Creating..." : "Create repository"}
+                  {phase === "creating" ? <LoadingDots>Creating</LoadingDots> : "Create repository"}
                 </button>
                 <button onClick={onClose} disabled={phase === "creating"} style={buttonStyle(false, phase === "creating")}>
                   Cancel

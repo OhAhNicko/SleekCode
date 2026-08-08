@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import LoadingDots from "./LoadingDots";
 import {
   resolveThickness,
   THICKNESS_PRESETS,
@@ -668,7 +669,7 @@ export default function ScreenshotAnnotationToolbar({
           </svg>
         )}
         {saving
-          ? "Saving..."
+          ? <LoadingDots>Saving</LoadingDots>
           : armSave
             ? `Overwrite ${saveTargets} ${saveTargets === 1 ? "file" : "files"}?`
             : "Save"}

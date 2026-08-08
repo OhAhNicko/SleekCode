@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import LoadingDots from "./LoadingDots";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { MODAL_BACKDROP } from "../lib/modal-layout";
@@ -426,7 +427,7 @@ export default function UnlockKeychainModal() {
               {phase === "verified"
                 ? `Restart ${candidates.length} ${candidates.length === 1 ? "pane" : "panes"}`
                 : phase === "verifying"
-                  ? "Verifying…"
+                  ? <LoadingDots>Verifying</LoadingDots>
                   : verifies
                     ? "Verify & Unlock"
                     : "Unlock"}

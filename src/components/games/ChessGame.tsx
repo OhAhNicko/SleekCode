@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import LoadingDots from "../LoadingDots";
 
 interface ChessGameProps {
   onUpdateStats: (difficulty: "easy" | "medium" | "hard", result: "win" | "loss" | "draw") => void;
@@ -1261,8 +1262,8 @@ export default function ChessGame({ onUpdateStats, paused }: ChessGameProps) {
         : gameResult === "draw50" ? "Draw (50-move)"
         : "Draw (insufficient)")
     : (gameState.turn === "w"
-        ? (aiThinking ? "AI thinking..." : "Your turn")
-        : "AI thinking...");
+        ? (aiThinking ? <LoadingDots>AI thinking</LoadingDots> : "Your turn")
+        : <LoadingDots>AI thinking</LoadingDots>);
 
   // Move pairs for display
   const movePairs: { num: number; white: string; black?: string }[] = [];

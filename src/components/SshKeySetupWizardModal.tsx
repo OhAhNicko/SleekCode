@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { useModal } from "../store/modalCoordinationSlice";
 import { getSshInstallKeyCommand } from "../lib/terminal-config";
 import { cleanOutput } from "../lib/pty-text";
@@ -421,8 +422,10 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
 
           {phase === "preparing" && (
             <div style={mutedTextStyle}>
-              Creating an ed25519 key for <strong style={{ color: "var(--ezy-text-secondary)" }}>{server.name}</strong> in
-              your <code style={inlineCodeStyle}>~/.ssh</code> folder (reused if it already exists)…
+              <LoadingDots>
+                Creating an ed25519 key for <strong style={{ color: "var(--ezy-text-secondary)" }}>{server.name}</strong> in
+                your <code style={inlineCodeStyle}>~/.ssh</code> folder (reused if it already exists)
+              </LoadingDots>
             </div>
           )}
 
@@ -472,11 +475,11 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
           )}
 
           {phase === "installing" && (
-            <div style={mutedTextStyle}>Installing the public key into the server's authorized keys…</div>
+            <div style={mutedTextStyle}><LoadingDots>Installing the public key into the server's authorized keys</LoadingDots></div>
           )}
 
           {phase === "verifying" && (
-            <div style={mutedTextStyle}>Key installed. Confirming that key-based login works…</div>
+            <div style={mutedTextStyle}><LoadingDots>Key installed. Confirming that key-based login works</LoadingDots></div>
           )}
 
           {phase === "done" && (

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import LoadingDots from "./LoadingDots";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { MODAL_BACKDROP } from "../lib/modal-layout";
@@ -286,7 +287,7 @@ export default function CliInstallModal() {
               }}
             >
               {lines.length === 0 ? (
-                <span style={{ color: "var(--ezy-text-muted)" }}>Starting…</span>
+                <span style={{ color: "var(--ezy-text-muted)" }}><LoadingDots>Starting</LoadingDots></span>
               ) : (
                 lines.map((line, i) => <div key={i}>{line}</div>)
               )}

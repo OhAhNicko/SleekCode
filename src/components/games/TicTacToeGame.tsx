@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import LoadingDots from "../LoadingDots";
 
 interface TicTacToeGameProps {
   onUpdateStats: (variant: "3x3" | "5x5", result: "win" | "loss" | "draw") => void;
@@ -697,7 +698,7 @@ export default function TicTacToeGame({ onUpdateStats, paused = false }: TicTacT
               fontFamily: FONT_UI,
             }}
           >
-            {currentTurn === "X" ? "Your turn" : "AI thinking..."}
+            {currentTurn === "X" ? "Your turn" : <LoadingDots>AI thinking</LoadingDots>}
           </div>
         )}
 

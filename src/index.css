@@ -295,6 +295,39 @@ body,
   cursor: grabbing !important;
 }
 
+/* Pane-header button cluster (TerminalHeader) — collapsed to zero width until
+   the header is hovered, so the always-visible content owns the full row. On
+   hover it slides in from under the fixed right edge, pushing the stats / path
+   content aside via an animated reflow. --ezy-header-controls-max is set inline
+   by the header to the pane's exact button-cluster width (48–92px), so the
+   150ms is all visible motion — a fixed worst-case value would spend half the
+   collapse as dead time on two-button shell panes. padding-left must animate
+   with the width: a constant 6px would floor the collapsed border-box at 6px
+   instead of 0. [data-pinned] holds the cluster open while the prompt-history
+   dropdown (anchored to its button) is up; :focus-within keeps keyboard-focused
+   buttons visible. */
+.ezy-header-controls {
+  max-width: 0;
+  padding-left: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition: max-width 150ms ease, padding-left 150ms ease, opacity 150ms ease;
+}
+.ezy-pane-header:hover .ezy-header-controls,
+.ezy-header-controls[data-pinned],
+.ezy-header-controls:focus-within {
+  max-width: var(--ezy-header-controls-max, 92px);
+  padding-left: 6px;
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ezy-header-controls {
+    transition: none;
+  }
+}
+
 /* Dropdown animation */
 @keyframes dropdown-in {
   from {
@@ -330,6 +363,23 @@ body,
 }
 @media (prefers-reduced-motion: reduce) {
   .ezy-spin { animation: none; }
+}
+
+/* Loading dots (components/LoadingDots.tsx): reveal left to right, hold the
+   full "...", restart. All three dots share one cycle with no delay — a
+   staggered animation-delay would make the reset ragged. Opacity only: the
+   dots keep their width, so nothing shifts while animating. */
+@keyframes ezy-dot-1 { 0%, 20% { opacity: 0; } 30%, 100% { opacity: 1; } }
+@keyframes ezy-dot-2 { 0%, 45% { opacity: 0; } 55%, 100% { opacity: 1; } }
+@keyframes ezy-dot-3 { 0%, 70% { opacity: 0; } 80%, 100% { opacity: 1; } }
+.ezy-dot {
+  animation: 1.6s linear infinite;
+}
+.ezy-dot-1 { animation-name: ezy-dot-1; }
+.ezy-dot-2 { animation-name: ezy-dot-2; }
+.ezy-dot-3 { animation-name: ezy-dot-3; }
+@media (prefers-reduced-motion: reduce) {
+  .ezy-dot { animation: none; } /* static "Loading..." */
 }
 
 /* Copy-confirmed check mark — single-fire pop-in (screenshots viewer).

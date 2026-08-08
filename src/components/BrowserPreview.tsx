@@ -1,15 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "../store";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { useBrowserConsoleStore, type ConsoleEntry } from "../store/browserConsoleStore";
-import { FaCheck, FaChevronLeft, FaChevronRight, FaGlobe, FaExternalLinkAlt, FaCrosshairs, FaTerminal, FaDesktop, FaTrash, FaLock, FaLockOpen, FaBug } from "react-icons/fa";
+import { FaCheck, FaChevronLeft, FaChevronRight, FaExternalLinkAlt, FaCrosshairs, FaTerminal, FaDesktop, FaTrash, FaLock, FaLockOpen, FaBug } from "react-icons/fa";
 import { FaArrowsRotate, FaXmark } from "react-icons/fa6";
 import { FaDownload } from "react-icons/fa";
 import { BiRefresh, BiTimer } from "react-icons/bi";
 import PaneExpandButton from "./PaneExpandButton";
+import { AppIconPreview } from "./AppIconPreview";
 import { resolveOmniboxInput } from "../lib/omnibox";
 import { jiraOriginFromUrl } from "../lib/jira";
 import { consumeJiraTicketPaste } from "../lib/jira-omnibox";
@@ -482,6 +484,9 @@ export default function BrowserPreview({
    *  into a breakage.                                                      */
   const iframeForLocalhost = useAppStore((s) => s.browserIframeForLocalhost);
   const askBeforeDownload = useAppStore((s) => s.browserAskBeforeDownload);
+  // App-logo variant (Settings > Appearance) — shown in the address bar
+  // where a generic globe icon would otherwise sit.
+  const appIconVariant = useAppStore((s) => s.appIconVariant);
   const useIframe = iframeForLocalhost && isLocalhostUrl(url);
 
   const surfaceAnchorRef = useRef<HTMLDivElement>(null);
@@ -1347,10 +1352,13 @@ export default function BrowserPreview({
       style={{ backgroundColor: "var(--ezy-bg)" }}
     >
       {/* ---- URL Bar ---- */}
+      {/* height 28 + 1px bottom border = TerminalHeader's exact box, so a
+          browser pane's chrome lines up stroke-for-stroke with the CLI pane
+          headers beside it. */}
       <div
         className="flex items-center gap-1.5 select-none"
         style={{
-          height: 36,
+          height: 28,
           backgroundColor: "var(--ezy-surface)",
           borderBottom: "1px solid var(--ezy-border)",
           padding: "0 8px",
@@ -1405,14 +1413,16 @@ export default function BrowserPreview({
         <div
           className="flex-1 flex items-center"
           style={{
-            height: 24,
+            height: 22,
             backgroundColor: "var(--ezy-bg)",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             border: "1px solid var(--ezy-border)",
             padding: "0 8px",
           }}
         >
-          <FaGlobe size={12} color="var(--ezy-text-muted)" style={{ flexShrink: 0, marginRight: 6 }} />
+          <span style={{ flexShrink: 0, marginRight: 6, display: "flex" }}>
+            <AppIconPreview variant={appIconVariant} size={12} />
+          </span>
           <input
             type="text"
             value={inputUrl}
@@ -1706,7 +1716,7 @@ export default function BrowserPreview({
                     backgroundColor: "var(--ezy-surface)",
                   }}
                 >
-                  {surfaceError ?? "Starting browser\u2026"}
+                  {surfaceError ?? <LoadingDots>Starting browser</LoadingDots>}
                 </div>
               )}
             </div>
@@ -2217,7 +2227,7 @@ export default function BrowserPreview({
               <>
                 {!storageData && (
                   <div style={{ padding: "8px 12px", fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
-                    {captureActive ? "Loading storage..." : "Storage viewer is not connected."}
+                    {captureActive ? <LoadingDots>Loading storage</LoadingDots> : "Storage viewer is not connected."}
                   </div>
                 )}
                 {storageData && (

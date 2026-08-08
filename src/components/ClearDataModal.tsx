@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
+import LoadingDots from "./LoadingDots";
 import { useModal } from "../store/modalCoordinationSlice";
 import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
@@ -422,7 +423,7 @@ export default function ClearDataModal({ onClose }: ClearDataModalProps) {
                 transition: "background-color 120ms ease, opacity 120ms ease",
               }}
             >
-              {wiping ? "Clearing..." : allSelected ? "Clear everything" : "Clear selected"}
+              {wiping ? <LoadingDots>Clearing</LoadingDots> : allSelected ? "Clear everything" : "Clear selected"}
             </button>
           </div>
         </div>

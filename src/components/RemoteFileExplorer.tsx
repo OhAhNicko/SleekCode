@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { useAppStore } from "../store";
 import {
   useRemoteBrowseStore,
@@ -76,6 +77,11 @@ export default function RemoteFileExplorer({ server, rootDir, tabId, onOpenFile 
       setError(null);
     } catch (e) {
       setError(String(e));
+      // Unlistable: collapse it so the chevron matches reality and the
+      // reconcile effect below stops retrying it over ssh. Live store read —
+      // this closure outlives the render.
+      const s = useAppStore.getState();
+      if (s.expandedRemoteDirs.includes(path)) s.toggleExpandRemoteDir(path);
     }
     setLoading((prev) => ({ ...prev, [path]: false }));
   }, [cache, server.host, server.username, identityFile]);
@@ -245,7 +251,7 @@ export default function RemoteFileExplorer({ server, rootDir, tabId, onOpenFile 
           <div>
             {isLoading && !cache[entry.path] ? (
               <div style={{ padding: "3px 8px", paddingLeft: 8 + (depth + 1) * 16, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)" }}>
-                Loading…
+                <LoadingDots />
               </div>
             ) : (
               cache[entry.path]?.map((child) => renderEntry(child, depth + 1))
@@ -263,6 +269,22 @@ export default function RemoteFileExplorer({ server, rootDir, tabId, onOpenFile 
     if (!expandedRemoteDirs.includes(rootDir)) toggleExpandRemoteDir(rootDir);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rootDir, server.id]);
+
+  // Same defect as the local tree: expandedRemoteDirs outlives this component
+  // but the cache does not, so a remount rendered rotated chevrons over
+  // folders with no children. Reload expanded dirs only once the root has
+  // listed — a reachable server — never while it is failed, which would spam
+  // ssh at a dead host. A dir that fails to list is collapsed by loadDir, so
+  // this can't retry-loop.
+  useEffect(() => {
+    if (!rootDir || !cache[rootDir]) return;
+    const rootPrefix = rootDir === "/" ? "/" : rootDir + "/";
+    for (const dir of expandedRemoteDirs) {
+      if (!dir.startsWith(rootPrefix)) continue;
+      if (cache[dir] || loading[dir]) continue;
+      loadDir(dir);
+    }
+  }, [expandedRemoteDirs, cache, loading, rootDir, loadDir]);
 
   if (!rootDir) {
     return (
@@ -357,7 +379,7 @@ export default function RemoteFileExplorer({ server, rootDir, tabId, onOpenFile 
           {cache[rootDir] ? (
             cache[rootDir].map((entry) => renderEntry(entry, 0))
           ) : (
-            <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Loading…</div>
+            <div style={{ padding: "12px", fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}><LoadingDots /></div>
           )}
         </>
       )}

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import LoadingDots from "./LoadingDots";
 import { FaTrash, FaKey, FaChevronDown } from "react-icons/fa";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import { FaPlus, FaPencil, FaXmark, FaCheck } from "react-icons/fa6";
@@ -62,7 +63,7 @@ function StatusIndicator({ status }: { status: "idle" | "testing" | "ok" | "erro
     ok: { bg: "var(--ezy-accent-dim)", text: "#ffffff" },
     error: { bg: "var(--ezy-red)", text: "#ffffff" },
   };
-  const labels = { idle: "Not tested", testing: "Testing...", ok: "Connected", error: "Failed" };
+  const labels = { idle: "Not tested", testing: <LoadingDots>Testing</LoadingDots>, ok: "Connected", error: "Failed" };
   const c = colors[status];
 
   return (

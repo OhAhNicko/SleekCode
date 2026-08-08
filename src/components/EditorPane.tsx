@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import LoadingDots from "./LoadingDots";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
@@ -275,7 +276,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
           </span>
           {saving && (
             <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", color: "var(--ezy-text-muted)" }}>
-              Saving...
+              <LoadingDots>Saving</LoadingDots>
             </span>
           )}
         </div>
@@ -339,7 +340,7 @@ export default function EditorPane({ filePath, onClose, serverId, paneId }: Edit
             className="flex items-center justify-center h-full"
             style={{ color: "var(--ezy-text-muted)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}
           >
-            Loading...
+            <LoadingDots />
           </div>
         ) : error ? (
           <div

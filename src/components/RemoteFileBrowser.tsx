@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { useModal } from "../store/modalCoordinationSlice";
 import type { RemoteServer } from "../types";
 
@@ -325,7 +326,7 @@ export default function RemoteFileBrowser({
                   fontFamily: "inherit",
                 }}
               >
-                {creating ? "Creating..." : "Create"}
+                {creating ? <LoadingDots>Creating</LoadingDots> : "Create"}
               </button>
               <button
                 onClick={cancelCreateFolder}
@@ -364,7 +365,7 @@ export default function RemoteFileBrowser({
               className="flex items-center justify-center"
               style={{ padding: 32, color: "var(--ezy-text-muted)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}
             >
-              Loading...
+              <LoadingDots />
             </div>
           ) : error ? (
             <div
