@@ -13,127 +13,18 @@
 #     slightly stale manifest still works.
 #   - Order here is the order the commits are made in.
 #
-# Several files carry work from more than one workstream (SettingsPane, lib.rs,
-# types/index.ts, App.tsx). Each is filed under the stream that dominates its
-# diff — SettingsPane and lib.rs both go to NexusMind, which is where most of
-# their new lines are.
-#
-# DIRECTORY ENTRIES CARRY NO TRAILING SLASH. release.sh skips any path that
-# `git check-ignore` claims, and this repo's .gitignore is CRLF: its "blank"
-# lines are really the pattern `\r`, which a trailing-slash path matches. So
-# `src/lib/knowledge/` silently reports as ignored and falls out of its group
-# into the sweep commit, while `src/lib/knowledge` does not. Verified 2026-08-08.
+# Groups below were GUESSED from file paths. Rewrite the subjects to say what
+# the work actually did — they become the release changelog verbatim.
 
-feat(knowledge): NexusMind — a shared project memory Claude Code, Codex and Gemini all read and write through one MCP adapter, with a sidebar, @-references in the composer, markdown notes on disk under .project-memory/ and attribution the model cannot forge
-  .gitignore
-  package.json
-  scripts/knowledge-mcp-smoke.mjs
-  scripts/nexusmind-checkpoint.sh
-  src-tauri/Cargo.toml
-  src-tauri/tauri.conf.json
-  src-tauri/src/bin
-  src-tauri/src/knowledge
+fix(ssh): remote Claude panes ask for the keychain password again — the unlock preamble read a bare ~/.claude/.credentials.json as proof Claude was signed in, but an MCP server's OAuth writes that same file, so on a Mac whose Claude login lives in the Keychain every pane skipped the prompt silently and came up at the login screen
+  src/lib/keychain.ts
+
+fix(window): the light "border skeleton" around the production window is gone — our own NCCALCSIZE per-edge clamp inset the client rect whenever the window sat a frame-width past the work area, and with NC painting suppressed that strip was never painted at all; restored windows now claim the full window rect, maximized still hard-sets the work area
   src-tauri/src/lib.rs
-  src/App.tsx
-  src/components/KnowledgeEngine.tsx
-  src/components/KnowledgeMcpStartupCheck.tsx
-  src/components/knowledge
-  src/components/PromptComposer.tsx
-  src/components/FileViewerPane.tsx
-  src/components/MarkdownPreview.tsx
-  src/components/SettingsPane.tsx
-  src/lib/knowledge
-  src/lib/commands.ts
-  src/lib/keybindings.ts
-  src/lib/menu/context.ts
-  src/lib/menu/providers/rows.ts
-  src/lib/menu-icons.tsx
-  src/lib/surface-actions.ts
-  src/store/index.ts
-  src/store/knowledgeSlice.ts
-  src/store/knowledgeStore.ts
-  src/types/index.ts
 
-feat(ui): one animated loading indicator across the app — every "Loading…" / "Starting…" / "Clearing…" state now reveals its dots left to right instead of sitting as static text, and holds its width so nothing shifts
-  src/components/LoadingDots.tsx
+feat(terminal): pane-header buttons wait out a 200ms hover before sliding in, so a pointer crossing the header no longer re-flows it, and a new "Slide-in header buttons" setting keeps them permanently boxed to fade in place instead
   src/index.css
-  src/components/BrowserPreview.tsx
-  src/components/ClaudeTokenWizardModal.tsx
-  src/components/ClearDataModal.tsx
-  src/components/CliInstallModal.tsx
-  src/components/CliMissingCard.tsx
-  src/components/CodeReviewDiffView.tsx
-  src/components/ConnectToGitHubModal.tsx
-  src/components/CreateProjectModal.tsx
-  src/components/CreatePullRequestModal.tsx
-  src/components/EditorPane.tsx
-  src/components/GlobalSearch.tsx
-  src/components/JiraProjectModal.tsx
-  src/components/ReleaseModal.tsx
-  src/components/RemoteFileBrowser.tsx
-  src/components/RemoteFileExplorer.tsx
-  src/components/ScreenshotAnnotationToolbar.tsx
-  src/components/ServersPanel.tsx
-  src/components/SshKeySetupWizardModal.tsx
-  src/components/UndoCloseToast.tsx
-  src/components/UnlockKeychainModal.tsx
-  src/components/VoiceHud.tsx
-  src/components/games/ChessGame.tsx
-  src/components/games/TicTacToeGame.tsx
-  src/lib/useOverlayToast.ts
-  src/overlay/OverlayRoot.tsx
-  src/overlay/overlay.css
-
-perf(git): the git status bar reads a whole project in one backend call instead of six process spawns, and paints the target tab's last-known branch and diff counts on the same frame as the switch — a Windows-drive repo read through WSL used to show the previous tab's numbers for 17s+
-  src/components/GitStatusBar.tsx
-  src/lib/git-invoke.ts
-  src/lib/git-status-cache.ts
-
-fix(dev-server): a wedged launch is reported instead of looking like a long compile — the start is watched for byte-silence and retried — and the tab name itself opens the running server, with a matching "Open dev server" row on the tab menu
-  src/components/DevServerTab.tsx
-  src/components/DevServerTerminalHost.tsx
-  src/components/TabBar.tsx
-  src/lib/menu/providers/tab.ts
-  src/store/terminalSlice.ts
-
-fix(pty): a process that exits on its own is finally reported as exited — ConPTY holds the output pipe open, so the reader's EOF never came and the "[Process exited]" banner, the reader thread and the session entry all leaked; remote panes also match ssh spawn failures after stripping VT noise, so "No connection" appears at the error instead of never
-  src-tauri/src/pty.rs
-  src/lib/ssh-reachability.ts
-  src/hooks/usePty.ts
-  src/hooks/usePtyNative.ts
-
-feat(terminal): native panes get the full header — model, context %, cost, session name and rate limits now come from one shared poll both renderers use, plus an optional project-color wash on pane headers and a working badge that can read the CLI's own status line
   src/components/TerminalHeader.tsx
-  src/components/TerminalPaneNative.tsx
-  src/components/TerminalPaneXterm.tsx
-  src/hooks/useSessionContext.ts
-  src/lib/terminal-activity.ts
-  src/lib/terminal-config.ts
-  src/store/recentProjectsSlice.ts
+  src/components/SettingsPane.tsx
   src/store/themeSlice.ts
-
-feat(theme): the stacked-panes mark is MADE's identity — taskbar, shortcut and installer icons are regenerated from it, and the picked variant is applied in Rust at boot so the window never flashes the old logo
-  scripts/generate-icons.py
-  src-tauri/icons/128x128.png
-  src-tauri/icons/128x128@2x.png
-  src-tauri/icons/32x32.png
-  src-tauri/icons/64x64.png
-  src-tauri/icons/icon.ico
-  src-tauri/icons/icon.png
-  src-tauri/icons/made-1024.png
-
-feat(layout): the vertical tab bar is a three-way choice (auto / always / never) instead of a toggle, and the sidebar can be docked on either side
-  src/components/VerticalTabBar.tsx
-  src/components/Sidebar.tsx
-  src/store/layoutSlice.ts
-
-fix(files): opening a file from a pane link highlights it in the tree without summoning the explorer, and a remounted tree paints its expanded folders from cache instead of flashing a loading row on each one
-  src/components/FileExplorer.tsx
-  src/components/PaneGrid.tsx
-  src/store/sidebarSlice.ts
-
-fix(screenshots): the image viewer takes the keyboard the moment it opens, so arrow keys work when it was opened from a context menu or an in-pane image link
-  src/components/ScreenshotsOverlay.tsx
-
-chore(test): npm run test:rust runs the Rust unit tests across the WSL→Windows boundary, stamping a Common-Controls-6 manifest into the test binary so it can load at all
-  scripts/cargo-test.sh
+  src/store/index.ts
