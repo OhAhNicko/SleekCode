@@ -330,6 +330,7 @@ export default function ScreenshotsOverlay({
 
   const stageRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
+  const winRef = useRef<HTMLDivElement>(null);
   // Wheel handlers are bound natively (see the effect below), so they need a
   // stable box the render can keep refreshing.
   const stageWheelRef = useRef<(e: WheelEvent) => void>(() => {});
@@ -682,6 +683,22 @@ export default function ScreenshotsOverlay({
   }, [armClear]);
 
   // ── keyboard ─────────────────────────────────────────────────────────────
+
+  // Claim DOM focus on open. The viewer can be opened from paths that never
+  // blur an already-focused text field (context-menu "Open in viewer" — the
+  // overlay webview is WS_EX_NOACTIVATE and right-click blurs nothing; image
+  // links clicked inside an xterm pane, which refocuses its helper textarea).
+  // A focused textarea makes the handler below drop every key on its `typing`
+  // guard, so the window div takes focus itself. rAF, not immediate: on the
+  // first open the div is still `visibility:hidden` until winRect lands, and
+  // a hidden element refuses focus.
+  useEffect(() => {
+    if (!open) return;
+    const raf = requestAnimationFrame(() => {
+      winRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -1133,8 +1150,15 @@ export default function ScreenshotsOverlay({
       onClick={onClose}
     >
       <div
+        ref={winRef}
         className="dropdown-enter"
+        // Focusable so the viewer owns the keyboard from the moment it opens
+        // (and clicks on its non-interactive surfaces keep focus here rather
+        // than falling back to <body>, which the native panes' focus effect
+        // treats as "nothing owns the keyboard").
+        tabIndex={-1}
         style={{
+          outline: "none",
           // Explicit geometry rather than flex centring — the window is
           // draggable and resizable, so it needs a position to own.
           position: "fixed",
