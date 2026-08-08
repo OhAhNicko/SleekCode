@@ -108,9 +108,16 @@ export async function verifyKeychainPassword(
  * probe can fail is skipped, because `unlock-keychain` cannot fix it and the
  * prompt would fire on every connect forever:
  *
- *   1. `~/.claude/.credentials.json` exists — Claude signed in via its file
- *      fallback, so the keychain is irrelevant. (This was the phantom prompt:
- *      it asked on every start, yet Cancel left Claude working.)
+ *   1. `~/.claude/.credentials.json` carries a `claudeAiOauth` block — Claude
+ *      signed in via its file fallback, so the keychain is irrelevant. (This
+ *      was the phantom prompt: it asked on every start, yet Cancel left Claude
+ *      working.) The marker is checked, NOT mere existence of the file: Claude
+ *      writes that same file for MCP-server OAuth alone (`mcpOAuth`, e.g. after
+ *      MADE installs the Jira MCP), and on a Mac whose own login lives in the
+ *      Keychain that left an mcpOAuth-only file behind — existence then made
+ *      this guard fire on a machine that was NOT signed in, so the preamble
+ *      printed SKIP, no dialog ever opened, and every remote Claude pane came
+ *      up at the login screen with no way to answer it.
  *   2. The secret reads fine — keychain unlocked and accessible, nothing to do.
  *   3. `show-keychain-info` succeeds — the keychain is UNLOCKED, so the probe
  *      in 2 failed for a reason unlocking can't cure: the item doesn't exist,
@@ -138,10 +145,15 @@ export function getKeychainUnlockPreamble(): string {
   // bytes still reach the watcher either way; only the rendering changes.
   //
   // Guard order = cheapest first; `||` short-circuits, so the two `security`
-  // calls never run when the creds file exists.
+  // calls never run when the creds file already proves Claude is signed in.
   return (
     "if command -v security >/dev/null 2>&1; then " +
-    "if [ -f ~/.claude/.credentials.json ] || " +
+    // `grep -q claudeAiOauth`, never `[ -f … ]`: the file's mere presence
+    // proves nothing about Claude's OWN login — an MCP server's OAuth state
+    // lives in the same file under `mcpOAuth`. Unquoted pattern on purpose (no
+    // shell metacharacters), so it survives the ssh argv → remote-shell trip
+    // without another quoting layer.
+    "if grep -q claudeAiOauth ~/.claude/.credentials.json 2>/dev/null || " +
     "security find-generic-password -s 'Claude Code-credentials' -w >/dev/null 2>&1 || " +
     "security show-keychain-info ~/Library/Keychains/login.keychain-db >/dev/null 2>&1; then " +
     `printf '${SKIP}\\r\\033[2K'; ` +
