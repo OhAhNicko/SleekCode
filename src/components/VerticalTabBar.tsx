@@ -11,11 +11,11 @@ import ClipboardImageStrip from "./ClipboardImageStrip";
 import VoiceMicButton from "./VoiceMicButton";
 import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 import GitStatusBar from "./GitStatusBar";
-import { FaXmark, FaGear, FaServer, FaPlus } from "react-icons/fa6";
+import { FaXmark, FaGear, FaServer, FaPlus, FaChevronLeft, FaChevronRight } from "react-icons/fa6";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
 import { PiKanbanDuotone, PiGameControllerDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
-import { BiSidebar, BiCollapseHorizontal, BiExpandHorizontal } from "react-icons/bi";
+import { BiSidebar } from "react-icons/bi";
 
 const WIDE_WIDTH = 200;
 const COMPACT_WIDTH = 80;
@@ -50,6 +50,7 @@ export default function VerticalTabBar() {
   const confirmQuit = useAppStore((s) => s.confirmQuit);
   const compact = useAppStore((s) => s.verticalTabBarCompact);
   const setCompact = useAppStore((s) => s.setVerticalTabBarCompact);
+  const dockedRight = useAppStore((s) => s.sidebarSide) === "right";
   const stripWidth = compact ? COMPACT_WIDTH : WIDE_WIDTH;
 
   const [isMaximized, setIsMaximized] = useState(false);
@@ -189,7 +190,10 @@ export default function VerticalTabBar() {
         flexShrink: 0,
         height: "100%",
         backgroundColor: "var(--ezy-bg)",
-        borderRight: "1px solid var(--ezy-border)",
+        // The border faces the main content, whichever side we're docked on.
+        ...(dockedRight
+          ? { borderLeft: "1px solid var(--ezy-border)" }
+          : { borderRight: "1px solid var(--ezy-border)" }),
         display: "flex",
         flexDirection: "column",
         position: "relative",
@@ -326,6 +330,7 @@ export default function VerticalTabBar() {
               transition: "background-color 120ms ease, color 120ms ease",
             }}
             onClick={handleSidebarClick}
+            data-tooltip="Explorer"
             onMouseEnter={(e) => {
               if (!sidebarOpen) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
             }}
@@ -334,46 +339,7 @@ export default function VerticalTabBar() {
             }}
           >
             <BiSidebar size={14} color="currentColor" />
-            {!compact && <span>Sidebar</span>}
-          </div>
-        )}
-
-        {/* Browser Preview — only meaningful for project tabs, but visible-
-            disabled for symmetry. Removed entirely for Jira projects: every
-            ticket owns its browser pane inside its pair, and a free-standing
-            browser would make the migration effect read the layout as legacy
-            and rebuild it. */}
-        {!activeTab?.isJiraProject && (
-          <div
-            onClick={activeIsProject ? handleBrowserClick : undefined}
-            data-tooltip="Browser Preview"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: compact ? "center" : "flex-start",
-              gap: 10,
-              height: 36,
-              padding: compact ? "0 6px" : "0 12px",
-              cursor: activeIsProject ? "pointer" : "not-allowed",
-              backgroundColor: activeHasBrowser ? "var(--ezy-tab-active)" : "transparent",
-              color: activeHasBrowser ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
-              opacity: activeIsProject ? 1 : 0.4,
-              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
-              transition: "background-color 120ms ease, color 120ms ease",
-            }}
-            onMouseEnter={(e) => {
-              if (!activeHasBrowser && activeIsProject) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
-            }}
-            onMouseLeave={(e) => {
-              if (!activeHasBrowser) e.currentTarget.style.backgroundColor = "transparent";
-            }}
-          >
-            {activeHasBrowser ? (
-              <TbBrowserMinus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
-            ) : (
-              <TbBrowserPlus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
-            )}
-            {!compact && <span>Browser</span>}
+            {!compact && <span>Explorer</span>}
           </div>
         )}
 
@@ -443,8 +409,8 @@ export default function VerticalTabBar() {
           flexDirection: "column",
         }}
       >
-        {/* Tabs list */}
-        <div style={{ display: "flex", flexDirection: "column" }}>
+        {/* Tabs list — tabstrip surface, same as the horizontal bar's strip */}
+        <div data-ctx-surface="tabstrip" style={{ display: "flex", flexDirection: "column" }}>
           {visibleTabs.map((tab) => {
             const isActive = tab.id === activeTabId;
             const isUserPinned = !!tab.isPinned;
@@ -455,12 +421,28 @@ export default function VerticalTabBar() {
             const cliCount = termIds.length;
             const activeCount = termIds.filter((id) => isTerminalActive(id)).length;
             const label = tab.customName ?? tab.name;
+            // Dev-server quick-open (Settings > Preview Panes > "Dev server
+            // link on tabs"): the tab NAME is the click target — hover
+            // underlines it like a link. Skipped in compact mode (initials
+            // only). "all" opens a BACKGROUND project's URL without switching
+            // tabs. A project can run several dev servers; getQuickOpenServer
+            // honours the one the user marked in the dev-server panel.
+            const quickDs = !compact && devServerTabIcon !== "off" && (devServerTabIcon === "all" || isActive)
+              ? getQuickOpenServer(
+                  { devServers, recentProjects },
+                  { tabId: tab.id, workingDir: tab.workingDir, serverId: tab.serverId },
+                  { requireRunning: true },
+                )
+              : null;
 
             return (
               <button
                 key={tab.id}
                 role="tab"
                 aria-selected={isActive}
+                // Raises the SAME tab context menu as the horizontal bar —
+                // the menu engine resolves any element carrying data-tab-id.
+                data-tab-id={tab.id}
                 onClick={() => setActiveTab(tab.id)}
                 className="group"
                 data-tooltip={compact ? label : undefined} aria-label={compact ? label : undefined}
@@ -524,12 +506,39 @@ export default function VerticalTabBar() {
                   </span>
                 ) : (
                   <span
+                    role={quickDs ? "button" : undefined}
+                    aria-label={quickDs ? "Open dev server in browser" : undefined}
+                    data-tooltip={quickDs ? `Open localhost:${quickDs.port} in browser` : undefined}
+                    data-tooltip-hint={quickDs ? "Ctrl+Click opens the MADE browser pane" : undefined}
+                    onClick={quickDs ? (e) => {
+                      // stopPropagation even in "all" mode: opening a
+                      // background project's URL must not also switch tabs.
+                      e.stopPropagation();
+                      // Second click of a double-click already opened once.
+                      if (e.detail > 1) return;
+                      openDevServerUrl(quickDs, { inApp: wantsInAppOpen(e) });
+                    } : undefined}
+                    // Link affordance on hover only: color lift + underline,
+                    // no background box — matches the horizontal tab bar.
+                    onMouseEnter={quickDs ? (e) => {
+                      e.currentTarget.style.color = "var(--ezy-text)";
+                      e.currentTarget.style.textDecoration = "underline";
+                    } : undefined}
+                    onMouseLeave={quickDs ? (e) => {
+                      e.currentTarget.style.color = "";
+                      e.currentTarget.style.textDecoration = "";
+                    } : undefined}
                     style={{
                       flex: 1,
                       minWidth: 0,
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                       whiteSpace: "nowrap",
+                      ...(quickDs ? {
+                        cursor: "pointer",
+                        transition: "color 120ms ease",
+                        textUnderlineOffset: 3,
+                      } : null),
                     }}
                   >
                     {label}
@@ -613,55 +622,6 @@ export default function VerticalTabBar() {
                     )}
                   </span>
                 )}
-
-                {/* Dev-server quick-open (Settings > Preview Panes > "Dev
-                    server button on project tab"). Rows are full-width, so no
-                    reserve-slot is needed here — active tab only, skipped in
-                    compact mode. Plain click = external browser, Ctrl/Cmd =
-                    MADE browser pane. */}
-                {!compact && devServerTabIcon !== "off" && (devServerTabIcon === "all" || isActive) && (() => {
-                  // A project can run several dev servers; getQuickOpenServer
-                  // honours the one the user marked in the dev-server panel.
-                  const ds = getQuickOpenServer(
-                    { devServers, recentProjects },
-                    { tabId: tab.id, workingDir: tab.workingDir, serverId: tab.serverId },
-                    { requireRunning: true },
-                  );
-                  if (!ds) return null;
-                  return (
-                    <span
-                      role="button"
-                      aria-label="Open dev server in browser"
-                      data-tooltip={`Open localhost:${ds.port} in browser`}
-                      data-tooltip-hint="Ctrl+Click opens the MADE browser pane"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        openDevServerUrl(ds, { inApp: wantsInAppOpen(e) });
-                      }}
-                      // Color-only hover, no background — matches the
-                      // horizontal tab bar's icon (see TabBar for why).
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        width: 14,
-                        height: 14,
-                        flexShrink: 0,
-                        cursor: "pointer",
-                        color: "var(--ezy-text-muted)",
-                        transition: "color 120ms ease",
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-text)")}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ezy-text-muted)")}
-                    >
-                      <svg width={10} height={10} viewBox="0 0 12 12" fill="none">
-                        <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.2" />
-                        <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="currentColor" strokeWidth="1" />
-                        <path d="M1.5 6h9" stroke="currentColor" strokeWidth="1" />
-                      </svg>
-                    </span>
-                  );
-                })()}
 
                 {/* Compact-mode WIP dot — small accent overlay on the right edge of the row */}
                 {compact && activeCount > 0 && (
@@ -759,15 +719,6 @@ export default function VerticalTabBar() {
           })}
         </div>
 
-        {/* GitStatusBar — project tabs with a workingDir, local or remote.
-            See the twin in TabBar.tsx: serverId routes reads over SSH and hides
-            the write actions. */}
-        {activeTab && activeTab.workingDir && activeIsProject && (
-          <div style={{ padding: compact ? "6px 6px" : "6px 10px", borderTop: "1px solid var(--ezy-border-subtle)" }}>
-            <GitStatusBar workingDir={activeTab.workingDir} serverId={activeTab.serverId} compact={compact} />
-          </div>
-        )}
-
         {/* Per-tab toggles row (Tasks/Browser/Games) — only for project tabs */}
         {activeIsProject && (
           <div
@@ -831,8 +782,18 @@ export default function VerticalTabBar() {
         <div onPointerDown={startCustomWindowDrag} onDoubleClick={toggleMaximizeOnDoubleClick} style={{ flex: 1, minHeight: 24 }} />
       </div>
 
-      {/* BOTTOM — voice mic, snip + thumbnails (wrap), divider, Settings */}
+      {/* BOTTOM — git status, voice mic, snip + thumbnails (wrap), browser,
+          Settings. Mirrors the horizontal TabBar's right-end order. */}
       <div style={{ flexShrink: 0, borderTop: "1px solid var(--ezy-border)" }}>
+        {/* GitStatusBar — project tabs with a workingDir, local or remote.
+            See the twin in TabBar.tsx: serverId routes reads over SSH and hides
+            the write actions. */}
+        {activeTab && activeTab.workingDir && activeIsProject && (
+          <div style={{ padding: compact ? "6px 6px" : "6px 10px", borderBottom: "1px solid var(--ezy-border-subtle)" }}>
+            {/* key: one instance per directory — see the twin in TabBar.tsx */}
+            <GitStatusBar key={`${activeTab.serverId ?? ""}:${activeTab.workingDir}`} workingDir={activeTab.workingDir} serverId={activeTab.serverId} compact={compact} />
+          </div>
+        )}
         {VOICE_ENABLED && (
           <div style={{ display: "flex", justifyContent: "center", padding: "8px 0 4px" }}>
             <VoiceMicButton size="vertical" />
@@ -841,6 +802,45 @@ export default function VerticalTabBar() {
         <div style={{ padding: "6px 4px" }}>
           <ClipboardImageStrip orientation="vertical" />
         </div>
+        {/* Browser Preview — below the screenshot strip, matching the
+            horizontal bar's order. Removed entirely for Jira projects: every
+            ticket owns its browser pane inside its pair, and a free-standing
+            browser would make the migration effect read the layout as legacy
+            and rebuild it. */}
+        {!activeTab?.isJiraProject && (
+          <div
+            onClick={activeIsProject ? handleBrowserClick : undefined}
+            data-tooltip="Browser Preview"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: compact ? "center" : "flex-start",
+              gap: 10,
+              height: 36,
+              padding: compact ? "0 6px" : "0 12px",
+              borderTop: "1px solid var(--ezy-border-subtle)",
+              cursor: activeIsProject ? "pointer" : "not-allowed",
+              backgroundColor: activeHasBrowser ? "var(--ezy-tab-active)" : "transparent",
+              color: activeHasBrowser ? "var(--ezy-accent)" : "var(--ezy-text-muted)",
+              opacity: activeIsProject ? 1 : 0.4,
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+              transition: "background-color 120ms ease, color 120ms ease",
+            }}
+            onMouseEnter={(e) => {
+              if (!activeHasBrowser && activeIsProject) e.currentTarget.style.backgroundColor = "var(--ezy-surface)";
+            }}
+            onMouseLeave={(e) => {
+              if (!activeHasBrowser) e.currentTarget.style.backgroundColor = "transparent";
+            }}
+          >
+            {activeHasBrowser ? (
+              <TbBrowserMinus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
+            ) : (
+              <TbBrowserPlus size={14} color="currentColor" style={{ transform: "scale(1.1)" }} />
+            )}
+            {!compact && <span>Browser</span>}
+          </div>
+        )}
         {/* Settings + compact toggle, side by side */}
         <div
           style={{
@@ -883,7 +883,7 @@ export default function VerticalTabBar() {
             onClick={() => setCompact(!compact)}
             data-tooltip={compact ? "Expand sidebar" : "Collapse sidebar"}
             style={{
-              width: compact ? 28 : 36,
+              width: 36,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -902,10 +902,12 @@ export default function VerticalTabBar() {
               e.currentTarget.style.color = "var(--ezy-text-muted)";
             }}
           >
-            {compact ? (
-              <BiExpandHorizontal size={14} color="currentColor" />
+            {/* Collapse points toward the dock edge, expand toward the content
+                — so the pair mirrors when the strip is docked right. */}
+            {compact !== dockedRight ? (
+              <FaChevronRight size={12} color="currentColor" />
             ) : (
-              <BiCollapseHorizontal size={14} color="currentColor" />
+              <FaChevronLeft size={12} color="currentColor" />
             )}
           </div>
         </div>

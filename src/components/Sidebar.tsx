@@ -4,6 +4,7 @@ import type { SidebarTab } from "../types";
 import FileExplorer from "./FileExplorer";
 import RemoteFileExplorer from "./RemoteFileExplorer";
 import GlobalSearch from "./GlobalSearch";
+import KnowledgeSidebar from "./knowledge/KnowledgeSidebar";
 
 interface SidebarProps {
   rootDir: string;
@@ -13,6 +14,7 @@ interface SidebarProps {
 export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
   const sidebarTab = useAppStore((s) => s.sidebarTab);
   const setSidebarTab = useAppStore((s) => s.setSidebarTab);
+  const sidebarSide = useAppStore((s) => s.sidebarSide);
   const terminals = useAppStore((s) => s.terminals);
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
@@ -38,15 +40,21 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
     if (!isRemote && sidebarTab === "remote-files") setSidebarTab("files");
   }, [isRemote, sidebarTab, setSidebarTab]);
 
+  // Knowledge appears on remote tabs too, where it renders a panel explaining
+  // that SSH projects are not supported yet — a tab that vanishes on some
+  // projects reads as a feature that does not exist, not one that does not
+  // apply here.
   const visibleTabs: { id: SidebarTab; label: string }[] = isRemote
     ? [
         { id: "remote-files", label: "Remote Files" },
         { id: "search", label: "Search" },
+        { id: "knowledge", label: "Knowledge" },
         { id: "terminals", label: "Terminals" },
       ]
     : [
         { id: "files", label: "Files" },
         { id: "search", label: "Search" },
+        { id: "knowledge", label: "Knowledge" },
         { id: "terminals", label: "Terminals" },
       ];
 
@@ -74,6 +82,20 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
             <line x1="11" y1="11" x2="14" y2="14" />
           </svg>
         );
+      case "knowledge":
+        // A small node graph: shared memory is one thing several agents link
+        // into, which is exactly what the glyph says.
+        return (
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth="1.3" strokeLinecap="round">
+            <line x1="8" y1="8" x2="3.5" y2="4" />
+            <line x1="8" y1="8" x2="12.5" y2="4" />
+            <line x1="8" y1="8" x2="8" y2="12.5" />
+            <circle cx="8" cy="8" r="2" />
+            <circle cx="3.5" cy="4" r="1.5" />
+            <circle cx="12.5" cy="4" r="1.5" />
+            <circle cx="8" cy="12.5" r="1.5" />
+          </svg>
+        );
       case "terminals":
         return (
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
@@ -93,7 +115,10 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
         width: 260,
         flexShrink: 0,
         backgroundColor: "var(--ezy-surface)",
-        borderRight: "1px solid var(--ezy-border-subtle)",
+        // The border faces the main content, whichever side we're docked on.
+        ...(sidebarSide === "right"
+          ? { borderLeft: "1px solid var(--ezy-border-subtle)" }
+          : { borderRight: "1px solid var(--ezy-border-subtle)" }),
         display: "flex",
         flexDirection: "column",
         height: "100%",
@@ -167,6 +192,14 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
             onOpenFile={onOpenFile}
             remoteServer={activeServer}
             onOpenRemoteFile={activeTab?.serverId ? handleRemoteOpen : undefined}
+          />
+        )}
+        {sidebarTab === "knowledge" && (
+          <KnowledgeSidebar
+            rootDir={rootDir}
+            serverId={activeTab?.serverId}
+            isJiraProject={!!activeTab?.isJiraProject}
+            onOpenFile={onOpenFile}
           />
         )}
         {sidebarTab === "terminals" && (

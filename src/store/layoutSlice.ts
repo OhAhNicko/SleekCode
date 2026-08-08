@@ -6,9 +6,16 @@ export interface PendingDir {
   serverId?: string;
 }
 
+/** auto = follow window orientation, always/never = force the choice. */
+export type VerticalTabMode = "auto" | "always" | "never";
+
+export type SidebarSide = "left" | "right";
+
 export interface LayoutSlice {
-  verticalModeEnabled: boolean;
-  setVerticalModeEnabled: (enabled: boolean) => void;
+  verticalTabMode: VerticalTabMode;
+  setVerticalTabMode: (mode: VerticalTabMode) => void;
+  sidebarSide: SidebarSide;
+  setSidebarSide: (side: SidebarSide) => void;
   verticalTabBarCompact: boolean;
   setVerticalTabBarCompact: (compact: boolean) => void;
   pendingDir: PendingDir | null;
@@ -21,10 +28,16 @@ export const createLayoutSlice: StateCreator<
   [],
   LayoutSlice
 > = (set) => ({
-  verticalModeEnabled: true,
+  verticalTabMode: "auto",
 
-  setVerticalModeEnabled: (enabled) => {
-    set({ verticalModeEnabled: enabled });
+  setVerticalTabMode: (mode) => {
+    set({ verticalTabMode: mode });
+  },
+
+  sidebarSide: "left",
+
+  setSidebarSide: (side) => {
+    set({ sidebarSide: side });
   },
 
   verticalTabBarCompact: false,
