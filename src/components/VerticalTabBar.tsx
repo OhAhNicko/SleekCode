@@ -881,7 +881,7 @@ export default function VerticalTabBar() {
           {/* Compact-mode toggle — collapses (200→80) or expands (80→200) the strip */}
           <div
             onClick={() => setCompact(!compact)}
-            data-tooltip={compact ? "Expand sidebar" : "Collapse sidebar"}
+            data-tooltip={compact ? "Expand tab bar" : "Collapse tab bar"}
             style={{
               width: 36,
               display: "flex",
