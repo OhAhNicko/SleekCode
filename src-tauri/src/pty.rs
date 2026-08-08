@@ -78,9 +78,36 @@ fn start_reader_thread(
     on_data: Channel<InvokeResponseBody>,
     on_exit: Channel<i32>,
 ) {
+    // Waiter: the child's DEATH is the exit signal. It used to be the
+    // reader's EOF — but ConPTY keeps the output pipe open until the MASTER
+    // is dropped, so a child that exited on its own (a failed `ssh` spawn,
+    // `exit` in a shell) never EOF'd the reader: the exit never reached JS —
+    // no "[Process exited]" banner, no way for the remote panes' "No
+    // connection" card to corroborate — and the blocked reader thread plus
+    // the session entry leaked until pty_kill. The waiter owns the child; on
+    // death it grants the reader a short drain for the last buffered bytes,
+    // reports the exit, and removes the session — dropping the master, which
+    // is exactly what unblocks the reader and ends its thread.
+    std::thread::spawn(move || {
+        let mut child = child;
+        let code = match child.wait() {
+            Ok(s) => {
+                if s.success() {
+                    0
+                } else {
+                    1
+                }
+            }
+            Err(_) => -1,
+        };
+        // The reader is still pumping; give ConPTY's buffered tail a moment
+        // to reach it before the master goes away.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let _ = on_exit.send(code);
+        sessions().lock().unwrap().remove(&id);
+    });
     std::thread::spawn(move || {
         let mut reader = reader;
-        let mut child = child;
         let mut buf = [0u8; 65536];
         loop {
             match reader.read(&mut buf) {
@@ -110,18 +137,9 @@ fn start_reader_thread(
                 Err(_) => break,
             }
         }
-        let code = match child.wait() {
-            Ok(s) => {
-                if s.success() {
-                    0
-                } else {
-                    1
-                }
-            }
-            Err(_) => -1,
-        };
-        let _ = on_exit.send(code);
-        sessions().lock().unwrap().remove(&id);
+        // Exit reporting and session teardown belong to the waiter; this
+        // thread simply ends when the pipe closes (master dropped by the
+        // waiter above or by pty_kill).
     });
 }
 

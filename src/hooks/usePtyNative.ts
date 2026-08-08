@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from "react";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import type { TerminalType, TerminalBackend } from "../types";
 import { sessionStillExists } from "../lib/session-exists";
-import { claudeSessionIdArgs, firstPromptArgs, getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag } from "../lib/terminal-config";
+import { claudeSessionIdArgs, firstPromptArgs, getTerminalConfig, getPooledInitCommand, isWslTerminal, toWslPath, getSshCommand, getYoloFlag, safePaneId } from "../lib/terminal-config";
 import { shellPsModeFor } from "../lib/shell-mode";
 import { notePtyChunk } from "../lib/pty-flood-stats";
 import { wslReady } from "../lib/wsl-cache";
@@ -443,7 +443,18 @@ export function usePtyNative({
             cols: Math.max(cols, 2),
             rows: Math.max(rows, 2),
             cwd: cwd ?? null,
-            env: { TERM: "xterm-256color", COLORTERM: "truecolor" },
+            // MADE_PANE_ID identifies which pane an agent's knowledge writes
+            // came from. The WSL paths plant it inside the distro themselves
+            // (terminal-config); this is the Windows-backend route, where the
+            // spawn env IS the process env. Only AI panes — a shell pane has
+            // no agent identity to attribute.
+            env: {
+              TERM: "xterm-256color",
+              COLORTERM: "truecolor",
+              ...(terminalType === "claude" || terminalType === "codex" || terminalType === "gemini"
+                ? { MADE_PANE_ID: safePaneId(termId) }
+                : {}),
+            },
             onData: onDataChan,
             onExit: onExitChan,
           });
