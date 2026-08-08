@@ -401,7 +401,12 @@ def verify_icns(path):
 def main():
     ap = argparse.ArgumentParser()
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    ap.add_argument("--svg", default=os.path.join(here, "src-tauri/icons/made-logo.svg"))
+    # Variant C ("Stacked panes") is the app's identity since 2026-08: the
+    # Appearance > App icon picker defaults to it and the Windows identity
+    # files (icon.ico + flat PNGs) were regenerated from it. made-logo.svg is
+    # the RETIRED tile-grid logo — pointing this back at it would silently
+    # revert the exe/shortcut icon on the next run.
+    ap.add_argument("--svg", default=os.path.join(here, "src-tauri/icons/variants/icon-c.svg"))
     ap.add_argument("--out", default=os.path.join(here, "src-tauri/icons"))
     ap.add_argument("--installer-out",
                     default=os.path.join(here, "src-tauri/installer-assets"))
