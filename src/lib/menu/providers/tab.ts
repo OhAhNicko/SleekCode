@@ -2,6 +2,8 @@ import { useAppStore } from "../../../store";
 import { PROJECT_COLOR_PRESETS, SOUND_PRESETS } from "../../../store/recentProjectsSlice";
 import { tabHibernateBlocker } from "../../../store/tabSlice";
 import { tabIdleVerdict } from "../../pane-idle";
+import { getQuickOpenServer } from "../../dev-server-lookup";
+import { openDevServerUrl } from "../../open-dev-server-url";
 import { snapshotTabs, undoClose, useUndoCloseStore } from "../../../store/undoCloseStore";
 import { cloneLayoutWithFreshIds } from "../../layout-utils";
 import { promptForInput, confirmAction } from "../../prompt-modal";
@@ -71,11 +73,39 @@ const tabProvider: MenuProvider<"tab"> = {
     // forward slashes — the same normalisation TabBar applied.
     const colorKey = ctx.workingDir.replace(/\\/g, "/");
     const currentColor = useAppStore.getState().projectColors?.[colorKey] ?? null;
+    // ALWAYS on the menu for project tabs, independent of the tab-name link
+    // setting (devServerTabIcon) — the link can be off while the menu still
+    // offers the action. Enabled only while a server is actually running:
+    // opening needs a live port. Resolved at BUILD time (menus never change
+    // after opening); ctx has no serverId, so the tab supplies it.
+    const devServer = getQuickOpenServer(
+      useAppStore.getState(),
+      {
+        tabId: ctx.tabId,
+        workingDir: ctx.workingDir,
+        serverId: useAppStore.getState().tabs.find((t) => t.id === ctx.tabId)?.serverId,
+      },
+      { requireRunning: true },
+    );
 
     return [
       {
         id: "target",
         items: [
+          {
+            id: "tab.openDevServer",
+            label: "Open dev server",
+            iconId: "external-link",
+            sublabel: devServer
+              ? `localhost:${devServer.port} — Ctrl+Click opens the MADE browser pane`
+              : undefined,
+            unavailable: devServer
+              ? undefined
+              : { reason: "No dev server running for this project" },
+            run: (_c, data) => {
+              if (devServer) openDevServerUrl(devServer, { inApp: !!data?.ctrl });
+            },
+          },
           {
             id: "tab.copyTitle",
             label: "Copy tab title",

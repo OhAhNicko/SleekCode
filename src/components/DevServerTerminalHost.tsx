@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import LoadingDots from "./LoadingDots";
 import { useAppStore } from "../store";
 import { getPtyWrite, registerTerminalDataListener, unregisterTerminalDataListener } from "../store/terminalSlice";
 import { injectPort } from "../lib/server-commands";
@@ -106,6 +107,40 @@ const LOCK_ERROR_PATTERNS = [
   /EEXIST.*\.lock/i,
 ];
 
+/**
+ * Silent-launch feedback (the 2026-08-07 frozen `tauri:dev` report: the command
+ * chain wedged at the WSL→PowerShell interop hop before printing a byte, and
+ * nothing anywhere said so).
+ *
+ * STALL: while "starting", a launch that has printed nothing for this long gets
+ * a "no output" hint on the row and panel header. 30s clears every legitimate
+ * quiet phase we've measured (npm install cold cache, a cargo link step) while
+ * still catching a wedge the same minute it happens. Any PTY byte clears it.
+ *
+ * WRITE LIVENESS: start/restart are *typed text* into the existing shell. A
+ * wedged foreground process ignores ^C, echoes nothing, and swallows the typed
+ * command invisibly — so after writing we wait this long for ANY byte, and a
+ * dead-silent PTY is escalated to a full pane respawn (`relaunchServer`), the
+ * escape hatch the 2026-08-05 fix only gave to already-dead PTYs.
+ *
+ * PROMPT SETTLE: a shell prompt sitting at the end of the buffer for this long
+ * with no port ever scraped means the command exited — status goes to error
+ * instead of eternal grey "detecting…". Debounced so a chunk boundary that
+ * merely *looks* like a prompt self-cancels when the rest of the line arrives.
+ */
+const STALL_AFTER_MS = 30_000;
+const STALL_SWEEP_MS = 5_000;
+const START_ECHO_LIVENESS_MS = 1_500;
+const PROMPT_SETTLE_MS = 3_000;
+
+/** Shell prompt at the very end of the (ANSI-stripped) buffer.
+ *  Bash/zsh convention matches the existing stopped-monitor; the PS alternative
+ *  is anchored to a line starting "PS " so `> made@0.2.16 tauri:dev`-style npm
+ *  banners can never match. */
+function promptAtEnd(cleanBuffer: string): boolean {
+  return /[\$%#] $/.test(cleanBuffer) || /(?:^|\n)PS [^\n]*> $/.test(cleanBuffer);
+}
+
 /** Guess the default port a framework uses based on the command string. */
 function guessDefaultPort(command: string): number {
   if (/\bnext\b/.test(command)) return 3000;
@@ -194,14 +229,18 @@ function buildCleanupPrefix(
  *
  * The panel is `right: 0`, so its right edge IS the window's right edge — and
  * so is the right edge of whatever workspace pane sits behind it. That pane's
- * header parks three 20px buttons (expand / restart / close) at 2px gaps behind
- * 6px of padding, i.e. a band from 6px to 76px inboard, and they are
- * `opacity-0 group-hover:opacity-100` — INVISIBLE but still hit-testable. So a
- * control stacked over that band is a trap: the first click closes the panel,
- * the panel vanishes, and the second click of a double-click lands on a pane
- * button nobody could see. Clearing the whole band (plus ~20px, roughly one
- * button) is what keeps the panel's controls off it — not just the ✕, since
- * whichever control ends up rightmost inherits the problem.
+ * header parks up to four 20px buttons (prompt history / expand / restart /
+ * close) at 2px gaps behind 6px root padding plus the cluster's 6px expanded
+ * padding, i.e. a band from 6px to 92px inboard. The cluster is collapsed to
+ * zero width until the pane header is hovered (`.ezy-header-controls`,
+ * index.css) — so nothing there is hit-testable while the panel is up — but
+ * that doesn't defuse the trap: the first click closes the panel, the panel
+ * vanishes, the cursor is now hovering the pane header underneath, and the
+ * cluster slides in within 150ms — the second click of a double-click lands
+ * on a freshly-materialized (possibly mid-slide) pane button, worst of all
+ * the rightmost close. Clearing the whole band is what keeps the panel's
+ * controls off it — not just the ✕, since whichever control ends up rightmost
+ * inherits the problem.
  */
 const HEADER_RIGHT_GUTTER_PX = 96;
 
@@ -283,6 +322,7 @@ export default function DevServerTerminalHost() {
   const setDevServerNetworkUrls = useAppStore((s) => s.setDevServerNetworkUrls);
   const setDevServerBackend = useAppStore((s) => s.setDevServerBackend);
   const setProjectServerInWindows = useAppStore((s) => s.setProjectServerInWindows);
+  const setDevServerStalled = useAppStore((s) => s.setDevServerStalled);
 
   // Track which servers have had their command written
   const commandSentRef = useRef<Set<string>>(new Set());
@@ -300,6 +340,29 @@ export default function DevServerTerminalHost() {
   const graceTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // Consecutive failed port probes per dev server (liveness poll below)
   const portFailuresRef = useRef<Map<string, number>>(new Map());
+  // Cumulative PTY bytes per dev server — monotonic across respawns, so a
+  // snapshot taken before a write can tell "anything at all arrived since".
+  const bytesSeenRef = useRef<Map<string, number>>(new Map());
+  // Epoch ms of the most recent PTY byte (or command send) per dev server.
+  const lastOutputAtRef = useRef<Map<string, number>>(new Map());
+  // bytesSeen snapshot taken when the command was last written. Presence arms
+  // the prompt-without-port scan; deleted on reset so a fresh spawn's banner
+  // prompt can never be mistaken for "the command exited".
+  const bytesAtSendRef = useRef<Map<string, number>>(new Map());
+  // Pending prompt-settle timers (fix: exited-without-port), keyed by ds.id.
+  const promptTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Pending write-liveness timers (start/restart into a possibly-wedged shell).
+  const livenessTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Servers currently flagged stalled — mirror of ds.stalledSince, so the data
+  // listener can clear on the first byte without a store read per chunk.
+  const stalledIdsRef = useRef<Set<string>>(new Set());
+
+  /** Arm the silence trackers for a just-written command: the stall clock
+   *  starts now, and the prompt-without-port scan measures output from here. */
+  const markCommandSent = useCallback((dsId: string) => {
+    bytesAtSendRef.current.set(dsId, bytesSeenRef.current.get(dsId) ?? 0);
+    lastOutputAtRef.current.set(dsId, Date.now());
+  }, []);
 
   /** Accumulated PTY text per dev server, for the port/error scan.
    *
@@ -374,6 +437,7 @@ export default function DevServerTerminalHost() {
         const write = getPtyWrite(terminalId);
         if (write) {
           write(command + "\r");
+          markCommandSent(serverId);
           return;
         }
         if (triesLeft > 0) {
@@ -398,6 +462,20 @@ export default function DevServerTerminalHost() {
         tunnelHandlesRef.current.delete(serverId);
         stopSshForward(tunnel);
       }
+      // A dead PTY can't be stalled, and its pending settle/liveness timers
+      // must not fire against whatever replaces it.
+      stalledIdsRef.current.delete(serverId);
+      setDevServerStalled(serverId, undefined);
+      const promptTimer = promptTimersRef.current.get(serverId);
+      if (promptTimer) {
+        clearTimeout(promptTimer);
+        promptTimersRef.current.delete(serverId);
+      }
+      const livenessTimer = livenessTimersRef.current.get(serverId);
+      if (livenessTimer) {
+        clearTimeout(livenessTimer);
+        livenessTimersRef.current.delete(serverId);
+      }
       if (resolvedRef.current.has(serverId)) {
         // Port was already detected — mark as stopped (server was running, then exited)
         updateDevServerStatus(serverId, "stopped");
@@ -410,7 +488,7 @@ export default function DevServerTerminalHost() {
         updateDevServerStatus(serverId, "stopped");
       }
     },
-    [updateDevServerStatus, updateDevServerError]
+    [updateDevServerStatus, updateDevServerError, setDevServerStalled]
   );
 
   /**
@@ -428,6 +506,21 @@ export default function DevServerTerminalHost() {
     portDetectedRef.current.delete(serverId);
     stoppedMonitorRef.current.delete(serverId);
     lockRetryRef.current.delete(serverId);
+    // Disarm the silence trackers: prompt-without-port must not re-arm off the
+    // PREVIOUS run's send snapshot (a fresh spawn's banner ends in a prompt),
+    // and pending settle/liveness timers belong to the run being torn down.
+    bytesAtSendRef.current.delete(serverId);
+    stalledIdsRef.current.delete(serverId);
+    const promptTimer = promptTimersRef.current.get(serverId);
+    if (promptTimer) {
+      clearTimeout(promptTimer);
+      promptTimersRef.current.delete(serverId);
+    }
+    const livenessTimer = livenessTimersRef.current.get(serverId);
+    if (livenessTimer) {
+      clearTimeout(livenessTimer);
+      livenessTimersRef.current.delete(serverId);
+    }
     // Stale output must not be re-scanned: it still holds the previous run's
     // port line, which would be "detected" before the new server even starts.
     scanBuffersRef.current.delete(serverId);
@@ -451,8 +544,9 @@ export default function DevServerTerminalHost() {
       updateDevServerPort(serverId, 0);
       updateDevServerError(serverId, undefined);
       setDevServerNetworkUrls(serverId, []);
+      setDevServerStalled(serverId, undefined);
     },
-    [updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls]
+    [updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls, setDevServerStalled]
   );
 
   /**
@@ -485,6 +579,34 @@ export default function DevServerTerminalHost() {
     [resetDetectionState, markStarting, updateDevServerError]
   );
 
+  /**
+   * A typed write only worked if the shell answered. Called after writing into
+   * a live-looking PTY: if not one byte arrives within the grace period, the
+   * foreground process is wedged (it isn't echoing, so ^C and the command both
+   * vanished invisibly — the 2026-08-07 frozen `tauri:dev`) and the only real
+   * escape is the same respawn a dead PTY gets.
+   */
+  const escalateIfSilent = useCallback(
+    (dsId: string, bytesBefore: number, graceMs: number) => {
+      const prev = livenessTimersRef.current.get(dsId);
+      if (prev) clearTimeout(prev);
+      livenessTimersRef.current.set(
+        dsId,
+        setTimeout(() => {
+          livenessTimersRef.current.delete(dsId);
+          const cur = useAppStore.getState().devServers.find((d) => d.id === dsId);
+          if (!cur || cur.status !== "starting") return;
+          if ((bytesSeenRef.current.get(dsId) ?? 0) !== bytesBefore) return;
+          console.warn(
+            `[DevServer] no PTY output ${graceMs}ms after write — respawning wedged terminal for ${cur.command}`,
+          );
+          relaunchServer(cur);
+        }, graceMs),
+      );
+    },
+    [relaunchServer],
+  );
+
   /** Run the command. Respawns the terminal first when the PTY is gone. */
   const startServer = useCallback(
     (ds: DevServer) => {
@@ -493,10 +615,13 @@ export default function DevServerTerminalHost() {
         return;
       }
       resetDetectionState(ds.id);
+      const bytesBefore = bytesSeenRef.current.get(ds.id) ?? 0;
       getPtyWrite(ds.terminalId)?.(ds.command + "\r");
+      markCommandSent(ds.id);
       markStarting(ds.id);
+      escalateIfSilent(ds.id, bytesBefore, START_ECHO_LIVENESS_MS);
     },
-    [relaunchServer, resetDetectionState, markStarting]
+    [relaunchServer, resetDetectionState, markCommandSent, markStarting, escalateIfSilent]
   );
 
   /** Send Ctrl+C (twice for stubborn processes), wait, then re-run the command. */
@@ -508,14 +633,40 @@ export default function DevServerTerminalHost() {
       }
       const write = getPtyWrite(ds.terminalId);
       if (!write) return;
+      const bytesBefore = bytesSeenRef.current.get(ds.id) ?? 0;
       write("\x03");
       // Second Ctrl+C after 100ms for processes that need confirmation
       setTimeout(() => write("\x03"), 100);
       resetDetectionState(ds.id);
       markStarting(ds.id);
-      setTimeout(() => write(ds.command + "\r"), delayMs);
+      // The retype is gated on the ^C having produced SOMETHING. A responsive
+      // shell echoes a fresh prompt (or the dying server's teardown) well
+      // within the delay; a wedged one stays byte-silent and gets respawned
+      // instead of having a second command typed into the void.
+      const timer = setTimeout(() => {
+        livenessTimersRef.current.delete(ds.id);
+        const cur = useAppStore.getState().devServers.find((d) => d.id === ds.id);
+        if (!cur || cur.status !== "starting") return;
+        if ((bytesSeenRef.current.get(ds.id) ?? 0) === bytesBefore) {
+          console.warn(
+            `[DevServer] no PTY output ${delayMs}ms after ^C — respawning wedged terminal for ${cur.command}`,
+          );
+          relaunchServer(cur);
+          return;
+        }
+        const w = getPtyWrite(cur.terminalId);
+        if (!w) {
+          relaunchServer(cur);
+          return;
+        }
+        w(cur.command + "\r");
+        markCommandSent(ds.id);
+      }, delayMs);
+      const prev = livenessTimersRef.current.get(ds.id);
+      if (prev) clearTimeout(prev);
+      livenessTimersRef.current.set(ds.id, timer);
     },
-    [relaunchServer, resetDetectionState, markStarting]
+    [relaunchServer, resetDetectionState, markCommandSent, markStarting]
   );
 
   /**
@@ -582,6 +733,15 @@ export default function DevServerTerminalHost() {
       const textDecoder = new TextDecoder();
 
       registerTerminalDataListener(ds.terminalId, (data) => {
+        // Silence trackers first: every byte proves the launch is alive, so it
+        // feeds the stall sweep, the write-liveness gates, and clears any
+        // standing "no output" flag before the scan below does anything.
+        bytesSeenRef.current.set(
+          ds.id,
+          (bytesSeenRef.current.get(ds.id) ?? 0) + data.byteLength,
+        );
+        lastOutputAtRef.current.set(ds.id, Date.now());
+        if (stalledIdsRef.current.delete(ds.id)) setDevServerStalled(ds.id, undefined);
         const chunk = textDecoder.decode(data, { stream: true });
         let buffer = (scanBuffersRef.current.get(ds.id) ?? "") + chunk;
         // Only scan last 4KB to avoid memory buildup
@@ -809,6 +969,42 @@ export default function DevServerTerminalHost() {
             }
           }
         }
+
+        // Exited without a port: the shell prompt is back at the end of the
+        // buffer and nothing above matched. ERROR_PATTERNS is a finite list —
+        // cargo's lowercase `error:` and Tauri's colon-less `Error The
+        // "beforeDevCommand" terminated…` both slip through it, and the PTY
+        // never dies (the shell survives its child), so without this the row
+        // sat on grey "detecting…" forever with the failure only in the
+        // scrollback. Armed only once real output followed the command echo,
+        // so the pre-command prompt and the echo itself can never trip it; the
+        // settle timer is cleared on every later chunk, so a chunk boundary
+        // that merely resembles a prompt self-cancels.
+        const pendingPrompt = promptTimersRef.current.get(ds.id);
+        if (pendingPrompt) {
+          clearTimeout(pendingPrompt);
+          promptTimersRef.current.delete(ds.id);
+        }
+        const sentAt = bytesAtSendRef.current.get(ds.id);
+        const armed =
+          sentAt !== undefined &&
+          (bytesSeenRef.current.get(ds.id) ?? 0) - sentAt > ds.command.length + 32;
+        if (armed && promptAtEnd(cleanBuffer)) {
+          promptTimersRef.current.set(
+            ds.id,
+            setTimeout(() => {
+              promptTimersRef.current.delete(ds.id);
+              if (portDetectedRef.current.has(ds.id) || resolvedRef.current.has(ds.id)) return;
+              const cur = useAppStore.getState().devServers.find((d) => d.id === ds.id);
+              if (!cur || cur.status !== "starting") return;
+              resolvedRef.current.add(ds.id);
+              stalledIdsRef.current.delete(ds.id);
+              setDevServerStalled(ds.id, undefined);
+              updateDevServerError(ds.id, "Exited without reporting a port — see terminal output");
+              unregisterTerminalDataListener(ds.terminalId);
+            }, PROMPT_SETTLE_MS),
+          );
+        }
       });
     }
 
@@ -820,7 +1016,7 @@ export default function DevServerTerminalHost() {
         }
       }
     };
-  }, [devServers, updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls, restartServer]);
+  }, [devServers, updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls, setDevServerStalled, restartServer]);
 
   // Clean up tracked state when servers are removed, or re-enable detection
   // when a server is restarted (status changed back to "running" without a port)
@@ -861,6 +1057,31 @@ export default function DevServerTerminalHost() {
         stopSshForward(handle);
       }
     }
+    // Silence trackers for removed servers
+    for (const id of bytesSeenRef.current.keys()) {
+      if (!currentIds.has(id)) bytesSeenRef.current.delete(id);
+    }
+    for (const id of lastOutputAtRef.current.keys()) {
+      if (!currentIds.has(id)) lastOutputAtRef.current.delete(id);
+    }
+    for (const id of bytesAtSendRef.current.keys()) {
+      if (!currentIds.has(id)) bytesAtSendRef.current.delete(id);
+    }
+    for (const id of stalledIdsRef.current) {
+      if (!currentIds.has(id)) stalledIdsRef.current.delete(id);
+    }
+    for (const [id, timer] of promptTimersRef.current.entries()) {
+      if (!currentIds.has(id)) {
+        clearTimeout(timer);
+        promptTimersRef.current.delete(id);
+      }
+    }
+    for (const [id, timer] of livenessTimersRef.current.entries()) {
+      if (!currentIds.has(id)) {
+        clearTimeout(timer);
+        livenessTimersRef.current.delete(id);
+      }
+    }
     // Re-enable detection for servers that were restarted
     for (const ds of devServers) {
       if (ds.status === "starting" && !ds.errorMessage) {
@@ -877,6 +1098,33 @@ export default function DevServerTerminalHost() {
       }
     }
   }, [devServers]);
+
+  // ── Stall sweep: "starting" with zero PTY output is a wedge, not a compile ──
+  //
+  // A launch chain can freeze without its PTY dying (the 2026-08-07 report:
+  // `tauri:dev` wedged at the WSL→PowerShell interop hop — pane alive, byte
+  // count zero, row on "detecting…" indefinitely). The screen alone cannot
+  // distinguish that from a long `npm install`, so this sweep flags any
+  // starting server whose command was sent and whose PTY has been silent for
+  // STALL_AFTER_MS. The flag is pure feedback (row + panel header hint); the
+  // first byte to arrive clears it in the data listener.
+  useEffect(() => {
+    const sweep = setInterval(() => {
+      const now = Date.now();
+      for (const ds of useAppStore.getState().devServers) {
+        if (ds.status !== "starting") continue;
+        if (stalledIdsRef.current.has(ds.id)) continue;
+        // Only once a command was written — a pane still resolving its backend
+        // has nothing to be silent about.
+        if (!bytesAtSendRef.current.has(ds.id)) continue;
+        const last = lastOutputAtRef.current.get(ds.id);
+        if (last === undefined || now - last < STALL_AFTER_MS) continue;
+        stalledIdsRef.current.add(ds.id);
+        useAppStore.getState().setDevServerStalled(ds.id, last);
+      }
+    }, STALL_SWEEP_MS);
+    return () => clearInterval(sweep);
+  }, []);
 
   // ── Liveness poll: the authoritative "is it still up" for LOCAL servers ──
   //
@@ -1049,6 +1297,18 @@ export default function DevServerTerminalHost() {
               <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", flexShrink: 0 }}>
                 {expandedServer.projectName}
               </span>
+              {expandedServer.status === "starting" && expandedServer.stalledSince !== undefined && (
+                <span
+                  data-tooltip="Nothing has printed for 30+ seconds — the launch may be wedged. Restart kills and respawns the terminal."
+                  style={{
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                    color: "var(--ezy-red)",
+                    flexShrink: 0,
+                  }}
+                >
+                  no output
+                </span>
+              )}
             </div>
             {/* gap 2 matches the pane header's `gap-0.5`; every control in this
                 row is 24px tall, the shell toggle included, so the row has one
@@ -1210,7 +1470,7 @@ export default function DevServerTerminalHost() {
                     color: "var(--ezy-text-muted)",
                   }}
                 >
-                  Preparing terminal…
+                  <LoadingDots>Preparing terminal</LoadingDots>
                 </div>
               );
             }

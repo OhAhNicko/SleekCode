@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import LoadingDots from "./LoadingDots";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import { openDevServerUrlIn, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { FaFolder, FaChevronDown, FaStop, FaPlay, FaExpand, FaGlobe } from "react-icons/fa";
@@ -287,7 +288,7 @@ function CommandEditor({
               {customPort
                 ? `Port ${customPort}`
                 : defaultPort === null
-                  ? "Default …"
+                  ? <LoadingDots>Default</LoadingDots>
                   : `Default ${defaultPort}`}
             </span>
             <SmallIconButton
@@ -703,6 +704,17 @@ function DevServerRow({
             >
               {serverUrl}
             </span>
+          ) : server.status === "starting" && server.stalledSince !== undefined ? (
+            <span
+              data-tooltip="Nothing has printed for 30+ seconds — the launch may be wedged. Restart kills and respawns the terminal."
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+                color: "var(--ezy-red)",
+                flexShrink: 0,
+              }}
+            >
+              no output
+            </span>
           ) : server.status !== "stopped" ? (
             <span
               style={{
@@ -712,7 +724,7 @@ function DevServerRow({
                 opacity: 0.5,
               }}
             >
-              detecting...
+              <LoadingDots>detecting</LoadingDots>
             </span>
           ) : null}
         </div>

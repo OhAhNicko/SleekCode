@@ -196,6 +196,7 @@ export interface TerminalSlice {
   updateDevServerError: (serverId: string, errorMessage: string | undefined) => void;
   setDevServerNetworkUrls: (serverId: string, urls: string[]) => void;
   setDevServerBackend: (serverId: string, backend: TerminalBackend) => void;
+  setDevServerStalled: (serverId: string, stalledSince: number | undefined) => void;
   setExpandedDevServerId: (id: string | null) => void;
 }
 
@@ -385,6 +386,20 @@ export const createTerminalSlice: StateCreator<
         ds.id === serverId ? { ...ds, backend } : ds
       ),
     }));
+  },
+
+  setDevServerStalled: (serverId, stalledSince) => {
+    set((state) => {
+      const ds = state.devServers.find((d) => d.id === serverId);
+      // No-op when already in the requested state — the stall sweep runs on an
+      // interval and the clear runs on every PTY chunk, so most calls are.
+      if (!ds || ds.stalledSince === stalledSince) return state;
+      return {
+        devServers: state.devServers.map((d) =>
+          d.id === serverId ? { ...d, stalledSince } : d
+        ),
+      };
+    });
   },
 
   setExpandedDevServerId: (id) => {

@@ -186,6 +186,11 @@ export default function TabBar() {
   useModalWhen("tabbar-quit-confirm", showQuitConfirm);
   const dragStartRef = useRef<{ tabId: string; offsetX: number; startX: number; startY: number; tabWidth: number; tabTop: number } | null>(null);
   const didDragRef = useRef(false);
+  // Pending dev-server open from a tab-name click. When rename is possible
+  // (showTabPath), the open is held briefly so a rename double-click can
+  // cancel it — otherwise the browser would open on the first click of the
+  // double-click. Single slot: only one click sequence can be live at a time.
+  const devOpenTimerRef = useRef<number | null>(null);
   const [dragState, setDragState] = useState<{
     tabId: string;
     ghostX: number;
@@ -893,6 +898,22 @@ export default function TabBar() {
                       // activityTick is read to trigger re-render on poll
                       void activityTick;
                       const activeCount = termIds.filter((id) => isTerminalActive(id)).length;
+                      // Dev-server quick-open (Settings > Preview Panes > "Dev
+                      // server link on tabs"): the tab NAME is the click target
+                      // — hover underlines it like a link. "all" opens a
+                      // BACKGROUND project's URL without switching tabs;
+                      // "active" keeps inactive names as plain tab-switch
+                      // targets. A project can run several dev servers;
+                      // getQuickOpenServer honours the one the user marked in
+                      // the dev-server panel.
+                      const quickDs = devServerTabIcon !== "off" && !isSystemTab
+                        ? getQuickOpenServer(
+                            { devServers, recentProjects },
+                            { tabId: tab.id, workingDir: tab.workingDir, serverId: tab.serverId },
+                            { requireRunning: true },
+                          )
+                        : null;
+                      const nameOpensDev = !!quickDs && (devServerTabIcon === "all" || isActive);
                       return (
                         <>
                           {showTabPath && !isSystemTab && renamingTabId === tab.id ? (
@@ -928,13 +949,62 @@ export default function TabBar() {
                             />
                           ) : (
                             <span
+                              role={nameOpensDev ? "button" : undefined}
+                              aria-label={nameOpensDev ? "Open dev server in browser" : undefined}
+                              data-tooltip={nameOpensDev && quickDs ? `Open localhost:${quickDs.port} in browser` : undefined}
+                              data-tooltip-hint={nameOpensDev ? "Ctrl+Click opens the MADE browser pane" : undefined}
+                              onClick={(e) => {
+                                if (!nameOpensDev || !quickDs) return;
+                                // stopPropagation even in "all" mode: opening a
+                                // background project's URL must not also switch
+                                // tabs (the old icon's contract).
+                                e.stopPropagation();
+                                if (didDragRef.current) return;
+                                // Second click of a double-click — the first
+                                // one already opened (or armed the timer).
+                                if (e.detail > 1) return;
+                                closeAllMenus();
+                                const inApp = wantsInAppOpen(e);
+                                if (showTabPath && !isSystemTab) {
+                                  // Rename double-click shares this target —
+                                  // hold the open so it can be cancelled.
+                                  if (devOpenTimerRef.current) window.clearTimeout(devOpenTimerRef.current);
+                                  devOpenTimerRef.current = window.setTimeout(() => {
+                                    devOpenTimerRef.current = null;
+                                    openDevServerUrl(quickDs, { inApp });
+                                  }, 250);
+                                } else {
+                                  openDevServerUrl(quickDs, { inApp });
+                                }
+                              }}
                               onDoubleClick={(e) => {
+                                if (devOpenTimerRef.current) {
+                                  window.clearTimeout(devOpenTimerRef.current);
+                                  devOpenTimerRef.current = null;
+                                }
                                 if (isSystemTab || !showTabPath) return;
                                 e.stopPropagation();
                                 setRenameValue(tab.customName ?? tab.name);
                                 setRenamingTabId(tab.id);
                                 setTimeout(() => renameInputRef.current?.select(), 0);
                               }}
+                              // Link affordance appears on hover only: color
+                              // lift + underline, no background box (the
+                              // pane-count badge's activity dot overhangs and
+                              // collides with any bg behind the label).
+                              style={nameOpensDev ? {
+                                cursor: "pointer",
+                                transition: "color 120ms ease",
+                                textUnderlineOffset: 3,
+                              } : undefined}
+                              onMouseEnter={nameOpensDev ? (e) => {
+                                e.currentTarget.style.color = "var(--ezy-text)";
+                                e.currentTarget.style.textDecoration = "underline";
+                              } : undefined}
+                              onMouseLeave={nameOpensDev ? (e) => {
+                                e.currentTarget.style.color = "";
+                                e.currentTarget.style.textDecoration = "";
+                              } : undefined}
                             >
                               {showTabPath && tab.customName ? tab.customName : tab.name}
                             </span>
@@ -1011,76 +1081,15 @@ export default function TabBar() {
                   </span>
                   )}
 
-                  {/* Dev-server quick-open (Settings > Preview Panes > "Dev
-                      server button on project tab"). RESERVE-SLOT: the element
-                      is rendered on EVERY project tab whose server is running
-                      so the tab's width never changes when it (de)activates —
-                      only the ACTIVE tab actually shows and handles the icon.
-                      Green = the app-wide running color (StatusDot). Plain
-                      click = external browser, Ctrl/Cmd = MADE browser pane. */}
-                  {devServerTabIcon !== "off" && !isSystemTab && (() => {
-                    // A project can run several dev servers; getQuickOpenServer
-                    // honours the one the user marked in the dev-server panel.
-                    const ds = getQuickOpenServer(
-                      { devServers, recentProjects },
-                      { tabId: tab.id, workingDir: tab.workingDir, serverId: tab.serverId },
-                      { requireRunning: true },
-                    );
-                    if (!ds) return null;
-                    // "all": live icon on every tab with a running server —
-                    // opens a BACKGROUND project's URL without switching tabs.
-                    // "active": icon shown on the active tab only; inactive
-                    // tabs keep an invisible slot so the width never shifts.
-                    const iconLive = devServerTabIcon === "all" || isActive;
-                    return (
-                      <span
-                        role={iconLive ? "button" : undefined}
-                        aria-label="Open dev server in browser"
-                        data-tooltip={iconLive ? `Open localhost:${ds.port} in browser` : undefined}
-                        data-tooltip-hint={iconLive ? "Ctrl+Click opens the MADE browser pane" : undefined}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openDevServerUrl(ds, { inApp: wantsInAppOpen(e) });
-                        }}
-                        // No hover BACKGROUND here on purpose: the pane-count
-                        // badge's activity dot overhangs its parent and any bg
-                        // box behind this icon collides with it. Hover feedback
-                        // is a color change, like the tab's close/pin buttons.
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          width: 14,
-                          height: 14,
-                          flexShrink: 0,
-                          marginLeft: 2,
-                          cursor: "pointer",
-                          color: "var(--ezy-text-muted)",
-                          transition: "color 120ms ease",
-                          visibility: iconLive ? "visible" : "hidden",
-                          pointerEvents: iconLive ? "auto" : "none",
-                        }}
-                        onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-text)")}
-                        onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ezy-text-muted)")}
-                      >
-                        <svg width={10} height={10} viewBox="0 0 12 12" fill="none">
-                          <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.2" />
-                          <ellipse cx="6" cy="6" rx="2" ry="4.5" stroke="currentColor" strokeWidth="1" />
-                          <path d="M1.5 6h9" stroke="currentColor" strokeWidth="1" />
-                        </svg>
-                      </span>
-                    );
-                  })()}
-
                   {/* Remote project the file sidebar could not load. The tree
                       retries on its own, but only while it is mounted — with
                       the sidebar closed this button is the only way back, and
                       it is also how you skip the backoff when you KNOW the
                       server just came up. Shown only while failed: reserving
-                      the width on every remote tab (as the dev-server icon
-                      does) would cost every tab, always, for a rare state.
-                      Colour-only hover, matching that icon — a hover box here
-                      collides with the pane-count badge's overhanging dot. */}
+                      the width on every remote tab would cost every tab,
+                      always, for a rare state. Colour-only hover — a hover box
+                      here collides with the pane-count badge's overhanging
+                      dot. */}
                   {tab.serverId && remoteBrowse[tab.id]?.state === "failed" && (() => {
                     const retrying = !!remoteBrowse[tab.id]?.retrying;
                     const server = servers.find((s) => s.id === tab.serverId);
@@ -1378,6 +1387,10 @@ export default function TabBar() {
           return at && at.workingDir && !at.isDevServerTab && !at.isServersTab && !at.isKanbanTab && !at.isSettingsTab;
         })() && (
           <GitStatusBar
+            /* One instance per directory: remount on switch so the bar seeds
+               from the new dir's snapshot instead of keeping the old dir's
+               state painted while the fetch runs. */
+            key={`${tabs.find((t) => t.id === activeTabId)!.serverId ?? ""}:${tabs.find((t) => t.id === activeTabId)!.workingDir!}`}
             workingDir={tabs.find((t) => t.id === activeTabId)!.workingDir!}
             serverId={tabs.find((t) => t.id === activeTabId)!.serverId}
           />
