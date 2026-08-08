@@ -54,6 +54,15 @@ export function runCommand(command: CommandId, target?: CommandTarget): void {
       }
       return;
     }
+    case "app.toggleKnowledge": {
+      const s = useAppStore.getState();
+      if (s.sidebarOpen && s.sidebarTab === "knowledge") s.toggleSidebar();
+      else {
+        s.setSidebarTab("knowledge");
+        if (!s.sidebarOpen) s.toggleSidebar();
+      }
+      return;
+    }
     case "app.devtools":
       invoke("open_devtools").catch(() => {});
       return;

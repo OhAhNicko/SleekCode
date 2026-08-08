@@ -32,6 +32,10 @@ Thumbs.db
 src-tauri/target/
 src-tauri/target.backup/
 src-tauri/WixTools/
+# scripts/knowledge-mcp-smoke.mjs scratches here (under the repo, not /tmp, so a
+# Windows exe launched from WSL can open it). Removed on exit; ignored in case a
+# run is killed.
+.knowledge-mcp-smoke-*/
 
 # Project docs & tasks (local only)
 docs/

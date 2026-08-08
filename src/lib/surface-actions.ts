@@ -25,7 +25,9 @@ export type SurfaceRole =
   | "sidebar"
   | "jira-ticket"
   | "jira-assigned"
-  | "game-sidebar";
+  | "game-sidebar"
+  | "knowledge"
+  | "knowledge-note";
 
 export type SurfaceActions = Record<string, (id: string) => void>;
 

@@ -51,6 +51,7 @@ import SoundPickerHost from "./components/SoundPickerHost";
 import { installAudioUnlock } from "./lib/notification-sounds";
 import SettingsPane from "./components/SettingsPane";
 import JiraMcpStartupCheck from "./components/JiraMcpStartupCheck";
+import KnowledgeMcpStartupCheck from "./components/KnowledgeMcpStartupCheck";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
 import { matchCommand, probeKeybinding, MIGRATED } from "./lib/keybindings";
@@ -62,6 +63,22 @@ import NewJiraTicketModal from "./components/NewJiraTicketModal";
 import TooltipHost from "./components/TooltipHost";
 import WslHealthCheck from "./components/WslHealthCheck";
 import HibernationEngine from "./components/HibernationEngine";
+import KnowledgeEngine from "./components/KnowledgeEngine";
+import KnowledgeToastHost from "./components/knowledge/KnowledgeToastHost";
+import KnowledgeApprovalHost from "./components/knowledge/KnowledgeApprovalHost";
+import KnowledgeConflictModal from "./components/knowledge/KnowledgeConflictModal";
+import KnowledgeRevisionModal from "./components/knowledge/KnowledgeRevisionModal";
+import KnowledgeContextPreviewModal from "./components/knowledge/KnowledgeContextPreviewModal";
+import { useKnowledgeStore } from "./store/knowledgeStore";
+import {
+  createNote as createKnowledgeNote,
+  createHandoff as createKnowledgeHandoff,
+  latestHandoff as latestKnowledgeHandoff,
+} from "./lib/knowledge/api";
+import { promptForInput } from "./lib/prompt-modal";
+import { resolveCaretTerminalId } from "./lib/clipboard-insert";
+import { pasteTextToTerminal } from "./lib/terminal-paste";
+import { setAiActivityDetectionMode } from "./lib/terminal-activity";
 import JiraNotifyEngine from "./components/JiraNotifyEngine";
 import UpdateBanner from "./components/UpdateBanner";
 import ChangelogModal from "./components/ChangelogModal";
@@ -108,9 +125,12 @@ export default function App() {
   const gameSidebarOpen = useAppStore((s) => s.gameSidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
-  const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
+  const verticalTabMode = useAppStore((s) => s.verticalTabMode);
+  const sidebarSide = useAppStore((s) => s.sidebarSide);
   const orientation = useOrientation();
-  const isVertical = orientation === "portrait" && verticalModeEnabled;
+  const isVertical =
+    verticalTabMode === "always" ||
+    (verticalTabMode === "auto" && orientation === "portrait");
   const pendingDir = useAppStore((s) => s.pendingDir);
   const setPendingDir = useAppStore((s) => s.setPendingDir);
   const addTerminals = useAppStore((s) => s.addTerminals);
@@ -161,10 +181,10 @@ export default function App() {
     void ensureFreshSession();
   }, []);
 
-  // Apply the persisted app-icon variant to the OS window (title bar +
-  // taskbar) on boot. The compiled .ico only covers the exe / shortcuts, so
-  // without this every launch would show the build-time icon regardless of
-  // the Appearance > App icon choice.
+  // Re-apply the persisted app-icon variant on boot as a fallback sync. The
+  // Rust side already boot-applied its sidecar copy before this webview even
+  // loaded; this pass repairs drift when the two stores disagree (the picker's
+  // source of truth is localStorage) and rewrites the sidecar via the command.
   useEffect(() => {
     void applyAppIcon(useAppStore.getState().appIconVariant);
   }, []);
@@ -404,6 +424,107 @@ export default function App() {
       execute: () => window.dispatchEvent(new Event("made:open-codereview")),
     });
 
+    // NexusMind — only on a local project tab. On a system tab there is no
+    // project to act on, and on an SSH tab the feature does not apply at all,
+    // so offering these would be offering four dead entries.
+    {
+      const store = useAppStore.getState();
+      const tab = store.tabs.find((t) => t.id === store.activeTabId);
+      const isLocalProject =
+        !!tab &&
+        !!tab.workingDir &&
+        !tab.serverId &&
+        !(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab);
+
+      if (isLocalProject && tab) {
+        const projectPath = tab.workingDir;
+        const KEYWORDS = "nexusmind knowledge memory notes";
+        const revealSidebar = () => {
+          const s = useAppStore.getState();
+          s.setSidebarTab("knowledge");
+          if (!s.sidebarOpen) s.toggleSidebar();
+        };
+
+        actions.push({
+          id: "action-knowledge-sidebar",
+          label: "Open knowledge sidebar",
+          category: "navigation",
+          keywords: `${KEYWORDS} sidebar open`,
+          execute: () => runCommand("app.toggleKnowledge"),
+        });
+        actions.push({
+          id: "action-knowledge-new-note",
+          label: "Knowledge: new note…",
+          category: "action",
+          keywords: `${KEYWORDS} new note create`,
+          execute: () => {
+            revealSidebar();
+            void (async () => {
+              const title = await promptForInput({
+                title: "New note",
+                label: "Title",
+                confirmLabel: "Create",
+                detail: "Creates a markdown file under .project-memory/notes/.",
+              });
+              const trimmed = title?.trim();
+              if (!trimmed) return;
+              const meta = await createKnowledgeNote(projectPath, trimmed).catch(() => null);
+              if (!meta) return;
+              const k = useKnowledgeStore.getState();
+              k.invalidateAfterOwnWrite(projectPath);
+              k.select(projectPath, meta.id);
+              // The same channel handleOpenFile uses. Dispatched directly
+              // because that callback is declared further down the component
+              // and reading it here would hit its temporal dead zone.
+              if (meta.filePath) {
+                window.dispatchEvent(
+                  new CustomEvent("made:open-file", { detail: { filePath: meta.filePath } }),
+                );
+              }
+            })();
+          },
+        });
+        actions.push({
+          id: "action-knowledge-create-handoff",
+          label: "Knowledge: create handoff",
+          category: "action",
+          keywords: `${KEYWORDS} handoff create agent`,
+          execute: () => {
+            revealSidebar();
+            void createKnowledgeHandoff(projectPath)
+              .then((handoff) => {
+                const k = useKnowledgeStore.getState();
+                k.invalidateAfterOwnWrite(projectPath);
+                if (handoff.entityId) k.select(projectPath, handoff.entityId);
+              })
+              .catch(() => {});
+          },
+        });
+        actions.push({
+          id: "action-knowledge-continue-handoff",
+          label: "Knowledge: continue from latest handoff",
+          category: "action",
+          keywords: `${KEYWORDS} handoff continue resume agent`,
+          execute: () => {
+            const terminalId = resolveCaretTerminalId();
+            const term = terminalId ? useAppStore.getState().terminals[terminalId] : undefined;
+            const isAgent =
+              term?.type === "claude" || term?.type === "codex" || term?.type === "gemini";
+            if (!terminalId || !isAgent) return;
+            void latestKnowledgeHandoff(projectPath)
+              .then((handoff) => {
+                if (!handoff) return;
+                pasteTextToTerminal(
+                  terminalId,
+                  `Continue from the latest handoff:\n\n${handoff.renderedMarkdown}`,
+                );
+              })
+              .catch(() => {});
+          },
+        });
+      }
+    }
+
     // Voice agent: speak a command (only when enabled)
     if (VOICE_ENABLED && useAppStore.getState().voiceEnabled) {
       actions.push({
@@ -428,7 +549,10 @@ export default function App() {
     });
 
     return actions;
-  }, [launchConfigs, loadLaunchConfig, snippets]);
+    // activeTabId is a dependency because the knowledge actions are built for
+    // whichever project is in front — without it the palette would keep offering
+    // the previous project's actions after a tab switch.
+  }, [launchConfigs, loadLaunchConfig, snippets, activeTabId]);
 
   // Pre-warm CLI paths at startup (background). On Windows we MUST resolve both
   // WSL and Windows CLI paths because per-project auto-detect (detectBackendForPath)
@@ -701,6 +825,13 @@ export default function App() {
 
   // Track AI working time from burst events
   useAiTimeTracker();
+
+  // Push the tab-badge detection mode into terminal-activity (the lib can't
+  // read the store itself — store/terminalSlice imports it, cycle risk).
+  const aiWorkingMarkerDetection = useAppStore((s) => s.aiWorkingMarkerDetection);
+  useEffect(() => {
+    setAiActivityDetectionMode(aiWorkingMarkerDetection ? "markers" : "hysteresis");
+  }, [aiWorkingMarkerDetection]);
 
   // Auto-update checker
   const updateState = useUpdateChecker();
@@ -1162,6 +1293,11 @@ export default function App() {
               }
             }
             return;
+          case "K":
+            // Ctrl+Shift+K → Toggle the NexusMind knowledge sidebar
+            consume();
+            runCommand("app.toggleKnowledge");
+            return;
           case "C":
             // Ctrl+Shift+C → Copy (explicit)
             consume();
@@ -1249,7 +1385,11 @@ export default function App() {
 
   const handleOpenFile = useCallback((filePath: string, lineNumber?: number) => {
     window.dispatchEvent(
-      new CustomEvent("made:open-file", { detail: { filePath, lineNumber } })
+      // `toggle` marks this as a ROW CLICK (file explorer / knowledge rows):
+      // clicking the already-active file closes it. Pane links and search
+      // results dispatch their own events without the flag, so a link to the
+      // open file can never close it out from under the user.
+      new CustomEvent("made:open-file", { detail: { filePath, lineNumber, toggle: true } })
     );
   }, []);
 
@@ -1261,8 +1401,8 @@ export default function App() {
       {!isVertical && <TabBar />}
       <UpdateBanner {...updateState} />
       <div className="flex-1 min-h-0 flex">
-        {isVertical && <VerticalTabBar />}
-        {sidebarOpen && (
+        {isVertical && sidebarSide === "left" && <VerticalTabBar />}
+        {sidebarOpen && sidebarSide === "left" && (
           <Sidebar
             rootDir={activeTab?.workingDir || ""}
             onOpenFile={handleOpenFile}
@@ -1392,6 +1532,15 @@ export default function App() {
             project tab — opening and closing it are global by construction.
             Sits outside the tab loop above for exactly that reason. */}
         {gameSidebarOpen && <GameSidebar />}
+        {/* Right dock mirrors the whole rail: tab strip on the window edge,
+            sidebar panel inside it, games innermost next to the content. */}
+        {sidebarOpen && sidebarSide === "right" && (
+          <Sidebar
+            rootDir={activeTab?.workingDir || ""}
+            onOpenFile={handleOpenFile}
+          />
+        )}
+        {isVertical && sidebarSide === "right" && <VerticalTabBar />}
       </div>
       <CommandPalette
         open={showPalette}
@@ -1423,8 +1572,18 @@ export default function App() {
       <NewJiraTicketModal />
       <TooltipHost />
       <JiraMcpStartupCheck />
+      <KnowledgeMcpStartupCheck />
       <WslHealthCheck />
       <HibernationEngine />
+      {/* NexusMind. The engine owns the single made:knowledge-changed listener
+          and the active-tab attach; the modals are always mounted and read
+          their open state from the knowledge store. */}
+      <KnowledgeEngine />
+      <KnowledgeToastHost />
+      <KnowledgeApprovalHost />
+      <KnowledgeConflictModal />
+      <KnowledgeRevisionModal />
+      <KnowledgeContextPreviewModal />
       <JiraNotifyEngine />
       <DevServerTerminalHost />
       <DevServerRestoreToast />

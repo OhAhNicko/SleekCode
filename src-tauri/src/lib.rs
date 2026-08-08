@@ -2,6 +2,7 @@ mod browser_view;
 mod cli_install;
 mod debug_log;
 mod jira_poll;
+mod knowledge;
 mod preview_proxy;
 mod pty;
 mod native_term;
@@ -59,6 +60,39 @@ pub(crate) fn wsl_command_in(distro: Option<&str>) -> Command {
         cmd.args(["-d", d]);
     }
     cmd
+}
+
+/// The environment variable carrying which MADE pane a CLI was launched in.
+/// Read by the knowledge MCP adapter to attribute writes to a session.
+pub(crate) const PANE_ID_ENV: &str = "MADE_PANE_ID";
+
+/// Add `MADE_PANE_ID/w` to a `WSLENV` value without disturbing what is there.
+///
+/// This is the PRIMARY mechanism for getting pane identity across the WSL
+/// boundary, and it works in both directions at once. `WSLENV` itself crosses
+/// Windows→WSL, so every pane inherits the declaration; the `/w` flag then
+/// forwards the named variable WSL→Windows at the interop boundary, which is
+/// what a WSL-launched CLI needs when it spawns `made-knowledge-mcp.exe`.
+///
+/// Appending rather than setting is load-bearing: WSLENV is a shared, colon-
+/// separated list, and clobbering it would silently break whatever else the
+/// user forwards. Idempotent, because setup() may run more than once in a
+/// StrictMode-style relaunch and a list with two copies is a list that grows.
+pub(crate) fn wslenv_with_pane_id(current: &str) -> String {
+    let already = current.split(':').any(|part| {
+        part.split('/')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(PANE_ID_ENV))
+    });
+    if already {
+        return current.to_string();
+    }
+    let entry = format!("{PANE_ID_ENV}/w");
+    if current.is_empty() {
+        entry
+    } else {
+        format!("{current}:{entry}")
+    }
 }
 
 /// Remove all Windows 11 DWM borders including the 1px top non-client border.
@@ -2618,6 +2652,338 @@ async fn git_ahead_behind(directory: String) -> Result<GitAheadBehind, String> {
     let ahead = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
     let behind = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
     Ok(GitAheadBehind { ahead, behind, has_remote: true })
+}
+
+// ── Git overview (status bar) ─────────────────────────────────────────────
+//
+// The tabbar's GitStatusBar used to make four invokes per refresh —
+// git_is_repo, git_branches, git_diff_stats, git_ahead_behind — up to six
+// process spawns, each its own wsl.exe round trip on WSL paths. Worse, a repo
+// that lives on the Windows drive but is opened through WSL
+// (\\wsl.localhost\…\mnt\c\…) pays the 9P filesystem tax on every worktree
+// scan: `git status` measured 4–7 s there vs 0.2 s for the native git.exe on
+// the very same checkout (porcelain output verified byte-identical). This
+// command replaces the whole cycle:
+//
+//  - Windows-drive dirs — plain C:\… AND the \mnt\<drive> translation — run
+//    native git.exe, READS ONLY. The write commands (pull, switch, commit, …)
+//    keep their existing routing so mutations always use the same git the
+//    user's shell does.
+//  - WSL ext4 dirs run ONE bash script over a single wsl.exe spawn, with the
+//    two worktree scans (status, numstat) as parallel background jobs.
+//
+// `--no-optional-locks` keeps these background reads from taking the index
+// lock out from under whatever git the user is running in a pane.
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitOverview {
+    is_repo: bool,
+    current: String,
+    branches: Vec<String>,
+    files_changed: u32,
+    insertions: u32,
+    deletions: u32,
+    ahead: u32,
+    behind: u32,
+    has_remote: bool,
+}
+
+impl GitOverview {
+    fn not_repo() -> Self {
+        GitOverview {
+            is_repo: false,
+            current: String::new(),
+            branches: Vec::new(),
+            files_changed: 0,
+            insertions: 0,
+            deletions: 0,
+            ahead: 0,
+            behind: 0,
+            has_remote: false,
+        }
+    }
+}
+
+/// `\\wsl.localhost\<distro>\mnt\<drive>\rest` → `<DRIVE>:\rest`. None for
+/// ext4 paths (`\home\…`), `/mnt/wsl*`, and anything that is not a
+/// single-letter drive mount.
+fn wsl_windows_drive_path(directory: &str) -> Option<String> {
+    let (_distro, linux_path) = parse_wsl_path(directory)?;
+    let rest = linux_path.strip_prefix("/mnt/")?;
+    let mut chars = rest.chars();
+    let drive = chars.next()?;
+    if !drive.is_ascii_alphabetic() {
+        return None;
+    }
+    let after = chars.as_str();
+    if !after.is_empty() && !after.starts_with('/') {
+        return None; // /mnt/wsl, /mnt/wslg — not drive mounts
+    }
+    let tail = after.replace('/', "\\");
+    Some(format!(
+        "{}:{}",
+        drive.to_ascii_uppercase(),
+        if tail.is_empty() { "\\" } else { tail.as_str() }
+    ))
+}
+
+/// Spawn git for the overview's read-only calls. Separate from `run_git` on
+/// purpose: no WSL routing (the caller already resolved the directory) and
+/// CREATE_NO_WINDOW so a background poll never flashes a console.
+fn overview_git(directory: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(directory);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.output().map_err(|e| format!("Failed to run git: {}", e))
+}
+
+/// `git branch` stdout → plain branch names. Same trims as `git_branches`.
+fn parse_branch_lines(stdout: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .map(|l| l.trim().trim_start_matches("* ").trim_start_matches("remotes/").to_string())
+        .filter(|l| !l.is_empty() && !l.contains("->"))
+        .collect()
+}
+
+/// `git diff --numstat` stdout → (insertions, deletions). Binary files show
+/// "-" in both columns; they count as 0, matching the awk sum in git_diff_stats.
+fn sum_numstat(stdout: &str) -> (u32, u32) {
+    let mut add = 0u32;
+    let mut del = 0u32;
+    for line in stdout.lines() {
+        let mut cols = line.split_whitespace();
+        add += cols.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+        del += cols.next().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
+    }
+    (add, del)
+}
+
+/// Native-git overview: the two worktree scans dominate (index refresh +
+/// untracked walk), so they run on threads while the cheap ref lookups share
+/// the calling thread.
+fn git_overview_native(dir: String) -> Result<GitOverview, String> {
+    let repo = overview_git(&dir, &["rev-parse", "--is-inside-work-tree"])
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !repo {
+        return Ok(GitOverview::not_repo());
+    }
+
+    let d = dir.clone();
+    let status_t = std::thread::spawn(move || {
+        overview_git(&d, &["--no-optional-locks", "status", "--porcelain=v1"])
+    });
+    let d = dir.clone();
+    let numstat_t = std::thread::spawn(move || {
+        overview_git(&d, &["--no-optional-locks", "diff", "--numstat", "HEAD"])
+    });
+
+    let current_out = overview_git(&dir, &["branch", "--show-current"])?;
+    let current = String::from_utf8_lossy(&current_out.stdout).trim().to_string();
+    let current = if current.is_empty() { "HEAD".to_string() } else { current };
+
+    let branches_out = overview_git(&dir, &["branch"])?;
+    let branches = parse_branch_lines(&String::from_utf8_lossy(&branches_out.stdout));
+
+    let upstream = overview_git(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]);
+    let (ahead, behind, has_remote) = match upstream {
+        Ok(ref out) if out.status.success() => {
+            let counts = overview_git(&dir, &["rev-list", "--left-right", "--count", "HEAD...@{u}"])?;
+            let line = String::from_utf8_lossy(&counts.stdout).trim().to_string();
+            let parts: Vec<&str> = line.split('\t').collect();
+            (
+                parts.first().and_then(|s| s.parse().ok()).unwrap_or(0),
+                parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0),
+                true,
+            )
+        }
+        _ => (0, 0, false),
+    };
+
+    let files_changed = match status_t.join() {
+        Ok(Ok(out)) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| !l.is_empty())
+            .count() as u32,
+        _ => 0,
+    };
+    let (insertions, deletions) = match numstat_t.join() {
+        Ok(Ok(out)) => sum_numstat(&String::from_utf8_lossy(&out.stdout)),
+        _ => (0, 0),
+    };
+
+    Ok(GitOverview {
+        is_repo: true,
+        current,
+        branches,
+        files_changed,
+        insertions,
+        deletions,
+        ahead,
+        behind,
+        has_remote,
+    })
+}
+
+/// One wsl.exe spawn for everything. The worktree scans run as background
+/// jobs; ref lookups run in the foreground meanwhile; `wait` joins them.
+const GIT_OVERVIEW_SCRIPT: &str = r#"
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo '::NOTREPO::'; exit 0; }
+files_f=$(mktemp); num_f=$(mktemp); ab_f=$(mktemp)
+( git --no-optional-locks status --porcelain=v1 2>/dev/null | grep -c . ) > "$files_f" &
+( git --no-optional-locks diff --numstat HEAD 2>/dev/null | awk '{a+=$1; d+=$2} END {print a+0, d+0}' ) > "$num_f" &
+(
+  up=$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null)
+  if [ -n "$up" ]; then
+    git rev-list --left-right --count 'HEAD...@{u}' 2>/dev/null | awk '{print $1, $2, 1}'
+  else
+    echo '0 0 0'
+  fi
+) > "$ab_f" &
+current=$(git branch --show-current 2>/dev/null)
+branch_list=$(git branch 2>/dev/null)
+wait
+echo "::CURRENT::${current}"
+echo "::FILES::$(cat "$files_f")"
+echo "::NUMSTAT::$(cat "$num_f")"
+echo "::AB::$(cat "$ab_f")"
+echo '::BRANCHES::'
+echo "$branch_list"
+rm -f "$files_f" "$num_f" "$ab_f"
+"#;
+
+fn parse_overview_output(stdout: &str) -> GitOverview {
+    if stdout.contains("::NOTREPO::") {
+        return GitOverview::not_repo();
+    }
+    let mut ov = GitOverview::not_repo();
+    ov.is_repo = true;
+    ov.current = "HEAD".to_string();
+    let mut branch_lines = String::new();
+    let mut in_branches = false;
+    for line in stdout.lines() {
+        if in_branches {
+            branch_lines.push_str(line);
+            branch_lines.push('\n');
+        } else if let Some(rest) = line.strip_prefix("::CURRENT::") {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() {
+                ov.current = trimmed.to_string();
+            }
+        } else if let Some(rest) = line.strip_prefix("::FILES::") {
+            ov.files_changed = rest.trim().parse().unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("::NUMSTAT::") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            ov.insertions = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+            ov.deletions = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+        } else if let Some(rest) = line.strip_prefix("::AB::") {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            ov.ahead = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+            ov.behind = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            ov.has_remote = parts.get(2).map(|s| *s == "1").unwrap_or(false);
+        } else if line == "::BRANCHES::" {
+            in_branches = true;
+        }
+    }
+    ov.branches = parse_branch_lines(&branch_lines);
+    ov
+}
+
+#[tauri::command]
+async fn git_overview(directory: String) -> Result<GitOverview, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if parse_wsl_path(&directory).is_some() {
+            // READS-ONLY reroute: a Windows-drive mount seen through WSL is the
+            // same checkout native git.exe reads 10–25× faster (9P tax).
+            if let Some(win_dir) = wsl_windows_drive_path(&directory) {
+                return git_overview_native(win_dir);
+            }
+            let output = run_bash_script(&directory, GIT_OVERVIEW_SCRIPT)?;
+            return Ok(parse_overview_output(&String::from_utf8_lossy(&output.stdout)));
+        }
+        git_overview_native(directory)
+    })
+    .await
+    .map_err(|e| format!("git_overview join error: {}", e))?
+}
+
+#[cfg(test)]
+mod git_overview_tests {
+    use super::*;
+
+    #[test]
+    fn windows_drive_translation() {
+        assert_eq!(
+            wsl_windows_drive_path(r"\\wsl.localhost\Ubuntu-24.04\mnt\c\Users\nikla\proj"),
+            Some(r"C:\Users\nikla\proj".to_string())
+        );
+        assert_eq!(
+            wsl_windows_drive_path(r"\\wsl$\Ubuntu\mnt\d\code"),
+            Some(r"D:\code".to_string())
+        );
+        // forward-slash spelling is normalized by parse_wsl_path
+        assert_eq!(
+            wsl_windows_drive_path("//wsl.localhost/Ubuntu-24.04/mnt/c/Users/x"),
+            Some(r"C:\Users\x".to_string())
+        );
+        // ext4 home — no translation
+        assert_eq!(
+            wsl_windows_drive_path(r"\\wsl.localhost\Ubuntu-24.04\home\nicko\projects\nano"),
+            None
+        );
+        // /mnt/wsl is not a drive mount
+        assert_eq!(wsl_windows_drive_path(r"\\wsl.localhost\Ubuntu\mnt\wsl\thing"), None);
+        // plain windows path is not a WSL path at all
+        assert_eq!(wsl_windows_drive_path(r"C:\Users\nikla"), None);
+        // bare drive root
+        assert_eq!(
+            wsl_windows_drive_path(r"\\wsl.localhost\Ubuntu\mnt\c"),
+            Some(r"C:\".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_full_overview() {
+        let out = "::CURRENT::main\n::FILES::25\n::NUMSTAT::589 6\n::AB::2 1 1\n::BRANCHES::\n* main\n  feature/x\n  remotes/origin/HEAD -> origin/main\n";
+        let ov = parse_overview_output(out);
+        assert!(ov.is_repo);
+        assert_eq!(ov.current, "main");
+        assert_eq!(ov.files_changed, 25);
+        assert_eq!(ov.insertions, 589);
+        assert_eq!(ov.deletions, 6);
+        assert_eq!(ov.ahead, 2);
+        assert_eq!(ov.behind, 1);
+        assert!(ov.has_remote);
+        assert_eq!(ov.branches, vec!["main".to_string(), "feature/x".to_string()]);
+    }
+
+    #[test]
+    fn parses_not_repo() {
+        let ov = parse_overview_output("::NOTREPO::\n");
+        assert!(!ov.is_repo);
+    }
+
+    #[test]
+    fn parses_detached_and_no_upstream() {
+        let out = "::CURRENT::\n::FILES::0\n::NUMSTAT::0 0\n::AB::0 0 0\n::BRANCHES::\n";
+        let ov = parse_overview_output(out);
+        assert!(ov.is_repo);
+        assert_eq!(ov.current, "HEAD");
+        assert!(!ov.has_remote);
+        assert!(ov.branches.is_empty());
+    }
+
+    #[test]
+    fn numstat_sum_skips_binary_rows() {
+        assert_eq!(sum_numstat("10\t2\tsrc/a.ts\n-\t-\tassets/logo.png\n3\t0\tb.rs\n"), (13, 2));
+    }
 }
 
 // ── Git over SSH (READ-ONLY) ──────────────────────────────────────────────
@@ -6199,21 +6565,35 @@ mod app_icon_win {
     }
 }
 
-/// Apply one of the bundled app-icon variants (Settings > Appearance >
-/// App icon) to the OS window — title bar, taskbar and Alt-Tab. Runtime-only:
-/// the exe/installer/shortcut icon stays whatever icons/icon.ico was at build
-/// time. `async` so the PNG decode + downscale never run inline on the
-/// WebView2 UI thread. The win32 NC guard already redraw-locks WM_SETICON,
-/// so no border flash.
-#[tauri::command]
-async fn set_app_icon_variant(window: tauri::WebviewWindow, variant: String) -> Result<(), String> {
-    let bytes: &[u8] = match variant.as_str() {
+/// The bundled app-icon masters (icons/variants/*.png), by picker id.
+fn app_icon_variant_png(variant: &str) -> Option<&'static [u8]> {
+    Some(match variant {
         "a" => include_bytes!("../icons/variants/icon-a.png"),
         "b" => include_bytes!("../icons/variants/icon-b.png"),
         "c" => include_bytes!("../icons/variants/icon-c.png"),
         "d" => include_bytes!("../icons/variants/icon-d.png"),
-        _ => return Err(format!("unknown app icon variant: {variant}")),
-    };
+        _ => return None,
+    })
+}
+
+/// Where the picked variant persists for the boot-time apply in setup().
+/// Lives in app_local_data_dir with a dev/live filename split (the same
+/// per-world rule knowledge::init uses) so a debug build's pick can never
+/// restyle the installed app or vice versa.
+fn app_icon_sidecar_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let dir = app.path().app_local_data_dir().ok()?;
+    Some(dir.join(if cfg!(debug_assertions) {
+        "app-icon-variant-dev.txt"
+    } else {
+        "app-icon-variant.txt"
+    }))
+}
+
+/// Set the OS window icon (taskbar button, Alt-Tab) to a bundled variant.
+fn apply_app_icon_variant(window: &tauri::WebviewWindow, variant: &str) -> Result<(), String> {
+    let bytes = app_icon_variant_png(variant)
+        .ok_or_else(|| format!("unknown app icon variant: {variant}"))?;
     let icon = tauri::image::Image::from_bytes(bytes).map_err(|e| e.to_string())?;
     #[cfg(target_os = "windows")]
     {
@@ -6222,12 +6602,39 @@ async fn set_app_icon_variant(window: tauri::WebviewWindow, variant: String) -> 
             return Err("app icon master must be square".into());
         }
         let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-        return app_icon_win::apply(hwnd.0 as isize, icon.rgba(), master);
+        app_icon_win::apply(hwnd.0 as isize, icon.rgba(), master)
     }
     #[cfg(not(target_os = "windows"))]
     {
         window.set_icon(icon).map_err(|e| e.to_string())
     }
+}
+
+/// Settings > Appearance > App icon. Applies immediately and persists the
+/// pick to the sidecar, so the NEXT boot re-applies it in setup() before the
+/// webview even loads — the frontend's own re-apply on mount lands seconds
+/// later (10s+ in dev builds) and only serves as a drift-repair fallback.
+/// The one surface this can never reach is a PINNED taskbar button: Windows
+/// draws pins from the shortcut/exe icon (icons/icon.ico — regenerated from
+/// variant C, the picker default). `async` so decode + downscale never run
+/// inline on the WebView2 UI thread. The win32 NC guard already redraw-locks
+/// WM_SETICON, so no border flash.
+#[tauri::command]
+async fn set_app_icon_variant(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    variant: String,
+) -> Result<(), String> {
+    apply_app_icon_variant(&window, &variant)?;
+    if let Some(path) = app_icon_sidecar_path(&app) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(&path, variant.as_bytes()) {
+            eprintln!("[made] app-icon sidecar write failed: {e}");
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -8643,15 +9050,19 @@ pub struct JiraMcpStatus {
 }
 
 /// Locate Claude Code's `~/.claude.json` for a given home directory.
-fn claude_json_at(home: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn claude_json_at(home: &std::path::Path) -> std::path::PathBuf {
     home.join(".claude.json")
 }
 
-/// Which CLI's MCP configuration a Jira request concerns. All three speak MCP
-/// and all three can reach the same Atlassian endpoint — they just keep their
-/// config in different places, in different formats.
+/// Which CLI's MCP configuration a request concerns. All three speak MCP —
+/// they just keep their config in different places, in different formats.
+///
+/// Named for Jira because that was the first configurator; `knowledge::
+/// mcp_config` now shares it, along with the scanners below. One type, because
+/// two enumerations of the same three CLIs would eventually disagree about
+/// which file each one reads.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum JiraCli {
+pub(crate) enum JiraCli {
     Claude,
     Codex,
     Gemini,
@@ -8660,7 +9071,7 @@ enum JiraCli {
 impl JiraCli {
     /// Unknown/absent means Claude: that is what every caller meant before the
     /// parameter existed, so an old caller keeps its old behaviour.
-    fn parse(raw: Option<&str>) -> Self {
+    pub(crate) fn parse(raw: Option<&str>) -> Self {
         match raw.unwrap_or("claude").trim().to_ascii_lowercase().as_str() {
             "codex" => JiraCli::Codex,
             "gemini" => JiraCli::Gemini,
@@ -8668,13 +9079,38 @@ impl JiraCli {
         }
     }
 
-    fn binary(self) -> &'static str {
+    pub(crate) fn binary(self) -> &'static str {
         match self {
             JiraCli::Claude => "claude",
             JiraCli::Codex => "codex",
             JiraCli::Gemini => "gemini",
         }
     }
+}
+
+/// One MCP server entry as it appears in a CLI's config: the name it is
+/// registered under, plus the command it launches when there is one.
+///
+/// The command is what makes "configured" and "configured to the RIGHT binary"
+/// two different answers — a leftover registration pointing at a moved or
+/// uninstalled MADE reads as Connected while every tool call goes nowhere.
+/// URL-transport servers (the Atlassian one) simply have no command.
+pub(crate) struct McpEntry {
+    pub(crate) name: String,
+    pub(crate) command: Option<String>,
+}
+
+/// Decides whether a server entry is the one being looked for. Takes the name
+/// AND the whole entry, because a server the user renamed is still the same
+/// server, and its command or URL is what proves it.
+pub(crate) type McpMatcher<'a> = &'a dyn Fn(&str, &serde_json::Value) -> bool;
+
+/// The `command` a JSON server entry launches, if it is a stdio server.
+pub(crate) fn json_entry_command(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Does this server entry point at Atlassian? Matches on the name OR the URL, so
@@ -8689,16 +9125,23 @@ fn is_atlassian_entry(name: &str, value: &serde_json::Value) -> bool {
     blob.contains("atlassian.com")
 }
 
-/// Scan a parsed `~/.claude.json` for an Atlassian MCP server, checking the
-/// user scope first and then this project's local scope.
-fn find_atlassian_in_claude_json(
+/// Scan a parsed `~/.claude.json` for a matching MCP server, checking the user
+/// scope first and then this project's local scope.
+pub(crate) fn find_mcp_in_claude_json(
     doc: &serde_json::Value,
     project_path: Option<&str>,
-) -> Option<(String, String)> {
+    matches: McpMatcher,
+) -> Option<(McpEntry, String)> {
     if let Some(servers) = doc.get("mcpServers").and_then(|v| v.as_object()) {
         for (name, value) in servers {
-            if is_atlassian_entry(name, value) {
-                return Some((name.clone(), "user".to_string()));
+            if matches(name, value) {
+                return Some((
+                    McpEntry {
+                        name: name.clone(),
+                        command: json_entry_command(value),
+                    },
+                    "user".to_string(),
+                ));
             }
         }
     }
@@ -8713,8 +9156,14 @@ fn find_atlassian_in_claude_json(
         }
         if let Some(servers) = entry.get("mcpServers").and_then(|v| v.as_object()) {
             for (name, value) in servers {
-                if is_atlassian_entry(name, value) {
-                    return Some((name.clone(), "local".to_string()));
+                if matches(name, value) {
+                    return Some((
+                        McpEntry {
+                            name: name.clone(),
+                            command: json_entry_command(value),
+                        },
+                        "local".to_string(),
+                    ));
                 }
             }
         }
@@ -8722,22 +9171,50 @@ fn find_atlassian_in_claude_json(
     None
 }
 
-/// An Atlassian entry in a doc's TOP-LEVEL `mcpServers` (the `.mcp.json`
-/// shape). Split out so the local and SSH paths share one notion of a match —
-/// two implementations of "is this Atlassian" would eventually disagree.
-fn find_atlassian_in_mcp_servers(doc: &serde_json::Value) -> Option<String> {
+/// The Atlassian view of the scanner above. A one-line wrapper on purpose: every
+/// Jira call site keeps the exact behaviour and the exact return type it had
+/// before the matcher parameter existed.
+fn find_atlassian_in_claude_json(
+    doc: &serde_json::Value,
+    project_path: Option<&str>,
+) -> Option<(String, String)> {
+    find_mcp_in_claude_json(doc, project_path, &is_atlassian_entry)
+        .map(|(entry, scope)| (entry.name, scope))
+}
+
+/// A matching entry in a doc's TOP-LEVEL `mcpServers` (the `.mcp.json` shape).
+/// Split out so the local and SSH paths share one notion of a match — two
+/// implementations of "is this the server" would eventually disagree.
+pub(crate) fn find_mcp_in_mcp_servers(
+    doc: &serde_json::Value,
+    matches: McpMatcher,
+) -> Option<McpEntry> {
     let servers = doc.get("mcpServers").and_then(|v| v.as_object())?;
     servers
         .iter()
-        .find(|(name, value)| is_atlassian_entry(name, value))
-        .map(|(name, _)| name.clone())
+        .find(|(name, value)| matches(name, value))
+        .map(|(name, value)| McpEntry {
+            name: name.clone(),
+            command: json_entry_command(value),
+        })
+}
+
+fn find_atlassian_in_mcp_servers(doc: &serde_json::Value) -> Option<String> {
+    find_mcp_in_mcp_servers(doc, &is_atlassian_entry).map(|e| e.name)
 }
 
 /// `.mcp.json` committed in the project itself (scope "project").
-fn find_atlassian_in_project_file(project_path: Option<&str>) -> Option<String> {
+pub(crate) fn find_mcp_in_project_file(
+    project_path: Option<&str>,
+    matches: McpMatcher,
+) -> Option<McpEntry> {
     let dir = project_path?;
     let raw = std::fs::read_to_string(std::path::Path::new(dir).join(".mcp.json")).ok()?;
-    find_atlassian_in_mcp_servers(&serde_json::from_str(&raw).ok()?)
+    find_mcp_in_mcp_servers(&serde_json::from_str(&raw).ok()?, matches)
+}
+
+fn find_atlassian_in_project_file(project_path: Option<&str>) -> Option<String> {
+    find_mcp_in_project_file(project_path, &is_atlassian_entry).map(|e| e.name)
 }
 
 /// Server name of a `[mcp_servers.<name>]` TOML header, or None for any other
@@ -8753,24 +9230,26 @@ fn codex_mcp_section_name(header: &str) -> Option<String> {
     if seg.is_empty() { None } else { Some(seg) }
 }
 
-/// Scan Codex's `~/.codex/config.toml` for an Atlassian MCP server.
+/// Scan Codex's `~/.codex/config.toml` for a matching MCP server.
 ///
 /// Deliberately a line scanner rather than a TOML parse: pulling in a TOML
 /// dependency to answer one yes/no question is not worth it, and the question
-/// is loose anyway — `is_atlassian_entry` matches on the server name OR any
-/// atlassian.com URL in its body, which survives whatever else the table holds.
-fn find_atlassian_in_codex_toml(raw: &str) -> Option<String> {
+/// is loose anyway — the matcher sees the server name OR its whole table body
+/// as a string, which survives whatever else the table holds.
+pub(crate) fn find_mcp_in_codex_toml(raw: &str, matches: McpMatcher) -> Option<McpEntry> {
     let mut current: Option<String> = None;
     let mut body = String::new();
-    let matches = |name: &Option<String>, body: &str| -> Option<String> {
+    let hit = |name: &Option<String>, body: &str| -> Option<McpEntry> {
         let name = name.as_ref()?;
-        is_atlassian_entry(name, &serde_json::Value::String(body.to_string()))
-            .then(|| name.clone())
+        matches(name, &serde_json::Value::String(body.to_string())).then(|| McpEntry {
+            name: name.clone(),
+            command: toml_command_in(body),
+        })
     };
     for line in raw.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
-            if let Some(found) = matches(&current, &body) {
+            if let Some(found) = hit(&current, &body) {
                 return Some(found);
             }
             body.clear();
@@ -8780,24 +9259,65 @@ fn find_atlassian_in_codex_toml(raw: &str) -> Option<String> {
             body.push('\n');
         }
     }
-    matches(&current, &body)
+    hit(&current, &body)
 }
 
-/// Find an Atlassian entry under ANY `mcpServers` object in a Gemini settings
+fn find_atlassian_in_codex_toml(raw: &str) -> Option<String> {
+    find_mcp_in_codex_toml(raw, &is_atlassian_entry).map(|e| e.name)
+}
+
+/// `command = "…"` out of an accumulated TOML table body. Same reasoning as the
+/// scanner above: one key, read by hand, rather than a parser dependency.
+pub(crate) fn toml_command_in(body: &str) -> Option<String> {
+    for line in body.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "command" {
+            continue;
+        }
+        let value = value.trim();
+        let unquoted = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .unwrap_or(value);
+        if !unquoted.is_empty() {
+            // TOML escapes backslashes in basic strings, and a Windows path is
+            // nothing but backslashes.
+            return Some(unquoted.replace("\\\\", "\\"));
+        }
+    }
+    None
+}
+
+/// Find a matching entry under ANY `mcpServers` object in a Gemini settings
 /// document. Gemini has reshuffled its settings schema more than once (0.49
 /// nests `security`/`general`/`model`); `mcpServers` is top-level today, and
 /// walking the tree means a future move reports the truth instead of silently
 /// claiming "not set up".
-fn find_atlassian_in_gemini_settings(doc: &serde_json::Value) -> Option<String> {
+pub(crate) fn find_mcp_in_gemini_settings(
+    doc: &serde_json::Value,
+    matches: McpMatcher,
+) -> Option<McpEntry> {
     let map = doc.as_object()?;
     if let Some(servers) = map.get("mcpServers").and_then(|v| v.as_object()) {
         for (name, value) in servers {
-            if is_atlassian_entry(name, value) {
-                return Some(name.clone());
+            if matches(name, value) {
+                return Some(McpEntry {
+                    name: name.clone(),
+                    command: json_entry_command(value),
+                });
             }
         }
     }
-    map.values().find_map(find_atlassian_in_gemini_settings)
+    map.values()
+        .find_map(|child| find_mcp_in_gemini_settings(child, matches))
+}
+
+/// Kept as a plain `fn(&Value) -> Option<String>` because the Jira call sites
+/// pass it by name to `and_then` and `find_map`.
+fn find_atlassian_in_gemini_settings(doc: &serde_json::Value) -> Option<String> {
+    find_mcp_in_gemini_settings(doc, &is_atlassian_entry).map(|e| e.name)
 }
 
 fn jira_mcp_status_for_home(
@@ -8888,7 +9408,7 @@ fn jira_mcp_status_for_home(
 /// "unknown" forever for someone who runs Codex in WSL and Claude nowhere. The
 /// other CLIs' markers are the fallback, so a distro with exactly one user
 /// still resolves whichever CLI is asked about.
-fn resolve_wsl_home_for(cli: JiraCli, distro: Option<&str>) -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_wsl_home_for(cli: JiraCli, distro: Option<&str>) -> Option<std::path::PathBuf> {
     let own = match cli {
         JiraCli::Claude => ".claude",
         JiraCli::Codex => ".codex",
@@ -9288,7 +9808,7 @@ fn jira_mcp_add_command(cli: JiraCli) -> String {
 ///
 /// Output is a few hundred bytes (a "server added" line and an OAuth URL), far
 /// below the pipe buffer, so polling without draining stdout cannot deadlock.
-fn wait_for_mcp_add(
+pub(crate) fn wait_for_mcp_add(
     mut child: Child,
     deadline: std::time::Duration,
 ) -> Result<Option<std::process::Output>, String> {
@@ -10050,7 +10570,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_unlock_keychain, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_read_image_data_uri, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, cli_install::cli_probe, cli_install::cli_install_start, cli_install::cli_install_cancel, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, set_app_icon_variant, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, get_gemini_notifications, get_gemini_notifications_windows, get_gemini_notifications_native, set_gemini_notifications, set_gemini_notifications_windows, set_gemini_notifications_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_status_ssh, jira_mcp_install, jira_mcp_install_direct, jira_mcp_install_ssh, jira_poll::jira_poll, jira_poll::jira_test_auth, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, toast_window_place, toast_window_hide, main_window_restore_focus, port_check, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_render_opts, native_term::native_term_list_mono_fonts, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_unlock_keychain, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_read_image_data_uri, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_overview, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, cli_install::cli_probe, cli_install::cli_install_start, cli_install::cli_install_cancel, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, set_app_icon_variant, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, get_gemini_notifications, get_gemini_notifications_windows, get_gemini_notifications_native, set_gemini_notifications, set_gemini_notifications_windows, set_gemini_notifications_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_status_ssh, jira_mcp_install, jira_mcp_install_direct, jira_mcp_install_ssh, jira_poll::jira_poll, jira_poll::jira_test_auth, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, toast_window_place, toast_window_hide, main_window_restore_focus, port_check, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_render_opts, native_term::native_term_list_mono_fonts, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown, knowledge::knowledge_status, knowledge::knowledge_open, knowledge::knowledge_close, knowledge::knowledge_remove, knowledge::knowledge_world, knowledge::knowledge_set_timezone, knowledge::knowledge_rescan, knowledge::knowledge_list_notes, knowledge::knowledge_get_note, knowledge::knowledge_create_note, knowledge::knowledge_update_note, knowledge::knowledge_archive_note, knowledge::knowledge_restore_note, knowledge::knowledge_rename_note, knowledge::knowledge_search, knowledge::knowledge_resolve_refs, knowledge::knowledge_history, knowledge::knowledge_get_revision, knowledge::knowledge_restore_revision, knowledge::knowledge_list_conflicts, knowledge::knowledge_get_conflict, knowledge::knowledge_resolve_conflict, knowledge::knowledge_update_state, knowledge::knowledge_add_decision, knowledge::knowledge_add_learning, knowledge::knowledge_create_handoff, knowledge::knowledge_list_handoffs, knowledge::knowledge_latest_handoff, knowledge::knowledge_consume_handoff, knowledge::knowledge_list_tasks, knowledge::knowledge_create_task, knowledge::knowledge_update_task, knowledge::knowledge_backlinks, knowledge::knowledge_link_entities, knowledge::knowledge_recent_changes, knowledge::knowledge_set_policy, knowledge::knowledge_append_gitignore, knowledge::knowledge_mark_own_edit, knowledge::knowledge_pane_update, knowledge::knowledge_mcp_connections, knowledge::knowledge_respond_approval, knowledge::knowledge_adapter_path, knowledge::knowledge_record_context, knowledge::knowledge_mcp_status, knowledge::knowledge_mcp_status_windows, knowledge::knowledge_mcp_status_native, knowledge::knowledge_mcp_install, knowledge::knowledge_mcp_install_direct, knowledge::knowledge_mcp_remove, knowledge::knowledge_mcp_remove_direct])
         .setup(|app| {
             // A3: build the shared wgpu Instance+Adapter on a background thread
             // NOW, so the one-time driver/DXGI enumeration (~534ms measured on
@@ -10092,6 +10612,29 @@ pub fn run() {
                     app.manage(handle);
                 }
                 Err(e) => eprintln!("[made] preview proxy failed to start: {e}"),
+            }
+
+            // Declare MADE_PANE_ID as a WSL-interop variable on THIS process,
+            // so every pane inherits the declaration and a Windows exe launched
+            // from inside WSL — which is exactly what the knowledge MCP adapter
+            // is — still sees which pane it belongs to. Must happen before any
+            // pane spawns, and it is the one mechanism that covers all four
+            // spawn paths including the fast `/usr/bin/env` one, which has no
+            // shell in which to export anything.
+            {
+                let current = std::env::var("WSLENV").unwrap_or_default();
+                let updated = wslenv_with_pane_id(&current);
+                if updated != current {
+                    std::env::set_var("WSLENV", &updated);
+                }
+            }
+
+            // NexusMind: per-project knowledge stores, their markdown
+            // projections, and the loopback listener the MCP adapters talk to.
+            // Non-fatal — a failure here costs the feature, never the app.
+            if let Err(e) = knowledge::init(app.handle().clone()) {
+                eprintln!("[made] knowledge service failed to start: {e}");
+                debug_log::dlog(&format!("[knowledge] init failed: {e}"));
             }
 
             // Auto-open DevTools in debug builds so the diagnostic logs from
@@ -10147,6 +10690,31 @@ pub fn run() {
                 // The browser pane hosts its wry webview in a child HWND of the
                 // same main window (see browser_view/host.rs).
                 browser_view::set_parent_hwnd(hwnd.0 as isize);
+
+                // Boot-apply the persisted app-icon pick (Settings >
+                // Appearance > App icon) before the webview loads. The
+                // frontend re-applies it on mount, but that lands seconds
+                // after the window is on screen (10s+ in dev builds); reading
+                // the sidecar here makes the pick hold from the first frame.
+                // "c" mirrors DEFAULT_APP_ICON_VARIANT in src/lib/app-icon.ts.
+                {
+                    let saved = app_icon_sidecar_path(app.handle())
+                        .and_then(|p| std::fs::read_to_string(p).ok())
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_default();
+                    let variant = if app_icon_variant_png(&saved).is_some() { saved } else { "c".to_string() };
+                    if let Some(bytes) = app_icon_variant_png(&variant) {
+                        match tauri::image::Image::from_bytes(bytes) {
+                            Ok(img) => {
+                                let master = img.width() as usize;
+                                if let Err(e) = app_icon_win::apply(hwnd.0 as isize, img.rgba(), master) {
+                                    eprintln!("[made] boot app-icon apply failed: {e}");
+                                }
+                            }
+                            Err(e) => eprintln!("[made] boot app-icon decode failed: {e}"),
+                        }
+                    }
+                }
                 let hwnd_raw = hwnd.0 as isize;
                 let border_app_handle = app.handle().clone();
                 window
@@ -10398,6 +10966,34 @@ url = "https://mcp.atlassian.com/v1/mcp/authv2"
         assert_eq!(codex_mcp_section_name("[mcp_servers.a.env]").as_deref(), Some("a"));
         assert_eq!(codex_mcp_section_name("[mcp_servers.\"my server\"]").as_deref(), Some("my server"));
         assert_eq!(codex_mcp_section_name("[tui]"), None);
+    }
+
+    /// WSLENV is a SHARED, colon-separated list the user may already be using.
+    /// Clobbering it would silently stop forwarding whatever else is in there,
+    /// and duplicating our own entry would make it grow on every relaunch.
+    #[test]
+    fn wslenv_appends_the_pane_id_without_disturbing_anything_else() {
+        assert_eq!(wslenv_with_pane_id(""), "MADE_PANE_ID/w");
+        assert_eq!(wslenv_with_pane_id("FOO/p"), "FOO/p:MADE_PANE_ID/w");
+        assert_eq!(
+            wslenv_with_pane_id("FOO/p:BAR/l"),
+            "FOO/p:BAR/l:MADE_PANE_ID/w"
+        );
+        // Idempotent, in every spelling Windows would consider the same name.
+        assert_eq!(wslenv_with_pane_id("MADE_PANE_ID/w"), "MADE_PANE_ID/w");
+        assert_eq!(
+            wslenv_with_pane_id("FOO/p:MADE_PANE_ID/w:BAR/l"),
+            "FOO/p:MADE_PANE_ID/w:BAR/l"
+        );
+        assert_eq!(wslenv_with_pane_id("made_pane_id/w"), "made_pane_id/w");
+        // A different flag on the same variable is still that variable — adding
+        // a second entry for it would be the duplicate we are avoiding.
+        assert_eq!(wslenv_with_pane_id("MADE_PANE_ID/p"), "MADE_PANE_ID/p");
+        // A variable whose name merely CONTAINS ours is a different variable.
+        assert_eq!(
+            wslenv_with_pane_id("MADE_PANE_ID_EXTRA/w"),
+            "MADE_PANE_ID_EXTRA/w:MADE_PANE_ID/w"
+        );
     }
 
     #[test]

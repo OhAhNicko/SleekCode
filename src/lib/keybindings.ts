@@ -27,6 +27,7 @@ export type CommandId =
   | "app.promptSearch"
   | "app.paneSearch"
   | "app.fileExplorer"
+  | "app.toggleKnowledge"
   | "app.codeReview"
   | "app.toggleMiniGames"
   | "app.devtools"
@@ -150,6 +151,7 @@ export const KEYBINDINGS: readonly KeyBinding[] = [
   { command: "pane.focusPrev", chords: [C("[", { ctrl: true, shift: true })], label: "Focus previous pane", group: "General", ownedBy: "app" },
   { command: "app.toggleSidebar", chords: [C("b", { ctrl: true })], label: "Toggle file sidebar", group: "General", ownedBy: "app" },
   { command: "app.fileExplorer", chords: [C("E", { ctrl: true, shift: true })], label: "Toggle file explorer", group: "General", ownedBy: "app" },
+  { command: "app.toggleKnowledge", chords: [C("K", { ctrl: true, shift: true })], label: "Toggle knowledge sidebar", group: "General", ownedBy: "app" },
   { command: "app.palette", chords: [C("k", { ctrl: true }), C("P", { ctrl: true, shift: true })], label: "Command palette", group: "General", ownedBy: "app", extraRows: [{ keys: ["Ctrl", "Shift", "P"], label: "Command palette" }] },
   { command: "app.settings", chords: [C(",", { ctrl: true })], label: "Settings", group: "General", ownedBy: "app" },
   { command: "tab.next", chords: [C("Tab", { ctrl: true })], label: "Next tab", group: "General", ownedBy: "app" },

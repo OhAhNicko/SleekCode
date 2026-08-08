@@ -4,7 +4,7 @@
   "version": "0.2.16",
   "identifier": "com.made.app",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "cargo build --manifest-path src-tauri/Cargo.toml --bin made-knowledge-mcp && npm run dev",
     "devUrl": "http://localhost:5420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"

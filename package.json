@@ -11,11 +11,13 @@
     "tauri:dev": "bash scripts/tauri-dev.sh",
     "tauri:build": "bash scripts/tauri-build.sh",
     "typecheck": "tsc --noEmit",
+    "test:rust": "bash scripts/cargo-test.sh",
     "icons": "python3 scripts/generate-icons.py"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/lang-markdown": "^6.5.2",
     "@codemirror/lang-python": "^6.2.1",
     "@codemirror/state": "^6.5.4",
     "@codemirror/view": "^6.39.16",

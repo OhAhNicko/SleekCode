@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef, useContext, createContext, Fragment } from "react";
+import LoadingDots from "./LoadingDots";
 import { nativeTermGpuInfo, nativeTermListMonoFonts, type GpuInfo } from "../lib/native-term-bridge";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -74,6 +75,15 @@ import { pingLlm } from "../lib/voice/llmClient";
 import { pingTts } from "../lib/voice/ttsClient";
 import { parseHotkey } from "../lib/voice/hotkey";
 import { VOICE_ENABLED } from "../lib/voice/feature-flag";
+import { useKnowledgeStore } from "../store/knowledgeStore";
+import { canonicalProjectKey, MEMORY_DIR_NAME } from "../lib/knowledge/keys";
+import KnowledgeMcpRow from "./knowledge/KnowledgeMcpRow";
+import {
+  KNOWLEDGE_CLIS,
+  connectionLine,
+  readKnowledgeMcpConnections,
+  type KnowledgeMcpConnection,
+} from "../lib/knowledge/mcp";
 
 // ─── Internal sub-components ───────────────────────────────────────────────
 
@@ -802,7 +812,7 @@ function UpdatesSection() {
               e.currentTarget.style.borderColor = "var(--ezy-border)";
             }}
           >
-            {checkStatus === "checking" ? "Checking..." : "Check for Updates"}
+            {checkStatus === "checking" ? <LoadingDots>Checking</LoadingDots> : "Check for Updates"}
           </button>
           {checkStatus === "available" && (
             <button
@@ -844,7 +854,7 @@ function UpdatesSection() {
           )}
           {checkStatus === "installing" && (
             <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-accent)", lineHeight: 1 }}>
-              Installing update, restarting...
+              <LoadingDots>Installing update, restarting</LoadingDots>
             </span>
           )}
         </div>
@@ -879,10 +889,7 @@ function UpdatesSection() {
           </span>
         )}
         <div style={{ borderTop: "1px solid var(--ezy-border)", paddingTop: 14, marginTop: 4 }}>
-          <SettingsRow
-            label="Show changelog popup after updates"
-            description="Shown on the next launch after an update."
-          >
+          <SettingsRow label="Show changelog popup after updates">
             <ToggleSwitch checked={showChangelogOnUpdate} onChange={setShowChangelogOnUpdate} />
           </SettingsRow>
         </div>
@@ -953,10 +960,10 @@ function UpdatesSection() {
                     ) : isThisRow ? (
                       <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-accent)" }}>
                         {downgrade.installing
-                          ? "Installing, restarting..."
+                          ? <LoadingDots>Installing, restarting</LoadingDots>
                           : downgrade.total
                             ? `Downloading ${Math.min(100, Math.round((downgrade.downloaded / downgrade.total) * 100))}%`
-                            : "Downloading..."}
+                            : <LoadingDots>Downloading</LoadingDots>}
                       </span>
                     ) : (
                       <button
@@ -1348,7 +1355,7 @@ function JiraPluginRow({ cli }: { cli: JiraCli }) {
         )}
         <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-secondary)" }}>
           <span style={{ width: 7, height: 7, borderRadius: "50%", backgroundColor: dot, flexShrink: 0 }} />
-          {status === null ? "Checking…" : label}
+          {status === null ? <LoadingDots>Checking</LoadingDots> : label}
         </span>
         {!connected && (
           <button
@@ -1371,7 +1378,7 @@ function JiraPluginRow({ cli }: { cli: JiraCli }) {
               fontFamily: "inherit",
             }}
           >
-            {busy ? "Setting up…" : "Set up"}
+            {busy ? <LoadingDots>Setting up</LoadingDots> : "Set up"}
           </button>
         )}
       </div>
@@ -1432,7 +1439,7 @@ function CliInstallRow({ cli }: { cli: AiCli }) {
           }}
         >
           <span style={{ width: 7, height: 7, borderRadius: "50%", backgroundColor: dot, flexShrink: 0 }} />
-          {status === null ? "Checking…" : label}
+          {status === null ? <LoadingDots>Checking</LoadingDots> : label}
         </span>
         {status === "missing" && (
           <button
@@ -1461,7 +1468,7 @@ function CliInstallRow({ cli }: { cli: AiCli }) {
 
 function TestButton({ onClick, state }: { onClick: () => void; state: PingState }) {
   const label =
-    state.status === "checking" ? "Testing…" :
+    state.status === "checking" ? <LoadingDots>Testing</LoadingDots> :
     state.status === "ok" ? `OK ${state.ms}ms` :
     state.status === "fail" ? "Failed" :
     "Test";
@@ -1609,9 +1616,9 @@ function VoiceAgentSection() {
       <SettingsSection
         id="voice"
         title="Voice agent"
-        description="Speak commands in English or Swedish. Whisper transcribes, a local LLM maps intent to actions."
+        description="Whisper transcribes, a local LLM maps intent to actions."
       >
-        <SettingsRow label="Enable voice agent" description="When off, the mic button and hotkey do nothing.">
+        <SettingsRow label="Enable voice agent">
           <ToggleSwitch checked={voiceEnabled} onChange={setVoiceEnabled} />
         </SettingsRow>
         <SettingsRow
@@ -1673,7 +1680,7 @@ function VoiceAgentSection() {
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection id="voice-llm" title="LLM (intent → action)" description="OpenAI-compatible endpoint with tool calling. Mistral Nemo and Qwen 2.5 handle Swedish well.">
+      <SettingsSection id="voice-llm" title="LLM (intent → action)" description="OpenAI-compatible endpoint with tool calling.">
         <SettingsRow label="Endpoint URL">
           <TextInput value={llmUrl} onChange={setLlmUrl} placeholder="http://<mac-mini-tailscale>:8765/v1/chat/completions" monospace />
         </SettingsRow>
@@ -1745,16 +1752,292 @@ function parsePresetJson(raw: string): { name: string; overrides: ColorOverrides
   return { name, overrides };
 }
 
+// ─── NexusMind ─────────────────────────────────────────────────────────────
+
+/**
+ * Adapters attached to this MADE right now (spec §7.9).
+ *
+ * The rows above answer "is it registered?"; this answers "is it working?".
+ * They come apart often enough to be worth separating: a CLI registered before
+ * MADE moved, or a pane started before the server was added, is configured and
+ * not connected — and only this list can tell you that.
+ *
+ * Polled rather than pushed: connections come and go with pane lifetimes, and
+ * the panel is only on screen while someone is looking at it.
+ */
+function KnowledgeMcpConnections({
+  Row,
+}: {
+  Row: (props: { label: string; description?: string; children: React.ReactNode }) => React.ReactElement | null;
+}) {
+  const [connections, setConnections] = useState<KnowledgeMcpConnection[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const read = () => {
+      void readKnowledgeMcpConnections().then((list) => {
+        if (alive) setConnections(list);
+      });
+    };
+    read();
+    const timer = setInterval(read, 5_000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  return (
+    <Row
+      label="Agent connections"
+      description="Live MCP adapters talking to this MADE instance."
+    >
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "flex-end",
+          gap: 3,
+          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+          color: "var(--ezy-text-secondary)",
+        }}
+      >
+        {connections === null ? (
+          <span style={{ color: "var(--ezy-text-muted)" }}><LoadingDots>Checking</LoadingDots></span>
+        ) : connections.length === 0 ? (
+          <span style={{ color: "var(--ezy-text-muted)" }}>No agent connections</span>
+        ) : (
+          connections.map((c, i) => (
+            <span
+              key={`${c.agentKind}-${c.paneId ?? i}`}
+              style={{ display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  backgroundColor: "#10b981",
+                  flexShrink: 0,
+                }}
+              />
+              {connectionLine(c)}
+            </span>
+          ))
+        )}
+      </div>
+    </Row>
+  );
+}
+
+/**
+ * Shared agent knowledge settings.
+ *
+ * Two of these are machine-wide preferences and two are about the project in
+ * front of you, which is why the project ones name it: a control that silently
+ * applies to "whatever is active" is one people change from the wrong place.
+ *
+ * The write policy is deliberately NOT a persisted app setting. It decides what
+ * agents may write to a project's memory, so it lives in the knowledge service
+ * next to the data it protects and survives a cleared local store.
+ */
+function NexusMindSection() {
+  const autoAttach = useAppStore((s) => s.knowledgeAutoAttach);
+  const setAutoAttach = useAppStore((s) => s.setKnowledgeAutoAttach);
+  const notifEnabled = useAppStore((s) => s.knowledgeNotifEnabled);
+  const setNotifEnabled = useAppStore((s) => s.setKnowledgeNotifEnabled);
+
+  const projectPath = useAppStore(
+    (s) => s.tabs.find((t) => t.id === s.activeTabId)?.workingDir ?? "",
+  );
+  const projectName = useAppStore((s) => {
+    const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    return tab?.customName || tab?.name || "";
+  });
+  const projectKey = canonicalProjectKey(projectPath);
+  const project = useKnowledgeStore((s) => s.projects[projectKey]);
+  const initialize = useKnowledgeStore((s) => s.initialize);
+  const setPolicy = useKnowledgeStore((s) => s.setPolicy);
+
+  // Which machine a pane's CLI would run on — the same resolution the Jira row
+  // uses. A remote project's panes run their CLI on the SERVER, where MADE's
+  // adapter does not exist, so the rows say so rather than describing this
+  // machine's config.
+  const terminalBackend = useAppStore((s) => s.terminalBackend);
+  const activeServerId = useAppStore((s) => s.tabs.find((t) => t.id === s.activeTabId)?.serverId);
+  const mcpBackend: TerminalBackend = activeServerId
+    ? "ssh"
+    : terminalBackend ?? getDefaultBackend();
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const status = project?.status;
+  const ready = status === "ready" || status === "readonly";
+  const policyReason =
+    status === "remote-unsupported"
+      ? "Knowledge is local-only — SSH projects are not supported yet"
+      : status === "readonly"
+        ? project?.readonlyReason || "Knowledge is read-only in this instance"
+        : ready
+          ? null
+          : "Initialize knowledge for this project first";
+
+  return (
+    <SettingsSection
+      id="nexusmind"
+      title="NexusMind"
+      description="Shared project memory your agents can read and write."
+    >
+      <SettingsRow label="Attach knowledge on project open">
+        <ToggleSwitch checked={autoAttach} onChange={setAutoAttach} />
+      </SettingsRow>
+
+      <SettingsRow
+        label="Memory write policy"
+        description={
+          projectName
+            ? `Applies to ${projectName}. Every write is revisioned.`
+            : "Open a project to set its write policy."
+        }
+      >
+        <span data-tooltip={policyReason ?? undefined}>
+          <SegmentedControl
+            options={[
+              { value: "read-only" as const, label: "Read only" },
+              { value: "ask" as const, label: "Ask before write" },
+              { value: "trusted" as const, label: "Trusted" },
+            ]}
+            value={project?.policy ?? "ask"}
+            disabled={!!policyReason || busy}
+            onChange={(v) => {
+              setError(null);
+              setBusy(true);
+              void setPolicy(projectPath, v)
+                .catch((e) => setError(String(e)))
+                .finally(() => setBusy(false));
+            }}
+          />
+        </span>
+      </SettingsRow>
+
+      {KNOWLEDGE_CLIS.map((cli) => (
+        <KnowledgeMcpRow
+          key={cli}
+          cli={cli}
+          backend={mcpBackend}
+          projectPath={projectPath || undefined}
+          Row={SettingsRow}
+        />
+      ))}
+
+      <KnowledgeMcpConnections Row={SettingsRow} />
+
+      <SettingsRow
+        label="This project"
+        description={
+          !projectPath
+            ? "No project is active."
+            : ready
+              ? `Ready · ${project?.notes.length ?? 0} notes · rev ${project?.revision ?? 0}`
+              : status === "remote-unsupported"
+                ? "SSH projects are not supported yet."
+                : status === "unavailable"
+                  ? project?.lastError || "The knowledge service is not available."
+                  : "Not initialized — no files have been created in this project."
+        }
+      >
+        {ready ? (
+          <button
+            onClick={() => {
+              const path = project?.memoryDir;
+              if (path) void invoke("reveal_in_explorer", { path }).catch(() => {});
+            }}
+            aria-disabled={!project?.memoryDir}
+            data-tooltip={project?.memoryDir ? undefined : "Folder path not reported yet"}
+            style={{
+              padding: "5px 12px",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+              fontFamily: "var(--ezy-font-ui)",
+              color: "var(--ezy-text-secondary)",
+              backgroundColor: "transparent",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+              cursor: project?.memoryDir ? "pointer" : "default",
+              opacity: project?.memoryDir ? 1 : 0.6,
+            }}
+          >
+            Open {MEMORY_DIR_NAME} folder
+          </button>
+        ) : (
+          <button
+            onClick={() => {
+              if (!projectPath || busy) return;
+              setError(null);
+              setBusy(true);
+              void initialize(projectPath)
+                .then((ok) => {
+                  if (!ok) setError("Could not initialize knowledge for this project.");
+                })
+                .finally(() => setBusy(false));
+            }}
+            aria-disabled={!projectPath || status === "remote-unsupported" || busy}
+            data-tooltip={
+              status === "remote-unsupported"
+                ? "SSH projects are not supported yet"
+                : !projectPath
+                  ? "No project is active"
+                  : undefined
+            }
+            style={{
+              padding: "5px 12px",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+              fontFamily: "var(--ezy-font-ui)",
+              color: "var(--ezy-on-accent)",
+              backgroundColor: "var(--ezy-accent)",
+              border: "none",
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+              cursor: !projectPath || status === "remote-unsupported" || busy ? "default" : "pointer",
+              opacity: !projectPath || status === "remote-unsupported" || busy ? 0.6 : 1,
+            }}
+          >
+            {busy ? <LoadingDots>Initializing</LoadingDots> : "Initialize…"}
+          </button>
+        )}
+      </SettingsRow>
+
+      <SettingsRow label="Knowledge update notifications">
+        <ToggleSwitch checked={notifEnabled} onChange={setNotifEnabled} />
+      </SettingsRow>
+
+      {error && (
+        <div
+          style={{
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+            color: "var(--ezy-red)",
+            paddingTop: 8,
+            wordBreak: "break-word",
+          }}
+        >
+          {error}
+        </div>
+      )}
+    </SettingsSection>
+  );
+}
+
 // ─── Nav sections ──────────────────────────────────────────────────────────
 
 const NAV_SECTIONS = [
   { id: "general", label: "General" },
   { id: "appearance", label: "Appearance" },
   { id: "terminal", label: "Terminal" },
+  { id: "cli", label: "CLI" },
   { id: "browser", label: "Browser" },
   { id: "projects", label: "Projects" },
   { id: "editor", label: "Editor" },
   { id: "ai", label: "AI" },
+  { id: "nexusmind", label: "NexusMind" },
   { id: "jira", label: "Jira" },
   ...(VOICE_ENABLED ? [{ id: "voice", label: "Voice agent" }] : []),
   { id: "updates", label: "Updates" },
@@ -1977,6 +2260,8 @@ export default function SettingsPane() {
   const setCommitMsgMode = useAppStore((s) => s.setCommitMsgMode);
   const shadowAiCli = useAppStore((s) => s.shadowAiCli ?? "claude");
   const setShadowAiCli = useAppStore((s) => s.setShadowAiCli);
+  const aiWorkingMarkerDetection = useAppStore((s) => s.aiWorkingMarkerDetection ?? false);
+  const setAiWorkingMarkerDetection = useAppStore((s) => s.setAiWorkingMarkerDetection);
   const jiraSitesList = useAppStore((s) => s.jiraSites ?? []);
   const jiraDefaultSiteId = useAppStore((s) => s.jiraDefaultSiteId ?? "");
   const addJiraSite = useAppStore((s) => s.addJiraSite);
@@ -2063,6 +2348,10 @@ export default function SettingsPane() {
   const setProjectPaneTint = useAppStore((s) => s.setProjectPaneTint);
   const projectPaneTintStrength = useAppStore((s) => s.projectPaneTintStrength);
   const setProjectPaneTintStrength = useAppStore((s) => s.setProjectPaneTintStrength);
+  const projectHeaderTint = useAppStore((s) => s.projectHeaderTint);
+  const setProjectHeaderTint = useAppStore((s) => s.setProjectHeaderTint);
+  const projectHeaderTintStrength = useAppStore((s) => s.projectHeaderTintStrength);
+  const setProjectHeaderTintStrength = useAppStore((s) => s.setProjectHeaderTintStrength);
   const activePaneLift = useAppStore((s) => s.activePaneLift);
   const setActivePaneLift = useAppStore((s) => s.setActivePaneLift);
   const uiFont = useAppStore((s) => s.uiFont);
@@ -2187,8 +2476,10 @@ export default function SettingsPane() {
   const setBrowserAskBeforeDownload = useAppStore((s) => s.setBrowserAskBeforeDownload);
   const aiTimeBursts = useAppStore((s) => s.aiTimeBursts);
   const clearAiTimeStats = useAppStore((s) => s.clearAiTimeStats);
-  const verticalModeEnabled = useAppStore((s) => s.verticalModeEnabled);
-  const setVerticalModeEnabled = useAppStore((s) => s.setVerticalModeEnabled);
+  const verticalTabMode = useAppStore((s) => s.verticalTabMode);
+  const setVerticalTabMode = useAppStore((s) => s.setVerticalTabMode);
+  const sidebarSide = useAppStore((s) => s.sidebarSide);
+  const setSidebarSide = useAppStore((s) => s.setSidebarSide);
   const theme = getTheme(themeId);
   // What a picker's trigger swatch shows for a key: the override if set, else
   // the theme's own value. The three preset-only extras fall back to each
@@ -2272,7 +2563,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Auto-hibernate idle tabs"
-                description="Background tabs whose panes are provably idle free their WSL processes; activating the tab respawns them and resumes Claude sessions."
+                description="Idle background tabs free their WSL processes; reopening the tab resumes them."
               >
                 <ToggleSwitch checked={autoHibernateEnabled} onChange={setAutoHibernateEnabled} />
               </SettingsRow>
@@ -2294,13 +2585,10 @@ export default function SettingsPane() {
               <SettingsRow label="Auto-paste screenshots">
                 <ToggleSwitch checked={autoInsertClipboardImage} onChange={setAutoInsertClipboardImage} />
               </SettingsRow>
-              <SettingsRow label="Mask image paths in terminal (beta)" description="Shows [Image #N] in place of the path. The CLI still receives the real path.">
+              <SettingsRow label="Mask image paths in terminal (beta)" description="The CLI still receives the real path.">
                 <ToggleSwitch checked={maskImagePathsInTerminal} onChange={setMaskImagePathsInTerminal} />
               </SettingsRow>
-              <SettingsRow
-                label="Remember the screenshot viewer's size"
-                description="Off: it reopens centred at its default size every time. On: your last drag and resize stick."
-              >
+              <SettingsRow label="Remember the screenshot viewer's size">
                 <ToggleSwitch
                   checked={rememberScreenshotWindow}
                   onChange={setRememberScreenshotWindow}
@@ -2330,10 +2618,10 @@ export default function SettingsPane() {
               <SettingsRow label="Copy on select">
                 <ToggleSwitch checked={copyOnSelect} onChange={setCopyOnSelect} />
               </SettingsRow>
-              <SettingsRow label="Hover tooltips" description="Off hides every hover tooltip. File links keep working.">
+              <SettingsRow label="Hover tooltips" description="File links keep working.">
                 <ToggleSwitch checked={hoverTooltips} onChange={setHoverTooltips} />
               </SettingsRow>
-              <SettingsRow label="Show path in tabs" description="Double-click the name to rename it.">
+              <SettingsRow label="Show path in tabs">
                 <ToggleSwitch checked={showTabPath} onChange={setShowTabPath} />
               </SettingsRow>
               <SettingsRow label="Confirm before quitting">
@@ -2345,19 +2633,34 @@ export default function SettingsPane() {
               >
                 <ToggleSwitch checked={confirmReloadPanes} onChange={setConfirmReloadPanes} />
               </SettingsRow>
-              <SettingsRow label="Auto-rotate topbar in portrait" description="Taller than wide swaps the topbar for a vertical tab strip.">
-                <ToggleSwitch checked={verticalModeEnabled} onChange={setVerticalModeEnabled} />
+              <SettingsRow label="Vertical tab bar" description="Auto swaps to the vertical strip when the window is taller than wide.">
+                <SegmentedControl<"auto" | "always" | "never">
+                  options={[
+                    { value: "auto", label: "Auto" },
+                    { value: "always", label: "Always" },
+                    { value: "never", label: "Never" },
+                  ]}
+                  value={verticalTabMode}
+                  onChange={setVerticalTabMode}
+                />
               </SettingsRow>
-              <SettingsRow label="Slash command ghost text" description="Inline suggestion as you type a slash command.">
+              <SettingsRow label="Sidebar side">
+                <SegmentedControl<"left" | "right">
+                  options={[
+                    { value: "left", label: "Left" },
+                    { value: "right", label: "Right" },
+                  ]}
+                  value={sidebarSide}
+                  onChange={setSidebarSide}
+                />
+              </SettingsRow>
+              <SettingsRow label="Slash command ghost text">
                 <ToggleSwitch checked={slashCommandGhostText} onChange={setSlashCommandGhostText} />
               </SettingsRow>
               <SettingsRow label="Open panes in background">
                 <ToggleSwitch checked={openPanesInBackground} onChange={setOpenPanesInBackground} />
               </SettingsRow>
-              <SettingsRow
-                label="Open tab-bar menus on hover"
-                description="The + projects menu and the add-pane menu open on hover; moving between the two buttons switches menus instantly."
-              >
+              <SettingsRow label="Open tab-bar menus on hover" description="The + projects and add-pane menus.">
                 <ToggleSwitch checked={hoverOpenAddPaneMenu} onChange={setHoverOpenAddPaneMenu} />
               </SettingsRow>
               <SettingsRow label="Wide grid layout" description="First 4 panes go side-by-side before stacking.">
@@ -2440,7 +2743,7 @@ export default function SettingsPane() {
                     onMouseEnter={(e) => { if (!wslShutdownBusy) e.currentTarget.style.opacity = "0.85"; }}
                     onMouseLeave={(e) => { if (!wslShutdownBusy) e.currentTarget.style.opacity = "1"; }}
                   >
-                    {wslShutdownBusy ? "Restarting..." : "Restart WSL..."}
+                    {wslShutdownBusy ? <LoadingDots>Restarting</LoadingDots> : "Restart WSL..."}
                   </button>
                 </div>
               )}
@@ -2503,7 +2806,7 @@ export default function SettingsPane() {
               <SettingsRow label="Vibrant colors">
                 <ToggleSwitch checked={vibrantColors} onChange={setVibrantColors} />
               </SettingsRow>
-              <SettingsRow label="Project color pane tint" description="Washes each pane toward its project's tab color.">
+              <SettingsRow label="Project color pane tint">
                 <ToggleSwitch checked={projectPaneTint} onChange={setProjectPaneTint} />
               </SettingsRow>
               {projectPaneTint && (
@@ -2517,6 +2820,20 @@ export default function SettingsPane() {
                   />
                 </SettingsRow>
               )}
+              <SettingsRow label="Project color header tint">
+                <ToggleSwitch checked={projectHeaderTint} onChange={setProjectHeaderTint} />
+              </SettingsRow>
+              {projectHeaderTint && (
+                <SettingsRow label="Tint strength">
+                  <FontSizeStepper
+                    value={projectHeaderTintStrength}
+                    onChange={setProjectHeaderTintStrength}
+                    min={1}
+                    max={30}
+                    suffix="%"
+                  />
+                </SettingsRow>
+              )}
               <SettingsRow label="Lighten active pane" description="Off: the pane header alone marks the active pane.">
                 <ToggleSwitch checked={activePaneLift} onChange={setActivePaneLift} />
               </SettingsRow>
@@ -2526,7 +2843,7 @@ export default function SettingsPane() {
                   --ezy-radius-scale it sets, so the row previews itself. */}
               <SettingsRow
                 label="Corners"
-                description="Applies one roundness to every theme. Default keeps whatever the current theme asks for."
+                description="Default keeps each theme's own roundness."
               >
                 <SliderWithReset
                   value={radiusScaleOverride ?? theme.radiusScale ?? 1}
@@ -2546,7 +2863,7 @@ export default function SettingsPane() {
                   font, so it lives beside it instead of as its own row. */}
               <SettingsRow
                 label="UI font"
-                description="Each name is set in its own face. Atkinson Hyperlegible is built for low-vision reading, with an unslashed zero. Size scales every label, menu and panel; terminal text stays Hack, sized per CLI below."
+                description="Scales every label, menu and panel; terminal fonts live in the CLI tab."
               >
                 <div
                   style={{
@@ -2580,7 +2897,7 @@ export default function SettingsPane() {
             <SettingsSection
               id="terminal-colors"
               title="Terminal colors"
-              description="Override individual theme colors. Only colors you set change — everything else follows the theme, and your preset stays applied when you switch themes."
+              description="Only colors you set change — the rest follows the theme."
             >
               {/* vertical: the dropdown + three buttons are wider than the
                   label column tolerates — side-by-side crushed the label. */}
@@ -2722,7 +3039,7 @@ export default function SettingsPane() {
                   ))}
                   <SettingsRow
                     label="ANSI colors"
-                    description="The 16 palette colors CLI output is drawn with — diff added and removed lines, prompts, syntax."
+                    description="The 16 palette colors terminal output is drawn with."
                     vertical
                   >
                     <div
@@ -2799,7 +3116,7 @@ export default function SettingsPane() {
                 </>
               )}
             </SettingsSection>
-            <SettingsSection id="app-icon" title="App icon" description="Shown in the title bar and taskbar while MADE is running.">
+            <SettingsSection id="app-icon" title="App icon">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8 }}>
                 {APP_ICON_OPTIONS.map((opt) => {
                   const isSelected = opt.id === appIconVariant;
@@ -2861,7 +3178,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Block cursor opacity"
-                description="At 100% the block is solid and the character shows in the cursor accent color. Native panes only."
+                description="At 100% the character shows in the cursor accent color."
               >
                 <SliderWithReset
                   value={cursorBlockOpacity}
@@ -2874,7 +3191,22 @@ export default function SettingsPane() {
                 />
               </SettingsRow>
             </SettingsSection>
-            <SettingsSection id="cli" title="CLI Options">
+          </>
+        );
+
+      case "cli":
+        return (
+          <>
+            <SettingsSection
+              id="cli-install"
+              title="AI CLIs"
+              description="Checked on the machine the active project's panes run on."
+            >
+              {AI_CLIS.map((cli) => (
+                <CliInstallRow key={cli} cli={cli} />
+              ))}
+            </SettingsSection>
+            <SettingsSection id="cli-options" title="CLI Options">
             <SettingsRow label="Terminal font">
               <Dropdown<string>
                 value={terminalFontFamily}
@@ -2883,7 +3215,7 @@ export default function SettingsPane() {
                 width={260}
               />
             </SettingsRow>
-            <SettingsRow label="Per-CLI font" description="Pick a different face per CLI below.">
+            <SettingsRow label="Per-CLI font">
               <ToggleSwitch checked={perCliFontFamily} onChange={setPerCliFontFamily} />
             </SettingsRow>
             {(["claude", "codex", "gemini"] as TerminalType[]).map((cliType) => {
@@ -3025,102 +3357,11 @@ export default function SettingsPane() {
               );
             })}
           </SettingsSection>
-          </>
-        );
-
-      case "browser":
-        return (
-          <>
-            <SettingsSection id="browser" title="Browser">
-              <SettingsRow
-                label="Use the legacy preview for dev servers"
-                description="Only affects localhost. Websites always use the native browser — the legacy preview cannot load them."
-              >
-                <ToggleSwitch checked={browserIframeForLocalhost} onChange={setBrowserIframeForLocalhost} />
-              </SettingsRow>
-              <SettingsRow
-                label="Ask before saving a download"
-                description="Off saves straight to Downloads like Chrome. On keeps files off disk until you approve, but it re-requests the file, which some one-time download links will not allow."
-              >
-                <ToggleSwitch checked={browserAskBeforeDownload} onChange={setBrowserAskBeforeDownload} />
-              </SettingsRow>
-            </SettingsSection>
-          </>
-        );
-
-      case "terminal":
-        return (
-          <>
-            {isWindows() && (
-              <SettingsSection id="terminal-backend" title="Backend" description="Fallback when a project's path doesn't say WSL or Windows. A per-project setting overrides it.">
-                <SettingsRow label="Terminal backend">
-                  <SegmentedControl
-                    options={[
-                      { value: "wsl" as const, label: "WSL" },
-                      { value: "windows" as const, label: "Windows" },
-                    ]}
-                    value={terminalBackend as "wsl" | "windows"}
-                    onChange={(v) => setTerminalBackend(v)}
-                  />
-                </SettingsRow>
-                {terminalBackend === "wsl" && (
-                  <SettingsRow label="WSL distribution" description="Applies to new terminals.">
-                    <Dropdown<string>
-                      value={wslDistro ?? ""}
-                      onChange={handleWslDistroChange}
-                      options={[
-                        { value: "", label: "Default" },
-                        // Keep a saved distro visible even if it was
-                        // uninstalled — a blank control would hide that the
-                        // override is still active.
-                        ...(wslDistro && !wslDistros.includes(wslDistro)
-                          ? [{ value: wslDistro, label: `${wslDistro} (not found)` }]
-                          : []),
-                        ...wslDistros.map((d) => ({ value: d, label: d })),
-                      ]}
-                      width={200}
-                    />
-                  </SettingsRow>
-                )}
-              </SettingsSection>
-            )}
-            <SettingsSection
-              id="cli-install"
-              title="AI CLIs"
-              description="Checked on the machine the active project's panes run on."
-            >
-              {AI_CLIS.map((cli) => (
-                <CliInstallRow key={cli} cli={cli} />
-              ))}
-            </SettingsSection>
-            <SettingsSection id="native-renderer" title="Native renderer">
-              <SettingsRow label="Native terminal renderer" description="GPU renderer instead of xterm panes. Open terminals reload.">
-                <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
-              </SettingsRow>
-              <SettingsRow
-                label="Share one GPU device"
-                description="Native panes share a single GPU device instead of building their own — measured ~4x faster to open a pane. The trade: a driver reset affects every shared pane at once instead of one. Applies to panes you open after flipping this; open panes keep the device they started with."
-              >
-                <ToggleSwitch checked={nativeSharedGpu} onChange={setNativeSharedGpu} />
-              </SettingsRow>
-              <SettingsRow
-                label="Graphics backend"
-                description={
-                  gpuInfo
-                    ? "Chosen automatically. Shown because it is the first thing worth knowing when a pane renders wrong."
-                    : "Available once a native pane is open — the adapter is picked when the first pane creates its surface."
-                }
-              >
-                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", textAlign: "right" }}>
-                  {gpuInfo
-                    ? `${gpuInfo.backend} · ${gpuInfo.name}${gpuInfo.shared ? "" : " (per-pane adapter)"}`
-                    : "—"}
-                </span>
-              </SettingsRow>
+            <SettingsSection id="cli-integration" title="Terminal integration">
               <SettingsRow
                 vertical
                 label="Report terminal type to AI CLIs (TERM_PROGRAM)"
-                description="Claude enables synchronized output, progress and notifications only for terminals it recognises. If a feature stays quiet, pick another. Applies to the next pane you open."
+                description="Claude enables extra features only for terminals it recognises. Applies to new panes."
               >
                 <div className="flex items-center gap-2">
                   <Dropdown<string>
@@ -3143,7 +3384,7 @@ export default function SettingsPane() {
               <SettingsRow
                 vertical
                 label="Claude notification channel"
-                description="Which escape sequence Claude sends when it wants your attention. MADE turns iTerm2, Kitty and Ghostty into an in-app toast; Terminal Bell carries no message. Applies to new sessions."
+                description="MADE turns iTerm2, Kitty and Ghostty into in-app toasts. Applies to new sessions."
               >
                 <div className="flex items-center gap-2">
                   <Dropdown<ClaudeNotifChannel | "">
@@ -3197,7 +3438,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Gemini notifications"
-                description="Gemini ships desktop notifications off; enabled, a finished Gemini pane toasts like Claude and Codex. Applies to new sessions."
+                description="Finished Gemini panes toast like Claude and Codex. Applies to new sessions."
               >
                 <div className="flex items-center gap-2">
                   {geminiNotif === "unavailable" ? (
@@ -3272,7 +3513,87 @@ export default function SettingsPane() {
                   )}
                 </div>
               </SettingsRow>
-              <SettingsRow label="Mouse wheel acceleration" description="Scroll faster to travel further per notch. Fullscreen CLIs do their own acceleration.">
+            </SettingsSection>
+          </>
+        );
+
+      case "browser":
+        return (
+          <>
+            <SettingsSection id="browser" title="Browser">
+              <SettingsRow
+                label="Use the legacy preview for dev servers"
+                description="Only affects localhost — websites always use the native browser."
+              >
+                <ToggleSwitch checked={browserIframeForLocalhost} onChange={setBrowserIframeForLocalhost} />
+              </SettingsRow>
+              <SettingsRow
+                label="Ask before saving a download"
+                description="Approving re-requests the file, which some one-time download links will not allow."
+              >
+                <ToggleSwitch checked={browserAskBeforeDownload} onChange={setBrowserAskBeforeDownload} />
+              </SettingsRow>
+            </SettingsSection>
+          </>
+        );
+
+      case "terminal":
+        return (
+          <>
+            {isWindows() && (
+              <SettingsSection id="terminal-backend" title="Backend" description="Used when a project's path doesn't decide; a per-project setting overrides it.">
+                <SettingsRow label="Terminal backend">
+                  <SegmentedControl
+                    options={[
+                      { value: "wsl" as const, label: "WSL" },
+                      { value: "windows" as const, label: "Windows" },
+                    ]}
+                    value={terminalBackend as "wsl" | "windows"}
+                    onChange={(v) => setTerminalBackend(v)}
+                  />
+                </SettingsRow>
+                {terminalBackend === "wsl" && (
+                  <SettingsRow label="WSL distribution" description="Applies to new terminals.">
+                    <Dropdown<string>
+                      value={wslDistro ?? ""}
+                      onChange={handleWslDistroChange}
+                      options={[
+                        { value: "", label: "Default" },
+                        // Keep a saved distro visible even if it was
+                        // uninstalled — a blank control would hide that the
+                        // override is still active.
+                        ...(wslDistro && !wslDistros.includes(wslDistro)
+                          ? [{ value: wslDistro, label: `${wslDistro} (not found)` }]
+                          : []),
+                        ...wslDistros.map((d) => ({ value: d, label: d })),
+                      ]}
+                      width={200}
+                    />
+                  </SettingsRow>
+                )}
+              </SettingsSection>
+            )}
+            <SettingsSection id="native-renderer" title="Native renderer">
+              <SettingsRow label="Native terminal renderer" description="GPU renderer instead of xterm panes. Open terminals reload.">
+                <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
+              </SettingsRow>
+              <SettingsRow
+                label="Share one GPU device"
+                description="Panes open ~4x faster; a driver reset then affects every shared pane at once."
+              >
+                <ToggleSwitch checked={nativeSharedGpu} onChange={setNativeSharedGpu} />
+              </SettingsRow>
+              <SettingsRow
+                label="Graphics backend"
+                description={gpuInfo ? undefined : "Available once a native pane is open."}
+              >
+                <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)", textAlign: "right" }}>
+                  {gpuInfo
+                    ? `${gpuInfo.backend} · ${gpuInfo.name}${gpuInfo.shared ? "" : " (per-pane adapter)"}`
+                    : "—"}
+                </span>
+              </SettingsRow>
+              <SettingsRow label="Mouse wheel acceleration" description="Fullscreen CLIs do their own acceleration.">
                 <ToggleSwitch checked={wheelAcceleration} onChange={setWheelAcceleration} />
               </SettingsRow>
               <SettingsRow label="Scroll thumb acceleration" description="Off is a strict 1:1 drag, so the top of the bar is the top of the buffer.">
@@ -3313,7 +3634,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Dim text strength"
-                description="How faded dim (SGR 2) text renders. Native panes only."
+                description="Native panes only."
               >
                 <SliderWithReset
                   value={dimStrength}
@@ -3327,7 +3648,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Scrollback"
-                description="Lines of history per pane; dense layouts scale it down. Applies when a pane is created."
+                description="Dense layouts scale it down; applies when a pane is created."
               >
                 <Dropdown<string>
                   value={String(scrollbackLines)}
@@ -3411,7 +3732,7 @@ export default function SettingsPane() {
               {notifEnabled && (
                 <SettingsRow
                   label="Notification popups outside the app"
-                  description="MADE's own cards at the screen corner while the app is minimized or another app is in front."
+                  description="MADE's own cards, not Windows notifications."
                 >
                   <ToggleSwitch checked={notifOsPopupsEnabled} onChange={setNotifOsPopupsEnabled} />
                 </SettingsRow>
@@ -3453,7 +3774,7 @@ export default function SettingsPane() {
             </SettingsRow>
             <SettingsRow
               label="Custom scaffolds"
-              description="Extra .md templates offered when creating a project. No path characters in filenames."
+              description="Extra .md templates offered when creating a project."
               vertical
             >
               <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
@@ -3609,7 +3930,7 @@ export default function SettingsPane() {
               <SettingsRow label="Spawn on left">
                 <ToggleSwitch checked={browserSpawnLeft} onChange={setBrowserSpawnLeft} />
               </SettingsRow>
-              <SettingsRow label="Dev server button on tabs">
+              <SettingsRow label="Dev server link on tabs">
                 <SegmentedControl
                   options={[
                     { value: "all" as DevServerTabIconMode, label: "All tabs" },
@@ -3625,7 +3946,7 @@ export default function SettingsPane() {
               </SettingsRow>
             </SettingsSection>
             <SettingsSection id="codereview" title="Code Review">
-              <SettingsRow label="Collapse all files" description="Diffs start collapsed.">
+              <SettingsRow label="Collapse all files">
                 <ToggleSwitch checked={codeReviewCollapseAll} onChange={setCodeReviewCollapseAll} />
               </SettingsRow>
               <SettingsRow label="Commit message mode">
@@ -3707,10 +4028,16 @@ export default function SettingsPane() {
                   onChange={(v) => setShadowAiCli(v as "claude" | "codex")}
                 />
               </SettingsRow>
+              <SettingsRow label="Working badge reads the status line">
+                <ToggleSwitch checked={aiWorkingMarkerDetection} onChange={setAiWorkingMarkerDetection} />
+              </SettingsRow>
             </SettingsSection>
             <AiTimeStatsSection bursts={aiTimeBursts} onClear={clearAiTimeStats} />
           </>
         );
+
+      case "nexusmind":
+        return <NexusMindSection />;
 
       case "jira":
         return (
@@ -3718,7 +4045,7 @@ export default function SettingsPane() {
             <SettingsSection id="jira" title="Jira" description={jiraPluginTargetNote}>
               <SettingsRow
                 label="Jira mode"
-                description="Declutter the tab bar while a Jira project tab is active — the dev server and file sidebar buttons hide there. Ordinary project tabs keep them."
+                description="Hides the dev server and file sidebar buttons while a Jira tab is active."
               >
                 <ToggleSwitch checked={jiraMode} onChange={setJiraMode} />
               </SettingsRow>
@@ -3730,7 +4057,7 @@ export default function SettingsPane() {
               <SettingsRow
                 vertical
                 label="Jira sites"
-                description="Company name is enough — it becomes https://<company>.atlassian.net. Full addresses also work (self-hosted). New Jira projects are born on the default site."
+                description="A company name becomes <company>.atlassian.net; full addresses work too."
               >
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, width: 380, maxWidth: "100%" }}>
                   {jiraSitesList.map((origin) => (
@@ -3847,7 +4174,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Jira API token"
-                description="Create one at id.atlassian.com → Security → API tokens. Powers ticket-update notifications and the Assigned tab; stored on this machine."
+                description="Create one at id.atlassian.com → Security → API tokens. Stored on this machine."
               >
                 <div className="flex items-center gap-2">
                   <TextInput
@@ -3873,19 +4200,19 @@ export default function SettingsPane() {
               ))}
               <SettingsRow
                 label="Ticket update notifications"
-                description="Card, sound and (minimized) system toast when a watched ticket gets a reply, status change or edit. Checked about once a minute."
+                description="Replies, status changes and edits on watched tickets, checked about once a minute."
               >
                 <ToggleSwitch checked={jiraNotifEnabled} onChange={setJiraNotifEnabled} />
               </SettingsRow>
               <SettingsRow
                 label="My assigned tickets"
-                description="Adds an Assigned tab to the ticket rail with everything assigned to you. Opening one shows only its Jira page — Investigate promotes it to a full ticket."
+                description="Adds an Assigned tab with everything assigned to you."
               >
                 <ToggleSwitch checked={jiraAssignedMode} onChange={setJiraAssignedMode} />
               </SettingsRow>
               <SettingsRow
                 label="Ticket pane header"
-                description="Live Jira info in a ticket's CLI pane header, refreshed by the update poll."
+                description="Live Jira info in the ticket's CLI pane header."
               >
                 <div className="flex items-center gap-3" style={{ flexWrap: "wrap" }}>
                   {(
@@ -3918,7 +4245,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Claude pane side"
-                description="Which side the Claude pane sits on in a ticket view — the ticket's browser takes the other side."
+                description="The ticket's browser takes the other side."
               >
                 <SegmentedControl<"left" | "right">
                   options={[
@@ -3931,7 +4258,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Sub-ticket mode"
-                description="Default shows one conversation at a time — the rail switches between a ticket and its sub-tickets. Stacked shows them all at once, stacked above each other beside the ticket's browser, each foldable to its header from the chevron in its own header."
+                description="Stacked shows a ticket and its sub-tickets at once, each foldable to its header."
               >
                 <SegmentedControl<"default" | "stacked">
                   options={[
@@ -3944,7 +4271,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Detect pasted tickets"
-                description="Paste a ticket link into a ticket's browser address bar and that ticket opens as its own ticket — its own pane, browser and rail row — instead of navigating this one's page away. A bare ticket number works too, for a prefix this project already uses. Clicking a ticket link inside the page is unaffected."
+                description="A ticket link pasted into the address bar opens as its own ticket instead of replacing this one."
               >
                 <ToggleSwitch
                   checked={jiraDetectPastedTickets}
@@ -3953,7 +4280,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Switch to detected ticket"
-                description="Automatic shows the detected ticket straight away. Manual opens it in the background and offers a Switch button."
+                description="Manual opens it in the background and offers a Switch button."
               >
                 <SegmentedControl<"auto" | "manual">
                   options={[
@@ -3966,7 +4293,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Detected ticket is archived"
-                description="Whether a detected ticket whose only rows are archived gets unarchived and resumed, or left alone with a new conversation started. Either way you are told which happened."
+                description="Applies when every conversation of the detected ticket is archived."
               >
                 <SegmentedControl<"resume" | "new">
                   options={[
@@ -3979,7 +4306,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Default Jira CLAUDE.md"
-                description="Offered when creating a Jira project — copied into the source folder unless it already has a CLAUDE.md. Separate from the normal project template."
+                description="Copied into new Jira projects unless the source folder already has one."
               >
                 <PathPicker
                   value={defaultJiraClaudeMdPath}
@@ -4021,7 +4348,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Full-color ticket rows"
-                description="Paint each ticket row in its ticket color instead of just the left edge — text flips automatically for contrast."
+                description="Off: only the left edge carries the ticket color."
               >
                 <ToggleSwitch checked={jiraRowFullColor} onChange={setJiraRowFullColor} />
               </SettingsRow>
@@ -4146,7 +4473,7 @@ export default function SettingsPane() {
               />
               <button
                 type="button"
-                data-tooltip="Close search (Esc)" aria-label="Close search (Esc)"
+                aria-label="Close search (Esc)"
                 onClick={closeSearch}
                 style={{
                   width: 16,
@@ -4161,10 +4488,16 @@ export default function SettingsPane() {
                   color: "var(--ezy-text-muted)",
                   cursor: "pointer",
                   flexShrink: 0,
-                  transition: "color 120ms ease",
+                  transition: "background-color 120ms ease, color 120ms ease",
                 }}
-                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--ezy-text)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--ezy-text-muted)"; }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
+                  e.currentTarget.style.color = "var(--ezy-text)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.backgroundColor = "transparent";
+                  e.currentTarget.style.color = "var(--ezy-text-muted)";
+                }}
               >
                 <svg width="9" height="9" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M3 3l10 10M13 3 3 13" />

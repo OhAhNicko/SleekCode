@@ -29,6 +29,58 @@ interface MarkdownPreviewProps {
   source: string;
   /** Absolute path of the markdown file — the base for relative links/images. */
   filePath: string;
+  /**
+   * Render one muted line summarising the frontmatter (type, revision, author)
+   * above the document. Off by default: on an ordinary README the block is
+   * bookkeeping the reader did not ask for.
+   */
+  frontmatterSummary?: boolean;
+}
+
+/**
+ * Split a leading YAML frontmatter block off a markdown source.
+ *
+ * Markdown has no notion of frontmatter, so `---\nid: …\n---` renders as a
+ * setext H2 followed by a paragraph of key-value soup — the document appears to
+ * start with a heading nobody wrote. Every knowledge document carries
+ * frontmatter, so stripping it is the difference between a readable note and a
+ * mangled one, and it is a plain improvement for any other file too.
+ *
+ * Deliberately not a YAML parser: only a block that STARTS the file counts, and
+ * the search for its closing fence is bounded, so a document that merely uses
+ * `---` as a horizontal rule can never lose its first section.
+ */
+const MAX_FRONTMATTER_LINES = 40;
+
+export function splitFrontmatter(source: string): { fm: string | null; body: string } {
+  if (!source.startsWith("---\n") && !source.startsWith("---\r\n")) return { fm: null, body: source };
+  const lines = source.split("\n");
+  const limit = Math.min(lines.length, MAX_FRONTMATTER_LINES + 1);
+  for (let i = 1; i < limit; i++) {
+    if (lines[i].trimEnd() === "---") {
+      return {
+        fm: lines.slice(1, i).join("\n"),
+        body: lines.slice(i + 1).join("\n"),
+      };
+    }
+  }
+  return { fm: null, body: source };
+}
+
+/** Pull the few keys worth showing, without a YAML dependency. */
+function frontmatterLine(fm: string): string {
+  const pick = (key: string): string | undefined => {
+    const m = new RegExp(`^${key}:\\s*(.+)$`, "m").exec(fm);
+    return m ? m[1].trim().replace(/^["']|["']$/g, "") : undefined;
+  };
+  const parts: string[] = [];
+  const type = pick("type");
+  if (type) parts.push(type);
+  const revision = pick("revision");
+  if (revision) parts.push(`rev ${revision}`);
+  const updatedBy = pick("updated_by");
+  if (updatedBy) parts.push(`updated by ${updatedBy}`);
+  return parts.join(" · ");
 }
 
 /**
@@ -155,9 +207,18 @@ function slugify(text: string): string {
     .replace(/\s+/g, "-");
 }
 
-export default function MarkdownPreview({ source, filePath }: MarkdownPreviewProps) {
+export default function MarkdownPreview({
+  source,
+  filePath,
+  frontmatterSummary,
+}: MarkdownPreviewProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const baseDir = useMemo(() => dirOf(filePath), [filePath]);
+  const { fm, body } = useMemo(() => splitFrontmatter(source), [source]);
+  const summary = useMemo(
+    () => (frontmatterSummary && fm ? frontmatterLine(fm) : ""),
+    [frontmatterSummary, fm],
+  );
 
   const handleLinkClick = useCallback(
     (href: string) => (e: React.MouseEvent) => {
@@ -226,8 +287,19 @@ export default function MarkdownPreview({ source, filePath }: MarkdownPreviewPro
 
   return (
     <div ref={rootRef} className="ezy-md h-full overflow-auto">
+      {summary && (
+        <div
+          style={{
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+            color: "var(--ezy-text-muted)",
+            marginBottom: 6,
+          }}
+        >
+          {summary}
+        </div>
+      )}
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {source}
+        {body}
       </ReactMarkdown>
     </div>
   );

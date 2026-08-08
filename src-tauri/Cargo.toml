@@ -4,10 +4,43 @@ version = "0.2.16"
 description = "AI Terminal Workspace"
 authors = ["you"]
 edition = "2021"
+# The crate now produces TWO binaries, so a bare `cargo run` becomes ambiguous —
+# and `tauri dev` runs exactly that. Without this line the dev loop stops with
+# "could not determine which binary to run"; it must never be removed while the
+# adapter bin exists.
+default-run = "made"
 
 [lib]
 name = "made_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# The MCP stdio adapter every CLI launches. Standalone by construction: it does
+# NOT `use made_lib`, because linking the app's lib would drag tauri, wgpu and
+# WebView2 into a process whose whole job is to relay NDJSON between a stdin
+# pipe and a loopback socket. The few helpers it needs are duplicated (~30
+# lines); the wire structs it mirrors from knowledge/ipc.rs are pinned by a
+# shared JSON fixture test on both sides.
+#
+# HOW IT SHIPS: as a second bin of THIS package, and by that route only. Tauri's
+# build runs a whole-package `cargo build`, so this lands in target/<profile>/
+# beside made.exe, and the bundler installs every bin of the package into the
+# app directory — which is exactly where `mcp_config::adapter_exe_path` looks.
+#
+# It must NOT also be declared as `bundle.externalBin`. Doing both installs the
+# same file into the same directory from two WiX components, and MSI's ICE30
+# validation rejects that outright ("installed by two different components"),
+# failing the whole release. NSIS silently tolerates it, so the MSI target is
+# the only thing that catches the mistake.
+#
+# The dev loop needs one extra nudge, and this is the asymmetry to remember:
+# `tauri dev` runs `cargo RUN`, which builds only the selected bin — that is why
+# `default-run` above exists at all — so a fresh clone would have no adapter in
+# target/debug and every Settings row would report it missing. Hence the
+# explicit `cargo build --bin made-knowledge-mcp` in `beforeDevCommand`
+# (tauri.conf.json), which is JSON and cannot carry this note itself.
+[[bin]]
+name = "made-knowledge-mcp"
+path = "src/bin/made-knowledge-mcp/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -35,9 +68,38 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync"] }
+# "time" is for knowledge/: the watcher's trailing debounce, the event
+# coalescer's 150ms flush and the IPC handshake deadline are all tokio timers.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+
+# NexusMind knowledge service (knowledge/). The per-project store lives in
+# app_local_data_dir, NEVER inside the project: a WAL SQLite file opened across
+# the \\wsl.localhost SMB share reliably reports "database is locked" — the same
+# trap already documented for Codex's state_5.sqlite. The markdown projection in
+# <project>/.project-memory/ is the portable copy, and the DB is rebuildable
+# from it. `bundled` compiles the amalgamation with cl.exe (already required for
+# the tauri build) so the shipped SQLite is a known one, with FTS5.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Entity ids (kn_/rel_/cfl_/ho_/tk_ + a v4 simple) and the loopback IPC token.
+# Already in the tree transitively via tauri/wry; this makes it a direct dep.
+uuid = { version = "1", features = ["v4"] }
+
+# MCP server SDK for the `made-knowledge-mcp` bin. `server` is a default feature
+# bundling schemars + transport-async-rw; `transport-io` is the stdio adapter and
+# pulls tokio's io-std transitively.
+#
+# EXACT-pinned: rmcp is a young SDK that has already reshaped its handler traits
+# between minor versions, and a silent bump would break the one binary the CLIs
+# launch — with the failure showing up as "server disconnected" inside someone
+# else's tool, not as a build error here.
+#
+# A NORMAL dependency, deliberately not `optional = true` + `required-features`:
+# a feature-gated dep would make cargo compile made_lib twice (once with the
+# feature for the bin, once without for the app). rustc drops it from made.exe
+# anyway, because the lib never names it.
+rmcp = { version = "=3.1.1", features = ["server", "transport-io"] }
 
 # Live-reload for the text editor (file_watch.rs). Watches the parent directory
 # of every open file non-recursively so atomic saves (write-temp + rename) don't

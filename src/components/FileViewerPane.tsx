@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import LoadingDots from "./LoadingDots";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from "@codemirror/view";
-import { EditorState, Annotation, Compartment } from "@codemirror/state";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { EditorState, Annotation, Compartment, Transaction } from "@codemirror/state";
+import { defaultKeymap, history, historyKeymap, undo, undoDepth } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
 import { python } from "@codemirror/lang-python";
 import { css } from "@codemirror/lang-css";
+import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching, foldGutter } from "@codemirror/language";
 import { closeBrackets } from "@codemirror/autocomplete";
 import { search } from "@codemirror/search";
@@ -13,6 +15,7 @@ import { SiMarkdown } from "react-icons/si";
 import { getTheme } from "../lib/themes";
 import { buildEditorTheme } from "../lib/editor-theme";
 import { useAppStore } from "../store";
+import { useKnowledgeStore } from "../store/knowledgeStore";
 import { watchFile } from "../lib/file-watcher";
 import type { Extension } from "@codemirror/state";
 import PaneSearchBar from "./PaneSearchBar";
@@ -21,6 +24,8 @@ import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface
 import { useCodeMirrorSearch } from "../hooks/usePaneSearch";
 import { registerPaneSearch, unregisterPaneSearch } from "../lib/pane-search-registry";
 import PaneExpandButton from "./PaneExpandButton";
+import { canonicalProjectKey, isMemoryFilePath, projectRootForMemoryFile } from "../lib/knowledge/keys";
+import { markOwnEdit, rescanProject } from "../lib/knowledge/api";
 
 interface FileViewerPaneProps {
   initialFiles: string[];
@@ -48,6 +53,13 @@ function detectLanguage(filePath: string): Extension[] {
       return [python()];
     case "css":
       return [css()];
+    // Shared knowledge documents are markdown, and they are read in the source
+    // view as often as in the preview (frontmatter only exists there), so the
+    // source view highlights them rather than showing a wall of plain text.
+    case "md":
+    case "markdown":
+    case "mdx":
+      return [markdown()];
     default:
       return [];
   }
@@ -149,6 +161,20 @@ export default function FileViewerPane({
   const diskTextRef = useRef<string | null>(null);
   /** Per-file source/preview choice. Markdown defaults to preview. */
   const [previewByFile, setPreviewByFile] = useState<Record<string, boolean>>({});
+  /** True while the editor's history has something to step back through —
+   *  drives the header's undo arrow. Reset with each file load (the state
+   *  rebuild starts a fresh history). */
+  const [canUndo, setCanUndo] = useState(false);
+  /** Save-confirmed tick: a nonce so consecutive saves re-fire the pop-in;
+   *  0 = hidden. Cleared back to the disk icon after a short hold. */
+  const [saveFlash, setSaveFlash] = useState(0);
+  const saveFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (saveFlashTimer.current) clearTimeout(saveFlashTimer.current);
+    },
+    [],
+  );
 
   /**
    * Holds the soft-wrap extension so toggling the setting can reconfigure the
@@ -162,7 +188,12 @@ export default function FileViewerPane({
   wordWrapRef.current = editorWordWrap;
 
   const activeIsMarkdown = isMarkdown(activeFile);
-  const showPreview = activeIsMarkdown && (previewByFile[activeFile] ?? true);
+  // Markdown defaults to the rendered view — EXCEPT shared-memory files, which
+  // are opened to be EDITED: the Knowledge sidebar's "Open" must land in the
+  // source (raised 2026-08-08), and its separate "Open preview" action still
+  // forces the rendered view via the `markdownPreview` event flag.
+  const showPreview =
+    activeIsMarkdown && (previewByFile[activeFile] ?? !isMemoryFilePath(activeFile));
 
   // Mirrors for use inside the watcher callback, which is created once per file
   // and must not close over stale render values.
@@ -205,14 +236,50 @@ export default function FileViewerPane({
    * project tab too, otherwise closing it "once" leaves copies behind in every
    * other project. With `perProjectEditor` on, each tab owns its own editor and
    * the X is local again.
+   *
+   * Closing also drops the Knowledge sidebar's row highlight for any memory
+   * file open here: with no editor showing the note, "active" is a claim the
+   * sidebar can no longer back (user, 2026-08-08).
    */
   const requestClose = useCallback(() => {
+    const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+    const openMemory = files.filter(isMemoryFilePath).map(norm);
+    if (openMemory.length > 0) {
+      const k = useKnowledgeStore.getState();
+      for (const proj of Object.values(k.projects)) {
+        if (!proj.selectedNoteId) continue;
+        const sel = proj.notes.find((n) => n.id === proj.selectedNoteId);
+        if (sel?.filePath && openMemory.includes(norm(sel.filePath))) {
+          k.select(proj.path, null);
+        }
+      }
+    }
     if (perProjectEditor) {
       onClose();
       return;
     }
     window.dispatchEvent(new CustomEvent("made:close-fileviewer"));
-  }, [perProjectEditor, onClose]);
+  }, [files, perProjectEditor, onClose]);
+
+  /** Close one file's tab; closing the last one closes the pane. Shared by
+   *  the tab X and the row-click toggle. */
+  const filesRef = useRef(files);
+  filesRef.current = files;
+  const closeFile = useCallback(
+    (filePath: string) => {
+      const next = filesRef.current.filter((f) => f !== filePath);
+      if (next.length === 0) {
+        requestClose();
+        return;
+      }
+      if (activeFileRef.current === filePath) {
+        const idx = filesRef.current.indexOf(filePath);
+        setActiveFile(next[Math.min(idx, next.length - 1)]);
+      }
+      setFiles(next);
+    },
+    [requestClose],
+  );
 
   // Listen for files being added to this viewer
   useEffect(() => {
@@ -222,6 +289,20 @@ export default function FileViewerPane({
       // In per-project mode only the viewer the event was addressed to takes
       // the file; in global mode every viewer mirrors it.
       if (perProjectEditor && detail.viewerId && detail.viewerId !== paneId) return;
+      // Row-click TOGGLE (user, 2026-08-08): clicking the file that is
+      // already showing closes it. Only for bare row clicks — a link
+      // carrying a line number or a preview request must never close the
+      // file it targets — and never over unsaved edits.
+      if (
+        detail.toggle === true &&
+        detail.lineNumber == null &&
+        detail.markdownPreview !== true &&
+        detail.filePath === activeFileRef.current &&
+        filesRef.current.includes(detail.filePath)
+      ) {
+        if (!modifiedRef.current) closeFile(detail.filePath);
+        return;
+      }
       setFiles((prev) => {
         if (prev.includes(detail.filePath)) {
           setActiveFile(detail.filePath);
@@ -234,7 +315,25 @@ export default function FileViewerPane({
     };
     window.addEventListener("made:fileviewer-add", handler);
     return () => window.removeEventListener("made:fileviewer-add", handler);
-  }, [perProjectEditor, paneId]);
+  }, [perProjectEditor, paneId, closeFile]);
+
+  // "Open preview" — an opener can ask for the rendered view rather than the
+  // source. Recorded straight from `made:open-file` because the relay that
+  // actually adds the file (PaneGrid) forwards only the path. Markdown already
+  // defaults to preview, so this only matters for a file the user had
+  // previously flipped to source; setting it is idempotent either way.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail?.filePath || detail.markdownPreview !== true) return;
+      if (!isMarkdown(detail.filePath)) return;
+      setPreviewByFile((prev) =>
+        prev[detail.filePath] === true ? prev : { ...prev, [detail.filePath]: true },
+      );
+    };
+    window.addEventListener("made:open-file", handler);
+    return () => window.removeEventListener("made:open-file", handler);
+  }, []);
 
   /** Current buffer text: the live editor when mounted, else the last snapshot. */
   const getCurrentText = useCallback(
@@ -259,6 +358,16 @@ export default function FileViewerPane({
     setSaving(true);
     try {
       const text = getCurrentText();
+      // Saving a shared-memory file: tell the knowledge service this write is
+      // ours BEFORE it hits disk. Its watcher cannot tell our save from an
+      // agent's, and guessing wrong costs twice — the revision is credited to
+      // the wrong author, and the user gets a "knowledge updated" toast for the
+      // edit they just made. Fire-and-forget: attribution is worth degrading,
+      // the save is not.
+      const memoryRoot = projectRootForMemoryFile(activeFile);
+      if (memoryRoot) {
+        await markOwnEdit(memoryRoot, activeFile).catch(() => {});
+      }
       await invoke("write_file", { path: activeFile, content: text });
       contentRef.current = text;
       diskTextRef.current = text;
@@ -266,6 +375,36 @@ export default function FileViewerPane({
       // Our own write wins — any conflict we were holding is now resolved.
       setDiskConflict(false);
       pendingDiskRef.current = null;
+      // Import the save NOW rather than waiting for the filesystem watcher:
+      // on `\\wsl.localhost` projects (9P) notify provably never fires, and
+      // this is MADE's own write — there is nothing to wait for. The rescan
+      // reconciles and credits the revision to the user via the own-edit mark
+      // set above. Then the buffer is refreshed from disk: the reconcile
+      // RE-PROJECTED the file with bumped frontmatter (revision, updated_by),
+      // and a buffer still carrying the old revision makes the NEXT save a
+      // stale-base write — a manufactured conflict on every second save
+      // (found at runtime 2026-08-08; the viewer's own disk watcher is
+      // notify-based too and equally blind on 9P). The user's keystrokes
+      // outrank the refresh: skip it if they typed or switched files.
+      if (memoryRoot) {
+        const savedFile = activeFile;
+        void (async () => {
+          await rescanProject(memoryRoot).catch(() => {});
+          try {
+            const disk = await invoke<string>("read_file", { path: savedFile });
+            if (activeFileRef.current === savedFile && !modifiedRef.current) {
+              applyDisk(disk);
+            }
+          } catch {
+            // Nothing lost — the next save simply imports against head.
+          }
+        })();
+      }
+      // Confirmation tick in the header — nonce-keyed so back-to-back saves
+      // each re-fire the pop-in (the ScreenshotsOverlay copy-check pattern).
+      setSaveFlash((n) => n + 1);
+      if (saveFlashTimer.current) clearTimeout(saveFlashTimer.current);
+      saveFlashTimer.current = setTimeout(() => setSaveFlash(0), 1200);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -325,7 +464,10 @@ export default function FileViewerPane({
           anchor: Math.min(sel.anchor, disk.length),
           head: Math.min(sel.head, disk.length),
         },
-        annotations: ExternalReload.of(true),
+        // Kept OUT of the undo history: a disk reload is not a user edit, and
+        // recording it made Ctrl+Z right after a save "undo" the frontmatter
+        // refresh instead of the user's last typing.
+        annotations: [ExternalReload.of(true), Transaction.addToHistory.of(false)],
       });
       view.scrollDOM.scrollTop = scrollTop;
     }
@@ -336,6 +478,33 @@ export default function FileViewerPane({
     setDiskConflict(false);
     pendingDiskRef.current = null;
   }, []);
+
+  // Memory files get a second change signal beside the file watcher: the
+  // knowledge service's own revision counter. On `\\wsl.localhost` projects
+  // the watcher below never fires (9P emits no notifications), but every
+  // import — external edit swept in by the service's poll, an agent's MCP
+  // write — bumps the project revision, which this store subscription sees.
+  // A clean buffer follows the import; unsaved edits stay put and the save
+  // path's conflict machinery arbitrates, same as ever.
+  const activeMemoryRoot = projectRootForMemoryFile(activeFile);
+  const activeMemoryKey = activeMemoryRoot ? canonicalProjectKey(activeMemoryRoot) : "";
+  const knowledgeRevision = useKnowledgeStore((s) =>
+    activeMemoryKey ? (s.projects[activeMemoryKey]?.revision ?? 0) : 0,
+  );
+  useEffect(() => {
+    if (!activeMemoryRoot || knowledgeRevision === 0) return;
+    if (modifiedRef.current) return;
+    const file = activeFileRef.current;
+    void invoke<string>("read_file", { path: file })
+      .then((disk) => {
+        if (activeFileRef.current !== file) return;
+        if (modifiedRef.current) return;
+        if (disk !== (diskTextRef.current ?? contentRef.current)) applyDisk(disk);
+      })
+      .catch(() => {});
+    // applyDisk is stable ([] deps) and declared above; refs carry the rest.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [knowledgeRevision, activeMemoryRoot]);
 
   useEffect(() => {
     if (!activeFile) return;
@@ -416,6 +585,9 @@ export default function FileViewerPane({
         ]),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return;
+          // The header's undo arrow lights up exactly when Ctrl+Z would do
+          // something.
+          setCanUndo(undoDepth(update.state) > 0);
           // A live reload from disk is not a user edit.
           if (update.transactions.some((tr) => tr.annotation(ExternalReload))) return;
           setModified(true);
@@ -425,6 +597,7 @@ export default function FileViewerPane({
 
     const view = new EditorView({ state, parent: containerRef.current });
     viewRef.current = view;
+    setCanUndo(false); // fresh state = fresh history
 
     return () => {
       // Snapshot the buffer before tearing the view down so the markdown
@@ -451,18 +624,9 @@ export default function FileViewerPane({
   const handleCloseTab = useCallback(
     (filePath: string, e: React.MouseEvent) => {
       e.stopPropagation();
-      const next = files.filter((f) => f !== filePath);
-      if (next.length === 0) {
-        requestClose();
-        return;
-      }
-      if (activeFile === filePath) {
-        const idx = files.indexOf(filePath);
-        setActiveFile(next[Math.min(idx, next.length - 1)]);
-      }
-      setFiles(next);
+      closeFile(filePath);
     },
-    [files, activeFile, requestClose]
+    [closeFile]
   );
 
   const handleTabClick = useCallback((filePath: string) => {
@@ -588,32 +752,84 @@ export default function FileViewerPane({
           >
             {langLabel}
           </span>
-          {modified && (
-            <span className="text-[10px]" style={{ color: "var(--ezy-accent)" }}>
-              modified
-            </span>
-          )}
           {saving && (
             <span className="text-[10px]" style={{ color: "var(--ezy-text-muted)" }}>
-              Saving...
+              <LoadingDots>Saving</LoadingDots>
             </span>
           )}
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="var(--ezy-text-muted)"
-            strokeWidth="1.3"
-            strokeLinecap="round"
-            className="cursor-pointer hover:opacity-80"
-            style={{ opacity: modified ? 1 : 0.4 }}
-            onClick={handleSave}
-          >
-            <path d="M3 14V2h8l2 2v10H3z" />
-            <path d="M5 2v4h5V2" />
-            <path d="M5 14v-4h6v4" />
-          </svg>
+          {!showPreview && (
+            // Undo — steps the editor history back, same as Ctrl+Z. Lit only
+            // when there is something to undo; focus returns to the editor so
+            // typing continues where it left off.
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="var(--ezy-text-muted)"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={canUndo ? "cursor-pointer hover:opacity-80" : undefined}
+              data-tooltip={canUndo ? "Undo (Ctrl+Z)" : "Nothing to undo"}
+              style={{ opacity: canUndo ? 1 : 0.35, transition: "opacity 120ms ease" }}
+              onClick={() => {
+                const view = viewRef.current;
+                if (!view || !canUndo) return;
+                undo(view);
+                view.focus();
+              }}
+            >
+              <path d="M6.5 3.5 3 7l3.5 3.5" />
+              <path d="M3 7h6a4 4 0 0 1 4 4v1.5" />
+            </svg>
+          )}
+          {saveFlash > 0 ? (
+            // Save confirmed — the same green pop-in the screenshots viewer
+            // uses for copy. Takes the disk icon's slot so the header never
+            // changes width.
+            <svg
+              key={saveFlash}
+              width="12"
+              height="12"
+              viewBox="0 0 12 12"
+              aria-hidden="true"
+              className="check-pop-in"
+              style={{ flexShrink: 0 }}
+            >
+              <path
+                d="M2.5 6.5 L5 9 L9.5 3.5"
+                stroke="#3fb950"
+                strokeWidth="1.6"
+                fill="none"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          ) : (
+            // Unsaved edits read from the icon itself — accent strokes while
+            // modified, quiet grey when clean (the "modified" text label it
+            // replaces looked out of place).
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke={modified ? "var(--ezy-accent)" : "var(--ezy-text-muted)"}
+              strokeWidth="1.3"
+              strokeLinecap="round"
+              className="cursor-pointer hover:opacity-80"
+              style={{
+                opacity: modified ? 1 : 0.4,
+                transition: "stroke 120ms ease, opacity 120ms ease",
+              }}
+              onClick={handleSave}
+            >
+              <path d="M3 14V2h8l2 2v10H3z" />
+              <path d="M5 2v4h5V2" />
+              <path d="M5 14v-4h6v4" />
+            </svg>
+          )}
           <PaneExpandButton paneId={paneId} />
           <svg
             width="12"
@@ -673,7 +889,7 @@ export default function FileViewerPane({
             className="flex items-center justify-center h-full"
             style={{ color: "var(--ezy-text-muted)", fontSize: "calc(var(--ezy-font-scale, 1) * 13px)" }}
           >
-            Loading {fileName}...
+            <LoadingDots>Loading {fileName}</LoadingDots>
           </div>
         ) : error ? (
           <div

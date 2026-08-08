@@ -84,6 +84,14 @@ export interface DevServer {
    * Windows toolchain instead of failing inside WSL bash.
    */
   backend?: TerminalBackend;
+  /**
+   * Epoch ms of the last PTY byte before the launch went silent. Set by
+   * DevServerTerminalHost's stall sweep while status is "starting"; cleared the
+   * moment any output arrives. A wedged launch (e.g. the WSL→PowerShell interop
+   * hop never printing) is indistinguishable from a long compile without this —
+   * the 2026-08-07 frozen `tauri:dev` report.
+   */
+  stalledSince?: number;
 }
 
 // Recursive pane layout tree
@@ -271,7 +279,7 @@ export interface SearchResult {
   line_content: string;
 }
 
-export type SidebarTab = "files" | "remote-files" | "search" | "terminals";
+export type SidebarTab = "files" | "remote-files" | "search" | "terminals" | "knowledge";
 
 /** Visual placement of a pane: in the grid, full-screen overlay, or free-floating window. */
 export type PaneMode = "grid" | "expanded" | "float";
@@ -339,6 +347,19 @@ export type ShadowAiCli = "claude" | "codex";
 export type ComposerExpansion = "up" | "down" | "scroll";
 
 export interface GitAheadBehind {
+  ahead: number;
+  behind: number;
+  hasRemote: boolean;
+}
+
+/** Everything the git status bar needs, from ONE `git_overview` invoke. */
+export interface GitOverview {
+  isRepo: boolean;
+  current: string;
+  branches: string[];
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
   ahead: number;
   behind: number;
   hasRemote: boolean;

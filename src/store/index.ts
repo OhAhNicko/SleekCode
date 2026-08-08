@@ -19,10 +19,11 @@ import { createLayoutSlice, type LayoutSlice } from "./layoutSlice";
 import { createVoiceSlice, type VoiceSlice } from "./voiceSlice";
 import { createNativeRendererSlice, type NativeRendererSlice } from "./nativeRendererSlice";
 import { createModalCoordinationSlice, type ModalCoordinationSlice } from "./modalCoordinationSlice";
+import { createKnowledgeSlice, type KnowledgeSlice } from "./knowledgeSlice";
 import { stripGamePanes } from "../lib/layout-utils";
 import type { Tab } from "../types";
 
-export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice & VoiceSlice & NativeRendererSlice & ModalCoordinationSlice;
+export type AppStore = TabSlice & TerminalSlice & ServerSlice & ThemeSlice & KanbanSlice & LaunchConfigSlice & SnippetSlice & HistorySlice & SidebarSlice & RecentProjectsSlice & GameSlice & SessionSlice & AiTimeSlice & FloatingPanesSlice & LayoutSlice & VoiceSlice & NativeRendererSlice & ModalCoordinationSlice & KnowledgeSlice;
 
 function isSystemTab(tab: Tab): boolean {
   return !!(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab);
@@ -49,6 +50,7 @@ export const useAppStore = create<AppStore>()(
       ...createVoiceSlice(...a),
       ...createNativeRendererSlice(...a),
       ...createModalCoordinationSlice(...a),
+      ...createKnowledgeSlice(...a),
     }),
     {
       name: "made-storage",
@@ -148,12 +150,15 @@ export const useAppStore = create<AppStore>()(
         wslDistro: state.wslDistro,
         commitMsgMode: state.commitMsgMode,
         shadowAiCli: state.shadowAiCli,
+        aiWorkingMarkerDetection: state.aiWorkingMarkerDetection,
         projectColors: state.projectColors,
         projectSounds: state.projectSounds,
         statuslineToggles: state.statuslineToggles,
         vibrantColors: state.vibrantColors,
         projectPaneTint: state.projectPaneTint,
         projectPaneTintStrength: state.projectPaneTintStrength,
+        projectHeaderTint: state.projectHeaderTint,
+        projectHeaderTintStrength: state.projectHeaderTintStrength,
         activePaneLift: state.activePaneLift,
         radiusScaleOverride: state.radiusScaleOverride,
         uiFont: state.uiFont,
@@ -199,7 +204,8 @@ export const useAppStore = create<AppStore>()(
         paneModes: state.paneModes,
         floatRects: state.floatRects,
         floatOrder: state.floatOrder,
-        verticalModeEnabled: state.verticalModeEnabled,
+        verticalTabMode: state.verticalTabMode,
+        sidebarSide: state.sidebarSide,
         verticalTabBarCompact: state.verticalTabBarCompact,
         voiceEnabled: state.voiceEnabled,
         whisperUrl: state.whisperUrl,
@@ -220,6 +226,11 @@ export const useAppStore = create<AppStore>()(
         wheelAcceleration: state.wheelAcceleration,
         termProgram: state.termProgram,
         termProgramVersion: state.termProgramVersion,
+        // NexusMind: settings only. Notes, revisions and the per-project write
+        // policy live in the knowledge service, never here.
+        knowledgeAutoAttach: state.knowledgeAutoAttach,
+        knowledgeNotifEnabled: state.knowledgeNotifEnabled,
+        knowledgeInitDismissed: state.knowledgeInitDismissed,
       }),
       merge: (persisted, current) => {
         const state = persisted as Partial<AppStore> | undefined;
@@ -267,6 +278,13 @@ export const useAppStore = create<AppStore>()(
         let cliYolo = state.cliYolo ?? {};
         if (persAny.claudeYolo === true && !cliYolo.claude) {
           cliYolo = { ...cliYolo, claude: true };
+        }
+
+        // Migrate legacy verticalModeEnabled boolean → verticalTabMode
+        if (state.verticalTabMode == null && typeof persAny.verticalModeEnabled === "boolean") {
+          (state as Record<string, unknown>).verticalTabMode = persAny.verticalModeEnabled
+            ? "auto"
+            : "never";
         }
 
         // Migrate legacy promptHistory → panePromptHistory + globalPromptHistory

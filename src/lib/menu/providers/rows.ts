@@ -14,6 +14,12 @@ import {
   BROWSER_SURFACE_ID,
 } from "../../../browser-view/page-context";
 import { registerMenuProvider } from "../registry";
+import {
+  knowledgeBlockedReason,
+  knowledgeReadBlockedReason,
+} from "../../../store/knowledgeStore";
+import { knowledgeRefFor, type KnowledgeNoteType } from "../../knowledge/types";
+import { MEMORY_DIR_NAME } from "../../knowledge/keys";
 import type { TaskCard } from "../../../types";
 import type { RowCtx } from "../context";
 import type { MenuGroup, MenuItemSpec, MenuProvider } from "../types";
@@ -710,6 +716,15 @@ function sidebarBackground(ctx: RowCtx): MenuGroup[] {
           unavailable: root ? undefined : { reason: "No project folder open" },
           run: () => copy(root),
         },
+        {
+          id: "row.sidebar.dockSide",
+          label: useAppStore.getState().sidebarSide === "right" ? "Dock left" : "Dock right",
+          iconId: "sidebar",
+          run: () => {
+            const s = useAppStore.getState();
+            s.setSidebarSide(s.sidebarSide === "right" ? "left" : "right");
+          },
+        },
       ],
     },
   ];
@@ -921,6 +936,213 @@ function jiraAssigned(ctx: RowCtx): MenuGroup[] {
   ];
 }
 
+// ── NexusMind knowledge sidebar ─────────────────────────────────────────────
+//
+// Two surfaces: a note row and the panel background. Both resolve their project
+// from the ACTIVE tab, because the knowledge sidebar is a single app-level
+// instance bound to that tab — there is never a second one showing a different
+// project.
+
+function knowledgeProjectPath(): string {
+  const s = useAppStore.getState();
+  return s.tabs.find((t) => t.id === s.activeTabId)?.workingDir ?? "";
+}
+
+/** The agent pane an "insert" would target, or why there is none. */
+function knowledgeAgentReason(): string | null {
+  const t = activeTerminal();
+  if (!t) return "No active agent pane";
+  const isAgent = t.type === "claude" || t.type === "codex" || t.type === "gemini";
+  return isAgent ? null : "No active agent pane";
+}
+
+function knowledgeNoteRows(ctx: RowCtx): MenuGroup[] {
+  const path = knowledgeProjectPath();
+  const writeBlocked = knowledgeBlockedReason(path);
+  const readBlocked = knowledgeReadBlockedReason(path);
+  const isCore = ctx.data.ctxCore === "1";
+  const type = (ctx.data.ctxType ?? "note") as KnowledgeNoteType;
+  const slug = ctx.data.ctxSlug ?? "";
+  const reference = knowledgeRefFor(type, slug);
+  const filePath = ctx.data.ctxPath ?? "";
+
+  return [
+    {
+      id: "target",
+      items: [
+        actionItem("knowledge-note", "open", ctx.id, {
+          id: "row.knote.open",
+          label: "Open",
+          unavailable: filePath ? undefined : { reason: "This note has no file on disk yet" },
+        }),
+        actionItem("knowledge-note", "openPreview", ctx.id, {
+          id: "row.knote.openPreview",
+          label: "Open preview",
+          iconId: "filter",
+          unavailable: filePath ? undefined : { reason: "This note has no file on disk yet" },
+        }),
+        actionItem("knowledge-note", "insertIntoAgent", ctx.id, {
+          id: "row.knote.insert",
+          // Same verb as the note panel's button — one action, one name.
+          label: "Send to agent",
+          iconId: "terminal",
+          unavailable: readBlocked
+            ? { reason: readBlocked }
+            : knowledgeAgentReason()
+              ? { reason: knowledgeAgentReason() as string }
+              : undefined,
+        }),
+        {
+          id: "row.knote.copyRef",
+          label: "Copy reference",
+          iconId: "copy",
+          sublabel: reference,
+          // A note with no slug has nothing addressable yet; copying "@note/"
+          // would put a reference in the clipboard that resolves to nothing.
+          unavailable:
+            type === "note" && !slug ? { reason: "This note has no reference yet" } : undefined,
+          run: () => copy(reference),
+        },
+      ],
+    },
+    {
+      id: "view",
+      items: [
+        actionItem("knowledge-note", "rename", ctx.id, {
+          id: "row.knote.rename",
+          label: "Rename…",
+          iconId: "rename",
+          unavailable: isCore
+            ? { reason: "Core memory files can't be renamed" }
+            : writeBlocked
+              ? { reason: writeBlocked }
+              : undefined,
+        }),
+        actionItem("knowledge-note", "archive", ctx.id, {
+          id: "row.knote.archive",
+          label: "Archive",
+          iconId: "archive",
+          unavailable: isCore
+            ? { reason: "Core memory files can't be archived" }
+            : writeBlocked
+              ? { reason: writeBlocked }
+              : undefined,
+        }),
+        actionItem("knowledge-note", "history", ctx.id, {
+          id: "row.knote.history",
+          label: "History…",
+          iconId: "history",
+          unavailable: readBlocked ? { reason: readBlocked } : undefined,
+        }),
+        // File-row parity (user, 2026-08-08): a knowledge note IS a file, so
+        // it answers the same questions the Files tab answers — where is it,
+        // and give me its path.
+        actionItem("knowledge-note", "reveal", ctx.id, {
+          id: "row.knote.reveal",
+          label: "Reveal in Explorer",
+          iconId: "folder-open",
+          unavailable: filePath ? undefined : { reason: "This note has no file on disk yet" },
+        }),
+        {
+          id: "row.knote.copyPath",
+          label: "Copy path",
+          iconId: "copy",
+          unavailable: filePath ? undefined : { reason: "This note has no file on disk yet" },
+          run: () => copy(filePath),
+        },
+      ],
+    },
+  ];
+}
+
+function knowledgeBackground(ctx: RowCtx): MenuGroup[] {
+  const path = knowledgeProjectPath();
+  const writeBlocked = knowledgeBlockedReason(path);
+  const readBlocked = knowledgeReadBlockedReason(path);
+  const agentReason = knowledgeAgentReason();
+  const alreadyIgnored = ctx.data.ctxGitignored === "1";
+  const initialized = !readBlocked;
+
+  return [
+    {
+      id: "target",
+      items: [
+        actionItem("knowledge", "newNote", ctx.id, {
+          id: "row.knowledge.newNote",
+          label: "New note…",
+          iconId: "file-plus",
+          unavailable: writeBlocked ? { reason: writeBlocked } : undefined,
+        }),
+        actionItem("knowledge", "createHandoff", ctx.id, {
+          id: "row.knowledge.createHandoff",
+          label: "Create handoff",
+          iconId: "arrow-right",
+          unavailable: writeBlocked ? { reason: writeBlocked } : undefined,
+        }),
+        actionItem("knowledge", "continueHandoff", ctx.id, {
+          id: "row.knowledge.continueHandoff",
+          label: "Continue from latest handoff",
+          iconId: "terminal",
+          unavailable: readBlocked
+            ? { reason: readBlocked }
+            : agentReason
+              ? { reason: agentReason }
+              : undefined,
+        }),
+      ],
+    },
+    {
+      id: "view",
+      items: [
+        actionItem("knowledge", "refresh", ctx.id, {
+          id: "row.knowledge.refresh",
+          label: "Refresh",
+          iconId: "restart",
+          unavailable: readBlocked ? { reason: readBlocked } : undefined,
+        }),
+        actionItem("knowledge", "revealFolder", ctx.id, {
+          id: "row.knowledge.reveal",
+          label: `Reveal ${MEMORY_DIR_NAME} in Explorer`,
+          iconId: "folder-open",
+          unavailable: initialized
+            ? undefined
+            : { reason: readBlocked ?? "Knowledge is not initialized for this project" },
+        }),
+        actionItem("knowledge", "addGitignore", ctx.id, {
+          id: "row.knowledge.gitignore",
+          label: `Add ${MEMORY_DIR_NAME} to .gitignore`,
+          iconId: "branch",
+          unavailable: alreadyIgnored
+            ? { reason: "Already ignored" }
+            : writeBlocked
+              ? { reason: writeBlocked }
+              : undefined,
+        }),
+      ],
+    },
+    // Only when there is a workspace to remove: the init panel, a remote tab
+    // and a still-loading project HIDE the row (it can never apply there),
+    // while a read-only follower instance shows it DISABLED with the reason —
+    // the owner instance is the one allowed to delete.
+    ...(ctx.data.ctxStatus === "ready" || ctx.data.ctxStatus === "readonly"
+      ? [
+          {
+            id: "edit" as const,
+            items: [
+              actionItem("knowledge", "removeProject", ctx.id, {
+                id: "row.knowledge.remove",
+                label: "Remove NexusMind from project…",
+                iconId: "trash",
+                danger: true,
+                unavailable: writeBlocked ? { reason: writeBlocked } : undefined,
+              }),
+            ],
+          },
+        ]
+      : []),
+  ];
+}
+
 const rowProvider: MenuProvider<"row"> = {
   id: "row",
   surface: "row",
@@ -949,6 +1171,10 @@ const rowProvider: MenuProvider<"row"> = {
         return jiraAssigned(ctx);
       case "game-sidebar":
         return gameSidebar(ctx);
+      case "knowledge-note":
+        return knowledgeNoteRows(ctx);
+      case "knowledge":
+        return knowledgeBackground(ctx);
       default:
         return [];
     }

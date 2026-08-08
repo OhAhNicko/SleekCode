@@ -11,6 +11,18 @@ import { registerImageMask } from "../lib/image-mask";
 import { SLASH_COMMANDS, SLASH_ARG_HINTS, loadUserSkills, type SlashCommand } from "../lib/slash-commands";
 import { resolveTerminalFontFamily, terminalFontStack } from "../lib/terminal-fonts";
 import type { TerminalType } from "../types";
+import { useKnowledgeStore } from "../store/knowledgeStore";
+import { canonicalProjectKey } from "../lib/knowledge/keys";
+import { getCachedNoteIndex, warmNoteIndex } from "../lib/knowledge/note-index-cache";
+import * as knowledgeApi from "../lib/knowledge/api";
+import {
+  CORE_REFS,
+  extractRefs,
+  findAtToken,
+  isRefQueryPlausible,
+  takeFreshRefPreview,
+} from "../lib/knowledge/refs";
+import KnowledgeRefStrip from "./knowledge/KnowledgeRefStrip";
 import { HiMiniArrowLongRight, HiMiniArrowLongLeft } from "react-icons/hi2";
 import { FaWandMagicSparkles, FaCopy, FaDeleteLeft } from "react-icons/fa6";
 import { useUndoClearStore } from "../store/undoClearStore";
@@ -44,6 +56,39 @@ const PLACEHOLDER_SUGGESTIONS = [
 
 /** Stable empty array to avoid selector re-renders when pane has no history. */
 const EMPTY_HISTORY: string[] = [];
+
+/**
+ * While a fullscreen modal (screenshot viewer, palette, search) is open, the
+ * modal owns the keyboard: none of the composer's AUTONOMOUS refocus paths
+ * (prompt-scan transitions, periodic safety net, mount) may claim it. The
+ * viewer runs a `window` keydown handler that drops every key whose target is
+ * a textarea, so a mid-modal `focus()` here silently killed its arrow keys.
+ * User-initiated focus (submit, popup accept, insert-path click) stays
+ * ungated — those can't fire while a modal covers the composer.
+ */
+const fullscreenModalOpen = () =>
+  useAppStore.getState().openFullscreenModals.size > 0;
+
+/** One row of the `@`-reference popup. */
+interface AtMatch {
+  /** The exact token inserted into the prompt, leading "@" included. */
+  ref: string;
+  /** Right-hand column: what this reference pulls in. */
+  description: string;
+}
+
+/**
+ * Ceiling on `@note/…` rows.
+ *
+ * The popup only ever paints 8, so a larger list costs nothing to render — but
+ * "(1/473)" in the counter is not a number anyone can act on, and arrow-cycling
+ * through it is not navigation. Past this many candidates the answer is to type
+ * more of the slug.
+ */
+const AT_NOTE_LIMIT = 50;
+
+/** How long a hung knowledge service may delay Enter before we send as typed. */
+const REF_EXPAND_TIMEOUT_MS = 1500;
 
 function randomPlaceholder(): string {
   return PLACEHOLDER_SUGGESTIONS[Math.floor(Math.random() * PLACEHOLDER_SUGGESTIONS.length)];
@@ -187,6 +232,36 @@ export default function PromptComposer({
   const SLASH_VISIBLE = 8;
   const [userSkills, setUserSkills] = useState<SlashCommand[]>([]);
   const slashGhostEnabled = useAppStore((s) => s.slashCommandGhostText);
+  // `@`-reference popup — structurally the slash popup, and deliberately so:
+  // the two are mutually exclusive (a token starts with "/" or "@", never
+  // both, because each scanner walks back to whitespace) so they can share
+  // every interaction rule without sharing state.
+  const [atMatches, setAtMatches] = useState<AtMatch[]>([]);
+  const [atSelectedIdx, setAtSelectedIdx] = useState(0);
+  const [atScrollOffset, setAtScrollOffset] = useState(0);
+  const AT_VISIBLE = 8;
+  const atTokenRef = useRef<{ start: number; end: number } | null>(null); // position of current @ token in value
+  /** Only the AI CLIs read a prompt; a shell pane has nothing to do with @memory. */
+  const isAgentPane =
+    terminalType === "claude" || terminalType === "codex" || terminalType === "gemini";
+  const knowledgeKey = canonicalProjectKey(workingDir);
+  // Primitive selectors: an object selector here would re-render every composer
+  // on every note-list refresh, and a derived array would never compare equal.
+  const knowledgeUsable = useKnowledgeStore((s) => {
+    const p = s.projects[knowledgeKey];
+    return p?.status === "ready" || p?.status === "readonly";
+  });
+  const knowledgeRevision = useKnowledgeStore((s) => s.projects[knowledgeKey]?.revision ?? 0);
+  /**
+   * True while a submit is between reading the textarea and clearing it.
+   *
+   * Submitting became asynchronous when `@`-references arrived: the text stays
+   * in the textarea across the resolve, so a second Enter — trivially produced
+   * by key auto-repeat — re-read it and sent the whole prompt to the CLI again.
+   * A ref rather than state on purpose: this must be visible to the very next
+   * keydown, and a re-render is neither needed nor fast enough.
+   */
+  const submitInFlightRef = useRef(false);
   const promptLineIdxRef = useRef(-1); // last known prompt line for re-scanning
   const submittedLineIdxRef = useRef(-1); // line to skip after submit (old echoed >)
   const valueRef = useRef(value);
@@ -614,7 +689,7 @@ export default function PromptComposer({
             setHidden(true);
             if (isActiveRef.current) {
               textareaRef.current?.blur();
-              if (document.hasFocus()) terminal?.focus();
+              if (document.hasFocus() && !fullscreenModalOpen()) terminal?.focus();
             }
           }
           return true; // counts as a poll hit for stabilization; just don't steal/show
@@ -778,7 +853,7 @@ export default function PromptComposer({
           setHidden(true);
           hiddenRef.current = true;
           textareaRef.current?.blur();
-          if (document.hasFocus()) terminal.focus();
+          if (document.hasFocus() && !fullscreenModalOpen()) terminal.focus();
           return;
         }
 
@@ -787,7 +862,9 @@ export default function PromptComposer({
           // Don't call scrollToBottom() here — it fights manual scrolling.
           // The user or TerminalPane's doFit() manages scroll position.
           setTimeout(() => {
-            if (isActiveRef.current && document.hasFocus()) textareaRef.current?.focus();
+            if (isActiveRef.current && document.hasFocus() && !fullscreenModalOpen()) {
+              textareaRef.current?.focus();
+            }
           }, 30);
           showTimeRef.current = Date.now();
         }
@@ -803,7 +880,9 @@ export default function PromptComposer({
           lastOffsetRef.current = result.offset;
           if (alwaysVisible) {
             setTimeout(() => {
-              if (isActiveRef.current && document.hasFocus()) textareaRef.current?.focus();
+              if (isActiveRef.current && document.hasFocus() && !fullscreenModalOpen()) {
+                textareaRef.current?.focus();
+              }
             }, 30);
           }
         }
@@ -973,7 +1052,7 @@ export default function PromptComposer({
               hiddenRef.current = true;
               setHidden(true);
               textareaRef.current?.blur();
-              if (isActiveRef.current) terminal.focus();
+              if (isActiveRef.current && !fullscreenModalOpen()) terminal.focus();
             }
           } else if (hiddenRef.current) {
             debugTransition(false, "periodic:recover");
@@ -1029,7 +1108,9 @@ export default function PromptComposer({
     useClipboardImageStore.getState().registerComposer(terminalId);
     const timer = suppressAutoFocus
       ? null // pane opened in background — don't steal focus
-      : setTimeout(() => textareaRef.current?.focus(), 30);
+      : setTimeout(() => {
+          if (!fullscreenModalOpen()) textareaRef.current?.focus();
+        }, 30);
     return () => {
       if (timer !== null) clearTimeout(timer);
       useClipboardImageStore.getState().unregisterComposer(terminalId);
@@ -1312,96 +1393,260 @@ export default function PromptComposer({
     }, 0);
   }
 
+  /**
+   * Rows for the `@`-reference popup at `cursorPos`, or none.
+   *
+   * Three gates, each of which would otherwise produce a popup that lies: the
+   * pane must be an agent that will read the expansion; the project's knowledge
+   * must be attached and readable; and the note index must be resolved, because
+   * offering the eight core refs while silently omitting every `@note/…` would
+   * read as "this project has no notes".
+   */
+  function computeAtMatches(val: string, cursorPos: number): AtMatch[] {
+    if (!isAgentPane || !knowledgeUsable) { atTokenRef.current = null; return []; }
+    const token = findAtToken(val, cursorPos);
+    if (!token || !isRefQueryPlausible(token.query)) { atTokenRef.current = null; return []; }
+
+    const notes = getCachedNoteIndex(workingDir);
+    if (!notes) {
+      // Cold cache: resolve it for the next keystroke rather than opening a
+      // popup that cannot complete note slugs. Deduped and cached inside, so
+      // this is one list walk, not one per character.
+      void warmNoteIndex(workingDir);
+      atTokenRef.current = null;
+      return [];
+    }
+    atTokenRef.current = { start: token.start, end: token.end };
+
+    const query = token.query;
+    let matches: AtMatch[];
+    if (query.startsWith("note/")) {
+      // Inside `note/`, match anywhere in the slug: people remember a word from
+      // the title, not how the slug starts.
+      const sub = query.slice("note/".length);
+      matches = notes
+        .filter((n) => !sub || n.slug.toLowerCase().includes(sub))
+        .slice(0, AT_NOTE_LIMIT)
+        .map((n) => ({ ref: `@note/${n.slug}`, description: n.title }));
+    } else {
+      const core = CORE_REFS.filter((r) => r.name.startsWith(query)).map((r) => ({
+        ref: `@${r.name}`,
+        description: r.description,
+      }));
+      const noteRows = notes
+        .filter((n) => `note/${n.slug}`.toLowerCase().startsWith(query))
+        .slice(0, AT_NOTE_LIMIT)
+        .map((n) => ({ ref: `@note/${n.slug}`, description: n.title }));
+      matches = [...core, ...noteRows];
+    }
+
+    // Auto-close on an exact reference, same as the slash popup: the token is
+    // already complete, so the next Enter should send rather than re-select.
+    if (matches.length === 1 && query !== "" && matches[0].ref.slice(1).toLowerCase() === query) {
+      atTokenRef.current = null;
+      return [];
+    }
+    return matches;
+  }
+
+  function selectAtRef(m: AtMatch) {
+    const token = atTokenRef.current;
+    const insertion = m.ref + " ";
+    let newVal: string;
+    let cursorAt: number;
+    if (token) {
+      newVal = value.slice(0, token.start) + insertion + value.slice(token.end);
+      cursorAt = token.start + insertion.length;
+    } else {
+      newVal = insertion;
+      cursorAt = insertion.length;
+    }
+    setValue(newVal);
+    setHistoryIdx(-1);
+    imgCycleRef.current = null;
+    setAtMatches([]);
+    setAtSelectedIdx(0); setAtScrollOffset(0);
+    atTokenRef.current = null;
+    updateGhost(newVal);
+    setTimeout(() => {
+      const ta = textareaRef.current;
+      if (ta) { ta.selectionStart = ta.selectionEnd = cursorAt; ta.focus(); }
+    }, 0);
+  }
+
+  /** Drop the `@` popup without touching the slash popup's state. */
+  function closeAtPopup() {
+    setAtMatches([]);
+    setAtSelectedIdx(0); setAtScrollOffset(0);
+    atTokenRef.current = null;
+  }
+
+  /**
+   * The context block for `refs`, or null when it could not be produced.
+   *
+   * Never throws and never outlives its deadline: a knowledge service that has
+   * wedged must cost the user 1.5 seconds once, not their Enter key.
+   *
+   * Resolves but records NOTHING — the audit entry is written by the caller
+   * once the prompt has actually gone out (`recordContext`). Recording here
+   * asserted a delivery this function cannot know happened: the 1500ms deadline
+   * abandons the wait, but nothing cancels the backend, so a late-completing
+   * resolve logged "context supplied" for a prompt that was sent bare.
+   */
+  async function resolveRefsForSubmit(refs: string[]) {
+    // The strip asked this exact question a moment ago; reusing its answer is
+    // what keeps Enter instant on the common path. The reused package is no
+    // staler than the preview the user was shown — bounded by PREVIEW_REUSE_MS
+    // plus however long a backend change takes to reach this store.
+    const reused = takeFreshRefPreview(terminalId, refs, knowledgeRevision);
+    if (reused) return reused;
+    return knowledgeApi.resolveRefs({
+      projectPath: workingDir,
+      refs,
+      record: false,
+      terminalId,
+      agentKind: terminalType,
+      timeoutMs: REF_EXPAND_TIMEOUT_MS,
+    }).catch(() => null);
+  }
+
   async function submit() {
     const ta = textareaRef.current;
     if (!ta) return;
     let text = ta.value.trim();
     if (!text) return;
-    // Resolve attached images: replace [Img N] labels with actual file paths
-    // so CLIs (Claude, Codex, Gemini) can read the image files. For remote
-    // SSH terminals, resolveImagePath uploads the bytes and returns a remote
-    // /tmp/made/... path; null means upload failed and the image is dropped
-    // from the prompt (an error toast is shown by resolveImagePath).
-    if (localImages.length > 0) {
-      const storeImages = useClipboardImageStore.getState().images;
-      const imageNumberFor = (winPath: string) => {
-        const idx = storeImages.findIndex((im) => im.winPath === winPath);
-        return idx >= 0 ? idx + 1 : storeImages.length + 1;
-      };
+    // One submit at a time. Everything below can suspend — image upload,
+    // reference resolution — while the text stays in the textarea, so a second
+    // Enter in that window re-read it and handed the CLI the same prompt twice.
+    // The flag goes up AFTER the empty check so pressing Enter on an empty
+    // composer stays the no-op it has always been.
+    if (submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
+    try {
+      // Resolve attached images: replace [Img N] labels with actual file paths
+      // so CLIs (Claude, Codex, Gemini) can read the image files. For remote
+      // SSH terminals, resolveImagePath uploads the bytes and returns a remote
+      // /tmp/made/... path; null means upload failed and the image is dropped
+      // from the prompt (an error toast is shown by resolveImagePath).
+      if (localImages.length > 0) {
+        const storeImages = useClipboardImageStore.getState().images;
+        const imageNumberFor = (winPath: string) => {
+          const idx = storeImages.findIndex((im) => im.winPath === winPath);
+          return idx >= 0 ? idx + 1 : storeImages.length + 1;
+        };
 
-      const resolvedEntries = await Promise.all(
-        localImages.map(async (img) => ({
-          img,
-          filePath: await resolveImagePath(img.winPath, "clipboard"),
-        }))
-      );
-      const resolvedImages = resolvedEntries.filter(
-        (e): e is { img: ClipboardImage; filePath: string } => e.filePath !== null
-      );
+        const resolvedEntries = await Promise.all(
+          localImages.map(async (img) => ({
+            img,
+            filePath: await resolveImagePath(img.winPath, "clipboard"),
+          }))
+        );
+        const resolvedImages = resolvedEntries.filter(
+          (e): e is { img: ClipboardImage; filePath: string } => e.filePath !== null
+        );
 
-      // Replace any [Img N] labels already in text (from autocomplete) with file paths
-      for (const { img, filePath } of resolvedImages) {
-        const label = getImageLabel(img.winPath);
-        if (text.includes(label)) {
-          text = text.split(label).join(filePath);
-          registerImageMask(terminalId, filePath, imageNumberFor(img.winPath));
+        // Replace any [Img N] labels already in text (from autocomplete) with file paths
+        for (const { img, filePath } of resolvedImages) {
+          const label = getImageLabel(img.winPath);
+          if (text.includes(label)) {
+            text = text.split(label).join(filePath);
+            registerImageMask(terminalId, filePath, imageNumberFor(img.winPath));
+          }
+        }
+
+        // Append file paths for attached images not yet referenced in text
+        const unreferenced = resolvedImages.filter(
+          ({ filePath }) => !text.includes(filePath)
+        );
+        if (unreferenced.length > 0) {
+          text =
+            text + " " + unreferenced.map(({ filePath }) => filePath).join(" ");
+          for (const { img, filePath } of unreferenced) {
+            registerImageMask(terminalId, filePath, imageNumberFor(img.winPath));
+          }
+        }
+
+        // Strip any [Img N] labels left over from images that failed to upload
+        // — leaving raw labels would send "[Img 2]" to the CLI as if it were the
+        // user's text, which is just noise.
+        const failedImages = resolvedEntries
+          .filter((e) => e.filePath === null)
+          .map((e) => e.img);
+        for (const img of failedImages) {
+          const label = getImageLabel(img.winPath);
+          text = text.split(label).join("").replace(/\s{2,}/g, " ").trim();
         }
       }
-
-      // Append file paths for attached images not yet referenced in text
-      const unreferenced = resolvedImages.filter(
-        ({ filePath }) => !text.includes(filePath)
-      );
-      if (unreferenced.length > 0) {
-        text =
-          text + " " + unreferenced.map(({ filePath }) => filePath).join(" ");
-        for (const { img, filePath } of unreferenced) {
-          registerImageMask(terminalId, filePath, imageNumberFor(img.winPath));
+      // Expand console snippet placeholder into formatted text
+      if (consoleSnippet) {
+        // Strip the visual space around the tag, then expand
+        const expansion = "\n\n" + consoleSnippet.formatted + "\n\n";
+        const tag = consoleSnippet.tag;
+        if (text.includes(tag + " ")) {
+          text = text.replace(tag + " ", expansion);
+        } else if (text.includes(" " + tag)) {
+          text = text.replace(" " + tag, expansion);
+        } else {
+          text = text.replace(tag, expansion);
+        }
+        setConsoleSnippet(null);
+        consoleTagRef.current = null;
+        useBrowserConsoleStore.getState().clearSelection();
+      }
+      // Knowledge @-references: the documents they name are APPENDED below the
+      // prompt, which is why `text` and `outgoing` stay separate from here on.
+      // The user's own words are never rewritten, and history keeps what they
+      // typed — pressing Up should return a prompt, not several KB of memory.
+      let outgoing = text;
+      /** Sources actually appended, recorded only once the prompt has gone out. */
+      let supplied: { entityId: string; revision: number }[] | null = null;
+      if (isAgentPane && knowledgeUsable) {
+        const refs = extractRefs(text);
+        if (refs.length > 0) {
+          const pkg = await resolveRefsForSubmit(refs);
+          if (pkg?.renderedPromptContext) {
+            outgoing = text + "\n\n" + pkg.renderedPromptContext;
+            supplied = pkg.sources.map((s) => ({ entityId: s.entityId, revision: s.revision }));
+          } else {
+            // Sending the prompt as typed is the right failure: the agent gets a
+            // question it can still answer. Saying so is what stops the user
+            // assuming it was given context it never received. Raised through the
+            // store because this submit may also be closing the composer.
+            useKnowledgeStore.getState().raiseRefFallback();
+          }
         }
       }
-
-      // Strip any [Img N] labels left over from images that failed to upload
-      // — leaving raw labels would send "[Img 2]" to the CLI as if it were the
-      // user's text, which is just noise.
-      const failedImages = resolvedEntries
-        .filter((e) => e.filePath === null)
-        .map((e) => e.img);
-      for (const img of failedImages) {
-        const label = getImageLabel(img.winPath);
-        text = text.split(label).join("").replace(/\s{2,}/g, " ").trim();
+      addPromptHistory(terminalId, text);
+      onSubmit(outgoing);
+      // The prompt is out. NOW the ledger can honestly say what went with it —
+      // the revisions from the package that was actually appended, not a fresh
+      // resolution of whatever the graph holds a moment later.
+      if (supplied && supplied.length > 0) {
+        void knowledgeApi
+          .recordContext({
+            projectPath: workingDir,
+            entityIds: supplied,
+            terminalId,
+            agentKind: terminalType,
+          })
+          .catch(() => {});
       }
-    }
-    // Expand console snippet placeholder into formatted text
-    if (consoleSnippet) {
-      // Strip the visual space around the tag, then expand
-      const expansion = "\n\n" + consoleSnippet.formatted + "\n\n";
-      const tag = consoleSnippet.tag;
-      if (text.includes(tag + " ")) {
-        text = text.replace(tag + " ", expansion);
-      } else if (text.includes(" " + tag)) {
-        text = text.replace(" " + tag, expansion);
+      setLocalImages([]);
+      setValue("");
+      setHistoryIdx(-1);
+      draftRef.current = "";
+      // Mark the old prompt line so the scan skips it (it'll be echoed as
+      // command history). Don't reset promptLineIdxRef to -1 — that causes
+      // the composer to vanish entirely in some CLIs (e.g. Gemini).
+      submittedLineIdxRef.current = promptLineIdxRef.current;
+      setPlaceholder(randomPlaceholder());
+      if (alwaysVisible) {
+        setTimeout(() => textareaRef.current?.focus(), 30);
       } else {
-        text = text.replace(tag, expansion);
+        onClose();
       }
-      setConsoleSnippet(null);
-      consoleTagRef.current = null;
-      useBrowserConsoleStore.getState().clearSelection();
-    }
-    addPromptHistory(terminalId, text);
-    onSubmit(text);
-    setLocalImages([]);
-    setValue("");
-    setHistoryIdx(-1);
-    draftRef.current = "";
-    // Mark the old prompt line so the scan skips it (it'll be echoed as
-    // command history). Don't reset promptLineIdxRef to -1 — that causes
-    // the composer to vanish entirely in some CLIs (e.g. Gemini).
-    submittedLineIdxRef.current = promptLineIdxRef.current;
-    setPlaceholder(randomPlaceholder());
-    if (alwaysVisible) {
-      setTimeout(() => textareaRef.current?.focus(), 30);
-    } else {
-      onClose();
+    } finally {
+      submitInFlightRef.current = false;
     }
   }
 
@@ -1462,6 +1707,67 @@ export default function PromptComposer({
         e.preventDefault();
         setSlashMatches([]);
         setSlashSelectedIdx(0); setSlashScrollOffset(0);
+        return;
+      }
+    }
+    // `@`-reference popup: same interception set as the slash popup above, and
+    // deliberately placed after it — the two can never both be open, so the
+    // order only decides which block is read first, not which one wins.
+    if (atMatches.length > 0) {
+      if (e.key === "ArrowDown" && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        setAtSelectedIdx((prev) => {
+          const next = (prev + 1) % atMatches.length;
+          setAtScrollOffset((off) => {
+            if (next === 0) return 0; // wrapped to top
+            if (next >= off + AT_VISIBLE) return next - AT_VISIBLE + 1;
+            return off;
+          });
+          return next;
+        });
+        return;
+      }
+      if (e.key === "ArrowUp" && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        setAtSelectedIdx((prev) => {
+          const next = (prev - 1 + atMatches.length) % atMatches.length;
+          setAtScrollOffset((off) => {
+            if (next === atMatches.length - 1) return Math.max(0, atMatches.length - AT_VISIBLE); // wrapped to bottom
+            if (next < off) return next;
+            return off;
+          });
+          return next;
+        });
+        return;
+      }
+      if (e.key === "Tab" && !e.shiftKey) {
+        e.preventDefault();
+        selectAtRef(atMatches[atSelectedIdx]);
+        return;
+      }
+      // Enter completes the reference — UNLESS the user has already typed one
+      // in full, in which case it sends, exactly as the slash popup does.
+      //
+      // The auto-close in computeAtMatches only fires on a lone match, so a
+      // slug that is a prefix of another ("auth" beside "oauth-flow") leaves
+      // the popup open on a complete, correct token. Selecting row 0 there
+      // rewrote the user's "@note/auth" into a DIFFERENT note and sent that —
+      // so a fully-typed reference has to win over the ranking.
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const token = atTokenRef.current;
+        const typed = token ? value.slice(token.start + 1, token.end).toLowerCase() : "";
+        if (typed !== "" && atMatches.some((m) => m.ref.slice(1).toLowerCase() === typed)) {
+          closeAtPopup();
+          submit();
+        } else {
+          selectAtRef(atMatches[atSelectedIdx]);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeAtPopup();
         return;
       }
     }
@@ -1527,6 +1833,12 @@ export default function PromptComposer({
         const matches = computeSlashMatches(newVal, deleteFrom);
         setSlashMatches(matches);
         setSlashSelectedIdx(0); setSlashScrollOffset(0);
+        // Deleting back through an "@" token must move its popup with it —
+        // a popup left open here would hold a token range into text that no
+        // longer exists, and selecting a row would splice at the wrong offset.
+        const atM = computeAtMatches(newVal, deleteFrom);
+        setAtMatches(atM);
+        setAtSelectedIdx(0); setAtScrollOffset(0);
         setTimeout(() => { ta.selectionStart = ta.selectionEnd = deleteFrom; }, 0);
       }
       return;
@@ -1918,6 +2230,115 @@ export default function PromptComposer({
           </div>
         );
       })()}
+      {/* Knowledge @-reference popup — same surface as the slash popup, because
+          it is the same gesture: name a thing, get it completed. */}
+      {atMatches.length > 0 && (() => {
+        const hasMore = atMatches.length > AT_VISIBLE;
+        const canScrollUp = atScrollOffset > 0;
+        const canScrollDown = atScrollOffset + AT_VISIBLE < atMatches.length;
+        const visibleSlice = atMatches.slice(atScrollOffset, atScrollOffset + AT_VISIBLE);
+        const token = atTokenRef.current;
+        const typed = token ? value.slice(token.start + 1, token.end).toLowerCase() : "";
+        return (
+          <div
+            style={{
+              position: "absolute",
+              bottom: "100%",
+              left: 0,
+              right: 0,
+              marginBottom: 4,
+              backgroundColor: lightenHex(terminalBg, 18),
+              border: `1px solid ${hexToRgba(terminalCursor, 0.2)}`,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+              boxShadow: "0 -2px 10px rgba(0,0,0,0.4)",
+              zIndex: 10,
+              overflow: "hidden",
+            }}
+          >
+            {visibleSlice.map((m, visIdx) => {
+              const realIdx = atScrollOffset + visIdx;
+              const name = m.ref.slice(1);
+              // Highlight what they typed WHEREVER it landed: inside `note/`
+              // the match is a substring, not a prefix, and colouring the first
+              // N characters there would point at the wrong letters.
+              const hit = typed ? name.toLowerCase().indexOf(typed) : -1;
+              return (
+                <div
+                  key={m.ref}
+                  onMouseDown={(e) => { e.preventDefault(); selectAtRef(m); }}
+                  onMouseEnter={() => setAtSelectedIdx(realIdx)}
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    gap: 10,
+                    padding: "4px 10px",
+                    cursor: "pointer",
+                    backgroundColor: realIdx === atSelectedIdx ? lightenHex(terminalBg, 36) : "transparent",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: fontStack,
+                      fontSize: effectiveFontSize - 1,
+                      flexShrink: 0,
+                      overflow: "hidden",
+                      whiteSpace: "nowrap",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    <span style={{ color: terminalCursor }}>@</span>
+                    {hit < 0 ? (
+                      <span style={{ color: terminalFg, opacity: 0.5 }}>{name}</span>
+                    ) : (
+                      <>
+                        <span style={{ color: terminalFg, opacity: 0.5 }}>{name.slice(0, hit)}</span>
+                        <span style={{ color: terminalCursor }}>{name.slice(hit, hit + typed.length)}</span>
+                        <span style={{ color: terminalFg, opacity: 0.5 }}>{name.slice(hit + typed.length)}</span>
+                      </>
+                    )}
+                  </span>
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      textAlign: "right",
+                      fontSize: effectiveFontSize - 2,
+                      color: terminalFg,
+                      opacity: 0.5,
+                      overflow: "hidden",
+                      whiteSpace: "nowrap",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
+                    {m.description}
+                  </span>
+                </div>
+              );
+            })}
+            {/* Footer: arrows (only when scrollable) + page counter (always) */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "3px 10px 4px",
+                fontSize: effectiveFontSize - 2,
+                color: terminalFg,
+                opacity: 0.45,
+              }}
+            >
+              {hasMore && (
+                <>
+                  <span style={{ opacity: canScrollUp ? 1 : 0.3 }}>&#9650;</span>
+                  <span style={{ opacity: canScrollDown ? 1 : 0.3 }}>&#9660;</span>
+                </>
+              )}
+              <span style={{ marginLeft: hasMore ? 2 : 0 }}>
+                ({atSelectedIdx + 1}/{atMatches.length})
+              </span>
+            </div>
+          </div>
+        );
+      })()}
       <FaAngleRight
         style={{
           color: terminalCursor,
@@ -1957,9 +2378,16 @@ export default function PromptComposer({
             const matches = computeSlashMatches(newVal, cursorPos);
             setSlashMatches(matches);
             setSlashSelectedIdx(0); setSlashScrollOffset(0);
+            const atM = computeAtMatches(newVal, cursorPos);
+            setAtMatches(atM);
+            setAtSelectedIdx(0); setAtScrollOffset(0);
           }}
           onKeyDown={handleKeyDown}
           onFocus={() => {
+            // Warm the note index while the user is still deciding what to
+            // type: the `@` popup has to be right on its first painted frame,
+            // and a list that arrives late pops open under their typing.
+            if (isAgentPane && knowledgeUsable) void warmNoteIndex(workingDir);
             // Re-scan position on focus to correct any accumulated drift + unhide
             const result = scanPromptPosition();
             if (result) {
@@ -1971,7 +2399,7 @@ export default function PromptComposer({
               }
             }
           }}
-          onBlur={() => { setSlashMatches([]); setSlashSelectedIdx(0); setSlashScrollOffset(0); }}
+          onBlur={() => { setSlashMatches([]); setSlashSelectedIdx(0); setSlashScrollOffset(0); closeAtPopup(); }}
           onAuxClick={(e) => {
             if (e.button !== 1) return; // middle-click only
             e.preventDefault();
@@ -2154,6 +2582,17 @@ export default function PromptComposer({
           >
             {placeholder}
           </div>
+        )}
+        {/* What the references in this prompt will add to it, before Enter.
+            Renders nothing until the prompt actually names one. */}
+        {isAgentPane && !!workingDir && (
+          <KnowledgeRefStrip
+            value={value}
+            workingDir={workingDir}
+            terminalId={terminalId}
+            color={terminalFg}
+            fontSize={effectiveFontSize}
+          />
         )}
       </div>
       {promptifying && (
