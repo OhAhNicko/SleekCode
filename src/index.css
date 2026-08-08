@@ -322,9 +322,37 @@ body,
   opacity: 1;
   pointer-events: auto;
 }
+/* Hover-intent filter: expansion waits 200ms, so a pointer merely dragged
+   across the header never starts the slide — leave before the delay elapses
+   and no transition ever begins. The delay lives ONLY on the hover selector:
+   collapse (base rule), the pinned dropdown and keyboard :focus-within all
+   stay immediate, and [data-static] keeps the old behavior's instant fade. */
+.ezy-pane-header:hover .ezy-header-controls:not([data-static]) {
+  transition-delay: 200ms;
+}
+/* Settings escape hatch ("Slide-in header buttons" off): the cluster keeps its
+   box permanently and only fades in on hover, so the header never re-flows.
+   opacity stays 0 from the base rule; the hover/pinned/focus rule above still
+   raises it (its max-width/padding values are no-ops here — the inline var IS
+   the cluster's exact width). Only opacity transitions, so the max-width jump
+   from `none` never animates. */
+.ezy-header-controls[data-static] {
+  max-width: none;
+  padding-left: 6px;
+  pointer-events: auto;
+  transition: opacity 150ms ease;
+}
 @media (prefers-reduced-motion: reduce) {
-  .ezy-header-controls {
+  .ezy-header-controls,
+  .ezy-header-controls[data-static] {
     transition: none;
+  }
+  /* Zero duration, same 200ms delay: the hover-intent filter survives with no
+     motion — the cluster snaps in after the delay instead of sliding. Without
+     this, `transition: none` above would make a passing pointer snap the
+     layout twice, which is exactly the jitter reduced motion asks to avoid. */
+  .ezy-pane-header:hover .ezy-header-controls:not([data-static]) {
+    transition: max-width 0s 200ms, padding-left 0s 200ms, opacity 0s 200ms;
   }
 }
 

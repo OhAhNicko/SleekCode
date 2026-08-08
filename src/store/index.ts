@@ -160,6 +160,7 @@ export const useAppStore = create<AppStore>()(
         projectHeaderTint: state.projectHeaderTint,
         projectHeaderTintStrength: state.projectHeaderTintStrength,
         activePaneLift: state.activePaneLift,
+        headerButtonsSlide: state.headerButtonsSlide,
         radiusScaleOverride: state.radiusScaleOverride,
         uiFont: state.uiFont,
         uiFontSize: state.uiFontSize,

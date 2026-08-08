@@ -35,6 +35,12 @@ export interface ThemeSlice {
    *  header (surface-raised + brand border) remains the only active marker. */
   activePaneLift: boolean;
   setActivePaneLift: (v: boolean) => void;
+  /** Pane-header buttons (prompt history / expand / restart / close) collapse
+   *  to zero width and slide in on header hover, letting the stats/path own
+   *  the full row. false = the buttons keep their box permanently and only
+   *  fade in on hover, so the header never re-flows. */
+  headerButtonsSlide: boolean;
+  setHeaderButtonsSlide: (v: boolean) => void;
   /** Global override for every corner radius in the app, consumed as
    *  `--ezy-radius-scale`. `null` = follow the ACTIVE THEME's own
    *  `radiusScale` (Sorbet 2, every other theme 1) — the default, so shipping
@@ -139,6 +145,8 @@ export const createThemeSlice: StateCreator<ThemeSlice, [], [], ThemeSlice> = (
   setProjectHeaderTintStrength: (v) => set({ projectHeaderTintStrength: v }),
   activePaneLift: true,
   setActivePaneLift: (v) => set({ activePaneLift: v }),
+  headerButtonsSlide: true,
+  setHeaderButtonsSlide: (v) => set({ headerButtonsSlide: v }),
   radiusScaleOverride: null,
   setRadiusScaleOverride: (v) => set({ radiusScaleOverride: v }),
   uiFont: DEFAULT_UI_FONT,

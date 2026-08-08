@@ -2354,6 +2354,8 @@ export default function SettingsPane() {
   const setProjectHeaderTintStrength = useAppStore((s) => s.setProjectHeaderTintStrength);
   const activePaneLift = useAppStore((s) => s.activePaneLift);
   const setActivePaneLift = useAppStore((s) => s.setActivePaneLift);
+  const headerButtonsSlide = useAppStore((s) => s.headerButtonsSlide);
+  const setHeaderButtonsSlide = useAppStore((s) => s.setHeaderButtonsSlide);
   const uiFont = useAppStore((s) => s.uiFont);
   const setUiFont = useAppStore((s) => s.setUiFont);
   const uiFontSize = useAppStore((s) => s.uiFontSize);
@@ -2836,6 +2838,9 @@ export default function SettingsPane() {
               )}
               <SettingsRow label="Lighten active pane" description="Off: the pane header alone marks the active pane.">
                 <ToggleSwitch checked={activePaneLift} onChange={setActivePaneLift} />
+              </SettingsRow>
+              <SettingsRow label="Slide-in header buttons" description="Off: the buttons always reserve their space and fade in on hover.">
+                <ToggleSwitch checked={headerButtonsSlide} onChange={setHeaderButtonsSlide} />
               </SettingsRow>
               {/* Shape, not color — so it sits after the color rows and before
                   the typography pair below. Dragging this visibly rounds the

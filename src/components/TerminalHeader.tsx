@@ -508,6 +508,7 @@ export default function TerminalHeader({
   // collapse as dead time on two-button shell panes.
   const headerButtonCount = 2 + (showPromptHistoryButton ? 1 : 0) + (onRestart ? 1 : 0);
   const headerControlsMaxPx = 22 * headerButtonCount + 4; // 48 / 70 / 92
+  const headerButtonsSlide = useAppStore((s) => s.headerButtonsSlide);
 
   // WSL/WIN badge — shell panes on a Windows host only (SSH shells run remote
   // bash, macOS/Linux run zsh; neither has a PowerShell mode to toggle).
@@ -1512,6 +1513,7 @@ export default function TerminalHeader({
       <div
         className={`ezy-header-controls flex items-center gap-0.5 ${contextPercent == null ? "ml-auto" : ""}`}
         data-pinned={showPromptHistory ? "" : undefined}
+        data-static={headerButtonsSlide ? undefined : ""}
         style={{ flexShrink: 0, "--ezy-header-controls-max": `${headerControlsMaxPx}px` } as CSSProperties}
       >
         {showPromptHistoryButton && (
