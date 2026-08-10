@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import LoadingDots from "./LoadingDots";
 import { useModal } from "../store/modalCoordinationSlice";
+import ModalCloseButton from "./ModalCloseButton";
 import type { RemoteServer } from "../types";
 
 interface RemoteFileBrowserProps {
@@ -225,20 +226,7 @@ export default function RemoteFileBrowser({
                 </svg>
                 <span>New Folder</span>
               </button>
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="var(--ezy-text-muted)"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                style={{ cursor: "pointer" }}
-                onClick={onClose}
-              >
-                <line x1="4" y1="4" x2="12" y2="12" />
-                <line x1="12" y1="4" x2="4" y2="12" />
-              </svg>
+              <ModalCloseButton onClose={onClose} />
             </div>
           </div>
 

@@ -7,6 +7,7 @@ import { createJiraProjectAt, jiraFileExists } from "../lib/jira-project";
 import { defaultJiraSiteIn } from "../lib/jira-sites";
 import { jiraSiteName } from "../lib/jira";
 import RemoteFileBrowser from "./RemoteFileBrowser";
+import ModalCloseButton from "./ModalCloseButton";
 import { MODAL_BACKDROP } from "../lib/modal-layout";
 
 /**
@@ -147,20 +148,7 @@ export default function JiraProjectModal({ onClose }: { onClose: () => void }) {
             <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
               New Jira Project
             </span>
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="var(--ezy-text-muted)"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              style={{ cursor: "pointer" }}
-              onClick={onClose}
-            >
-              <line x1="4" y1="4" x2="12" y2="12" />
-              <line x1="12" y1="4" x2="4" y2="12" />
-            </svg>
+            <ModalCloseButton onClose={onClose} />
           </div>
 
           {/* Body */}

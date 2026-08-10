@@ -6,6 +6,7 @@ import { useAppStore } from "../store";
 import { useModal } from "../store/modalCoordinationSlice";
 import { createRemoteProject, remoteJoin } from "../lib/remote-project";
 import RemoteFileBrowser from "./RemoteFileBrowser";
+import ModalCloseButton from "./ModalCloseButton";
 import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 interface CreateProjectModalProps {
@@ -265,7 +266,22 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
           overflow: "hidden",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
-          maxHeight: MODAL_MAX_HEIGHT,
+          // FIXED height, not `maxHeight`. Under `align-items: center` an
+          // auto-height panel grows in BOTH directions, so every line that
+          // appears while typing — the path preview, the exists warning —
+          // moved the whole dialog out from under the pointer. A constant
+          // height is the only thing that holds it still across all of them.
+          //
+          // Scaled by the font token because the content is text, and clamped
+          // by the shared 68vh ceiling so a short window scrolls the body
+          // instead of overflowing off the top (see modal-layout.ts).
+          //
+          // 500 was measured, not guessed: it is the natural height of the
+          // fullest ordinary case — servers configured, a name typed, three
+          // scaffold rows — with a little slack. Configurations beyond that
+          // (many custom scaffolds, several servers) scroll the body, which is
+          // the deal a fixed height makes.
+          height: `min(calc(var(--ezy-font-scale, 1) * 500px), ${MODAL_MAX_HEIGHT})`,
           display: "flex",
           flexDirection: "column",
         }}
@@ -287,24 +303,14 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
             Create New Project
           </span>
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="var(--ezy-text-muted)"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            style={{ cursor: "pointer" }}
-            onClick={onClose}
-          >
-            <line x1="4" y1="4" x2="12" y2="12" />
-            <line x1="12" y1="4" x2="4" y2="12" />
-          </svg>
+          <ModalCloseButton onClose={onClose} />
         </div>
 
-        {/* Body */}
-        <div style={{ padding: "16px", overflowY: "auto" }}>
+        {/* Body — the only scrolling region. `flex: 1` + `minHeight: 0` are
+            both load-bearing: a flex child defaults to `min-height: auto` and
+            refuses to shrink below its content, so `overflowY` alone never
+            scrolls. */}
+        <div style={{ padding: "16px", flex: 1, minHeight: 0, overflowY: "auto" }}>
           {/* Location — local machine or one of the configured servers */}
           {servers.length > 0 && (
             <div style={{ marginBottom: 14 }}>
@@ -432,33 +438,43 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
             }}
           />
 
-          {validationError && (
-            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 4 }}>{validationError}</div>
-          )}
+          {/* Reserved slot for everything the name field can say.
+              These three lines used to mount and unmount as you typed, which
+              is what made the panel breathe. The slot is always here at a
+              constant height, so the scaffold section below never moves —
+              44px is the measured height of the tallest combination, a
+              one-line warning plus the path. The warning copy is kept short
+              enough to stay on one line at a raised font scale. */}
+          <div style={{ height: "calc(var(--ezy-font-scale, 1) * 44px)", overflow: "hidden" }}>
+            {validationError ? (
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 4, lineHeight: 1.35 }}>
+                {validationError}
+              </div>
+            ) : existsWarning ? (
+              <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 4, lineHeight: 1.35 }}>
+                This folder exists — scaffold files will overwrite it.
+              </div>
+            ) : null}
 
-          {existsWarning && !validationError && (
-            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 4 }}>
-              A folder with this name already exists — scaffold files will overwrite existing ones.
-            </div>
-          )}
+            {fullPath && !validationError && (
+              <div
+                style={{
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                  color: "var(--ezy-text-muted)",
+                  marginTop: 8,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {fullPath}
+              </div>
+            )}
+          </div>
 
-          {fullPath && !validationError && (
-            <div
-              style={{
-                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
-                color: "var(--ezy-text-muted)",
-                marginTop: 8,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {fullPath}
-            </div>
-          )}
-
-          {/* Scaffold section */}
-          <div style={{ marginTop: 16 }}>
+          {/* Scaffold section — 8, not 16: the reserved slot above already
+              supplies the separation whether or not it has anything to say. */}
+          <div style={{ marginTop: 8 }}>
             <div
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
@@ -521,18 +537,29 @@ export default function CreateProjectModal({ onCreated, onClose }: CreateProject
           {error && (
             <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "#e55", marginTop: 8 }}>{error}</div>
           )}
+        </div>
 
+        {/* Footer — pinned, like RemoteFileBrowser's. Inside the scroll region
+            the primary action could be scrolled out of reach the moment the
+            body overflows, which a fixed-height panel makes routine. */}
+        <div
+          style={{
+            padding: "12px 16px",
+            borderTop: "1px solid var(--ezy-border)",
+            backgroundColor: "var(--ezy-surface)",
+            flexShrink: 0,
+          }}
+        >
           <button
             disabled={!canCreate}
             onClick={handleCreate}
             style={{
-              marginTop: 16,
               width: "100%",
               padding: "8px 0",
               fontSize: "calc(var(--ezy-font-scale, 1) * 13px)",
               fontWeight: 600,
               color: canCreate ? "#fff" : "var(--ezy-text-muted)",
-              backgroundColor: canCreate ? "var(--ezy-accent)" : "var(--ezy-surface)",
+              backgroundColor: canCreate ? "var(--ezy-accent)" : "var(--ezy-surface-raised)",
               border: canCreate ? "none" : "1px solid var(--ezy-border)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
               cursor: canCreate ? "pointer" : "not-allowed",
