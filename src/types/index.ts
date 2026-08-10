@@ -33,6 +33,34 @@ export interface RemoteServer {
    * through the shell that can actually resolve them; refreshed by Test
    * Connection. Absent = never probed. */
   detectedCliShells?: RemoteCliShells;
+  /** Folders this server reaches over a share that are really folders on THIS
+   * machine (src/lib/knowledge/remote-mirror.ts). Absent = none linked. */
+  mounts?: RemoteMount[];
+}
+
+/**
+ * A proven remote↔local folder correspondence.
+ *
+ * The server sees `remotePrefix` over a network share; the same bytes live at
+ * `localPrefix` on the machine running MADE. That makes NexusMind work on an
+ * SSH tab: the database and the watcher are already on the right machine, and
+ * only the path needs translating.
+ *
+ * Only ever created by a passing probe or by an explicit manual entry —
+ * a guessed mapping would attach one project's memory to a different project.
+ * Direction matters: this describes a folder MADE owns and the server borrows,
+ * never the reverse (a WAL database over a share is the "database is locked"
+ * case `knowledge/mod.rs` keeps the DB out of the project to avoid).
+ */
+export interface RemoteMount {
+  /** POSIX prefix on the server, no trailing slash. "/Volumes/projects" */
+  remotePrefix: string;
+  /** The same folder locally. "C:\\Users\\me\\Documents\\projects" */
+  localPrefix: string;
+  /** epoch-ms of the last passing probe. Never 0 — unproven is never stored. */
+  verifiedAt: number;
+  /** "probe" = the nonce round-trip passed; "manual" = typed in Settings. */
+  source: "probe" | "manual";
 }
 
 /** Which shells a remote server has and which shell resolves each AI CLI. */
@@ -72,6 +100,16 @@ export interface DevServer {
   port: number;
   status: "starting" | "running" | "stopped" | "error";
   errorMessage?: string;
+  /**
+   * The port a "port is already in use" failure named. Its presence is what
+   * turns the row's red banner into something actionable — "Another port" and
+   * "Kill <port>" — instead of a dead end the user has to leave the app to fix.
+   *
+   * Written only by `updateDevServerError`, alongside the message, so a
+   * conflict port with no error (or an error whose conflict port belongs to the
+   * previous failure) is unrepresentable.
+   */
+  conflictPort?: number;
   /** When set, the dev server PTY is spawned via SSH against this RemoteServer. */
   serverId?: string;
   /** Additional non-local addresses parsed from server output (e.g. LAN / Tailscale IPs). */

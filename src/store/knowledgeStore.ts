@@ -3,6 +3,7 @@ import { useAppStore } from "./index";
 import * as api from "../lib/knowledge/api";
 import { canonicalProjectKey, sameProjectPath } from "../lib/knowledge/keys";
 import { publishNoteIndex, forgetNoteIndex } from "../lib/knowledge/note-index-cache";
+import { usableKnowledgePath } from "../lib/knowledge/remote-mirror";
 import type {
   KnowledgeChangedPayload,
   KnowledgeConflict,
@@ -252,12 +253,21 @@ export const useKnowledgeStore = create<KnowledgeStoreState>((set, get) => {
       const key = canonicalProjectKey(projectPath);
       if (!key) return;
 
-      // SSH projects: the working directory is on another machine, so there is
-      // nothing here to open. Say so and invoke nothing.
+      // SSH projects. Callers are expected to have resolved the path already
+      // (`resolveMirror`), so reaching here with a `serverId` means either an
+      // unmirrored server — nothing on this machine to open, say so and invoke
+      // nothing — or a caller that forgot. Resolving again rather than trusting
+      // is the cheap half of that: it costs a prefix match and it keeps a
+      // proven link working from any entry point.
       if (serverId) {
-        const existing = get().projects[key];
-        if (existing?.status === "remote-unsupported") return;
-        seed(key, projectPath, "remote-unsupported");
+        const local = usableKnowledgePath(projectPath, serverId);
+        if (!local) {
+          const existing = get().projects[key];
+          if (existing?.status === "remote-unsupported") return;
+          seed(key, projectPath, "remote-unsupported");
+          return;
+        }
+        get().ensureOpen(local);
         return;
       }
 

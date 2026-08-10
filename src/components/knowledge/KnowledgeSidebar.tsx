@@ -9,6 +9,7 @@ import {
 } from "../../store/knowledgeStore";
 import * as api from "../../lib/knowledge/api";
 import { canonicalProjectKey, MEMORY_DIR_NAME } from "../../lib/knowledge/keys";
+import { resolveMirror, revalidateMirrorOnce } from "../../lib/knowledge/remote-mirror";
 import { CORE_NOTE_TYPES, knowledgeRefFor } from "../../lib/knowledge/types";
 import type { KnowledgeNoteMeta } from "../../lib/knowledge/types";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../../lib/surface-actions";
@@ -41,7 +42,9 @@ import KnowledgeFooter from "./KnowledgeFooter";
  * from shipping one dead button among eleven correct ones.
  */
 interface Props {
-  rootDir: string;
+  /** The TAB's working directory. On an SSH tab this is a path on the server,
+   *  which is why nothing below uses it directly — see `rootDir`. */
+  tabDir: string;
   serverId?: string;
   /** Jira tabs get no NexusMind offer — but an already-initialized repo still
    *  attaches and works. See the probe in the mount effect. */
@@ -59,7 +62,34 @@ function agentTargetOrReason(): { terminalId: string } | { reason: string } {
   return { terminalId };
 }
 
-export default function KnowledgeSidebar({ rootDir, serverId, isJiraProject, onOpenFile }: Props) {
+export default function KnowledgeSidebar({ tabDir, serverId, isJiraProject, onOpenFile }: Props) {
+  // Resolve the tab's directory to a LOCAL one exactly once, here. On a local
+  // tab that is the identity; on an SSH tab whose folder is a proven mirror of
+  // a local folder it is the local twin, and every line below — the store key,
+  // every `api.*` call, the context-menu root — then works on a local path with
+  // no idea a server was involved. Empty when a remote tab has no usable link,
+  // which the status routing turns into the link panel before anything runs.
+  //
+  // Subscribing to `servers` keeps this reactive: linking a folder must light
+  // the sidebar up on that click, not on whatever render happens next.
+  const servers = useAppStore((s) => s.servers);
+  const mirror = useMemo(
+    () => resolveMirror(tabDir, serverId),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tabDir, serverId, servers],
+  );
+  /**
+   * A link that no longer holds — the share was unmounted or re-pointed since
+   * it was proven. Costs nothing to check (a byte compare of a file both sides
+   * already have, memoised per session) and catches the one failure a stored
+   * link can develop on its own: the sidebar happily showing memory that the
+   * agent on the server can no longer reach.
+   */
+  const [staleLink, setStaleLink] = useState(false);
+
+  const linkedPath = mirror.kind === "local" || mirror.kind === "linked" ? mirror.path : "";
+  const rootDir = staleLink ? "" : linkedPath;
+
   const ensureOpen = useKnowledgeStore((s) => s.ensureOpen);
   const initialize = useKnowledgeStore((s) => s.initialize);
   const retry = useKnowledgeStore((s) => s.retry);
@@ -104,12 +134,29 @@ export default function KnowledgeSidebar({ rootDir, serverId, isJiraProject, onO
    *  false = none — show the not-offered panel and touch nothing. */
   const [jiraHasMemory, setJiraHasMemory] = useState<boolean | null>(null);
 
+  // Confirm a stored link still holds. Only `false` acts — `null` means the
+  // project has no memory yet, which is not evidence of anything.
+  //
+  // The reset on the first line is load-bearing. There is ONE of these sidebars
+  // for the whole app and it re-targets on every tab switch, so a verdict left
+  // over from the previous tab would blank out the next one — including a plain
+  // local tab, which would then be told to link a folder it does not need.
+  useEffect(() => {
+    setStaleLink(false);
+    if (mirror.kind !== "linked" || !serverId) return;
+    const server = servers.find((s) => s.id === serverId);
+    if (!server) return;
+    let cancelled = false;
+    void revalidateMirrorOnce(server, mirror.path, tabDir).then((ok) => {
+      if (!cancelled) setStaleLink(ok === false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [mirror, serverId, servers, tabDir]);
+
   useEffect(() => {
     if (!rootDir) return;
-    if (serverId) {
-      ensureOpen(rootDir, serverId);
-      return;
-    }
     if (isJiraProject) {
       // Probe, never offer: `probeInitialized` is a pure disk stat that opens
       // nothing, so an uninitialized repo costs no database and no watcher.
@@ -125,9 +172,9 @@ export default function KnowledgeSidebar({ rootDir, serverId, isJiraProject, onO
       };
     }
     if (autoAttach) ensureOpen(rootDir);
-  }, [ensureOpen, rootDir, serverId, autoAttach, isJiraProject]);
+  }, [ensureOpen, rootDir, autoAttach, isJiraProject]);
 
-  const status = project?.status ?? (serverId ? "remote-unsupported" : "loading");
+  const status = project?.status ?? "loading";
   const blocked = knowledgeBlockedReason(rootDir);
   const notes = project?.notes ?? [];
   const selectedId = project?.selectedNoteId ?? null;
@@ -594,19 +641,34 @@ export default function KnowledgeSidebar({ rootDir, serverId, isJiraProject, onO
       data-ctx-surface="knowledge"
       data-ctx-root={rootDir}
       data-ctx-gitignored={project?.gitignored ? "1" : "0"}
-      data-ctx-status={status}
+      data-ctx-status={rootDir ? status : "remote-unsupported"}
       style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}
     >
       {children}
     </div>
   );
 
-  if (status === "remote-unsupported") return shell(<KnowledgeRemotePanel />);
+  // An SSH tab with no usable local twin. Everything below this line assumes a
+  // local path, so the link panel has to come before all of it — including the
+  // Jira gate, which would otherwise probe a path on the wrong machine.
+  if (!rootDir) {
+    return shell(
+      <KnowledgeRemotePanel
+        tabDir={tabDir}
+        serverId={serverId}
+        proposedPath={
+          staleLink ? linkedPath : mirror.kind === "proposed" ? mirror.path : undefined
+        }
+        stale={staleLink}
+        onRelinked={() => setStaleLink(false)}
+      />,
+    );
+  }
 
   // The Jira gate sits before every other panel: until the probe answers,
   // showing "not offered" would flash a wrong claim at an initialized repo,
   // so the probing state borrows the quiet loading line.
-  if (isJiraProject && !serverId && jiraHasMemory !== true) {
+  if (isJiraProject && jiraHasMemory !== true) {
     if (jiraHasMemory === null) {
       return shell(
         <div

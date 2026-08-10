@@ -7,7 +7,8 @@ import { HiMiniSignal } from "react-icons/hi2";
 import { BiCopy } from "react-icons/bi";
 import { TbRefresh } from "react-icons/tb";
 import { useAppStore } from "../store";
-import type { RemoteServer } from "../types";
+import type { RemoteMount, RemoteServer } from "../types";
+import { removeMirror } from "../lib/knowledge/remote-mirror";
 import { invoke } from "@tauri-apps/api/core";
 import ClaudeTokenWizardModal from "./ClaudeTokenWizardModal";
 import SshKeySetupWizardModal from "./SshKeySetupWizardModal";
@@ -348,6 +349,74 @@ const CLAUDE_TOKEN_TIP =
   "Exports a long-lived login token (from: claude setup-token) into every SSH session, bypassing the keychain. Paste one or capture it automatically.";
 
 /* ── Inline icon button (test / copy) ── */
+
+/**
+ * Folders on this machine that this server reaches over a share.
+ *
+ * Each row is one folder the user proved, so unlinking removes exactly what
+ * they linked. Unlinking forgets the mapping and nothing else — the memory,
+ * the database and the files all stay where they are — so it asks no
+ * confirmation; re-linking is one click in the Knowledge sidebar.
+ */
+function SharedFolderRows({ serverId, mounts }: { serverId: string; mounts?: RemoteMount[] }) {
+  if (!mounts?.length) return null;
+  return (
+    <div style={{ padding: "0 10px 6px 22px" }}>
+      <div
+        style={{
+          fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+          fontWeight: 600,
+          letterSpacing: "0.04em",
+          color: "var(--ezy-text-muted)",
+          marginBottom: 3,
+        }}
+      >
+        SHARED FOLDERS
+      </div>
+      {mounts.map((mount) => (
+        <div
+          key={mount.remotePrefix}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+            color: "var(--ezy-text-muted)",
+            lineHeight: 1.6,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {mount.remotePrefix}
+            <span style={{ margin: "0 5px", opacity: 0.3 }}>→</span>
+            <span style={{ color: "var(--ezy-text-secondary)" }}>{mount.localPrefix}</span>
+          </div>
+          <div
+            data-tooltip={`Unlink — checked ${new Date(mount.verifiedAt).toLocaleDateString()}`}
+            onClick={() => removeMirror(serverId, mount.remotePrefix)}
+            // 14px, not the 22px SmallIconButton chip: this sits in an 11px
+            // text row and a taller hit box would grow it. Same reasoning as
+            // the copy-key button above.
+            style={{
+              width: 14,
+              height: 14,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              flexShrink: 0,
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+              cursor: "pointer",
+              transition: "background-color 120ms ease",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = "transparent"; }}
+          >
+            <FaXmark size={9} color="var(--ezy-text-muted)" style={{ opacity: 0.7 }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function SmallIconButton({
   title,
@@ -1292,6 +1361,13 @@ export default function ServersPanel({
                     />
                   </div>
                 )}
+
+                {/* Row 4: folders on this machine that this server shares.
+                    Read and unlink only — linking happens in the Knowledge
+                    sidebar, where the remote path is already known and one
+                    click can prove it. An "Add" here would mean typing a
+                    remote path by hand to do the same job worse. */}
+                <SharedFolderRows serverId={server.id} mounts={server.mounts} />
               </div>
             );
           })

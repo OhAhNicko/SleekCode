@@ -1,11 +1,16 @@
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { WORKSPACE_TEMPLATES, type WorkspaceTemplate } from "../lib/workspace-templates";
 import { useAppStore } from "../store";
+import { useKnowledgeStore } from "../store/knowledgeStore";
 import { useModal } from "../store/modalCoordinationSlice";
 import { getServerCommandSuggestions, BUILTIN_SERVER_COMMANDS } from "../lib/server-commands";
 import { isWindows } from "../lib/platform";
+import * as knowledgeApi from "../lib/knowledge/api";
+import { MEMORY_DIR_NAME } from "../lib/knowledge/keys";
+import { usableKnowledgePath } from "../lib/knowledge/remote-mirror";
 import type { TerminalType } from "../types";
 import { MODAL_BACKDROP } from "../lib/modal-layout";
+import ModalCloseButton from "./ModalCloseButton";
 
 export type ExtraPaneType = "codereview" | "fileviewer" | "browser" | "kanban";
 
@@ -14,6 +19,36 @@ interface TemplatePickerProps {
   onClose: () => void;
   initialServerCommand?: string;
   initialNoDevServer?: boolean;
+  /** The folder this workspace opens on — the NexusMind offer needs it. */
+  projectPath: string;
+  /** Set when that folder lives on a remote server. */
+  serverId?: string;
+}
+
+/** The dialog's checkbox mark. Matches the "No dev server" and pane toggles. */
+function CheckSquare({ on, size = 14 }: { on: boolean; size?: number }) {
+  return (
+    <div
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+        border: `1.5px solid ${on ? "var(--ezy-accent)" : "var(--ezy-border-light)"}`,
+        backgroundColor: on ? "var(--ezy-accent)" : "transparent",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        transition: "all 120ms ease",
+      }}
+    >
+      {on && (
+        <svg width={size - 6} height={size - 6} viewBox="0 0 10 10" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="2,5.5 4,7.5 8,3" />
+        </svg>
+      )}
+    </div>
+  );
 }
 
 /** Distribute `count` panes across `cols` columns (taller columns first). */
@@ -190,7 +225,14 @@ function SlotAllocation({ assigned, total }: { assigned: number; total: number }
 }
 
 
-export default function TemplatePicker({ onSelect, onClose, initialServerCommand, initialNoDevServer }: TemplatePickerProps) {
+export default function TemplatePicker({
+  onSelect,
+  onClose,
+  initialServerCommand,
+  initialNoDevServer,
+  projectPath,
+  serverId,
+}: TemplatePickerProps) {
   // MANDATORY for a fullscreen modal, and its absence is why "the overlay
   // after the project-name one never opens" (user-reported 2026-07-27): it DID
   // open, buried. Native panes are Win32 child HWNDs composited above WebView2,
@@ -215,6 +257,44 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
   const [serverCommand, setServerCommand] = useState(initialServerCommand ?? "");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const cmdInputRef = useRef<HTMLInputElement>(null);
+
+  // ── NexusMind ────────────────────────────────────────────────────────────
+  //
+  // The one place both project flows pass through: this dialog opens after
+  // Create New Project AND after opening an existing folder, so a single offer
+  // covers both. Before it existed the feature could only be found in the
+  // sidebar's first-run panel or in Settings.
+  //
+  // `usableKnowledgePath` — never a bare `if (serverId)` — is the documented
+  // choke point that decides whether a folder has knowledge and at which path.
+  // A remote folder proven to be a local one over a share resolves to its local
+  // twin and works exactly like a local project; an unproven one resolves to
+  // null and gets no offer here, because linking it is the sidebar's job.
+  const knowledgePath = useMemo(
+    () => usableKnowledgePath(projectPath, serverId),
+    [projectPath, serverId],
+  );
+  const [nexusEnabled, setNexusEnabled] = useState(false);
+  const [keepOutOfGit, setKeepOutOfGit] = useState(true);
+  const [nexusAlreadyOn, setNexusAlreadyOn] = useState(false);
+
+  // A pure stat that attaches nothing (`knowledge_status` on an unattached
+  // project just looks for the folder). Whether the card is shown at all is
+  // decided synchronously above, so this only settles the card's interior —
+  // it can never make the card pop in after paint.
+  useEffect(() => {
+    if (!knowledgePath) return;
+    let cancelled = false;
+    void knowledgeApi
+      .probeInitialized(knowledgePath)
+      .then((on) => {
+        if (!cancelled) setNexusAlreadyOn(on);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [knowledgePath]);
 
   const suggestions = getServerCommandSuggestions(serverCommand.trim() || undefined);
 
@@ -284,11 +364,26 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
       if (cmd && !BUILTIN_SERVER_COMMANDS.includes(cmd.trim())) {
         addCustomServerCommand(cmd.trim());
       }
+      // `initialize` is the ONLY sanctioned path that may create the memory
+      // folder, and it is a module store, so `getState()` outside a component
+      // is the established call (KnowledgeSidebar does the same).
+      //
+      // Fire-and-forget on purpose: it records status and `lastError` on the
+      // store and the sidebar renders both, so a failure has a home already —
+      // this dialog is closing and must not grow an error surface of its own.
+      // The .gitignore line waits for a successful init, mirroring the
+      // sidebar's ordering: the offer comes after the folder exists.
+      if (knowledgePath && nexusEnabled && !nexusAlreadyOn) {
+        void (async () => {
+          const ok = await useKnowledgeStore.getState().initialize(knowledgePath);
+          if (ok && keepOutOfGit) await knowledgeApi.appendGitignore(knowledgePath).catch(() => {});
+        })();
+      }
       const slots = expandFleetToSlots(fleetCounts);
       const extras = extraPanes.size > 0 ? Array.from(extraPanes) : undefined;
       onSelect(selectedTemplate, slots, cmd, extras, noDevServer || undefined);
     }
-  }, [selectedTemplate, fleetCounts, extraPanes, onSelect, serverCommand, noDevServer, addCustomServerCommand]);
+  }, [selectedTemplate, fleetCounts, extraPanes, onSelect, serverCommand, noDevServer, addCustomServerCommand, knowledgePath, nexusEnabled, nexusAlreadyOn, keepOutOfGit]);
 
   const canLaunch = selectedTemplate && totalAssigned === slotCount;
 
@@ -343,20 +438,7 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
           <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 600, color: "var(--ezy-text)" }}>
             New Workspace
           </span>
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="var(--ezy-text-muted)"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            style={{ cursor: "pointer" }}
-            onClick={onClose}
-          >
-            <line x1="4" y1="4" x2="12" y2="12" />
-            <line x1="12" y1="4" x2="4" y2="12" />
-          </svg>
+          <ModalCloseButton onClose={onClose} />
         </div>
 
         {/* Server Command combobox */}
@@ -498,6 +580,98 @@ export default function TemplatePicker({ onSelect, onClose, initialServerCommand
             )}
           </div>
         </div>
+
+        {/* NexusMind — a fact about the project, not about the layout, so it
+            sits outside the `selectedTemplate` branch and is here from the
+            first paint. Absent entirely when there is no local folder to write
+            into: an unlinked remote project cannot be offered this here, and a
+            greyed row would only advertise something unreachable. */}
+        {knowledgePath && (
+          <div style={{ padding: "12px 16px 0" }}>
+            <div
+              style={{
+                border: "1px solid var(--ezy-border)",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
+                backgroundColor: "var(--ezy-surface)",
+                padding: "8px 10px",
+                // Floor = the taller (checkbox + sub-checkbox) variant. The
+                // probe resolves a frame or two after paint, so without this
+                // an already-initialized project renders the tall variant and
+                // then snaps to the short one, yanking the layout grid up —
+                // the very flavour of jump this dialog pass exists to remove.
+                minHeight: "calc(var(--ezy-font-scale, 1) * 83px)",
+              }}
+            >
+              {nexusAlreadyOn ? (
+                // Settled state — no checkbox, because unticking one here would
+                // read as "remove it" and this dialog does not remove anything.
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                  <CheckSquare on />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text)" }}>
+                      NexusMind is already on for this project
+                    </div>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                      Manage it in the NexusMind sidebar.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <label
+                    style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer", userSelect: "none" }}
+                    onClick={() => setNexusEnabled((v) => !v)}
+                  >
+                    <div style={{ marginTop: 1 }}>
+                      <CheckSquare on={nexusEnabled} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text)" }}>
+                        NexusMind project memory
+                      </div>
+                      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                        Shared memory your agents read and write. Creates{" "}
+                        <span style={{ color: "var(--ezy-text-secondary)" }}>{MEMORY_DIR_NAME}/</span> in the project.
+                      </div>
+                    </div>
+                  </label>
+
+                  {/* Always rendered, dimmed when the parent is off — the same
+                      treatment the server-command input gets under "No dev
+                      server". Mounting it on tick would grow the card under
+                      the pointer that just ticked it. */}
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                      marginTop: 8,
+                      marginLeft: 22,
+                      cursor: "pointer",
+                      userSelect: "none",
+                      opacity: nexusEnabled ? 1 : 0.35,
+                      pointerEvents: nexusEnabled ? "auto" : "none",
+                      transition: "opacity 150ms ease",
+                    }}
+                    onClick={() => setKeepOutOfGit((v) => !v)}
+                  >
+                    <div style={{ marginTop: 1 }}>
+                      <CheckSquare on={keepOutOfGit} size={12} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text)" }}>
+                        Keep it out of Git
+                      </div>
+                      <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 1, lineHeight: 1.3 }}>
+                        Adds {MEMORY_DIR_NAME}/ to .gitignore.
+                      </div>
+                    </div>
+                  </label>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Layout selection — always visible */}
         <div

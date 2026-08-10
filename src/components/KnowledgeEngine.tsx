@@ -6,6 +6,7 @@ import { useKnowledgeStore } from "../store/knowledgeStore";
 import * as api from "../lib/knowledge/api";
 import { applyKnowledgeWorld, canonicalProjectKey } from "../lib/knowledge/keys";
 import { applyKnowledgeMcpServerName } from "../lib/knowledge/mcp";
+import { usableKnowledgePath } from "../lib/knowledge/remote-mirror";
 import type { KnowledgeChangedPayload } from "../lib/knowledge/types";
 
 /**
@@ -101,17 +102,24 @@ export default function KnowledgeEngine() {
         const seen = new Set<string>();
         for (const tab of s.tabs) {
           if (cancelled) return;
-          if (!tab.workingDir || tab.serverId) continue;
+          if (!tab.workingDir) continue;
           if (tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) {
             continue;
           }
-          const key = canonicalProjectKey(tab.workingDir);
+          // A mirrored SSH tab folds onto its local twin, and `seen` then keeps
+          // it from being walked twice when the same project is also open
+          // locally — which is the normal state of affairs for a shared folder.
+          const dir = tab.serverId
+            ? usableKnowledgePath(tab.workingDir, tab.serverId)
+            : tab.workingDir;
+          if (!dir) continue;
+          const key = canonicalProjectKey(dir);
           if (!key || seen.has(key)) continue;
           seen.add(key);
-          const initialized = await api.probeInitialized(tab.workingDir).catch(() => false);
+          const initialized = await api.probeInitialized(dir).catch(() => false);
           if (cancelled) return;
           if (initialized) {
-            ensureOpen(tab.workingDir);
+            ensureOpen(dir);
             // One reconcile walk at a time — boot has enough to do.
             await new Promise((resolve) => setTimeout(resolve, 300));
           }
@@ -160,9 +168,12 @@ export default function KnowledgeEngine() {
   // and the undo-close window makes eager detaching wrong.
   useEffect(() => {
     if (!isProjectTab || !workingDir) return;
-    // Remote tabs still get an entry so the sidebar can explain itself, and
-    // `ensureOpen` invokes nothing for them.
-    if (serverId) {
+    // An SSH tab attaches only when its folder is a proven mirror of a local
+    // one, in which case it attaches to THAT local path and is indistinguishable
+    // from a local tab from here on. Unmirrored ones still get an entry, so the
+    // sidebar can explain itself, and `ensureOpen` invokes nothing for them.
+    const dir = serverId ? usableKnowledgePath(workingDir, serverId) : workingDir;
+    if (!dir) {
       ensureOpen(workingDir, serverId);
       return;
     }
@@ -170,14 +181,14 @@ export default function KnowledgeEngine() {
     if (isJiraTab) {
       // No offer on Jira tabs: attach only a repo that already has knowledge.
       let cancelled = false;
-      void jiraTabHasKnowledge(workingDir).then((has) => {
-        if (!cancelled && has) ensureOpen(workingDir);
+      void jiraTabHasKnowledge(dir).then((has) => {
+        if (!cancelled && has) ensureOpen(dir);
       });
       return () => {
         cancelled = true;
       };
     }
-    ensureOpen(workingDir);
+    ensureOpen(dir);
   }, [ensureOpen, workingDir, serverId, isProjectTab, isJiraTab, autoAttach]);
 
   return null;

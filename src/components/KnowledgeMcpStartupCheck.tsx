@@ -9,6 +9,7 @@ import { useOverlayToast } from "../lib/useOverlayToast";
 import { requestSettingsSection } from "../lib/settings-section";
 import { KNOWLEDGE_CLI_LABEL, type KnowledgeCli } from "../lib/knowledge/types";
 import { KNOWLEDGE_MCP_SERVER_NAME, readKnowledgeMcpStatus } from "../lib/knowledge/mcp";
+import { usableKnowledgePath } from "../lib/knowledge/remote-mirror";
 
 /**
  * Startup check: can the agents actually reach this project's memory?
@@ -45,10 +46,12 @@ async function knowledgeReadyProject(): Promise<string | null> {
   for (;;) {
     const app = useAppStore.getState();
     const tab = app.tabs.find((t) => t.id === app.activeTabId);
-    // A remote project has no local knowledge and never will — stop, don't wait.
-    if (!tab?.workingDir || tab.serverId) return null;
-    const entry = useKnowledgeStore.getState().projects[canonicalProjectKey(tab.workingDir)];
-    if (entry?.status === "ready" || entry?.status === "readonly") return tab.workingDir;
+    // A mirrored SSH tab has local knowledge, at its local twin. An unmirrored
+    // one never will — stop, don't wait.
+    const dir = tab?.workingDir ? usableKnowledgePath(tab.workingDir, tab.serverId) : null;
+    if (!dir) return null;
+    const entry = useKnowledgeStore.getState().projects[canonicalProjectKey(dir)];
+    if (entry?.status === "ready" || entry?.status === "readonly") return dir;
     // Uninitialized is a settled answer, not a slow one.
     if (entry && entry.status !== "loading") return null;
     if (Date.now() > deadline) return null;

@@ -196,7 +196,7 @@ export default function Sidebar({ rootDir, onOpenFile }: SidebarProps) {
         )}
         {sidebarTab === "knowledge" && (
           <KnowledgeSidebar
-            rootDir={rootDir}
+            tabDir={rootDir}
             serverId={activeTab?.serverId}
             isJiraProject={!!activeTab?.isJiraProject}
             onOpenFile={onOpenFile}

@@ -167,9 +167,18 @@ export async function runExclusiveKnowledgeMcpOp<T>(
   }
 }
 
-/** SSH panes run their CLI on another machine, and the adapter is a local
- *  binary that talks to a local service — there is nothing to register there. */
-export const KNOWLEDGE_MCP_REMOTE_REASON = "Remote projects are not supported yet";
+/**
+ * SSH panes run their CLI on another machine, and the adapter is a local binary
+ * talking to a local service — there is nothing to register there.
+ *
+ * Deliberately about REGISTRATION, not about the project. It used to read
+ * "Remote projects are not supported yet", which stopped being true when a
+ * remote project whose folder is a proven mirror of a local one started getting
+ * the full workspace: memory, `@`-refs, history, the lot. Only the CLI's own
+ * tool access is still local-only, and only that is what this greys out.
+ */
+export const KNOWLEDGE_MCP_REMOTE_REASON =
+  "Registration is local-only — this pane's CLI runs on the server.";
 
 /**
  * Reject if `work` has not settled in `ms`.
