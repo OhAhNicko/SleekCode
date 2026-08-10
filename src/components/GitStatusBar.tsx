@@ -252,11 +252,16 @@ export default function GitStatusBar({ workingDir, serverId, compact = false }: 
       style={{
         display: "flex",
         alignItems: "center",
-        gap: compact ? 4 : 8,
+        gap: compact ? 3 : 8,
         flexWrap: compact ? "wrap" : "nowrap",
-        rowGap: compact ? 4 : undefined,
+        rowGap: compact ? 2 : undefined,
+        // The compact strip is 80px wide: rows have to CENTRE and the box must
+        // never exceed it, or the diff numbers run off the right edge.
+        justifyContent: compact ? "center" : undefined,
+        width: compact ? "100%" : undefined,
+        minWidth: 0,
         position: "relative",
-        fontSize: compact ? 11 : 12,
+        fontSize: compact ? 10 : 12,
         fontVariantNumeric: "tabular-nums",
         marginLeft: compact ? 0 : 6,
         marginRight: compact ? 0 : 6,
@@ -274,9 +279,11 @@ export default function GitStatusBar({ workingDir, serverId, compact = false }: 
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 5,
+          gap: compact ? 3 : 5,
+          minWidth: 0,
+          maxWidth: "100%",
           cursor: readOnly ? "default" : "pointer",
-          padding: "2px 4px",
+          padding: compact ? "1px 2px" : "2px 4px",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
           backgroundColor: "transparent",
           transition: "background-color 120ms ease",
@@ -303,7 +310,7 @@ export default function GitStatusBar({ workingDir, serverId, compact = false }: 
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
-            maxWidth: compact ? 48 : 140,
+            maxWidth: compact ? 40 : 140,
             fontStyle: isDetached ? "italic" : undefined,
           }}
         >
@@ -322,9 +329,14 @@ export default function GitStatusBar({ workingDir, serverId, compact = false }: 
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 6,
+          flexWrap: compact ? "wrap" : "nowrap",
+          justifyContent: compact ? "center" : undefined,
+          rowGap: compact ? 2 : undefined,
+          gap: compact ? 3 : 6,
+          minWidth: 0,
+          maxWidth: "100%",
           cursor: "pointer",
-          padding: "2px 4px",
+          padding: compact ? "1px 2px" : "2px 4px",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
           backgroundColor: "transparent",
           transition: "background-color 120ms ease",
@@ -340,7 +352,9 @@ export default function GitStatusBar({ workingDir, serverId, compact = false }: 
           />
         </svg>
         <span style={{ color: "var(--ezy-text-secondary)" }}>{stats.filesChanged}</span>
-        <span style={{ color: "var(--ezy-text-muted)", opacity: 0.6, fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", lineHeight: 1 }}>&bull;</span>
+        {!compact && (
+          <span style={{ color: "var(--ezy-text-muted)", opacity: 0.6, fontSize: "calc(var(--ezy-font-scale, 1) * 10px)", lineHeight: 1 }}>&bull;</span>
+        )}
         <span style={{ color: "var(--ezy-diff-add)" }}>+{stats.insertions}</span>
         <span style={{ color: "var(--ezy-diff-remove)" }}>-{stats.deletions}</span>
       </div>
@@ -407,23 +421,27 @@ export default function GitStatusBar({ workingDir, serverId, compact = false }: 
             </svg>
           )}
           <span style={{ color: "var(--ezy-text-secondary)" }}>
-            Pull {aheadBehind.behind}
+            {compact ? aheadBehind.behind : `Pull ${aheadBehind.behind}`}
           </span>
         </div>
       )}
 
       {/* Branch switcher dropdown */}
-      {/* Trailing divider — separates git stats from toolbar icons */}
-      <div
-        style={{
-          width: 1,
-          height: 14,
-          backgroundColor: "var(--ezy-text-muted)",
-          opacity: 0.2,
-          flexShrink: 0,
-          marginLeft: 2,
-        }}
-      />
+      {/* Trailing divider — separates git stats from the toolbar icons that
+          follow it in the HORIZONTAL bar. The vertical strip has nothing to its
+          right, so the divider would just be a stray mark eating 3px of 80. */}
+      {!compact && (
+        <div
+          style={{
+            width: 1,
+            height: 14,
+            backgroundColor: "var(--ezy-text-muted)",
+            opacity: 0.2,
+            flexShrink: 0,
+            marginLeft: 2,
+          }}
+        />
+      )}
 
       {/* Branch dropdown — overlay-rendered (kind "git-branch-menu", hook above). */}
 

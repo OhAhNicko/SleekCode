@@ -3142,7 +3142,19 @@ function RecentMenu({
   };
 
   const left = Math.max(8, Math.min(anchor.x, window.innerWidth - 300 - 8));
-  const top = anchor.y + anchor.height + 2;
+  // Flip above when there is no room below. This menu was written for the
+  // horizontal tab bar, whose "+" sits at the TOP of the window — so it always
+  // dropped downward and sized itself to whatever was left underneath. Anchored
+  // to the vertical strip's pinned footer that is ~40px, i.e. a clipped stub.
+  const spaceBelow = window.innerHeight - (anchor.y + anchor.height) - 8;
+  const spaceAbove = anchor.y - 8;
+  // Below wins whenever it can show a usable menu; only a cramped bottom
+  // anchor with a roomier top flips. The panel scrolls either way, so this is
+  // about not offering a 2-row peephole, not about fitting every project.
+  const dropUp = spaceBelow < 320 && spaceAbove > spaceBelow;
+  const vertical: CSSProperties = dropUp
+    ? { bottom: window.innerHeight - anchor.y + 2, maxHeight: Math.max(120, spaceAbove) }
+    : { top: anchor.y + anchor.height + 2, maxHeight: Math.max(120, spaceBelow) };
 
   return (
     <div
@@ -3157,10 +3169,9 @@ function RecentMenu({
         onPointerDown={(e) => e.stopPropagation()}
         style={{
           position: "absolute",
-          top,
+          ...vertical,
           left,
           width: 300,
-          maxHeight: Math.max(120, window.innerHeight - top - 8),
           overflowY: "auto",
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.12))",

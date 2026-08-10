@@ -1,34 +1,27 @@
 import { useCallback, useState, useRef, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "../store";
-import { spawnDevServer } from "../lib/spawn-dev-server";
+import { useTabLaunchMenu } from "../hooks/useTabLaunchMenu";
 import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
-import { buildLayoutFromTemplate, stampTerminalTypes, findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane, cloneLayoutWithFreshIds, countLeafPanes } from "../lib/layout-utils";
+import { findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
-import { getProjectColor, autoAssignColor, isQuickOpenEnabled, type ProjectColorId, type RecentProject } from "../store/recentProjectsSlice";
+import { getProjectColor } from "../store/recentProjectsSlice";
+import { syncProjectColors } from "../lib/tab-colors";
 import { isTerminalActive } from "../lib/terminal-activity";
-import { isWindows, detectBackendForPath } from "../lib/platform";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
-import { useModalWhen } from "../store/modalCoordinationSlice";
 import { useRemoteBrowseStore, requestRemoteReload } from "../store/remoteBrowseStore";
 import { useOverlayMenu } from "../lib/useOverlayMenu";
-import { useOverlayPopupAnchor } from "../native-term/useOverlayPopupAnchor";
-import type { RemoteServer, TerminalType } from "../types";
-import RemoteFileBrowser from "./RemoteFileBrowser";
-import CreateProjectModal from "./CreateProjectModal";
 import ClipboardImageStrip from "./ClipboardImageStrip";
 import VoiceMicButton from "./VoiceMicButton";
 import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 import GitStatusBar from "./GitStatusBar";
-import { FaChevronDown, FaCheck } from "react-icons/fa";
+import { FaChevronDown } from "react-icons/fa";
 import { TbBrowserPlus, TbBrowserMinus } from "react-icons/tb";
 import { FaXmark, FaPlus, FaGear, FaServer, FaArrowRotateRight } from "react-icons/fa6";
 import { PiKanbanDuotone, PiGameControllerDuotone } from "react-icons/pi";
 import { AiOutlinePushpin, AiFillPushpin } from "react-icons/ai";
 import { BiSidebar } from "react-icons/bi";
-import JiraProjectModal from "./JiraProjectModal";
-import { createJiraProjectAt } from "../lib/jira-project";
 
 function truncateTabPath(path: string, maxSegments = 3): string {
   const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -40,8 +33,6 @@ export default function TabBar() {
   const tabs = useAppStore((s) => s.tabs);
   const activeTabId = useAppStore((s) => s.activeTabId);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
-  const addTabWithLayout = useAppStore((s) => s.addTabWithLayout);
-  const addTerminals = useAppStore((s) => s.addTerminals);
   const removeTab = useAppStore((s) => s.removeTab);
   const togglePinTab = useAppStore((s) => s.togglePinTab);
   const reorderTabs = useAppStore((s) => s.reorderTabs);
@@ -54,8 +45,6 @@ export default function TabBar() {
     jiraMode && !!tabs.find((t) => t.id === activeTabId)?.isJiraProject;
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const recentProjects = useAppStore((s) => s.recentProjects);
-  const addRecentProject = useAppStore((s) => s.addRecentProject);
-  const removeRecentProject = useAppStore((s) => s.removeRecentProject);
   const servers = useAppStore((s) => s.servers);
   // Whether each tab's remote project loaded in the file sidebar. Selecting the
   // record itself (never a .filter()/.map(), which would return a fresh array
@@ -63,11 +52,6 @@ export default function TabBar() {
   const remoteBrowse = useRemoteBrowseStore((s) => s.byTab);
   const cliYolo = useAppStore((s) => s.cliYolo);
   const hoverOpenAddPaneMenu = useAppStore((s) => s.hoverOpenAddPaneMenu);
-  const toggleProjectQuickOpen = useAppStore((s) => s.toggleProjectQuickOpen);
-  const setProjectBackend = useAppStore((s) => s.setProjectBackend);
-  const terminalBackend = useAppStore((s) => s.terminalBackend);
-  const confirmQuit = useAppStore((s) => s.confirmQuit);
-  const setConfirmQuit = useAppStore((s) => s.setConfirmQuit);
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
   const gameSidebarOpen = useAppStore((s) => s.gameSidebarOpen);
   const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
@@ -82,21 +66,12 @@ export default function TabBar() {
   const renameTab = useAppStore((s) => s.renameTab);
 
   const [isMaximized, setIsMaximized] = useState(false);
-  const [showQuitConfirm, setShowQuitConfirm] = useState(false);
-  const [quitDontShow, setQuitDontShow] = useState(false);
   const [showNewTabMenu, setShowNewTabMenu] = useState(false);
-  const [showRecentMenu, setShowRecentMenu] = useState(false);
-  const [browsingServer, setBrowsingServer] = useState<RemoteServer | null>(null);
   const [showServersTab] = useState(false);
-  const setPendingDir = useAppStore((s) => s.setPendingDir);
-  const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
-  const [showJiraProjectModal, setShowJiraProjectModal] = useState(false);
-  const projectsDir = useAppStore((s) => s.projectsDir);
   const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
   // Tab color picker — overlay-rendered (kind "swatch-menu", backdrop).
-  const quitConfirmRef = useRef<HTMLDivElement>(null);
   const tabsContainerRef = useRef<HTMLDivElement>(null);
 
   // Hole-cut publishers: each floating overlay publishes its viewport rect so
@@ -104,6 +79,27 @@ export default function TabBar() {
   // (only when the overlay is rendered); useOverlayPublisher's rAF loop
   // tolerates null refs and re-reads each frame.
   const newTabChevronRef = useRef<HTMLDivElement>(null);
+
+  // The hook below is created before the hover timers it calls, so it reaches
+  // them through refs rather than forcing a declaration-order dance.
+  const cancelHoverCloseRef = useRef<() => void>(() => {});
+  const scheduleHoverCloseRef = useRef<() => void>(() => {});
+
+  // The "+" launcher (recent projects, Create/Browse/Jira, remote servers) and
+  // its modals — shared verbatim with the vertical strip so both bars raise the
+  // identical dialogue. Hover stays here: see the pointermove note below.
+  const {
+    recentBtnRef,
+    showRecentMenu,
+    setShowRecentMenu,
+    canOpenRecent,
+    handlePlusClick,
+    launchModals,
+  } = useTabLaunchMenu({
+    hoverTracking: hoverOpenAddPaneMenu,
+    onHoverIn: () => cancelHoverCloseRef.current(),
+    onHoverOut: () => scheduleHoverCloseRef.current(),
+  });
 
   // Hover-to-open mode: menus stay open only while the pointer is inside the
   // button or its dropdown. Leave either → grace timer → close (the grace
@@ -125,6 +121,8 @@ export default function TabBar() {
       setShowNewTabMenu(false);
     }, 160);
   }, [hoverOpenAddPaneMenu, cancelHoverClose]);
+  cancelHoverCloseRef.current = cancelHoverClose;
+  scheduleHoverCloseRef.current = scheduleHoverClose;
   // "Add pane" dropdown — overlay-rendered (kind "anchored-menu").
   useOverlayMenu({
     id: "tabbar-new-tab-menu",
@@ -183,7 +181,6 @@ export default function TabBar() {
     },
     onClose: () => setShowNewTabMenu(false),
   });
-  useModalWhen("tabbar-quit-confirm", showQuitConfirm);
   const dragStartRef = useRef<{ tabId: string; offsetX: number; startX: number; startY: number; tabWidth: number; tabTop: number } | null>(null);
   const didDragRef = useRef(false);
   // Pending dev-server open from a tab-name click. When rename is possible
@@ -263,65 +260,6 @@ export default function TabBar() {
     };
   }, [getInsertBeforeId, reorderTabs]);
 
-  const handleNewLocalTab = useCallback(() => {
-    setShowNewTabMenu(false);
-    window.dispatchEvent(new Event("made:new-tab"));
-  }, []);
-
-  const handleRemotePathSelected = useCallback((remotePath: string) => {
-    if (!browsingServer) return;
-    const name = remotePath.split("/").filter(Boolean).pop() || browsingServer.name;
-    setBrowsingServer(null);
-    setPendingDir({ name, dir: remotePath, serverId: browsingServer.id });
-  }, [browsingServer]);
-
-  const autoStartServerCommand = useAppStore((s) => s.autoStartServerCommand);
-
-  /** Quick-open a recent project using saved layout (or template fallback) */
-  const quickOpenProject = useCallback(
-    (project: RecentProject, startFresh: boolean) => {
-      if (project.lastLayout) {
-        // Use last-closed layout — clone with fresh IDs, optionally strip resume IDs
-        const { layout, terminalIds } = cloneLayoutWithFreshIds(project.lastLayout, { stripResume: startFresh });
-        const batch = terminalIds.map((t) => ({
-          id: t.id,
-          type: t.type,
-          workingDir: project.path,
-          serverId: project.serverId,
-        }));
-        addTerminals(batch);
-        const tabId = addTabWithLayout(project.name, project.path, layout, project.serverId);
-        addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate, serverId: project.serverId });
-        if (project.serverCommand && autoStartServerCommand && !project.noDevServer) {
-          spawnDevServer(tabId, project.name, project.path, project.serverCommand, project.serverId);
-        }
-      } else if (project.lastTemplate) {
-        // Fallback to template-based rebuild
-        const { templateId, cols, rows, slotTypes, paneCount } = project.lastTemplate;
-        const { layout, terminalIds } = buildLayoutFromTemplate(templateId, cols, rows, paneCount);
-        const typedLayout = stampTerminalTypes(layout, terminalIds, slotTypes);
-        const batch = terminalIds.map((id, i) => ({
-          id,
-          type: slotTypes[i] ?? ("shell" as TerminalType),
-          workingDir: project.path,
-          serverId: project.serverId,
-        }));
-        addTerminals(batch);
-        const tabId = addTabWithLayout(project.name, project.path, typedLayout, project.serverId);
-        addRecentProject({ path: project.path, name: project.name, template: project.lastTemplate, serverId: project.serverId });
-        if (project.serverCommand && autoStartServerCommand && !project.noDevServer) {
-          spawnDevServer(tabId, project.name, project.path, project.serverCommand, project.serverId);
-        }
-      }
-    },
-    [addTerminals, addTabWithLayout, addRecentProject, autoStartServerCommand]
-  );
-
-  // Recent-projects dropdown — overlay-rendered (custom kind "recent-menu",
-  // backdrop). Live payload: rows update in place (quick/backend/remove keep
-  // the menu open, mirroring the old DOM menu).
-  const recentBtnRef = useRef<HTMLDivElement>(null);
-
   // Hover mode decides from pointer POSITION, not enter/leave edges.
   //
   // Edges are unreliable here for two reasons that between them produced every
@@ -347,8 +285,7 @@ export default function TabBar() {
   hoverStateRef.current.showNewTabMenu = showNewTabMenu;
   // Same gate the + button's own handler uses: with nothing to list, that
   // button is a plain "new tab" action and must not sprout a menu on hover.
-  hoverStateRef.current.canOpenRecent =
-    recentProjects.length > 0 || !!projectsDir || servers.length > 0;
+  hoverStateRef.current.canOpenRecent = canOpenRecent;
   useEffect(() => {
     if (!hoverOpenAddPaneMenu) return;
     if (!showRecentMenu && !showNewTabMenu) return;
@@ -380,154 +317,6 @@ export default function TabBar() {
     window.addEventListener("pointermove", onMove);
     return () => window.removeEventListener("pointermove", onMove);
   }, [hoverOpenAddPaneMenu, showRecentMenu, showNewTabMenu, scheduleHoverClose, cancelHoverClose]);
-  useOverlayPopupAnchor({
-    id: "tabbar-recent-menu",
-    kind: "recent-menu",
-    open: showRecentMenu,
-    anchorRef: recentBtnRef,
-    payload: showRecentMenu
-      ? {
-          projects: recentProjects.map((project) => {
-            const hasSavedLayout = !!project.lastLayout || !!project.lastTemplate;
-            const canQuickOpen = hasSavedLayout && isQuickOpenEnabled(project);
-            const savedPaneCount = project.lastLayout
-              ? countLeafPanes(project.lastLayout)
-              : project.lastTemplate?.paneCount;
-            const linkedServer = project.serverId
-              ? servers.find((sv) => sv.id === project.serverId)
-              : undefined;
-            const isOrphanRemote = !!project.serverId && !linkedServer;
-            const backend = (() => {
-              if (!isWindows() || project.serverId) return null;
-              const effective =
-                project.preferredBackend ??
-                detectBackendForPath(project.path, terminalBackend);
-              if (effective !== "wsl" && effective !== "windows") return null;
-              return effective === "wsl" ? "WSL" : "WIN";
-            })();
-            return {
-              key: project.id,
-              name: project.name,
-              subtitle: truncatePath(project.path),
-              tooltip: isOrphanRemote
-                ? `Server removed — re-add it in the Remote Servers panel to use this project. (${project.path})`
-                : linkedServer
-                  ? `${linkedServer.name}: ${project.path}`
-                  : project.path,
-              disabled: isOrphanRemote,
-              badge: project.serverId
-                ? isOrphanRemote
-                  ? "no server"
-                  : (linkedServer?.name ?? linkedServer?.host ?? "remote")
-                : undefined,
-              badgeMuted: isOrphanRemote,
-              jira: !!project.isJira,
-              // Jira projects reopen through their own path (rail + per-ticket
-              // canvas) — the layout-restore shortcuts would rebuild them as
-              // plain grids, so hide those controls for them.
-              showFresh: !project.isJira && canQuickOpen,
-              showQuick: !project.isJira && hasSavedLayout,
-              quickOn: isQuickOpenEnabled(project),
-              paneCount: String(savedPaneCount ?? "?"),
-              backendLabel: backend ?? undefined,
-            };
-          }),
-          // The modal itself offers local + server locations, so creating is
-          // possible as soon as EITHER exists.
-          canCreate: !!projectsDir || servers.length > 0,
-          servers: servers.map((sv) => ({ id: sv.id, name: sv.name })),
-          hoverTracking: hoverOpenAddPaneMenu,
-        }
-      : null,
-    onAction: (action) => {
-      if (action === "__hoverin__") {
-        cancelHoverClose();
-        return;
-      }
-      if (action === "__hoverout__") {
-        scheduleHoverClose();
-        return;
-      }
-      if (action === "__dismiss__") {
-        setShowRecentMenu(false);
-        return;
-      }
-      const idx = action.indexOf(":");
-      const verb = idx === -1 ? action : action.slice(0, idx);
-      const arg = idx === -1 ? "" : action.slice(idx + 1);
-      const project = recentProjects.find((pr) => pr.id === arg);
-      switch (verb) {
-        case "open":
-          if (!project) return;
-          setShowRecentMenu(false);
-          // Jira projects reopen as Jira tabs (rail + per-ticket canvas) —
-          // never through the template picker or layout restore, which would
-          // recreate them as plain grids.
-          if (project.isJira) {
-            void createJiraProjectAt({
-              path: project.path,
-              serverId: project.serverId,
-              siteId: project.jiraSiteId,
-            });
-            break;
-          }
-          if ((!!project.lastLayout || !!project.lastTemplate) && isQuickOpenEnabled(project)) {
-            quickOpenProject(project, false);
-          } else {
-            setPendingDir({
-              name: project.name,
-              dir: project.path,
-              serverId: project.serverId,
-            });
-          }
-          break;
-        case "fresh":
-          if (!project) return;
-          setShowRecentMenu(false);
-          quickOpenProject(project, true);
-          break;
-        case "quick":
-          if (project) toggleProjectQuickOpen(project.path, project.serverId);
-          break;
-        case "backend": {
-          if (!project) return;
-          const effective =
-            project.preferredBackend ??
-            detectBackendForPath(project.path, terminalBackend);
-          setProjectBackend(
-            project.path,
-            project.serverId,
-            effective === "wsl" ? "windows" : "wsl",
-          );
-          break;
-        }
-        case "remove":
-          if (project) removeRecentProject(project.path, project.serverId);
-          break;
-        case "create":
-          setShowRecentMenu(false);
-          setShowCreateProjectModal(true);
-          break;
-        case "browse":
-          setShowRecentMenu(false);
-          handleNewLocalTab();
-          break;
-        case "jira":
-          setShowRecentMenu(false);
-          setShowJiraProjectModal(true);
-          break;
-        case "server": {
-          const server = servers.find((sv) => sv.id === arg);
-          if (server) {
-            setShowRecentMenu(false);
-            setBrowsingServer(server);
-          }
-          break;
-        }
-      }
-    },
-  });
-
   // Track maximized state for window control icon
   useEffect(() => {
     const win = getCurrentWindow();
@@ -542,39 +331,6 @@ export default function TabBar() {
     return () => { unlisten?.(); };
   }, []);
 
-  // Listen for open-recent event from startup screen
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const { path, name } = (e as CustomEvent).detail;
-      const project = recentProjects.find((p) => p.path === path);
-      if (project && (project.lastLayout || project.lastTemplate)) {
-        quickOpenProject(project, false);
-      } else {
-        setPendingDir({ name, dir: path });
-      }
-    };
-    window.addEventListener("made:open-recent", handler);
-    return () => window.removeEventListener("made:open-recent", handler);
-  }, [recentProjects, quickOpenProject]);
-
-  // Listen for OS-level quit request (Alt+F4 etc.) intercepted in App.tsx
-  useEffect(() => {
-    const handler = () => {
-      setQuitDontShow(false);
-      setShowQuitConfirm(true);
-    };
-    window.addEventListener("made:quit-requested", handler);
-    return () => window.removeEventListener("made:quit-requested", handler);
-  }, []);
-
-  // Helper: truncate long paths for display
-  function truncatePath(fullPath: string): string {
-    const segments = fullPath.replace(/\\/g, "/").split("/").filter(Boolean);
-    if (segments.length <= 3) return fullPath;
-    return ".../" + segments.slice(-2).join("/");
-  }
-
-  // Helper: get icon for tab type
   const renderTabIcon = (tab: typeof tabs[0], isActive: boolean) => {
     const activeColor = "var(--ezy-text)";
     const inactiveColor = "var(--ezy-text-muted)";
@@ -742,53 +498,10 @@ export default function TabBar() {
         {/* Tabs */}
         <div ref={tabsContainerRef} data-ctx-surface="tabstrip" style={{ display: "flex", alignItems: "stretch", minWidth: 0, overflow: "hidden" }}>
           {(() => {
-            // Build a local color map so tabs assigned in the same render pass see each other
-            const localColors = { ...projectColors };
-            const pendingAssigns: Array<[string, ProjectColorId]> = [];
             const visibleTabs = tabs.filter((t) => !t.isDevServerTab && !t.isKanbanTab && (!t.isServersTab || showServersTab) && !t.isSettingsTab);
-
-            // Collect unique project dirs for visible non-system tabs
-            const visibleDirs = new Set<string>();
-            for (const tab of visibleTabs) {
-              if (!(tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab || tab.isSettingsTab)) {
-                const dir = tab.workingDir.replace(/\\/g, "/");
-                if (dir) visibleDirs.add(dir);
-              }
-            }
-
-            // Assign colors for any tabs missing them
-            for (const dir of visibleDirs) {
-              if (localColors[dir] === undefined) {
-                const newId = autoAssignColor(localColors);
-                localColors[dir] = newId;
-                pendingAssigns.push([dir, newId]);
-              }
-            }
-
-            // Dedup: if two different visible projects share the same color, reassign the later one
-            const colorToDirs = new Map<string, string[]>();
-            for (const dir of visibleDirs) {
-              const cid = localColors[dir];
-              if (cid) {
-                const list = colorToDirs.get(cid) ?? [];
-                list.push(dir);
-                colorToDirs.set(cid, list);
-              }
-            }
-            for (const [, dirs] of colorToDirs) {
-              if (dirs.length <= 1) continue;
-              // Keep the first, reassign the rest
-              for (let i = 1; i < dirs.length; i++) {
-                const newId = autoAssignColor(localColors);
-                localColors[dirs[i]] = newId;
-                pendingAssigns.push([dirs[i], newId]);
-              }
-            }
-
-            // Commit all new/changed assignments to store
-            for (const [dir, colorId] of pendingAssigns) {
-              setProjectColor(dir, colorId);
-            }
+            // Assign + dedup project colours. Shared with the vertical strip —
+            // see lib/tab-colors.ts for why this could not stay inline here.
+            const localColors = syncProjectColors(visibleTabs, projectColors, setProjectColor);
             return visibleTabs.map((tab) => {
             const isActive = tab.id === activeTabId;
             const isSystemTab = tab.isKanbanTab || tab.isDevServerTab || tab.isServersTab || tab.isSettingsTab;
@@ -1291,23 +1004,14 @@ export default function TabBar() {
             }}
             onClick={() => {
               setShowNewTabMenu(false);
-              if (recentProjects.length > 0 || projectsDir || servers.length > 0) {
-                setShowRecentMenu((v) => !v);
-              } else {
-                setShowRecentMenu(false);
-                handleNewLocalTab();
-              }
+              handlePlusClick();
             }}
             onMouseEnter={(e) => {
               cancelHoverClose();
               // Same hover-to-open setting as the add-pane chevron next door;
               // each button closes the other's menu, so moving the pointer
               // between the two is an instant switch.
-              if (
-                hoverOpenAddPaneMenu &&
-                !showRecentMenu &&
-                (recentProjects.length > 0 || projectsDir || servers.length > 0)
-              ) {
+              if (hoverOpenAddPaneMenu && !showRecentMenu && canOpenRecent) {
                 setShowNewTabMenu(false);
                 setShowRecentMenu(true);
                 return;
@@ -1617,14 +1321,10 @@ export default function TabBar() {
 
           {/* Close */}
           <div
-            onClick={() => {
-              if (confirmQuit) {
-                setQuitDontShow(false);
-                setShowQuitConfirm(true);
-              } else {
-                getCurrentWindow().close();
-              }
-            }}
+            // Straight to close(): App's onCloseRequested decides whether to
+            // confirm, so this X, Alt+F4 and the taskbar X all take the same
+            // path and QuitConfirmModal is the single place that asks.
+            onClick={() => getCurrentWindow().close()}
             style={{
               display: "flex",
               alignItems: "center",
@@ -1653,140 +1353,7 @@ export default function TabBar() {
       </div>
 
       {/* Remote File Browser modal */}
-      {browsingServer && (
-        <RemoteFileBrowser
-          server={browsingServer}
-          onSelect={handleRemotePathSelected}
-          onClose={() => setBrowsingServer(null)}
-        />
-      )}
-
-      {/* Tab color picker (right-click menu) */}
-
-      {/* Quit confirmation dialog */}
-      {showQuitConfirm && (
-        <div
-          ref={quitConfirmRef}
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 9999,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: "rgba(0,0,0,0.55)",
-          }}
-          onClick={(e) => { if (e.target === e.currentTarget) setShowQuitConfirm(false); }}
-        >
-          <div
-            style={{
-              backgroundColor: "var(--ezy-surface-raised)",
-              border: "1px solid var(--ezy-border)",
-              borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
-              boxShadow: "0 24px 64px rgba(0,0,0,0.7)",
-              padding: "24px 28px 20px",
-              width: 320,
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-            }}
-          >
-            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 15px)", fontWeight: 600, color: "var(--ezy-text)" }}>
-              Quit MADE?
-            </div>
-            <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)", lineHeight: 1.5 }}>
-              All running terminals will be closed.
-            </div>
-            {/* Don't show again */}
-            <div
-              style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 2 }}
-              onClick={() => setQuitDontShow((v) => !v)}
-            >
-              <div
-                style={{
-                  width: 15,
-                  height: 15,
-                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
-                  border: quitDontShow ? "none" : "1px solid var(--ezy-border-light)",
-                  backgroundColor: quitDontShow ? "var(--ezy-accent)" : "transparent",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                  transition: "background-color 120ms ease",
-                }}
-              >
-                {quitDontShow && (
-                  <FaCheck size={9} color="#fff" />
-                )}
-              </div>
-              <span style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 12px)", color: "var(--ezy-text-muted)" }}>Do not show again</span>
-            </div>
-            {/* Buttons */}
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-              <div
-                onClick={() => setShowQuitConfirm(false)}
-                style={{
-                  padding: "6px 16px",
-                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
-                  fontWeight: 500,
-                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
-                  cursor: "pointer",
-                  border: "1px solid var(--ezy-border-light)",
-                  color: "var(--ezy-text-secondary)",
-                  backgroundColor: "transparent",
-                  transition: "background-color 120ms ease",
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "transparent"}
-              >
-                Cancel
-              </div>
-              <div
-                onClick={() => {
-                  if (quitDontShow) setConfirmQuit(false);
-                  setShowQuitConfirm(false);
-                  getCurrentWindow().destroy();
-                }}
-                style={{
-                  padding: "6px 16px",
-                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
-                  fontWeight: 500,
-                  borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
-                  cursor: "pointer",
-                  border: "none",
-                  color: "#fff",
-                  backgroundColor: "#c42b1c",
-                  transition: "background-color 120ms ease",
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = "#a82318"}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = "#c42b1c"}
-              >
-                Quit
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Create Project modal */}
-      {showCreateProjectModal && (
-        <CreateProjectModal
-          onCreated={(name, dir, serverId) => {
-            setShowCreateProjectModal(false);
-            setPendingDir({ name, dir, serverId });
-          }}
-          onClose={() => setShowCreateProjectModal(false)}
-        />
-      )}
-
-      {/* New Jira Project modal */}
-      {showJiraProjectModal && (
-        <JiraProjectModal onClose={() => setShowJiraProjectModal(false)} />
-      )}
-
-      {/* Delayed path tooltip (2s hover on tab) */}
-      {/* Tab-path tooltip — overlay-rendered (useOverlayViewportPopup above). */}
+      {launchModals}
     </>
   );
 }

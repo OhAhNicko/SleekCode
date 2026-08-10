@@ -5,8 +5,9 @@ import { uiFontStack, uiFontTracking, UI_FONT_SIZE_DEFAULT } from "./lib/ui-font
 import { fetchReleaseNotes } from "./lib/release-notes";
 import TabBar from "./components/TabBar";
 import VerticalTabBar from "./components/VerticalTabBar";
+import VerticalTabBarV2 from "./components/VerticalTabBarV2";
 import TemplatePicker, { type ExtraPaneType } from "./components/TemplatePicker";
-import { useOrientation } from "./lib/use-orientation";
+import { useIsVerticalTabBar } from "./lib/use-vertical-tabbar";
 import { spawnDevServer } from "./lib/spawn-dev-server";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { buildLayoutFromTemplate, stampTerminalTypes, addPaneAsGrid, generatePaneId, addKanbanPane } from "./lib/layout-utils";
@@ -54,6 +55,7 @@ import JiraMcpStartupCheck from "./components/JiraMcpStartupCheck";
 import KnowledgeMcpStartupCheck from "./components/KnowledgeMcpStartupCheck";
 import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
+import QuitConfirmModal from "./components/QuitConfirmModal";
 import { matchCommand, probeKeybinding, MIGRATED } from "./lib/keybindings";
 import { runCommand } from "./lib/commands";
 import PromptModal from "./components/PromptModal";
@@ -69,12 +71,18 @@ import KnowledgeApprovalHost from "./components/knowledge/KnowledgeApprovalHost"
 import KnowledgeConflictModal from "./components/knowledge/KnowledgeConflictModal";
 import KnowledgeRevisionModal from "./components/knowledge/KnowledgeRevisionModal";
 import KnowledgeContextPreviewModal from "./components/knowledge/KnowledgeContextPreviewModal";
-import { useKnowledgeStore } from "./store/knowledgeStore";
+import {
+  useKnowledgeStore,
+  knowledgeBlockedReason,
+  knowledgeReadBlockedReason,
+} from "./store/knowledgeStore";
+import { canonicalProjectKey } from "./lib/knowledge/keys";
 import {
   createNote as createKnowledgeNote,
   createHandoff as createKnowledgeHandoff,
   latestHandoff as latestKnowledgeHandoff,
 } from "./lib/knowledge/api";
+import { usableKnowledgePath } from "./lib/knowledge/remote-mirror";
 import { promptForInput } from "./lib/prompt-modal";
 import { resolveCaretTerminalId } from "./lib/clipboard-insert";
 import { pasteTextToTerminal } from "./lib/terminal-paste";
@@ -125,12 +133,11 @@ export default function App() {
   const gameSidebarOpen = useAppStore((s) => s.gameSidebarOpen);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const devServerPanelOpen = useAppStore((s) => s.devServerPanelOpen);
-  const verticalTabMode = useAppStore((s) => s.verticalTabMode);
   const sidebarSide = useAppStore((s) => s.sidebarSide);
-  const orientation = useOrientation();
-  const isVertical =
-    verticalTabMode === "always" ||
-    (verticalTabMode === "auto" && orientation === "portrait");
+  const isVertical = useIsVerticalTabBar();
+  // Which vertical strip: the redesigned "gutter rail" or the original.
+  const verticalTabBarV2 = useAppStore((s) => s.verticalTabBarV2 ?? false);
+  const VerticalBar = verticalTabBarV2 ? VerticalTabBarV2 : VerticalTabBar;
   const pendingDir = useAppStore((s) => s.pendingDir);
   const setPendingDir = useAppStore((s) => s.setPendingDir);
   const addTerminals = useAppStore((s) => s.addTerminals);
@@ -376,6 +383,28 @@ export default function App() {
     setChangelogToShow(null);
   }, [changelogToShow]);
 
+  /**
+   * The active tab's knowledge path, and whether anything is attached there.
+   *
+   * Two PRIMITIVE selectors, so App re-renders only when one of these strings
+   * actually changes — returning the tab or the project entry would hand this
+   * component a new reference on every store write.
+   *
+   * `knowledgeStatus` is read only to make the palette memo recompute:
+   * `activeTabId` cannot see a project that becomes initialized while its own
+   * tab stays in front, which is exactly what the sidebar's "Initialize
+   * NexusMind" button does. Do not delete it as unused.
+   */
+  const knowledgePath = useAppStore((s) => {
+    const tab = s.tabs.find((t) => t.id === s.activeTabId);
+    if (!tab?.workingDir) return "";
+    if (tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab) return "";
+    return usableKnowledgePath(tab.workingDir, tab.serverId) ?? "";
+  });
+  const knowledgeStatus = useKnowledgeStore(
+    (s) => s.projects[canonicalProjectKey(knowledgePath)]?.status ?? "",
+  );
+
   // Build extra palette actions from launch configs, snippets, and history
   const paletteExtraActions = useMemo<PaletteAction[]>(() => {
     const actions: PaletteAction[] = [];
@@ -424,20 +453,24 @@ export default function App() {
       execute: () => window.dispatchEvent(new Event("made:open-codereview")),
     });
 
-    // NexusMind — only on a local project tab. On a system tab there is no
-    // project to act on, and on an SSH tab the feature does not apply at all,
-    // so offering these would be offering four dead entries.
+    // NexusMind. Two different questions, and conflating them is what made the
+    // three action entries dead: "is there a project here" gates the SIDEBAR
+    // entry, but the other three ACT ON ATTACHED MEMORY and need it to exist.
+    //
+    // They used to be listed on any project tab and fail silently on a project
+    // that was never attached — every one of them ends in `.catch(() => {})`,
+    // so the palette closed and nothing happened. A Jira tab made that
+    // permanent rather than transient: it is never offered initialization at
+    // all, so its memory could only ever arrive from a different tab.
+    //
+    // Gated through the same two functions the sidebar and the context menu
+    // use, so all three surfaces agree on what "unavailable" means.
     {
-      const store = useAppStore.getState();
-      const tab = store.tabs.find((t) => t.id === store.activeTabId);
-      const isLocalProject =
-        !!tab &&
-        !!tab.workingDir &&
-        !tab.serverId &&
-        !(tab.isDevServerTab || tab.isServersTab || tab.isKanbanTab || tab.isSettingsTab);
+      const projectPath = knowledgePath;
 
-      if (isLocalProject && tab) {
-        const projectPath = tab.workingDir;
+      if (projectPath) {
+        const writeBlocked = knowledgeBlockedReason(projectPath);
+        const readBlocked = knowledgeReadBlockedReason(projectPath);
         const KEYWORDS = "nexusmind knowledge memory notes";
         const revealSidebar = () => {
           const s = useAppStore.getState();
@@ -445,6 +478,8 @@ export default function App() {
           if (!s.sidebarOpen) s.toggleSidebar();
         };
 
+        // Always offered where there is a project: on an uninitialized one the
+        // sidebar is exactly where you go to fix that.
         actions.push({
           id: "action-knowledge-sidebar",
           label: "Open knowledge sidebar",
@@ -452,7 +487,7 @@ export default function App() {
           keywords: `${KEYWORDS} sidebar open`,
           execute: () => runCommand("app.toggleKnowledge"),
         });
-        actions.push({
+        if (!writeBlocked) actions.push({
           id: "action-knowledge-new-note",
           label: "Knowledge: new note…",
           category: "action",
@@ -484,7 +519,7 @@ export default function App() {
             })();
           },
         });
-        actions.push({
+        if (!writeBlocked) actions.push({
           id: "action-knowledge-create-handoff",
           label: "Knowledge: create handoff",
           category: "action",
@@ -500,7 +535,8 @@ export default function App() {
               .catch(() => {});
           },
         });
-        actions.push({
+        // A read, so a read-only follower instance still gets it.
+        if (!readBlocked) actions.push({
           id: "action-knowledge-continue-handoff",
           label: "Knowledge: continue from latest handoff",
           category: "action",
@@ -551,8 +587,10 @@ export default function App() {
     return actions;
     // activeTabId is a dependency because the knowledge actions are built for
     // whichever project is in front — without it the palette would keep offering
-    // the previous project's actions after a tab switch.
-  }, [launchConfigs, loadLaunchConfig, snippets, activeTabId]);
+    // the previous project's actions after a tab switch. knowledgeStatus is one
+    // for the same reason within a single tab: initializing a project must add
+    // its actions without a switch to notice it.
+  }, [launchConfigs, loadLaunchConfig, snippets, activeTabId, knowledgePath, knowledgeStatus]);
 
   // Pre-warm CLI paths at startup (background). On Windows we MUST resolve both
   // WSL and Windows CLI paths because per-project auto-detect (detectBackendForPath)
@@ -1401,7 +1439,7 @@ export default function App() {
       {!isVertical && <TabBar />}
       <UpdateBanner {...updateState} />
       <div className="flex-1 min-h-0 flex">
-        {isVertical && sidebarSide === "left" && <VerticalTabBar />}
+        {isVertical && sidebarSide === "left" && <VerticalBar />}
         {sidebarOpen && sidebarSide === "left" && (
           <Sidebar
             rootDir={activeTab?.workingDir || ""}
@@ -1540,7 +1578,7 @@ export default function App() {
             onOpenFile={handleOpenFile}
           />
         )}
-        {isVertical && sidebarSide === "right" && <VerticalTabBar />}
+        {isVertical && sidebarSide === "right" && <VerticalBar />}
       </div>
       <CommandPalette
         open={showPalette}
@@ -1566,6 +1604,10 @@ export default function App() {
       {VOICE_ENABLED && <VoiceHud />}
       {VOICE_ENABLED && <VoiceController />}
       <GlobalContextMenu />
+      {/* NOT inside an isVertical branch: both tab bars route their X through
+          getCurrentWindow().close(), and this is the only listener for the
+          made:quit-requested event App's onCloseRequested raises. */}
+      <QuitConfirmModal />
       <PromptModal />
       <UnlockKeychainModal />
       <CliInstallModal />
@@ -1609,6 +1651,8 @@ export default function App() {
           onClose={() => setPendingDir(null)}
           initialServerCommand={matchingRecentForPending?.serverCommand}
           initialNoDevServer={matchingRecentForPending?.noDevServer}
+          projectPath={pendingDir.dir}
+          serverId={pendingDir.serverId}
         />
       )}
     </div>

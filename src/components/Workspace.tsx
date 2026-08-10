@@ -44,6 +44,8 @@ import {
   JIRA_ASSIGNED_PANE_PREFIX,
 } from "../lib/jira-layout";
 import { buildTicketUrl } from "../lib/jira";
+import { askForTicket, openJiraTicket } from "../lib/jira-project";
+import { useJiraTreeOwnsTickets } from "../lib/use-vertical-tabbar";
 import { siteForTabIn, splitJiraQK } from "../lib/jira-sites";
 import { useJiraNotifyStore } from "../store/jiraNotifyStore";
 import JiraStackedPair from "./JiraStackedPair";
@@ -67,6 +69,9 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // FloatingPaneWindow and the slot needs to re-observe the new element.
   const paneModes = useAppStore((s) => s.paneModes);
   const closingPanes = useAppStore((s) => s.closingPanes);
+  // True while the v2 vertical strip nests this project's tickets under its
+  // tab row — the ticket rail stands down rather than listing them twice.
+  const jiraTreeOwnsTickets = useJiraTreeOwnsTickets();
   const [activeTerminalId, setLocalActiveTerminal] = useState<string | null>(
     null
   );
@@ -126,12 +131,21 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // pair-layout invariant (isJiraPairLayout migration above) must never see
   // it, and an assigned ticket must not grow a CLI pane by being previewed.
   const jiraAssignedMode = useAppStore((s) => s.jiraAssignedMode ?? false);
+  const jiraUnassignedMode = useAppStore((s) => s.jiraUnassignedMode ?? false);
   const tabSite = useAppStore((s) => (tab.isJiraProject ? siteForTabIn(s, tab) : ""));
-  const railTab = useJiraNotifyStore((s) =>
-    jiraAssignedMode ? (s.railTab[tab.id] ?? "tickets") : "tickets",
-  );
+  const railTab = useJiraNotifyStore((s) => {
+    const t = s.railTab[tab.id] ?? "tickets";
+    // A tab can be parked on a list whose mode was since turned off — fall
+    // back rather than render a list that no longer has a source.
+    if (t === "assigned" && !jiraAssignedMode) return "tickets";
+    if (t === "unassigned" && !jiraUnassignedMode) return "tickets";
+    return t;
+  });
   const assignedPreview = useJiraNotifyStore((s) => s.assignedPreview[tab.id]);
-  const assignedActive = tab.isJiraProject && jiraAssignedMode && railTab === "assigned";
+  // Both list tabs drive the SAME browser-only preview — a rail shows one of
+  // them at a time, so one slot and one synthetic pane cover both.
+  const assignedActive =
+    tab.isJiraProject && (railTab === "assigned" || railTab === "unassigned");
   const displayJiraPair = useMemo(() => {
     if (!tab.isJiraProject || !tab.layout || !tab.selectedJiraTicket) return null;
     // Selection is an INSTANCE key ("SUPPORT-1" or "SUPPORT-1#2" for a
@@ -968,8 +982,13 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // A Jira project keeps its rail visible in every state — including the empty
   // one, since the rail is where "new ticket" lives. So each return below is
   // wrapped rather than returned bare.
+  //
+  // The v2 vertical strip nests the same tickets under the project's tab row,
+  // so the rail stands down there rather than showing the list twice. The flag
+  // alone is not enough: with the horizontal bar up, the rail is still the only
+  // ticket surface there is.
   const withRail = (content: ReactNode) => {
-    if (!tab.isJiraProject) return content;
+    if (!tab.isJiraProject || jiraTreeOwnsTickets) return content;
     return (
       <div className="h-full w-full flex" style={{ minWidth: 0 }}>
         <JiraTicketRail tab={tab} onFocusTerminal={handleTerminalFocus} />
@@ -978,9 +997,12 @@ export default function Workspace({ tab }: WorkspaceProps) {
     );
   };
 
-  // A Jira project with no panes yet: the rail already offers "new ticket", so
-  // the middle just says so. The generic launchers below would spawn panes that
-  // aren't tickets, which would sit outside the rail's model entirely.
+  // A Jira project with no panes yet. The generic launchers below would spawn
+  // panes that aren't tickets, which would sit outside the rail's model
+  // entirely — so this state offers exactly one action. With the rail up that
+  // action is a pointer to it; with the v2 tree up the rail is gone, and an
+  // empty middle plus a nested list the user may have collapsed would be a dead
+  // end, so the button is right here.
   // (Assigned mode falls through — its preview renders in the main return so
   // the terminal portals stay mounted and background sessions keep running.)
   if (tab.isJiraProject && !displayJiraPair && !assignedActive) {
@@ -991,15 +1013,57 @@ export default function Workspace({ tab }: WorkspaceProps) {
       >
         <div
           style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 12,
             fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
             color: "var(--ezy-text-muted)",
             textAlign: "center",
             lineHeight: 1.6,
           }}
         >
-          No ticket open.
-          <br />
-          Add one from the rail to start investigating.
+          <span>
+            No ticket open.
+            {!jiraTreeOwnsTickets && (
+              <>
+                <br />
+                Add one from the rail to start investigating.
+              </>
+            )}
+          </span>
+          {jiraTreeOwnsTickets && (
+            <button
+              type="button"
+              onClick={() => {
+                void askForTicket().then((answer) => {
+                  if (!answer) return;
+                  openJiraTicket(tab.id, {
+                    ticket: answer.ticket,
+                    cli: answer.cli,
+                    swedish: answer.swedish,
+                    english: answer.english,
+                    model: answer.model,
+                  });
+                });
+              }}
+              style={{
+                padding: "6px 14px",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                backgroundColor: "var(--ezy-surface-raised)",
+                border: "1px solid var(--ezy-border)",
+                color: "var(--ezy-text)",
+                fontFamily: "inherit",
+                fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                cursor: "pointer",
+                transition: "background-color 120ms ease",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface)")}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-surface-raised)")}
+            >
+              New ticket
+            </button>
+          )}
         </div>
       </div>,
     );
