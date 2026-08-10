@@ -13,86 +13,18 @@
 #     slightly stale manifest still works.
 #   - Order here is the order the commits are made in.
 #
+# List FILES, never directories: `git check-ignore` calls a trailing-slash path
+# ignored in this repo (CRLF .gitignore, empty-pattern match), and the script's
+# guard then drops the whole group into the sweep commit.
+#
 # Order is deliberately least-notable FIRST: `git log` prints newest first, so
 # the last commit here is the top line of the changelog.
 
-feat(settings): Jira gets its own controls — unassigned queue, status indicator and per-status colours, grouping, sort, which facts the row meta line and the pane header carry, any extra Jira field as a column, and list width — next to the toggle for the v2 vertical strip
-  src/components/SettingsPane.tsx
-
-feat(ui): the dismiss X in a dialog is a real button with a hit area and a hover fill instead of the bare 14px glyph five dialogs had each copy-pasted, and the create-project dialog holds a fixed height so the panel stops growing out from under the pointer as you type
-  src/components/ModalCloseButton.tsx
-  src/components/ConnectToGitHubModal.tsx
-  src/components/CreateProjectModal.tsx
-  src/components/JiraProjectModal.tsx
-  src/components/RemoteFileBrowser.tsx
-
-fix(window): with "Confirm before quitting" on, MADE could not be quit from the vertical tab bar at all — its X confirmed via window.confirm and then called close(), which re-entered the interception that had just preventDefault()ed, and Alt+F4 reached no listener there at all; the prompt is now an app-level modal both bars share, and its Quit button destroys the window instead of re-asking
-  src/components/QuitConfirmModal.tsx
-  src/components/VerticalTabBar.tsx
-
-fix(terminal): pane-header text sat on three different baselines — centring aligns boxes, and Blink rounds each of the row's three font sizes onto its own baseline, so the model chip printed visibly below the session picker beside it; every run now shares one strut, and the three hand-rolled copies of relative-time formatting collapse into lib/relative-time.ts
-  src/components/TerminalHeader.tsx
-  src/components/CommandHistory.tsx
-  src/index.css
-  src/lib/relative-time.ts
-
-feat(knowledge): NexusMind now works on an SSH project whose folder is a share of a folder on THIS machine — the Knowledge sidebar proposes the local twin and proves it with a nonce round-trip through the share before anything downstream uses it, stale links are caught by a byte compare, and each server lists what it has linked (and can unlink it) in the Servers panel
-  src/lib/knowledge/remote-mirror.ts
-  src/components/knowledge/KnowledgeRemotePanel.tsx
-  src/components/knowledge/KnowledgeSidebar.tsx
-  src/components/KnowledgeEngine.tsx
-  src/components/KnowledgeMcpStartupCheck.tsx
-  src/components/ServersPanel.tsx
-  src/components/Sidebar.tsx
-  src/components/TemplatePicker.tsx
-  src/lib/knowledge/mcp.ts
-  src/store/knowledgeStore.ts
-  src/types/index.ts
-
-feat(dev-server): a dev server now picks a free port BEFORE it launches instead of colliding by construction — the project's real port is resolved from vite.config/.env/angular.json, probed, and stepped up to the first free one; a conflict that still happens offers "Another port" and "Kill <port>" on the row's banner and in its context menu, and a restart no longer fires fuser at whatever unrelated project happens to own 3000
-  src/lib/dev-server-ports.ts
-  src/lib/port-conflict.ts
-  src/components/DevServerTab.tsx
-  src/components/DevServerTerminalHost.tsx
-  src/lib/dev-server-actions.ts
-  src/lib/server-commands.ts
-  src/lib/spawn-dev-server.ts
-  src/store/terminalSlice.ts
-
-feat(jira): an Unassigned queue — open tickets nobody has claimed, per site, with a card the first time one appears — and much richer ticket rows: a fixed-width status badge on a per-status colour, sortable and groupable lists whose order goes into the JQL rather than reordering the wrong 50, a meta line read down columns, and JSM Organizations / Request type discovered per site instead of hardcoded to a customfield id
-  src-tauri/src/jira_poll.rs
-  src-tauri/src/lib.rs
-  src/components/JiraTicketRail.tsx
-  src/components/JiraNotifyEngine.tsx
-  src/components/jira/JiraRowMeta.tsx
-  src/components/jira/JiraStatusBadge.tsx
-  src/hooks/useJiraTicketRows.ts
-  src/lib/jira.ts
-  src/lib/jira-colors.ts
-  src/lib/jira-fields.ts
-  src/lib/jira-notify.ts
-  src/lib/jira-omnibox.ts
-  src/lib/jira-row-sort.ts
-  src/lib/jira-status-colors.ts
-  src/lib/jira-surface-actions.ts
-  src/lib/compact-row-menu.ts
-  src/lib/menu/context.ts
-  src/lib/menu/providers/rows.ts
-  src/lib/surface-actions.ts
-  src/store/index.ts
-  src/store/jiraNotifyStore.ts
-  src/store/recentProjectsSlice.ts
-
-feat(tabs): a redesigned vertical tab strip behind Settings > Appearance > "Vertical tabbar v2" — drag-resizable, with each Jira project's tickets nested as a tree under its own tab row (or an anchored flyout when the strip is collapsed to 80px, where the rail stands down rather than listing them twice); the "+" launcher and the project-colour assignment moved out of TabBar so both bars raise the identical menu and colour their tabs the same way
+fix(tabs): the v2 vertical strip's width handle showed an ew-resize cursor where every other vertical divider in the app — the pane splitters, the ticket rail — uses col-resize
   src/components/VerticalTabBarV2.tsx
-  src/components/VerticalTicketTree.tsx
-  src/components/VerticalTicketFlyout.tsx
-  src/hooks/useTabLaunchMenu.tsx
-  src/lib/use-vertical-tabbar.ts
-  src/lib/tab-colors.ts
-  src/components/TabBar.tsx
-  src/components/Workspace.tsx
-  src/components/GitStatusBar.tsx
-  src/overlay/OverlayRoot.tsx
-  src/store/layoutSlice.ts
-  src/App.tsx
+
+feat(jira): ticket rows in the rail can be dragged into whatever order you want, kept per project — a 4px threshold keeps a drag from swallowing the click, a 2px accent rule marks the landing spot (rather than a floating ghost, which would cover the narrow list it is being dropped into), a duplicated ticket's whole group moves as one, and the first drag freezes the automatic order you were looking at instead of reshuffling around the row you moved
+  src/components/JiraTicketRail.tsx
+  src/hooks/useJiraTicketRows.ts
+  src/store/recentProjectsSlice.ts
+  src/store/index.ts
