@@ -47,7 +47,6 @@ export default function VerticalTabBar() {
   const showMiniGamesButton = useAppStore((s) => s.showMiniGamesButton ?? false);
   const gameSidebarOpen = useAppStore((s) => s.gameSidebarOpen);
   const showKanbanButton = useAppStore((s) => s.showKanbanButton ?? true);
-  const confirmQuit = useAppStore((s) => s.confirmQuit);
   const compact = useAppStore((s) => s.verticalTabBarCompact);
   const setCompact = useAppStore((s) => s.setVerticalTabBarCompact);
   const dockedRight = useAppStore((s) => s.sidebarSide) === "right";
@@ -90,11 +89,11 @@ export default function VerticalTabBar() {
     else win.maximize();
   };
 
+  // Straight to close(): App's onCloseRequested decides whether to confirm and
+  // QuitConfirmModal answers it. The old window.confirm here could not quit at
+  // all with Confirm-quit on — close() re-entered the interception that had
+  // just been preventDefault()ed.
   const handleClose = () => {
-    if (confirmQuit) {
-      const ok = window.confirm("Quit MADE?");
-      if (!ok) return;
-    }
     getCurrentWindow().close();
   };
 
