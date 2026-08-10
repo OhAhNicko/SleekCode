@@ -64,7 +64,19 @@ import { pendingSettingsSection } from "../lib/settings-section";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { isWindows } from "../lib/platform";
 import { currentIsoWeek } from "../lib/iso-week";
-import { DEFAULT_CLI_FONT_SIZE, type DevServerTabIconMode } from "../store/recentProjectsSlice";
+import {
+  DEFAULT_CLI_FONT_SIZE,
+  DEFAULT_JIRA_HEADER_SHOW,
+  DEFAULT_JIRA_RAIL_WIDTHS,
+  DEFAULT_JIRA_ROW_META_SHOW,
+  JIRA_RAIL_MAX_WIDTH,
+  JIRA_RAIL_MIN_WIDTH,
+  type DevServerTabIconMode,
+} from "../store/recentProjectsSlice";
+import { buildStatusColorMap, normalizeStatus } from "../lib/jira-status-colors";
+import { pickableFields } from "../lib/jira-fields";
+import { requestSettingsSection } from "../lib/settings-section";
+import type { JiraFieldMeta } from "../store/recentProjectsSlice";
 import { FaCheck } from "react-icons/fa";
 import { STATUSLINE_FEATURES, getStatuslineDefault } from "./TerminalHeader";
 import ClearDataModal from "./ClearDataModal";
@@ -77,6 +89,7 @@ import { parseHotkey } from "../lib/voice/hotkey";
 import { VOICE_ENABLED } from "../lib/voice/feature-flag";
 import { useKnowledgeStore } from "../store/knowledgeStore";
 import { canonicalProjectKey, MEMORY_DIR_NAME } from "../lib/knowledge/keys";
+import { usableKnowledgePath } from "../lib/knowledge/remote-mirror";
 import KnowledgeMcpRow from "./knowledge/KnowledgeMcpRow";
 import {
   KNOWLEDGE_CLIS,
@@ -236,6 +249,130 @@ function SliderWithReset({ value, onChange, onReset, isDefault, min, max, step, 
   );
 }
 
+/**
+ * Pick any of the site's Jira fields to show as an extra column.
+ *
+ * A mature Jira site exposes ~150 fields, so this is a filterable checklist
+ * rather than a wall of checkboxes: type to narrow, and whatever is already
+ * ticked stays pinned to the top so you can always see (and untick) your
+ * current picks even when the filter excludes them.
+ */
+function JiraExtraFieldsRow({
+  where,
+  label,
+  description,
+  fields,
+  selected,
+  onChange,
+}: {
+  where: "rows" | "header";
+  label: string;
+  description: string;
+  fields: JiraFieldMeta[];
+  selected: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const [filter, setFilter] = useState("");
+  const picked = new Set(selected);
+  const q = filter.trim().toLowerCase();
+  const shown = fields.filter((f) => picked.has(f.id) || !q || f.name.toLowerCase().includes(q));
+  // Ticked first, so a pick never scrolls out of reach behind a filter.
+  shown.sort((a, b) => {
+    const pa = picked.has(a.id) ? 0 : 1;
+    const pb = picked.has(b.id) ? 0 : 1;
+    return pa !== pb ? pa - pb : a.name.localeCompare(b.name);
+  });
+  const toggle = (id: string) =>
+    onChange(picked.has(id) ? selected.filter((x) => x !== id) : [...selected, id]);
+
+  return (
+    <SettingsRow label={label} description={description} vertical>
+      {fields.length === 0 ? (
+        <span
+          style={{
+            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+            color: "var(--ezy-text-muted)",
+          }}
+        >
+          Available once Jira has been polled at least once.
+        </span>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
+          <input
+            type="text"
+            value={filter}
+            placeholder={`Filter ${fields.length} fields`}
+            onChange={(e) => setFilter(e.target.value)}
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "5px 8px",
+              fontFamily: "inherit",
+              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+              color: "var(--ezy-text)",
+              backgroundColor: "var(--ezy-surface)",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+              outline: "none",
+            }}
+          />
+          <div
+            style={{
+              maxHeight: 168,
+              overflowY: "auto",
+              border: "1px solid var(--ezy-border)",
+              borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+              padding: 6,
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+            }}
+          >
+            {shown.length === 0 ? (
+              <span
+                style={{
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                  color: "var(--ezy-text-muted)",
+                }}
+              >
+                No field matches that.
+              </span>
+            ) : (
+              shown.map((f) => (
+                <label
+                  key={`${where}-${f.id}`}
+                  className="flex items-center gap-1.5"
+                  style={{
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                    color: "var(--ezy-text)",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={picked.has(f.id)}
+                    onChange={() => toggle(f.id)}
+                  />
+                  <span
+                    style={{
+                      minWidth: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {f.name}
+                  </span>
+                </label>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </SettingsRow>
+  );
+}
+
 function SegmentedControl<T extends string>({ options, value, onChange, disabled }: {
   /** `fontFamily` renders that option's label in the face it selects, so a font
    *  picker reads as a specimen instead of a word. Omitted everywhere else. */
@@ -342,11 +479,17 @@ function SettingsRow({ label, description, children, vertical }: {
       gap: 16,
       borderBottom: "1px solid var(--ezy-border-subtle)",
     }}>
-      <div style={{ minWidth: 0, flex: 1 }}>
+      {/* The label gets a FLOOR and the control is what gives. Before this the
+          label column was `flex:1, minWidth:0` against a `flexShrink:0`
+          control, so a wide control (input + Test) squeezed it to ~90px and
+          "Jira API token" wrapped onto three lines with its description as a
+          ribbon. Controls all carry their own min sizes, so they shrink to a
+          floor rather than collapsing. */}
+      <div style={{ minWidth: 132, flex: "1 1 auto" }}>
         <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>{label}</div>
         {description && <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>{description}</div>}
       </div>
-      <div style={{ flexShrink: 0 }}>{children}</div>
+      <div style={{ flex: "0 1 auto", minWidth: 0, display: "flex", justifyContent: "flex-end" }}>{children}</div>
     </div>
   );
 }
@@ -1239,7 +1382,12 @@ function TextInput({
       onChange={(e) => onChange(e.target.value)}
       onBlur={onBlurValue ? (e) => onBlurValue(e.target.value) : undefined}
       style={{
+        // Shrinkable, not a hard 260: a fixed width here is what used to push
+        // the row's label column down to a wrapping sliver on a narrow pane.
         width: 260,
+        maxWidth: "100%",
+        minWidth: 0,
+        flex: "0 1 260px",
         padding: "5px 8px",
         fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
         fontFamily: monospace ? "var(--ezy-font-mono, ui-monospace, Menlo, monospace)" : "inherit",
@@ -1847,8 +1995,15 @@ function NexusMindSection() {
   const notifEnabled = useAppStore((s) => s.knowledgeNotifEnabled);
   const setNotifEnabled = useAppStore((s) => s.setKnowledgeNotifEnabled);
 
+  // The LOCAL path this section acts on. An SSH tab resolves to its local twin
+  // when the folder has been linked, and to "" when it has not — the rows then
+  // disable themselves with a reason, exactly as they do before initialization.
   const projectPath = useAppStore(
-    (s) => s.tabs.find((t) => t.id === s.activeTabId)?.workingDir ?? "",
+    (s) => {
+      const tab = s.tabs.find((t) => t.id === s.activeTabId);
+      if (!tab?.workingDir) return "";
+      return usableKnowledgePath(tab.workingDir, tab.serverId) ?? "";
+    },
   );
   const projectName = useAppStore((s) => {
     const tab = s.tabs.find((t) => t.id === s.activeTabId);
@@ -1875,7 +2030,9 @@ function NexusMindSection() {
   const status = project?.status;
   const ready = status === "ready" || status === "readonly";
   const policyReason =
-    status === "remote-unsupported"
+    activeServerId && !projectPath
+      ? "This project's folder is not linked to one on this machine — open the Knowledge sidebar to link it"
+      : status === "remote-unsupported"
       ? "Knowledge is local-only — SSH projects are not supported yet"
       : status === "readonly"
         ? project?.readonlyReason || "Knowledge is read-only in this instance"
@@ -2201,6 +2358,18 @@ export default function SettingsPane() {
   const setNotifOsPopupsEnabled = useAppStore((s) => s.setNotifOsPopupsEnabled);
   const setNotifSystemMinimized = useAppStore((s) => s.setNotifSystemMinimized);
   const notifSoundEnabled = useAppStore((s) => s.notifSoundEnabled ?? true);
+  // Names the channels a Jira notification will actually use, so the Jira tab
+  // answers "will I see this outside the app?" without a trip to Terminal.
+  // Declared here, after the channel selectors it reads — a const cannot be
+  // used above its declaration.
+  const jiraChannelSummary = [
+    "In-app",
+    notifOsPopupsEnabled ? "popup" : null,
+    notifSystemMinimized ? "system" : null,
+    notifSoundEnabled ? "sound" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const setNotifSoundEnabled = useAppStore((s) => s.setNotifSoundEnabled);
   const notifSoundVolume = useAppStore((s) => s.notifSoundVolume ?? 50);
   const setNotifSoundVolume = useAppStore((s) => s.setNotifSoundVolume);
@@ -2275,10 +2444,81 @@ export default function SettingsPane() {
   const setJiraNotifEnabled = useAppStore((s) => s.setJiraNotifEnabled);
   const jiraAssignedMode = useAppStore((s) => s.jiraAssignedMode ?? false);
   const setJiraAssignedMode = useAppStore((s) => s.setJiraAssignedMode);
-  const jiraHeaderShow = useAppStore(
-    (s) => s.jiraHeaderShow ?? { status: true, summary: true, assignee: false, myTickets: true },
+  // Select the RAW slice and merge below. Building the object inside the
+  // selector would return a fresh reference on every store change and
+  // re-render this pane constantly (same rule as the rail's row selectors).
+  // The merge is not optional: a store written before a key existed carries
+  // the object WITHOUT it, so `?? DEFAULT` alone leaves the new checkbox
+  // reading `undefined`.
+  const jiraHeaderShowRaw = useAppStore((s) => s.jiraHeaderShow);
+  const jiraHeaderShow = useMemo(
+    () => ({ ...DEFAULT_JIRA_HEADER_SHOW, ...(jiraHeaderShowRaw ?? {}) }),
+    [jiraHeaderShowRaw],
   );
   const setJiraHeaderShow = useAppStore((s) => s.setJiraHeaderShow);
+  const jiraUnassignedMode = useAppStore((s) => s.jiraUnassignedMode ?? false);
+  const setJiraUnassignedMode = useAppStore((s) => s.setJiraUnassignedMode);
+  const jiraUnassignedNotify = useAppStore((s) => s.jiraUnassignedNotify ?? true);
+  const setJiraUnassignedNotify = useAppStore((s) => s.setJiraUnassignedNotify);
+  const jiraRowMetaShowRaw = useAppStore((s) => s.jiraRowMetaShow);
+  const jiraRowMetaShow = useMemo(
+    () => ({ ...DEFAULT_JIRA_ROW_META_SHOW, ...(jiraRowMetaShowRaw ?? {}) }),
+    [jiraRowMetaShowRaw],
+  );
+  const setJiraRowMetaShow = useAppStore((s) => s.setJiraRowMetaShow);
+  const jiraStatusIndicator = useAppStore((s) => s.jiraStatusIndicator ?? "both");
+  const setJiraStatusIndicator = useAppStore((s) => s.setJiraStatusIndicator);
+  const jiraListGrouping = useAppStore((s) => s.jiraListGrouping ?? "flat");
+  const setJiraListGrouping = useAppStore((s) => s.setJiraListGrouping);
+  const jiraStatusColorMode = useAppStore((s) => s.jiraStatusColorMode ?? "auto");
+  const setJiraStatusColorMode = useAppStore((s) => s.setJiraStatusColorMode);
+  const jiraStatusColors = useAppStore((s) => s.jiraStatusColors);
+  const setJiraStatusColor = useAppStore((s) => s.setJiraStatusColor);
+  const jiraSiteFields = useAppStore((s) => s.jiraSiteFields);
+  const jiraExtraFieldsRaw = useAppStore((s) => s.jiraExtraFields);
+  const jiraExtraFields = useMemo(
+    () => ({ rows: jiraExtraFieldsRaw?.rows ?? [], header: jiraExtraFieldsRaw?.header ?? [] }),
+    [jiraExtraFieldsRaw],
+  );
+  const setJiraExtraFields = useAppStore((s) => s.setJiraExtraFields);
+  // UNION of every configured site's catalogue, not just the default one — on
+  // a multi-site setup the default-only list silently offered nothing for the
+  // other sites. Deduped by field id, first name seen wins. A pick is narrowed
+  // back to the site that actually has the field at request AND render time,
+  // so a field only one site defines is simply inert on the others.
+  const jiraPickableFields = useMemo(() => {
+    const byId = new Map<string, JiraFieldMeta>();
+    const cats = jiraSiteFields ?? {};
+    // Default site first, so its naming wins any collision.
+    for (const site of [jiraDefaultSiteId, ...Object.keys(cats)]) {
+      for (const f of cats[site] ?? []) if (!byId.has(f.id)) byId.set(f.id, f);
+    }
+    return pickableFields([...byId.values()]);
+  }, [jiraSiteFields, jiraDefaultSiteId]);
+  const jiraRailWidths = useAppStore((s) => s.jiraRailWidths ?? DEFAULT_JIRA_RAIL_WIDTHS);
+  const setJiraRailWidth = useAppStore((s) => s.setJiraRailWidth);
+  const jiraAssignedTickets = useAppStore((s) => s.jiraAssignedTickets);
+  const jiraUnassignedTickets = useAppStore((s) => s.jiraUnassignedTickets);
+  const jiraTicketSnapshots = useAppStore((s) => s.jiraTicketSnapshots);
+  // Every status the app has actually seen, with its automatic colour. Built
+  // from the SAME union the rail uses, so a colour pinned here is guaranteed to
+  // be the colour that renders there.
+  const jiraKnownStatuses = useMemo(() => {
+    const names: string[] = [];
+    for (const t of jiraAssignedTickets ?? []) if (t.status) names.push(t.status);
+    for (const t of jiraUnassignedTickets ?? []) if (t.status) names.push(t.status);
+    for (const snap of Object.values(jiraTicketSnapshots ?? {})) {
+      if (snap?.statusName) names.push(snap.statusName);
+    }
+    const auto = buildStatusColorMap(names);
+    // One row per NORMALIZED status, labelled with the first spelling seen —
+    // the map key is what the override is stored against.
+    const label = new Map<string, string>();
+    for (const n of names) if (!label.has(normalizeStatus(n))) label.set(normalizeStatus(n), n);
+    return [...auto.entries()]
+      .map(([key, color]) => ({ key, label: label.get(key) ?? key, auto: color }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [jiraAssignedTickets, jiraUnassignedTickets, jiraTicketSnapshots]);
   const jiraSiteAuthErrors = useJiraNotifyStore((s) => s.siteAuthErrors);
   const [jiraCredPing, setJiraCredPing] = useState<PingState>({ status: "idle" });
   const [newJiraSite, setNewJiraSite] = useState("");
@@ -2482,6 +2722,8 @@ export default function SettingsPane() {
   const setVerticalTabMode = useAppStore((s) => s.setVerticalTabMode);
   const sidebarSide = useAppStore((s) => s.sidebarSide);
   const setSidebarSide = useAppStore((s) => s.setSidebarSide);
+  const verticalTabBarV2 = useAppStore((s) => s.verticalTabBarV2 ?? false);
+  const setVerticalTabBarV2 = useAppStore((s) => s.setVerticalTabBarV2);
   const theme = getTheme(themeId);
   // What a picker's trigger swatch shows for a key: the override if set, else
   // the theme's own value. The three preset-only extras fall back to each
@@ -2645,6 +2887,12 @@ export default function SettingsPane() {
                   value={verticalTabMode}
                   onChange={setVerticalTabMode}
                 />
+              </SettingsRow>
+              <SettingsRow
+                label="Vertical tabbar v2"
+                description="Redesigned strip: a project-colour rail spanning each tab, an icon action grid instead of labelled rows, and Jira tickets nested under their project instead of in a separate rail."
+              >
+                <ToggleSwitch checked={verticalTabBarV2} onChange={setVerticalTabBarV2} />
               </SettingsRow>
               <SettingsRow label="Sidebar side">
                 <SegmentedControl<"left" | "right">
@@ -4050,7 +4298,7 @@ export default function SettingsPane() {
             <SettingsSection id="jira" title="Jira" description={jiraPluginTargetNote}>
               <SettingsRow
                 label="Jira mode"
-                description="Hides the dev server and file sidebar buttons while a Jira tab is active."
+                description="Hides dev server and sidebar buttons."
               >
                 <ToggleSwitch checked={jiraMode} onChange={setJiraMode} />
               </SettingsRow>
@@ -4062,7 +4310,7 @@ export default function SettingsPane() {
               <SettingsRow
                 vertical
                 label="Jira sites"
-                description="A company name becomes <company>.atlassian.net; full addresses work too."
+                description="Name or full address."
               >
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, width: 380, maxWidth: "100%" }}>
                   {jiraSitesList.map((origin) => (
@@ -4170,18 +4418,29 @@ export default function SettingsPane() {
                   </div>
                 </div>
               </SettingsRow>
-              <SettingsRow label="Jira account email">
-                <TextInput
-                  value={jiraApiEmail}
-                  onChange={setJiraApiEmail}
-                  placeholder="you@company.com"
-                />
-              </SettingsRow>
+              {/* Email and token are ONE row: neither works without the other,
+                  and the API is either configured or it isn't. Vertical so the
+                  two fields get the full width instead of fighting the label
+                  column on a narrow pane. */}
               <SettingsRow
-                label="Jira API token"
-                description="Create one at id.atlassian.com → Security → API tokens. Stored on this machine."
+                label="Jira account"
+                description="Token: id.atlassian.com → Security."
+                vertical
               >
-                <div className="flex items-center gap-2">
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    width: "100%",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <TextInput
+                    value={jiraApiEmail}
+                    onChange={setJiraApiEmail}
+                    placeholder="you@company.com"
+                  />
                   <TextInput
                     value={jiraApiToken}
                     onChange={setJiraApiToken}
@@ -4203,29 +4462,242 @@ export default function SettingsPane() {
                   Polling paused for {jiraSiteName(siteId) ?? siteId}: {msg}
                 </div>
               ))}
+              {/* Jira's own notification controls live HERE, not only in
+                  Terminal > Notifications. The two Terminal switches
+                  ("Notification popups outside the app", "System notifications
+                  while minimized") stay global on purpose — they choose the
+                  CHANNEL for every notification MADE raises, so duplicating
+                  them per source would let the two disagree. What is Jira's to
+                  own is WHICH Jira events are worth a notification. */}
               <SettingsRow
                 label="Ticket update notifications"
-                description="Replies, status changes and edits on watched tickets, checked about once a minute."
+                description="Replies, status and assignee changes."
               >
                 <ToggleSwitch checked={jiraNotifEnabled} onChange={setJiraNotifEnabled} />
               </SettingsRow>
               <SettingsRow
+                label="New unassigned tickets"
+                description="Announces one when it lands in the queue."
+              >
+                <ToggleSwitch
+                  checked={jiraUnassignedNotify}
+                  onChange={setJiraUnassignedNotify}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Notification channels"
+                description={
+                  notifEnabled
+                    ? `${jiraChannelSummary} · change in Terminal.`
+                    : "All notifications are off in Terminal."
+                }
+              >
+                <button
+                  onClick={() => requestSettingsSection("notifications")}
+                  style={{
+                    padding: "0 10px",
+                    height: 24,
+                    borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+                    border: "1px solid var(--ezy-border-light)",
+                    backgroundColor: "transparent",
+                    color: "var(--ezy-text-secondary)",
+                    fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                    fontFamily: "inherit",
+                    lineHeight: 1,
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.backgroundColor = "var(--ezy-accent-glow)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.backgroundColor = "transparent";
+                  }}
+                >
+                  Open
+                </button>
+              </SettingsRow>
+              <SettingsRow
                 label="My assigned tickets"
-                description="Adds an Assigned tab with everything assigned to you."
+                description="Adds an Assigned tab."
               >
                 <ToggleSwitch checked={jiraAssignedMode} onChange={setJiraAssignedMode} />
               </SettingsRow>
               <SettingsRow
+                label="Unassigned tickets"
+                description="Open tickets nobody has picked up."
+              >
+                <ToggleSwitch checked={jiraUnassignedMode} onChange={setJiraUnassignedMode} />
+              </SettingsRow>
+              <SettingsRow
+                label="Ticket list details"
+                description="Second line under the ticket key."
+              >
+                <div className="flex items-center gap-3" style={{ flexWrap: "wrap" }}>
+                  {(
+                    [
+                      ["organization", "Organization"],
+                      ["requestType", "Request type"],
+                      ["updated", "Updated"],
+                      ["created", "Created"],
+                      ["priority", "Priority"],
+                      ["reporter", "Reporter"],
+                    ] as const
+                  ).map(([k, label]) => (
+                    <label
+                      key={k}
+                      className="flex items-center gap-1.5"
+                      style={{
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                        color: "var(--ezy-text)",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={jiraRowMetaShow[k]}
+                        onChange={(e) => setJiraRowMetaShow({ [k]: e.target.checked })}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </SettingsRow>
+              <JiraExtraFieldsRow
+                where="rows"
+                label="More details in ticket lists"
+                description="Any other Jira field, as a column."
+                fields={jiraPickableFields}
+                selected={jiraExtraFields.rows}
+                onChange={(ids) => setJiraExtraFields("rows", ids)}
+              />
+              <JiraExtraFieldsRow
+                where="header"
+                label="More details in the pane header"
+                description="Any other Jira field."
+                fields={jiraPickableFields}
+                selected={jiraExtraFields.header}
+                onChange={(ids) => setJiraExtraFields("header", ids)}
+              />
+              <SettingsRow
+                label="Status indicator"
+                description="Where the status colour sits."
+              >
+                <SegmentedControl<"both" | "stripe" | "badge">
+                  options={[
+                    { value: "both", label: "Both" },
+                    { value: "stripe", label: "Left edge" },
+                    { value: "badge", label: "Badge" },
+                  ]}
+                  value={jiraStatusIndicator}
+                  onChange={setJiraStatusIndicator}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Group tickets by"
+                description="Collapsible groups with counts."
+              >
+                <SegmentedControl<"flat" | "status" | "category">
+                  options={[
+                    { value: "flat", label: "None" },
+                    { value: "status", label: "Status" },
+                    { value: "category", label: "Category" },
+                  ]}
+                  value={jiraListGrouping}
+                  onChange={setJiraListGrouping}
+                />
+              </SettingsRow>
+              <SettingsRow
+                label="Status colours"
+                description="Manual lets you pin each status."
+              >
+                <SegmentedControl<"auto" | "manual">
+                  options={[
+                    { value: "auto", label: "Auto" },
+                    { value: "manual", label: "Manual" },
+                  ]}
+                  value={jiraStatusColorMode}
+                  onChange={setJiraStatusColorMode}
+                />
+              </SettingsRow>
+              {jiraStatusColorMode === "manual" &&
+                (jiraKnownStatuses.length === 0 ? (
+                  <SettingsRow
+                    label="No statuses yet"
+                    description="Appear after the first poll."
+                  >
+                    <span />
+                  </SettingsRow>
+                ) : (
+                  jiraKnownStatuses.map((s) => (
+                    <SettingsRow key={s.key} label={s.label}>
+                      <ColorSwatchPicker
+                        value={jiraStatusColors?.[s.key] ?? null}
+                        effectiveColor={jiraStatusColors?.[s.key] ?? s.auto}
+                        onChange={(hex) => setJiraStatusColor(s.key, hex)}
+                        label={`${s.label} colour`}
+                      />
+                    </SettingsRow>
+                  ))
+                ))}
+              <SettingsRow
+                label="Ticket list width"
+                description="Also draggable from the list edge."
+                vertical
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
+                  {(
+                    [
+                      ["tickets", "Tickets"],
+                      ["list", "Assigned & Unassigned"],
+                    ] as const
+                  ).map(([which, label]) => (
+                    <div
+                      key={which}
+                      style={{ display: "flex", alignItems: "center", gap: 10, width: "100%" }}
+                    >
+                      <span
+                        style={{
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                          color: "var(--ezy-text-secondary)",
+                          width: 150,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {label}
+                      </span>
+                      <SliderWithReset
+                        value={jiraRailWidths[which] ?? DEFAULT_JIRA_RAIL_WIDTHS[which]}
+                        min={JIRA_RAIL_MIN_WIDTH}
+                        max={JIRA_RAIL_MAX_WIDTH}
+                        step={4}
+                        onChange={(v) => setJiraRailWidth(which, v)}
+                        onReset={() => setJiraRailWidth(which, DEFAULT_JIRA_RAIL_WIDTHS[which])}
+                        isDefault={
+                          (jiraRailWidths[which] ?? DEFAULT_JIRA_RAIL_WIDTHS[which])
+                          === DEFAULT_JIRA_RAIL_WIDTHS[which]
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+              </SettingsRow>
+              <SettingsRow
                 label="Ticket pane header"
-                description="Live Jira info in the ticket's CLI pane header."
+                description="Shown in the ticket's CLI pane header."
               >
                 <div className="flex items-center gap-3" style={{ flexWrap: "wrap" }}>
                   {(
                     [
                       ["status", "Status"],
                       ["summary", "Summary"],
+                      ["organization", "Organization"],
+                      ["requestType", "Request type"],
                       ["assignee", "Assignee"],
-                      ["myTickets", "My tickets button"],
+                      ["priority", "Priority"],
+                      ["reporter", "Reporter"],
+                      ["updated", "Updated"],
                     ] as const
                   ).map(([k, label]) => (
                     <label
