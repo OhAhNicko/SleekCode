@@ -138,6 +138,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     metaShow,
     rowTitleFields,
     rowExtraFields,
+    moveTicket,
     labelForField,
     listGrouping,
     sort,
@@ -176,6 +177,83 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
   };
+
+  /**
+   * Drag-to-reorder for the CLI ticket rows.
+   *
+   * Same mechanic as the tab bar's: pointerdown records the origin, a 4px
+   * threshold separates a drag from a click, the target is whichever row's
+   * vertical midpoint the pointer has passed, and the move commits on
+   * pointerup. Two deliberate differences — no `grab`/`grabbing` cursor (asked
+   * for), and an insertion LINE instead of a floating ghost, because a cloned
+   * row hovering over a narrow rail obscures the list it is being dropped into.
+   *
+   * Rows carry `data-jira-row-ticket`; a whole duplicate GROUP moves as one,
+   * which is why the order is keyed by ticket rather than session.
+   */
+  const listRef = useRef<HTMLDivElement>(null);
+  const dragTicketRef = useRef<{ ticket: string; startY: number } | null>(null);
+  const didDragRef = useRef(false);
+  const [dropBefore, setDropBefore] = useState<string | null | undefined>(undefined);
+
+  const insertBeforeAt = (clientY: number, exclude: string): string | null => {
+    const el = listRef.current;
+    if (!el) return null;
+    for (const row of el.querySelectorAll<HTMLElement>("[data-jira-row-ticket]")) {
+      const t = row.dataset.jiraRowTicket;
+      if (!t || t === exclude) continue;
+      const { top, height } = row.getBoundingClientRect();
+      if (clientY < top + height / 2) return t;
+    }
+    return null;
+  };
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const d = dragTicketRef.current;
+      if (!d) return;
+      if (!didDragRef.current && Math.abs(e.clientY - d.startY) < 4) return;
+      didDragRef.current = true;
+      setDropBefore(insertBeforeAt(e.clientY, d.ticket));
+    };
+    const onUp = () => {
+      const d = dragTicketRef.current;
+      dragTicketRef.current = null;
+      if (d && didDragRef.current) {
+        setDropBefore((target) => {
+          if (target !== undefined) moveTicket(d.ticket, target);
+          return undefined;
+        });
+      } else {
+        setDropBefore(undefined);
+      }
+      // Cleared on the NEXT tick so the click handler that follows pointerup
+      // can still see that this was a drag and skip opening the ticket.
+      setTimeout(() => {
+        didDragRef.current = false;
+      }, 0);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moveTicket]);
+
+  /** 2px accent rule marking where the dragged ticket will land. */
+  const dropMarker = (ticket: string) =>
+    dropBefore === ticket ? (
+      <div
+        style={{
+          height: 2,
+          backgroundColor: "var(--ezy-accent)",
+          margin: "0 8px",
+          borderRadius: 1,
+        }}
+      />
+    ) : null;
 
   // Sort menu. Every row is `sticky` so picking a field applies it and leaves
   // the menu open — pick, watch it reorder, flip the direction, dismiss.
@@ -753,7 +831,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
             ? renderList("assignedDone", assignedDoneGroups, assignedDoneSorted.length)
             : renderList("assigned", assignedGroups, assignedSorted.length)
       ) : (
-      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: 8 }}>
+      <div ref={listRef} style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: 8 }}>
         {filtered.length === 0 && (
           <div
             style={{
@@ -783,7 +861,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           return (
             <div key={row.session.id}>
               {showClosedHeading && <div style={sectionHeadingStyle}>Closed</div>}
+              {groupStart && dropMarker(t)}
               {groupStart && renderGroupTitle(t)}
+              {!grouped && dropMarker(t)}
               {!folded && renderRow(row)}
             </div>
           );
@@ -799,7 +879,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
               const folded = grouped && !query.trim() && collapsedGroups.has(t);
               return (
                 <div key={row.session.id}>
+                  {groupStart && dropMarker(t)}
                   {groupStart && renderGroupTitle(t)}
+                  {!grouped && dropMarker(t)}
                   {!folded && renderRow(row)}
                 </div>
               );
@@ -982,7 +1064,19 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         data-ctx-open={isOpen ? "1" : undefined}
         data-ctx-gone={unavailable ? "1" : undefined}
         data-ctx-archived={archived ? "1" : undefined}
-        onClick={() => handleRowClick(row)}
+        data-jira-row-ticket={ticket}
+        onPointerDown={(e) => {
+          // Left button only, and never from a nested control (the hamburger
+          // and the expand chevron own their own gestures).
+          if (e.button !== 0 || !ticket) return;
+          if ((e.target as HTMLElement).closest("[role='button']")) return;
+          dragTicketRef.current = { ticket, startY: e.clientY };
+        }}
+        onClick={() => {
+          // A drag that ended over this row must not also open it.
+          if (didDragRef.current) return;
+          handleRowClick(row);
+        }}
         data-tooltip={
           unavailable
             ? "This conversation's transcript is gone — it can't be reopened."

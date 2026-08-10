@@ -736,6 +736,14 @@ export interface RecentProjectsSlice {
   /** Of the facts that are shown, which ride the ticket-key line. */
   jiraRowTitleFields: string[];
   setJiraRowTitleFields: (ids: string[]) => void;
+  /** Hand-dragged CLI ticket order per project dir, as ticket KEYS (not
+   *  session ids — a ticket's duplicate instances move as one group).
+   *
+   *  Absent = the automatic order (any-instance-open first, then newest). A
+   *  ticket missing from a stored order is NEW and goes to the TOP, so "last
+   *  added on top" survives any amount of manual arranging. */
+  jiraTicketOrder: Record<string, string[]>;
+  setJiraTicketOrder: (projectKey: string, ticketKeys: string[]) => void;
   /** "auto" derives every status colour from its name; "manual" lets
    *  jiraStatusColors pin them. */
   jiraStatusColorMode: "auto" | "manual";
@@ -1136,6 +1144,11 @@ export const createRecentProjectsSlice: StateCreator<
     })),
   jiraRowTitleFields: DEFAULT_JIRA_ROW_TITLE_FIELDS,
   setJiraRowTitleFields: (ids) => set({ jiraRowTitleFields: ids }),
+  jiraTicketOrder: {},
+  setJiraTicketOrder: (projectKey, ticketKeys) =>
+    set((state) => ({
+      jiraTicketOrder: { ...(state.jiraTicketOrder ?? {}), [projectKey]: ticketKeys },
+    })),
   jiraStatusColorMode: "auto",
   setJiraStatusColorMode: (value) => set({ jiraStatusColorMode: value }),
   jiraStatusColors: {},

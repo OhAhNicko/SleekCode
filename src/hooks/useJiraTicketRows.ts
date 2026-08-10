@@ -114,6 +114,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
   // returns a new array every render and spins the store.
   const allSessions = useAppStore((s) => s.projectSessions[projectKey]);
   const activeTerminalId = useAppStore((s) => s.terminals);
+  const ticketOrder = useAppStore((s) => s.jiraTicketOrder?.[projectKey]);
 
   const rows = useMemo<TicketRow[]>(() => {
     const tickets = (allSessions ?? []).filter((s) => !!s.ticket);
@@ -140,18 +141,40 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     }
     const groupList = [...groups.values()];
     for (const g of groupList) g.sort((a, b) => instanceOf(a.session) - instanceOf(b.session));
-    groupList.sort((a, b) => {
-      const aOpen = a.some((r) => !!r.terminalId);
-      const bOpen = b.some((r) => !!r.terminalId);
-      if (aOpen !== bOpen) return aOpen ? -1 : 1;
-      const aT = Math.max(...a.map((r) => r.session.createdAt));
-      const bT = Math.max(...b.map((r) => r.session.createdAt));
-      return bT - aT;
-    });
+    if (ticketOrder && ticketOrder.length > 0) {
+      // A HAND-DRAGGED order wins outright — including over open-first, which
+      // would otherwise yank a row out from under the position the user just
+      // put it in. Tickets absent from the stored order are new: they go to the
+      // TOP (negative index), newest of them first.
+      const at = new Map(ticketOrder.map((t, i) => [t, i]));
+      groupList.sort((a, b) => {
+        const ka = a[0].session.ticket ?? "";
+        const kb = b[0].session.ticket ?? "";
+        const ia = at.get(ka);
+        const ib = at.get(kb);
+        if (ia === undefined && ib === undefined) {
+          const aT = Math.max(...a.map((r) => r.session.createdAt));
+          const bT = Math.max(...b.map((r) => r.session.createdAt));
+          return bT - aT;
+        }
+        if (ia === undefined) return -1;
+        if (ib === undefined) return 1;
+        return ia - ib;
+      });
+    } else {
+      groupList.sort((a, b) => {
+        const aOpen = a.some((r) => !!r.terminalId);
+        const bOpen = b.some((r) => !!r.terminalId);
+        if (aOpen !== bOpen) return aOpen ? -1 : 1;
+        const aT = Math.max(...a.map((r) => r.session.createdAt));
+        const bT = Math.max(...b.map((r) => r.session.createdAt));
+        return bT - aT;
+      });
+    }
     return groupList.flat();
     // `activeTerminalId` (the terminals map) is a dependency because a pane
     // appearing or dying changes which rows count as open.
-  }, [allSessions, tab.layout, activeTerminalId]);
+  }, [allSessions, tab.layout, activeTerminalId, ticketOrder]);
 
   // Instance counts across ALL rows (incl. archived) — this is the NAMING
   // truth: session names keep their "#n" while any sibling exists anywhere,
@@ -506,6 +529,29 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, isActiveTab, railTab, tab.selectedJiraTicket, activeRows, missing]);
 
+  /** Ticket keys in their current visual order — the base a drag edits. */
+  const orderedTicketKeys = useMemo(() => {
+    const seen: string[] = [];
+    for (const r of rows) {
+      const t = r.session.ticket;
+      if (t && !seen.includes(t)) seen.push(t);
+    }
+    return seen;
+  }, [rows]);
+
+  /** Move `ticket` so it sits immediately before `beforeTicket` (null = end).
+   *  Persists the WHOLE visible order, so the first drag also freezes the
+   *  automatic order the user was looking at rather than reshuffling around
+   *  the one row they moved. */
+  const moveTicket = (ticket: string, beforeTicket: string | null) => {
+    if (ticket === beforeTicket) return;
+    const next = orderedTicketKeys.filter((t) => t !== ticket);
+    const at = beforeTicket ? next.indexOf(beforeTicket) : -1;
+    if (at < 0) next.push(ticket);
+    else next.splice(at, 0, ticket);
+    useAppStore.getState().setJiraTicketOrder(projectKey, next);
+  };
+
   const handleRowClick = (row: TicketRow) => {
     const ticket = row.session.ticket;
     if (!ticket) return;
@@ -574,6 +620,8 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     metaShow,
     rowTitleFields,
     rowExtraFields,
+    orderedTicketKeys,
+    moveTicket,
     labelForField,
     tabSite,
     listGrouping,
