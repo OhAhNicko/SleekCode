@@ -295,6 +295,39 @@ body,
   cursor: grabbing !important;
 }
 
+/* Pane-header text (TerminalHeader) — ONE baseline for the whole row.
+   ---------------------------------------------------------------------------
+   The header stacks three type sizes in a single `align-items: center` row: the
+   11px CLI label, the 10px path / model / percentage, and the 9px session name,
+   chips and stats. Centering aligns BOXES; a reader aligns BASELINES, and those
+   are not the same thing — Blink rounds each font size's ascent and half-leading
+   to whole pixels, so three sizes land on three different baselines inside three
+   correctly-centered boxes. Measured in the shipped header: 1.4–1.8px of spread,
+   which is why "Opus 5 - 1M" sat visibly below the session picker next to it.
+
+   No per-size line-height fixes that: the baseline offset lands wherever the
+   rounding puts it, and it moves again with the font-size setting and the UI
+   font. So don't align the sizes — give every text run the SAME strut. The
+   element contributes none of its own (line-height 0), and an empty ::before
+   carries one reference size and one fixed line box for all of them. Every item
+   then gets an identical box height AND an identical baseline inside it,
+   whatever size its own glyphs are: verified pixel-identical across font scales
+   0.8–1.4 and independent of the selected UI face, since both numbers come from
+   one place.
+
+   Leaf text elements only — on a flex container the ::before would become a
+   flex item. Sized off the same --ezy-font-scale as the text it aligns; 13px is
+   the 10px reference at the header's 1.3 rhythm, which keeps every box within a
+   pixel of the height it has today so nothing else in the row reflows. */
+.ezy-pane-header-text {
+  line-height: 0;
+}
+.ezy-pane-header-text::before {
+  content: "";
+  font-size: calc(var(--ezy-font-scale, 1) * 10px);
+  line-height: calc(var(--ezy-font-scale, 1) * 13px);
+}
+
 /* Pane-header button cluster (TerminalHeader) — collapsed to zero width until
    the header is hovered, so the always-visible content owns the full row. On
    hover it slides in from under the fixed right edge, pushing the stats / path
@@ -748,7 +781,19 @@ body,
   opacity: 0;
   transition: opacity 100ms ease;
 }
-[data-ctx-surface="jira-ticket"]:hover .jira-row-menu,
+/* Prefix match, not an exact one: the Assigned and Unassigned rows use the
+   same class but their own surfaces, so an exact "jira-ticket" selector left
+   their hamburgers stuck at opacity 0 for good. */
+[data-ctx-surface^="jira-"]:hover .jira-row-menu,
 .jira-row-menu:focus-visible {
   opacity: 1;
+}
+
+/* Dev-server error-banner actions ("Another port" / "Kill 6180"). The banner
+   paints its own red, so a ring in the app's accent would be lost against it —
+   near-black on that red is the one thing legible behind both the white chip and
+   the dark one, and the offset keeps it on the banner rather than the button. */
+.ezy-banner-action:focus-visible {
+  outline: 2px solid #1a1a1a;
+  outline-offset: 1px;
 }

@@ -14,9 +14,12 @@ import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { useAppStore } from "../store";
 import { getProjectColor } from "../store/recentProjectsSlice";
 import { getTheme, projectTintBg } from "../lib/themes";
-import { useJiraNotifyStore } from "../store/jiraNotifyStore";
 import { findAllTerminalLeaves } from "../lib/layout-utils";
 import { jiraInstKeyOfTermPaneId, jiraBaseTicket } from "../lib/jira-layout";
+import { relativeShort, relativeShortIso } from "../lib/relative-time";
+import { badgeInkFor } from "../lib/jira-colors";
+import { buildStatusColorMap, resolveStatusColor } from "../lib/jira-status-colors";
+import { fieldLabel } from "../lib/jira-fields";
 import { jiraQK, siteForTabIn } from "../lib/jira-sites";
 import { FaChevronDown } from "react-icons/fa";
 import { FaXmark, FaGripVertical } from "react-icons/fa6";
@@ -179,26 +182,10 @@ function TerminalIcon({ type }: { type: TerminalType }) {
 
 
 /** Format a relative time string, e.g. "2h ago", "3d ago" */
-function formatRelativeTime(isoDate: string): string {
-  const diff = Date.now() - new Date(isoDate).getTime();
-  if (diff < 0) return "";
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return `${Math.floor(days / 30)}mo ago`;
-}
+const formatRelativeTime = relativeShortIso;
 
 /** Format a timestamp (ms) as relative time */
-function formatTimestamp(ts: number): string {
-  const diff = Math.floor((Date.now() - ts) / 1000);
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
+const formatTimestamp = relativeShort;
 
 /** Longest prompt a hover chip will carry. The chip wraps at 280px, so ~360
  *  chars is about 12 lines — enough to identify any prompt, short enough that a
@@ -639,13 +626,20 @@ export default function TerminalHeader({
   // through both renderers. Primitive result — the memo recompute per tabs
   // change is a cheap walk over few leaves.
   const allTabs = useAppStore((s) => s.tabs);
+  // Two DIFFERENT questions, answered separately on purpose:
+  //   `jiraOwner`  — is this pane inside a Jira project at all?
+  //   `.ticket`    — which ticket is it, parsed out of the pane id?
+  // The live-Jira segment needs the key (it looks up a snapshot); the session
+  // picker only needs "am I in a Jira project". Keeping the tab even when the
+  // pane-id parse fails means the picker's gate never depends on that parse,
+  // so it cannot flash for a frame while a hibernated tab's layout settles.
   const jiraOwner = useMemo(() => {
     for (const t of allTabs) {
       if (!t.isJiraProject || !t.layout) continue;
       for (const leaf of findAllTerminalLeaves(t.layout)) {
         if (leaf.terminalId === terminalId) {
           const inst = jiraInstKeyOfTermPaneId(leaf.id);
-          return inst ? { ticket: jiraBaseTicket(inst), tab: t } : undefined;
+          return { tab: t, ticket: inst ? jiraBaseTicket(inst) : undefined };
         }
       }
     }
@@ -653,11 +647,61 @@ export default function TerminalHeader({
   }, [allTabs, terminalId]);
   const jiraTicket = jiraOwner?.ticket;
   const jiraSnapshot = useAppStore((s) =>
-    jiraOwner
+    jiraOwner?.ticket
       ? (s.jiraTicketSnapshots ?? {})[jiraQK(siteForTabIn(s, jiraOwner.tab), jiraOwner.ticket)]
       : undefined,
   );
   const jiraHeaderShow = useAppStore((s) => s.jiraHeaderShow);
+  // Status colour for the header chip. Built from the same union the rail uses
+  // (every status the app currently knows about) so one status is one colour
+  // everywhere — a chip that disagreed with its own rail row would be worse
+  // than no colour at all.
+  const jiraStatusColorMode = useAppStore((s) => s.jiraStatusColorMode ?? "auto");
+  const jiraStatusColorOverrides = useAppStore((s) => s.jiraStatusColors);
+  const jiraAssignedTickets = useAppStore((s) => s.jiraAssignedTickets);
+  const jiraUnassignedTickets = useAppStore((s) => s.jiraUnassignedTickets);
+  const jiraSnapshots = useAppStore((s) => s.jiraTicketSnapshots);
+  // Extra fields picked for the HEADER, narrowed to ones this site has — a
+  // field picked while another site was active would render a dead column.
+  const jiraExtraFields = useAppStore((s) => s.jiraExtraFields);
+  const jiraSiteFields = useAppStore((s) => s.jiraSiteFields);
+  // Selector, not getState(): a site switch has to re-render this header, and
+  // a getState() read inside render would silently keep the old catalogue.
+  const headerSite = useAppStore((s) => (jiraOwner ? siteForTabIn(s, jiraOwner.tab) : ""));
+  const headerSiteFields = headerSite ? (jiraSiteFields ?? {})[headerSite] : undefined;
+  const headerExtraFields = useMemo(() => {
+    const picked = jiraExtraFields?.header ?? [];
+    if (picked.length === 0) return [];
+    const known = new Set((headerSiteFields ?? []).map((f) => f.id));
+    return known.size === 0 ? picked : picked.filter((id) => known.has(id));
+  }, [jiraExtraFields?.header, headerSiteFields]);
+  const jiraFieldLabel = useMemo(
+    () => (id: string) => fieldLabel(headerSiteFields, id),
+    [headerSiteFields],
+  );
+  const jiraStatusColor = useMemo(() => {
+    const name = jiraSnapshot?.statusName;
+    if (!name) return undefined;
+    const names: string[] = [];
+    for (const t of jiraAssignedTickets ?? []) if (t.status) names.push(t.status);
+    for (const t of jiraUnassignedTickets ?? []) if (t.status) names.push(t.status);
+    for (const snap of Object.values(jiraSnapshots ?? {})) {
+      if (snap?.statusName) names.push(snap.statusName);
+    }
+    return resolveStatusColor(
+      name,
+      buildStatusColorMap(names),
+      jiraStatusColorMode,
+      jiraStatusColorOverrides,
+    );
+  }, [
+    jiraSnapshot?.statusName,
+    jiraAssignedTickets,
+    jiraUnassignedTickets,
+    jiraSnapshots,
+    jiraStatusColorMode,
+    jiraStatusColorOverrides,
+  ]);
 
   // Read sessions for this project + type from the store
   const normalizedDir = workingDir?.replace(/\\/g, "/") ?? "";
@@ -839,7 +883,7 @@ export default function TerminalHeader({
         >
           <TerminalIcon type={terminalType} />
           <span
-            className="text-[11px] font-medium tracking-wide"
+            className="ezy-pane-header-text text-[11px] font-medium tracking-wide"
             style={{
               color: isActive ? "var(--ezy-text)" : "var(--ezy-text-muted)",
               letterSpacing: "0.04em",
@@ -854,12 +898,12 @@ export default function TerminalHeader({
           </span>
           {isYolo && (
             <span
+              className="ezy-pane-header-text"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontWeight: 700,
                 letterSpacing: "0.06em",
-                lineHeight: 1.2,
-                padding: "1px 4px",
+                padding: "0 4px",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                 backgroundColor: "var(--ezy-red, #e55)",
                 color: "#fff",
@@ -870,12 +914,12 @@ export default function TerminalHeader({
           )}
           {sl("collabMode") && contextInfo?.collabMode && contextInfo.collabMode !== "default" && (
             <span
+              className="ezy-pane-header-text"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontWeight: 700,
                 letterSpacing: "0.06em",
-                lineHeight: 1.2,
-                padding: "1px 4px",
+                padding: "0 4px",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                 backgroundColor: "var(--ezy-cyan, #5eead4)",
                 color: "#000",
@@ -887,13 +931,13 @@ export default function TerminalHeader({
           )}
           {isNativeRenderer && (
             <span
+              className="ezy-pane-header-text"
               data-tooltip="Drawn by the native GPU renderer"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontWeight: 700,
                 letterSpacing: "0.06em",
-                lineHeight: 1.2,
-                padding: "1px 4px",
+                padding: "0 4px",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
                 // Neutral on purpose: red means YOLO and cyan means collab mode
                 // in this same chip row. The renderer is a fact, not a warning.
@@ -917,6 +961,7 @@ export default function TerminalHeader({
       {showShellModeBadge && shellPsMode && (
         <span
           role="button"
+          className="ezy-pane-header-text"
           data-tooltip={
             shellPsMode === "wsl"
               ? "Shell drops into WSL bash at the project. Click to relaunch in plain Windows PowerShell."
@@ -927,8 +972,7 @@ export default function TerminalHeader({
             fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
             fontWeight: 700,
             letterSpacing: "0.06em",
-            lineHeight: 1.2,
-            padding: "1px 4px",
+            padding: "0 4px",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
             marginLeft: 6,
             flexShrink: 0,
@@ -948,6 +992,7 @@ export default function TerminalHeader({
       {/* File path — max 3 segments from end */}
       {sl("filePath") && workingDir && (
         <span
+          className="ezy-pane-header-text"
           style={{
             fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
             color: "var(--ezy-text-muted)",
@@ -955,7 +1000,6 @@ export default function TerminalHeader({
             overflow: "hidden",
             textOverflow: "ellipsis",
             minWidth: 0,
-            lineHeight: 1.2,
             marginLeft: 0,
             cursor: "pointer",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
@@ -1036,17 +1080,21 @@ export default function TerminalHeader({
             overflow: "hidden",
           }}
         >
+          {/* Status chip in the ticket's own status colour — the same hue the
+              rail paints on this ticket's row stripe and badge, so a pane and
+              its rail row read as one object. Sized to content here (a header
+              has the room), unlike the rail's fixed-width aligned column. */}
           {jiraHeaderShow?.status !== false && jiraSnapshot?.statusName && (
             <span
+              className="ezy-pane-header-text"
               data-tooltip={`Jira status: ${jiraSnapshot.statusName}`}
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontWeight: 600,
-                lineHeight: 1.2,
-                padding: "1px 5px",
+                padding: "0 5px",
                 borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
-                background: "var(--ezy-border)",
-                color: "var(--ezy-text)",
+                background: jiraStatusColor ?? "var(--ezy-border)",
+                color: jiraStatusColor ? badgeInkFor(jiraStatusColor) : "var(--ezy-text)",
                 whiteSpace: "nowrap",
                 flexShrink: 0,
               }}
@@ -1056,11 +1104,11 @@ export default function TerminalHeader({
           )}
           {jiraHeaderShow?.summary !== false && jiraSnapshot?.summary && (
             <span
+              className="ezy-pane-header-text"
               data-tooltip={jiraSnapshot.summary}
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1.2,
                 minWidth: 0,
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -1070,13 +1118,54 @@ export default function TerminalHeader({
               {jiraSnapshot.summary}
             </span>
           )}
+          {/* Organization — the customer company that raised the ticket. Sits
+              right after the summary because in a support workflow "who is
+              this for" is read together with "what is it". Absent on sites
+              with no JSM Organizations field, which is why it renders off the
+              value rather than off the toggle alone. */}
+          {jiraHeaderShow?.organization !== false && jiraSnapshot?.organization && (
+            <span
+              className="ezy-pane-header-text"
+              data-tooltip={`Organization: ${jiraSnapshot.organization}`}
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+                color: "var(--ezy-text-secondary)",
+                minWidth: 0,
+                maxWidth: 160,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                flexShrink: 1,
+              }}
+            >
+              {jiraSnapshot.organization}
+            </span>
+          )}
+          {jiraHeaderShow?.requestType !== false && jiraSnapshot?.requestType && (
+            <span
+              className="ezy-pane-header-text"
+              data-tooltip={`Request type: ${jiraSnapshot.requestType}`}
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+                color: "var(--ezy-text-muted)",
+                minWidth: 0,
+                maxWidth: 140,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                flexShrink: 1,
+              }}
+            >
+              · {jiraSnapshot.requestType}
+            </span>
+          )}
           {jiraHeaderShow?.assignee === true && jiraSnapshot?.assigneeName && (
             <span
+              className="ezy-pane-header-text"
               data-tooltip="Assignee"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 flexShrink: 0,
               }}
@@ -1084,52 +1173,77 @@ export default function TerminalHeader({
               · {jiraSnapshot.assigneeName}
             </span>
           )}
-          {jiraHeaderShow?.myTickets !== false && (
+          {jiraHeaderShow?.priority === true && jiraSnapshot?.priorityName && (
             <span
-              role="button"
-              aria-label="My assigned tickets"
-              data-tooltip="My assigned tickets"
-              onClick={(e) => {
-                e.stopPropagation();
-                const s = useAppStore.getState();
-                if (!(s.jiraAssignedMode ?? false)) s.setJiraAssignedMode(true);
-                if (s.activeTabId) {
-                  useJiraNotifyStore.getState().setRailTab(s.activeTabId, "assigned");
-                }
-              }}
+              className="ezy-pane-header-text"
+              data-tooltip="Priority"
               style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                padding: 3,
-                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
-                flexShrink: 0,
-                cursor: "pointer",
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.backgroundColor = "var(--ezy-border)";
-                e.currentTarget.style.color = "var(--ezy-text)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.backgroundColor = "transparent";
-                e.currentTarget.style.color = "var(--ezy-text-muted)";
+                whiteSpace: "nowrap",
+                flexShrink: 0,
               }}
             >
-              <svg
-                width="12"
-                height="12"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-              >
-                <circle cx="8" cy="5.5" r="2.75" />
-                <path d="M2.5 13.5c1.2-2.4 3.2-3.5 5.5-3.5s4.3 1.1 5.5 3.5" />
-              </svg>
+              · {jiraSnapshot.priorityName}
             </span>
           )}
+          {jiraHeaderShow?.reporter === true && jiraSnapshot?.reporterName && (
+            <span
+              className="ezy-pane-header-text"
+              data-tooltip="Reporter"
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+                color: "var(--ezy-text-muted)",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+              }}
+            >
+              · {jiraSnapshot.reporterName}
+            </span>
+          )}
+          {jiraHeaderShow?.updated === true && jiraSnapshot?.updatedIso && (
+            <span
+              className="ezy-pane-header-text"
+              data-tooltip="Last updated in Jira"
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+                color: "var(--ezy-text-muted)",
+                fontVariantNumeric: "tabular-nums",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+              }}
+            >
+              · {relativeShortIso(jiraSnapshot.updatedIso)}
+            </span>
+          )}
+          {/* Any other Jira field the user added in Settings > Jira. Rendered
+              off the VALUE, so a field a ticket doesn't fill costs no chrome. */}
+          {headerExtraFields.map((id) => {
+            const value = jiraSnapshot?.extra?.[id];
+            if (!value) return null;
+            return (
+              <span
+                key={id}
+                className="ezy-pane-header-text"
+                data-tooltip={`${jiraFieldLabel(id)}: ${value}`}
+                style={{
+                  fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+                  color: "var(--ezy-text-muted)",
+                  minWidth: 0,
+                  maxWidth: 140,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  flexShrink: 1,
+                }}
+              >
+                · {value}
+              </span>
+            );
+          })}
+          {/* No "My assigned tickets" button here. It only ever flipped the
+              rail to a tab the rail already offers, and the assigned list now
+              lives entirely in the rail. */}
         </div>
       )}
 
@@ -1141,10 +1255,10 @@ export default function TerminalHeader({
         >
           {sl("model") && contextInfo.model && (
             <span
+              className="ezy-pane-header-text"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1.2,
                 whiteSpace: "nowrap",
               }}
             >
@@ -1156,10 +1270,10 @@ export default function TerminalHeader({
           {/* Claude: version */}
           {sl("version") && contextInfo.cliVersion && (
             <span
+              className="ezy-pane-header-text"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1.2,
                 whiteSpace: "nowrap",
               }}
             >
@@ -1169,10 +1283,10 @@ export default function TerminalHeader({
           {/* Claude: speed mode */}
           {sl("speed") && contextInfo.speed && (
             <span
+              className="ezy-pane-header-text"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1.2,
                 whiteSpace: "nowrap",
               }}
             >
@@ -1193,10 +1307,10 @@ export default function TerminalHeader({
                 }
                 return parts.join(" · ");
               })()}
+              className="ezy-pane-header-text"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontVariantNumeric: "tabular-nums",
-                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 color: "var(--ezy-text-muted)",
               }}
@@ -1210,10 +1324,10 @@ export default function TerminalHeader({
           {sl("compactCount") && contextInfo.compactCount != null && contextInfo.compactCount > 0 && (
             <span
               data-tooltip={`Context compacted ${contextInfo.compactCount} time${contextInfo.compactCount !== 1 ? "s" : ""}`}
+              className="ezy-pane-header-text"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontVariantNumeric: "tabular-nums",
-                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 color: "var(--ezy-text-muted)",
               }}
@@ -1225,8 +1339,14 @@ export default function TerminalHeader({
               available. SESSION_NAME_MAX_PX caps the name on a WIDE pane, where
               flex leftover is generous enough that a long title would run the
               whole header. On a narrow pane flexShrink still does the work and
-              the name gives up space before this cap is reached. */}
-          {sl("sessionPicker") && isResumable && (
+              the name gives up space before this cap is reached.
+
+              NOT on Jira ticket panes (`!jiraOwner`). Such a pane's identity IS
+              its ticket: the rail names it, the rail's menu renames it, and
+              swapping the session underneath would leave the pane pointing at a
+              conversation that has nothing to do with the ticket beside it —
+              breaking the pair invariant Workspace maintains. */}
+          {sl("sessionPicker") && isResumable && !jiraOwner && (
             <div ref={sessionNameRef} style={{ minWidth: 0, flexShrink: 1, maxWidth: SESSION_NAME_MAX_PX }}>
               {inlineRenaming ? (
                 <input
@@ -1281,10 +1401,10 @@ export default function TerminalHeader({
                   data-tooltip-hint={sessionDisplayName ? "Click to switch sessions · double-click to rename" : "Click to switch sessions"}
                 >
                   <span
+                    className="ezy-pane-header-text"
                     style={{
                       fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                       color: "var(--ezy-text-muted)",
-                      lineHeight: 1.2,
                       whiteSpace: "nowrap",
                       overflow: "hidden",
                       textOverflow: "ellipsis",
@@ -1314,13 +1434,13 @@ export default function TerminalHeader({
           )}
           {/* Fallback: show session name for non-resumable or when no sessions yet.
               Tooltip carries the FULL text — the cap is display only. */}
-          {sl("sessionPicker") && !isResumable && contextInfo.sessionName && (
+          {sl("sessionPicker") && !isResumable && !jiraOwner && contextInfo.sessionName && (
             <span
+              className="ezy-pane-header-text"
               data-tooltip={contextInfo.sessionName}
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -1335,11 +1455,11 @@ export default function TerminalHeader({
           {/* Gemini: summary — hidden for resumable CLIs where it's already the session name */}
           {sl("summary") && contextInfo.summary && !isResumable && (
             <span
+              className="ezy-pane-header-text"
               data-tooltip={contextInfo.summary}
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 color: "var(--ezy-text-muted)",
-                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
@@ -1355,10 +1475,10 @@ export default function TerminalHeader({
           {sl("thinkingTokens") && contextInfo.thinkingTokens != null && (
             <span
               data-tooltip={`Last response used ${contextInfo.thinkingTokens.toLocaleString()} thinking tokens`}
+              className="ezy-pane-header-text"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                 fontVariantNumeric: "tabular-nums",
-                lineHeight: 1.2,
                 whiteSpace: "nowrap",
                 color: "var(--ezy-text-muted)",
               }}
@@ -1378,10 +1498,10 @@ export default function TerminalHeader({
             return (
               <span
                 data-tooltip={`Quota resets at ${reset.toLocaleTimeString()}`}
+                className="ezy-pane-header-text"
                 style={{
                   fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                   fontVariantNumeric: "tabular-nums",
-                  lineHeight: 1.2,
                   whiteSpace: "nowrap",
                   color: "var(--ezy-text-muted)",
                 }}
@@ -1401,10 +1521,10 @@ export default function TerminalHeader({
             return (
               <span
                 data-tooltip={tooltip}
+                className="ezy-pane-header-text"
                 style={{
                   fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                   fontVariantNumeric: "tabular-nums",
-                  lineHeight: 1.2,
                   whiteSpace: "nowrap",
                   color: left <= 20 ? "var(--ezy-red)" : "var(--ezy-text-muted)",
                 }}
@@ -1418,10 +1538,10 @@ export default function TerminalHeader({
             return (
               <span
                 data-tooltip={`Weekly rate limit: ${left}% left (${contextInfo.rateLimitWeekly}% used)`}
+                className="ezy-pane-header-text"
                 style={{
                   fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
                   fontVariantNumeric: "tabular-nums",
-                  lineHeight: 1.2,
                   whiteSpace: "nowrap",
                   color: left <= 20 ? "var(--ezy-red)" : "var(--ezy-text-muted)",
                 }}
@@ -1479,6 +1599,7 @@ export default function TerminalHeader({
               />
             </div>
             <span
+              className="ezy-pane-header-text"
               style={{
                 fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
                 fontVariantNumeric: "tabular-nums",
@@ -1488,7 +1609,6 @@ export default function TerminalHeader({
                     : contextPercent <= 40
                       ? "var(--ezy-text-muted)"
                       : "var(--ezy-text-muted)",
-                lineHeight: 1.2,
                 minWidth: 36,
                 textAlign: "right",
               }}
@@ -1581,7 +1701,10 @@ export default function TerminalHeader({
       </div>
 
       {/* Session picker — rendered outside overflow-hidden context info area */}
-      {showSessionPicker && isResumable && (
+      {/* `!jiraOwner` again, defensively: without a trigger this cannot open,
+          but a stale `showSessionPicker` left over from before a pane became a
+          Jira pane must not re-open it. */}
+      {showSessionPicker && isResumable && !jiraOwner && (
         <SessionPicker
           sessions={sessions}
           currentSessionId={sessionResumeId}

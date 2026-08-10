@@ -2,17 +2,10 @@ import { useRef, useState, useMemo } from "react";
 import { useAppStore } from "../store";
 import { useModal } from "../store/modalCoordinationSlice";
 import { getPtyWrite, getAllPtyWriteTerminalIds } from "../store/terminalSlice";
+import { relativeShort as formatRelativeTime } from "../lib/relative-time";
 
 interface CommandHistoryProps {
   onClose: () => void;
-}
-
-function formatRelativeTime(timestamp: number): string {
-  const diff = Date.now() - timestamp;
-  if (diff < 60000) return "just now";
-  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-  return `${Math.floor(diff / 86400000)}d ago`;
 }
 
 function formatDuration(start: number, end: number | null): string | null {
