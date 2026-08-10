@@ -1677,7 +1677,10 @@ export default function VerticalTabBarV2() {
             bottom: 0,
             ...(dockedRight ? { left: -2 } : { right: -2 }),
             width: 5,
-            cursor: "ew-resize",
+            // col-resize, matching the pane splitters (PaneGrid) and the
+            // ticket rail — every vertical divider in the app resizes with the
+            // same cursor.
+            cursor: "col-resize",
             zIndex: 70,
           }}
         />
