@@ -26,6 +26,17 @@ export interface DevServerActions {
   start(): void;
   /** ^C the running process and re-run the command, or respawn if the PTY is gone. */
   restart(): void;
+  /**
+   * Re-run on the next free port, skipping `conflictPort`. Backs the "Another
+   * port" button on the row's error banner and its context-menu twin.
+   */
+  retryOtherPort(): void;
+  /**
+   * Kill whatever holds `conflictPort` — in this server's OWN shell, so it lands
+   * on the right machine — then re-run exactly what failed. No-op when the row
+   * has no conflict port, which is why both callers gate on it first.
+   */
+  killConflictPort(): void;
 }
 
 const registry: Record<string, DevServerActions> = {};

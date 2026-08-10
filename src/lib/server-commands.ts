@@ -231,17 +231,23 @@ export async function resolveDefaultPort(
   projectPath: string,
   command: string,
   serverId?: string,
-): Promise<{ port: number; style: HostStyle; fromConfig: boolean }> {
+): Promise<{ port: number; style: HostStyle; fromConfig: boolean; hasManifest: boolean }> {
   const pkg = await readProjectFile(projectPath, "package.json", serverId);
+  // No package.json means `style` below is a guess, not a detection — and so is
+  // the port it implies. Callers that ACT on the port (the launcher's pre-flight,
+  // which appends `--port N`) need to know the difference: `cargo run --port
+  // 5174` is not a fallback, it is a broken command. Callers that merely DISPLAY
+  // it (the row editor's "Default 5173" badge) can keep using the guess.
+  const hasManifest = pkg !== null;
   const style = pkg ? detectHostStyle(pkg, command) : "vite";
   for (const candidate of PORT_CONFIG_CANDIDATES[style]) {
     const text = await readProjectFile(projectPath, candidate, serverId);
     if (text === null) continue;
     const port = portFromConfig(text, style);
-    if (port && port > 0 && port <= 65535) return { port, style, fromConfig: true };
+    if (port && port > 0 && port <= 65535) return { port, style, fromConfig: true, hasManifest };
     break; // the config exists but names no port — the framework default stands
   }
-  return { port: defaultPortForStyle(style), style, fromConfig: false };
+  return { port: defaultPortForStyle(style), style, fromConfig: false, hasManifest };
 }
 
 /**

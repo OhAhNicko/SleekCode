@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import LoadingDots from "./LoadingDots";
 import { useAppStore } from "../store";
 import { getPtyWrite, registerTerminalDataListener, unregisterTerminalDataListener } from "../store/terminalSlice";
-import { injectPort } from "../lib/server-commands";
+import { detectPortConflict } from "../lib/port-conflict";
+import { killPortCommand, planRun, rememberPort, type RunPlan } from "../lib/dev-server-ports";
 import { isSameProject, resolveDevServerBackend } from "../lib/spawn-dev-server";
 import { getDefaultBackend } from "../lib/platform";
 import { getPaneState } from "../lib/pane-state-registry";
@@ -84,11 +85,15 @@ function extractAddresses(buf: string): { networkUrls: string[] } {
   return { networkUrls: network };
 }
 
-// Common error patterns in dev server output
+// Common error patterns in dev server output.
+//
+// Port conflicts are NOT here: `detectPortConflict` runs earlier and owns them,
+// because they are the one failure with an automatic way out (retry a port up,
+// or free the port). Matching EADDRINUSE here as well would just be a race to
+// declare the same failure unrecoverable.
 const ERROR_PATTERNS = [
   /npm ERR!/,
   /Error:\s+(.{1,120})/,
-  /EADDRINUSE/,
   /ENOENT/,
   /EACCES/,
   /command not found/,
@@ -141,26 +146,25 @@ function promptAtEnd(cleanBuffer: string): boolean {
   return /[\$%#] $/.test(cleanBuffer) || /(?:^|\n)PS [^\n]*> $/.test(cleanBuffer);
 }
 
-/** Guess the default port a framework uses based on the command string. */
-function guessDefaultPort(command: string): number {
-  if (/\bnext\b/.test(command)) return 3000;
-  if (/\bvite\b/.test(command)) return 5173;
-  if (/\breact-scripts\b/.test(command)) return 3000;
-  if (/\bng\s+serve\b|\bangular\b/.test(command)) return 4200;
-  if (/\bgatsby\b/.test(command)) return 8000;
-  return 3000;
-}
-
 /**
  * Build a shell one-liner that kills old processes and removes framework lock
  * files.
  *
- * `sweepDefaultPort` exists because the default-port kill is a guess: it clears
- * a stale instance of THIS server that never reported its port. When the
- * project runs several dev servers on the same framework, that guess belongs to
- * a sibling — restarting the Tauri server would shoot the web server sitting on
- * 5173. With a sibling present we only kill the port this server actually
- * reported, which is the one we know is ours.
+ * `basePort` is the port THIS server was planned onto (`planRun`), not a guess.
+ * It used to come from a `guessDefaultPort(command)` that tested the command
+ * TEXT for a framework name — and `npm run dev` contains no "vite", so it
+ * answered 3000 for almost every project and this prefix fired
+ * `fuser -k 3000/tcp` at whatever unrelated project owned 3000. That is MADE
+ * itself causing the "dev servers fight over ports" report, and it is the same
+ * bug `server-commands.ts` documents for the sibling function it replaced.
+ * Zero means "we never worked one out" — then nothing is swept.
+ *
+ * `sweepBasePort` exists because the base-port kill still clears a stale
+ * instance of THIS server that never reported its port. When the project runs
+ * several dev servers on the same framework that base may belong to a sibling —
+ * restarting the Tauri server would shoot the web server sitting on 5173. With a
+ * sibling present we only kill the port this server actually reported, which is
+ * the one we know is ours.
  */
 /**
  * True when the shell that would run the command no longer exists, so writing
@@ -188,18 +192,19 @@ function isPtyGone(terminalId: string): boolean {
 function buildCleanupPrefix(
   command: string,
   detectedPort: number,
+  basePort: number,
   backend?: string,
-  sweepDefaultPort = true,
+  sweepBasePort = true,
 ): string {
   const parts: string[] = [];
-  const defaultPort = guessDefaultPort(command);
+  const sweepBase = sweepBasePort && basePort > 0;
 
   if (backend === "windows") {
     // PowerShell cleanup: kill processes by port
     const killPort = (port: number) =>
       `$p = Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if ($p) { $p | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }`;
-    if (sweepDefaultPort) parts.push(killPort(defaultPort));
-    if (detectedPort > 0 && (detectedPort !== defaultPort || !sweepDefaultPort)) {
+    if (sweepBase) parts.push(killPort(basePort));
+    if (detectedPort > 0 && (detectedPort !== basePort || !sweepBase)) {
       parts.push(killPort(detectedPort));
     }
     if (/\bnext\b/.test(command)) {
@@ -210,10 +215,10 @@ function buildCleanupPrefix(
   }
 
   // WSL/Linux cleanup
-  // Always kill the default port first — the stale instance is typically here
-  if (sweepDefaultPort) parts.push(`fuser -k ${defaultPort}/tcp 2>/dev/null`);
+  // Kill this server's own base port first — the stale instance is typically here
+  if (sweepBase) parts.push(`fuser -k ${basePort}/tcp 2>/dev/null`);
   // Also kill the detected port if it differs (auto-incremented by framework)
-  if (detectedPort > 0 && (detectedPort !== defaultPort || !sweepDefaultPort)) {
+  if (detectedPort > 0 && (detectedPort !== basePort || !sweepBase)) {
     parts.push(`fuser -k ${detectedPort}/tcp 2>/dev/null`);
   }
   // Remove framework lock files
@@ -356,6 +361,23 @@ export default function DevServerTerminalHost() {
   // Servers currently flagged stalled — mirror of ds.stalledSince, so the data
   // listener can clear on the first byte without a store read per chunk.
   const stalledIdsRef = useRef<Set<string>>(new Set());
+  // Runtime port-conflict retries spent, per dev server. Budget is 1: the
+  // pre-flight probe already covers the ordinary case, so a conflict here means
+  // the port was taken between probe and bind. One silent re-run absorbs that
+  // race; a second failure is a real fight the user should see and decide.
+  const portRetryRef = useRef<Map<string, number>>(new Map());
+  /**
+   * What was last typed for this server and which port it was aimed at.
+   *
+   * Three readers, none of which can recompute it: the conflict branch (a
+   * failure message that names no port falls back to the port we aimed for),
+   * `rememberPort` (only a port that differs from the project's natural one is
+   * worth persisting), and kill-and-retry (which must re-run the EXACT text that
+   * failed, not `ds.command`, or an auto-retry's injected `--port` is lost).
+   * Deliberately NOT cleared by `resetDetectionState` — it describes the last
+   * write, and every write overwrites it.
+   */
+  const runPlanRef = useRef<Map<string, RunPlan>>(new Map());
 
   /** Arm the silence trackers for a just-written command: the stall clock
    *  starts now, and the prompt-without-port scan measures output from here. */
@@ -363,6 +385,78 @@ export default function DevServerTerminalHost() {
     bytesAtSendRef.current.set(dsId, bytesSeenRef.current.get(dsId) ?? 0);
     lastOutputAtRef.current.set(dsId, Date.now());
   }, []);
+
+  /**
+   * Stop the prompt-without-port scan from judging the gap before a re-run.
+   *
+   * A retry (lock or port conflict) types ^C, then re-runs some ms later — and
+   * `planRun` can spend up to 2s on the port probe in between. Meanwhile the ^C
+   * leaves a fresh shell prompt at the end of the buffer while the PREVIOUS
+   * run's send snapshot is still armed, which is exactly the signature of
+   * "the command exited" — so the 3s settle timer fires mid-retry and parks a
+   * bogus "Exited without reporting a port" on a server that is about to start
+   * perfectly well. `markCommandSent` re-arms it when the command actually goes.
+   *
+   * `resetDetectionState` does this too, but the retry paths cannot call that:
+   * it also clears the retry counters they are using to bound themselves.
+   */
+  const disarmPromptScan = useCallback((dsId: string) => {
+    bytesAtSendRef.current.delete(dsId);
+    const pending = promptTimersRef.current.get(dsId);
+    if (pending) {
+      clearTimeout(pending);
+      promptTimersRef.current.delete(dsId);
+    }
+  }, []);
+
+  /**
+   * The one place a dev-server command is typed.
+   *
+   * Decides the port first (`planRun`: the project's own port from its config,
+   * probed, stepping +1 to the first free one) and types the result. Every
+   * launch path goes through here — first spawn, start, restart, the lock retry,
+   * the conflict retry — because "which port" was previously nobody's decision
+   * at all: the command went out verbatim and whatever appeared in the output
+   * became the truth, so two Vite projects both meant 5173 and collided.
+   *
+   * Async, so callers MUST do their synchronous work (`resetDetectionState`,
+   * `markStarting`) before awaiting this, per the sync-before-render rule in
+   * dev-server-actions.ts. `ds` must be the row as it was BEFORE `markStarting`
+   * zeroed its port — `planRun` needs to know which port this server is
+   * vacating, or a restart climbs one port every time.
+   *
+   * Returns false when the PTY's write function vanished mid-plan; the caller
+   * decides whether that is a respawn or an error.
+   */
+  const writePlannedCommand = useCallback(
+    async (
+      ds: DevServer,
+      opts?: { avoid?: number; force?: boolean; prefix?: string; command?: string },
+    ): Promise<boolean> => {
+      let plan: RunPlan;
+      if (opts?.command !== undefined) {
+        // The caller already knows what must run. Kill-and-retry is the reason:
+        // it frees a port in the same typed line, so probing here would read the
+        // port as still busy and move the server off the one we just cleared.
+        const prev = runPlanRef.current.get(ds.id);
+        plan = {
+          command: opts.command,
+          port: prev?.port ?? null,
+          natural: prev?.natural ?? null,
+          controllable: prev?.controllable ?? false,
+        };
+      } else {
+        plan = await planRun(ds, { avoid: opts?.avoid, force: opts?.force });
+      }
+      const write = getPtyWrite(ds.terminalId);
+      if (!write) return false;
+      runPlanRef.current.set(ds.id, plan);
+      write((opts?.prefix ? `${opts.prefix}; ` : "") + plan.command + "\r");
+      markCommandSent(ds.id);
+      return true;
+    },
+    [markCommandSent],
+  );
 
   /** Accumulated PTY text per dev server, for the port/error scan.
    *
@@ -433,24 +527,35 @@ export default function DevServerTerminalHost() {
       // The 300ms gives the shell a beat to start reading stdin. The retry
       // loop is a backstop for the write registry only: if the write fn never
       // materialises, say so in the sidebar instead of staying "detecting...".
+      const giveUp = () => {
+        // Allow a manual restart / backend switch to try again.
+        commandSentRef.current.delete(serverId);
+        updateDevServerError(serverId, "Auto-start failed — terminal never became ready");
+      };
       const attempt = (triesLeft: number) => {
-        const write = getPtyWrite(terminalId);
-        if (write) {
-          write(command + "\r");
-          markCommandSent(serverId);
+        if (getPtyWrite(terminalId)) {
+          // Re-read the row rather than trusting the `command` argument: the
+          // port pre-flight needs the whole DevServer (project path for the
+          // config read, backend, current port), and this is a fresh spawn so
+          // nothing of ours is holding a port yet.
+          const ds = useAppStore.getState().devServers.find((d) => d.id === serverId);
+          if (!ds) {
+            const write = getPtyWrite(terminalId);
+            if (write) { write(command + "\r"); markCommandSent(serverId); }
+            return;
+          }
+          void writePlannedCommand(ds).then((ok) => { if (!ok) giveUp(); });
           return;
         }
         if (triesLeft > 0) {
           setTimeout(() => attempt(triesLeft - 1), 500);
           return;
         }
-        // Allow a manual restart / backend switch to try again.
-        commandSentRef.current.delete(serverId);
-        updateDevServerError(serverId, "Auto-start failed — terminal never became ready");
+        giveUp();
       };
       setTimeout(() => attempt(10), 300);
     },
-    [updateDevServerError]
+    [updateDevServerError, markCommandSent, writePlannedCommand]
   );
 
   // Handle PTY exit — set status to error if no port was detected
@@ -506,6 +611,10 @@ export default function DevServerTerminalHost() {
     portDetectedRef.current.delete(serverId);
     stoppedMonitorRef.current.delete(serverId);
     lockRetryRef.current.delete(serverId);
+    // A deliberate re-launch earns a fresh conflict-retry budget: the user has
+    // acted (start, restart, "Another port", "Kill <port>"), so the next
+    // collision is a new fight, not a continuation of the last one.
+    portRetryRef.current.delete(serverId);
     // Disarm the silence trackers: prompt-without-port must not re-arm off the
     // PREVIOUS run's send snapshot (a fresh spawn's banner ends in a prompt),
     // and pending settle/liveness timers belong to the run being torn down.
@@ -614,14 +723,21 @@ export default function DevServerTerminalHost() {
         relaunchServer(ds);
         return;
       }
+      // Both synchronous and both before the await, so the refs are clear by the
+      // time `markStarting`'s store write triggers the re-render.
       resetDetectionState(ds.id);
-      const bytesBefore = bytesSeenRef.current.get(ds.id) ?? 0;
-      getPtyWrite(ds.terminalId)?.(ds.command + "\r");
-      markCommandSent(ds.id);
       markStarting(ds.id);
-      escalateIfSilent(ds.id, bytesBefore, START_ECHO_LIVENESS_MS);
+      // `ds`, not the store copy: markStarting has just zeroed the port there,
+      // and the port this row is vacating is what stops the pre-flight probe
+      // reading its own dying instance as a conflict.
+      void writePlannedCommand(ds).then((ok) => {
+        // Measured from the write, not from before the port probe — the grace
+        // period is about the shell answering, not about how long we spent
+        // deciding what to send it.
+        if (ok) escalateIfSilent(ds.id, bytesSeenRef.current.get(ds.id) ?? 0, START_ECHO_LIVENESS_MS);
+      });
     },
-    [relaunchServer, resetDetectionState, markCommandSent, markStarting, escalateIfSilent]
+    [relaunchServer, resetDetectionState, markStarting, escalateIfSilent, writePlannedCommand]
   );
 
   /** Send Ctrl+C (twice for stubborn processes), wait, then re-run the command. */
@@ -654,19 +770,81 @@ export default function DevServerTerminalHost() {
           relaunchServer(cur);
           return;
         }
-        const w = getPtyWrite(cur.terminalId);
-        if (!w) {
-          relaunchServer(cur);
-          return;
-        }
-        w(cur.command + "\r");
-        markCommandSent(ds.id);
+        // Planned here rather than before the ^C: by now the old instance has
+        // let go of its port, so the probe sees the truth and the server goes
+        // straight back onto the port it was already using.
+        // `cur` carries a command the user may have just edited; `ds.port`
+        // carries the port being vacated, which the store copy no longer has.
+        void writePlannedCommand({ ...cur, port: ds.port }).then((ok) => {
+          if (!ok) relaunchServer(cur);
+        });
       }, delayMs);
       const prev = livenessTimersRef.current.get(ds.id);
       if (prev) clearTimeout(prev);
       livenessTimersRef.current.set(ds.id, timer);
     },
-    [relaunchServer, resetDetectionState, markCommandSent, markStarting]
+    [relaunchServer, resetDetectionState, markStarting, writePlannedCommand]
+  );
+
+  /**
+   * Re-run this server somewhere else, skipping the port that just refused it.
+   *
+   * Backs the "Another port" button on the row's error banner. Goes through the
+   * normal planner with the bad port excluded, so it lands on the next free step
+   * of the same +1 ladder rather than a second, ad-hoc idea of what "another
+   * port" means.
+   */
+  const retryOnAnotherPort = useCallback(
+    (ds: DevServer) => {
+      if (isPtyGone(ds.terminalId)) {
+        relaunchServer(ds);
+        return;
+      }
+      resetDetectionState(ds.id);
+      markStarting(ds.id);
+      // `force`: the user asked for another port in so many words, so we append
+      // `--port` even to a command we could not have reasoned about on our own.
+      // If it turns out the command rejects the flag, that failure is visible,
+      // costs one restart, and never touched the stored command text.
+      void writePlannedCommand(ds, { avoid: ds.conflictPort, force: true }).then((ok) => {
+        if (!ok) relaunchServer(ds);
+      });
+    },
+    [relaunchServer, resetDetectionState, markStarting, writePlannedCommand]
+  );
+
+  /**
+   * Free the contested port, then re-run exactly what failed.
+   *
+   * The kill is TYPED INTO THIS SERVER'S OWN SHELL rather than run from Rust,
+   * which is what puts it on the right machine: a WSL-backed server kills inside
+   * the distro, an SSH server kills on the remote host. Killing from the Windows
+   * side would shoot WSL's localhost-forwarding relay instead of the server.
+   *
+   * `command` is the last text we actually sent, not `ds.command` — if an
+   * earlier auto-retry injected `--port 5174` and 5174 is what is contested,
+   * re-running the stored command would quietly aim at 5173 instead.
+   */
+  const killPortAndRetry = useCallback(
+    (ds: DevServer) => {
+      const port = ds.conflictPort;
+      if (!port) return;
+      if (isPtyGone(ds.terminalId)) {
+        relaunchServer(ds);
+        return;
+      }
+      const backend = ds.backend ?? useAppStore.getState().terminalBackend ?? getDefaultBackend();
+      const lastRun = runPlanRef.current.get(ds.id)?.command ?? ds.command;
+      resetDetectionState(ds.id);
+      markStarting(ds.id);
+      void writePlannedCommand(ds, {
+        prefix: killPortCommand(port, backend),
+        command: lastRun,
+      }).then((ok) => {
+        if (!ok) relaunchServer(ds);
+      });
+    },
+    [relaunchServer, resetDetectionState, markStarting, writePlannedCommand]
   );
 
   /**
@@ -684,12 +862,14 @@ export default function DevServerTerminalHost() {
       registerDevServerActions(ds.id, {
         start: () => { const cur = current(); if (cur) startServer(cur); },
         restart: () => { const cur = current(); if (cur) restartServer(cur); },
+        retryOtherPort: () => { const cur = current(); if (cur) retryOnAnotherPort(cur); },
+        killConflictPort: () => { const cur = current(); if (cur) killPortAndRetry(cur); },
       });
     }
     return () => {
       for (const ds of devServers) unregisterDevServerActions(ds.id);
     };
-  }, [devServers, startServer, restartServer]);
+  }, [devServers, startServer, restartServer, retryOnAnotherPort, killPortAndRetry]);
 
 
   /**
@@ -791,6 +971,7 @@ export default function DevServerTerminalHost() {
 
               const write = getPtyWrite(ds.terminalId);
               if (!write) return;
+              disarmPromptScan(ds.id);
               write("\x03");
               setTimeout(() => write("\x03"), 100);
 
@@ -801,24 +982,27 @@ export default function DevServerTerminalHost() {
               // Use the server's resolved backend so a Windows-routed dev server
               // gets the PowerShell cleanup (Get-NetTCPConnection), not WSL fuser.
               const backend = ds.backend ?? useAppStore.getState().terminalBackend ?? "wsl";
-              // Sweeping the framework default port is only safe while this is
-              // the project's only server — otherwise it is a sibling's port.
+              // Sweeping this server's base port is only safe while this is the
+              // project's only server — otherwise it may be a sibling's port.
               const hasSiblings =
                 useAppStore
                   .getState()
                   .devServers.filter((o) => isSameProject(o, ds.workingDir, ds.serverId)).length > 1;
-              const cleanup = buildCleanupPrefix(ds.command, ds.port, backend, !hasSiblings);
+              // The port the last launch was PLANNED onto — a fact, where the
+              // old `guessDefaultPort(command)` was a guess that answered 3000
+              // for every `npm run dev` and swept an unrelated project's server.
+              const plan = runPlanRef.current.get(ds.id);
+              const basePort = plan?.port ?? plan?.natural ?? 0;
+              const cleanup = buildCleanupPrefix(ds.command, ds.port, basePort, backend, !hasSiblings);
 
               if (attempts === 0) {
-                // First retry: kill old process on default port + remove lock, then same command
-                const delay = 2500;
-                setTimeout(() => write(`${cleanup}; ${ds.command}\r`), delay);
+                // First retry: free this server's own ports + remove the lock, then the same command
+                setTimeout(() => { void writePlannedCommand(ds, { prefix: cleanup }); }, 2500);
               } else {
-                // Second retry: try on a different port (default + 1)
-                const fallbackPort = guessDefaultPort(ds.command) + 1;
-                const cmdWithPort = injectPort(ds.command, fallbackPort);
-                const delay = 2500;
-                setTimeout(() => write(`${cleanup}; ${cmdWithPort}\r`), delay);
+                // Second retry: somewhere else entirely, off the port that keeps failing
+                setTimeout(() => {
+                  void writePlannedCommand(ds, { prefix: cleanup, avoid: basePort || undefined });
+                }, 2500);
               }
               return;
             }
@@ -847,6 +1031,67 @@ export default function DevServerTerminalHost() {
             unregisterTerminalDataListener(ds.terminalId);
           }
           return;
+        }
+
+        // ── Port conflict ──
+        //
+        // Checked BEFORE port detection, not after, for a reason that has
+        // nothing to do with priority: Kestrel prints "Failed to bind to address
+        // http://127.0.0.1:5000: address already in use", and PORT_REGEX would
+        // read that as a successful bind and paint the row green on a server
+        // that never started. Anything that says "taken" has to be ruled out
+        // before anything that says "listening" is believed.
+        //
+        // One silent retry, then hand it to the user. The pre-flight probe
+        // already covers the ordinary collision, so reaching here means the port
+        // went between probe and bind — worth absorbing once, not worth looping
+        // over while two projects fight.
+        {
+          const conflict = detectPortConflict(cleanBuffer);
+          if (conflict) {
+            const busy = conflict.port ?? runPlanRef.current.get(ds.id)?.port ?? 0;
+            const attempts = portRetryRef.current.get(ds.id) ?? 0;
+            // The conflict line survives re-registration otherwise, and would
+            // match again on the next chunk — the same loop the lock path guards.
+            scanBuffersRef.current.delete(ds.id);
+            unregisterTerminalDataListener(ds.terminalId);
+
+            // Only retry automatically when we can actually change the outcome.
+            // For a command we may not append `--port` to (no package.json, no
+            // explicit flag of its own) a retry would re-run the identical line
+            // and fail identically — so go straight to the banner, where "Kill
+            // <port>" still works and "Another port" is the user's call to make.
+            const canMove = runPlanRef.current.get(ds.id)?.controllable ?? false;
+            const write = attempts < 1 && canMove ? getPtyWrite(ds.terminalId) : undefined;
+            if (write) {
+              portRetryRef.current.set(ds.id, attempts + 1);
+              // Deleted, not added: markStarting's store write re-renders, the
+              // main effect finds this server unresolved and hands it a fresh
+              // listener. That is how the lock retry gets its scanner back too.
+              resolvedRef.current.delete(ds.id);
+              disarmPromptScan(ds.id);
+              write("\x03");
+              setTimeout(() => write("\x03"), 100);
+              markStarting(ds.id);
+              setTimeout(() => {
+                const cur = useAppStore.getState().devServers.find((d) => d.id === ds.id);
+                if (!cur || cur.status !== "starting") return;
+                void writePlannedCommand(
+                  { ...cur, port: ds.port },
+                  { avoid: busy > 0 ? busy : undefined },
+                );
+              }, 2500);
+              return;
+            }
+
+            resolvedRef.current.add(ds.id);
+            updateDevServerError(
+              ds.id,
+              busy > 0 ? `Port ${busy} is already in use` : "That port is already in use",
+              busy > 0 ? busy : undefined,
+            );
+            return;
+          }
         }
 
         // Check for port
@@ -884,6 +1129,12 @@ export default function DevServerTerminalHost() {
                   });
                 }
                 updateDevServerStatus(ds.id, "running");
+                // Remember the port ONLY when it isn't the one the project
+                // names anyway — a server pushed onto 5174 by a sibling comes
+                // back on 5174 next launch instead of re-fighting for 5173,
+                // while one that landed on its own port clears the entry so a
+                // later config change is never overruled by an old preference.
+                rememberPort(ds, p, runPlanRef.current.get(ds.id));
               };
 
               // Harvest LAN / Tailscale / 0.0.0.0 addresses printed alongside the localhost line
@@ -1016,7 +1267,7 @@ export default function DevServerTerminalHost() {
         }
       }
     };
-  }, [devServers, updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls, setDevServerStalled, restartServer]);
+  }, [devServers, updateDevServerStatus, updateDevServerPort, updateDevServerError, setDevServerNetworkUrls, setDevServerStalled, restartServer, markStarting, writePlannedCommand, disarmPromptScan]);
 
   // Clean up tracked state when servers are removed, or re-enable detection
   // when a server is restarted (status changed back to "running" without a port)
@@ -1036,6 +1287,12 @@ export default function DevServerTerminalHost() {
     }
     for (const id of lockRetryRef.current.keys()) {
       if (!currentIds.has(id)) lockRetryRef.current.delete(id);
+    }
+    for (const id of portRetryRef.current.keys()) {
+      if (!currentIds.has(id)) portRetryRef.current.delete(id);
+    }
+    for (const id of runPlanRef.current.keys()) {
+      if (!currentIds.has(id)) runPlanRef.current.delete(id);
     }
     for (const [id, timer] of graceTimersRef.current.entries()) {
       if (!currentIds.has(id)) {

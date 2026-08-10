@@ -193,7 +193,13 @@ export interface TerminalSlice {
   ) => void;
   updateDevServerCommand: (serverId: string, command: string) => void;
   updateDevServerPort: (serverId: string, port: number) => void;
-  updateDevServerError: (serverId: string, errorMessage: string | undefined) => void;
+  /** `conflictPort` is the port a "port already in use" failure named — it is
+   *  what makes the row's banner actionable, and it is cleared with the message. */
+  updateDevServerError: (
+    serverId: string,
+    errorMessage: string | undefined,
+    conflictPort?: number,
+  ) => void;
   setDevServerNetworkUrls: (serverId: string, urls: string[]) => void;
   setDevServerBackend: (serverId: string, backend: TerminalBackend) => void;
   setDevServerStalled: (serverId: string, stalledSince: number | undefined) => void;
@@ -361,10 +367,22 @@ export const createTerminalSlice: StateCreator<
     }));
   },
 
-  updateDevServerError: (serverId, errorMessage) => {
+  // `conflictPort` rides along with the message rather than getting its own
+  // setter: it only ever means "the port THIS error is about", so writing it
+  // separately would allow a stale port to outlive the failure that named it and
+  // offer the user a "Kill 6180" button for a conflict that is long gone.
+  // Clearing the message clears it too.
+  updateDevServerError: (serverId, errorMessage, conflictPort) => {
     set((state) => ({
       devServers: state.devServers.map((ds) =>
-        ds.id === serverId ? { ...ds, errorMessage, status: errorMessage ? "error" : ds.status } : ds
+        ds.id === serverId
+          ? {
+              ...ds,
+              errorMessage,
+              conflictPort: errorMessage ? conflictPort : undefined,
+              status: errorMessage ? "error" : ds.status,
+            }
+          : ds
       ),
     }));
   },

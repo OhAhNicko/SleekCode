@@ -27,6 +27,109 @@ import {
   type HostStyle,
 } from "../lib/server-commands";
 
+/**
+ * One action chip on the error banner.
+ *
+ * Opaque fills, not the translucent wash the UI rules ban — and dark vs white
+ * rather than two of the same, so the heavier action reads as the heavier one
+ * without needing a second colour on a surface that is already red. Both tones
+ * are literal rather than themed: the banner's red is the one constant behind
+ * them, and a themed `--ezy-bg` would turn the pair identical in a light theme.
+ */
+function BannerButton({
+  label,
+  tooltip,
+  onClick,
+  heavy,
+}: {
+  label: string;
+  tooltip: string;
+  onClick: () => void;
+  heavy?: boolean;
+}) {
+  const idle = heavy ? "#1a1a1a" : "#ffffff";
+  const hover = heavy ? "#000000" : "#e6e6e6";
+  return (
+    <button
+      type="button"
+      className="ezy-banner-action"
+      data-tooltip={tooltip}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = hover; }}
+      onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = idle; }}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        padding: "3px 6px",
+        fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+        fontWeight: 600,
+        // Explicit: a <button> inherits line-height 1.5 and would quietly add
+        // several px to this banner (CLAUDE.md's compact-header gotcha).
+        lineHeight: 1.2,
+        fontFamily: "inherit",
+        fontVariantNumeric: "tabular-nums",
+        color: heavy ? "#ffffff" : "#1a1a1a",
+        backgroundColor: idle,
+        border: "none",
+        borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        transition: "background-color 120ms ease",
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+/**
+ * The two ways out of a port conflict, attached to the message that reports it.
+ *
+ * "Port 6180 is already in use" used to be a dead end — the only way forward was
+ * to leave MADE, hunt down the process, kill it, and come back. Both answers now
+ * live where the problem is stated, and the kill button NAMES the port it will
+ * free, because the number is the entire reason that button can be trusted.
+ *
+ * Actions are looked up per click, not per render: the registry is populated by
+ * DevServerTerminalHost (the only place that can restart correctly, see
+ * dev-server-actions.ts) and a row can render before that effect has run.
+ */
+function PortConflictActions({
+  serverId,
+  port,
+  holder,
+}: {
+  serverId: string;
+  port: number;
+  /** Project name of the MADE dev server holding the port, when it is one of ours. */
+  holder?: string;
+}) {
+  return (
+    <div style={{ display: "flex", gap: 4, marginTop: 5 }}>
+      <BannerButton
+        label="Another port"
+        tooltip="Restarts with --port set to the next free one"
+        onClick={() => getDevServerActions(serverId)?.retryOtherPort()}
+      />
+      <BannerButton
+        heavy
+        label={`Kill ${port}`}
+        tooltip={
+          holder
+            ? `Stops ${holder}'s server on ${port}, then starts this one`
+            : `Frees port ${port}, then starts this server again`
+        }
+        onClick={() => getDevServerActions(serverId)?.killConflictPort()}
+      />
+    </div>
+  );
+}
+
 function StatusDot({ status }: { status: DevServer["status"] }) {
   const color =
     status === "running"
@@ -355,6 +458,19 @@ function DevServerRow({
 
   const serverUrl = server.port > 0 ? `http://localhost:${server.port}` : null;
   const networkUrls = server.networkUrls ?? [];
+
+  // Who is sitting on the contested port, when it is another MADE row. Named in
+  // the kill button's tooltip so "Kill 6180" can't quietly mean "kill your other
+  // project". Subscribed rather than read once — the selector returns a plain
+  // string, so a sibling stopping updates the tooltip without churning renders.
+  const conflictPort = server.conflictPort;
+  const portHolder = useAppStore((s) =>
+    conflictPort === undefined
+      ? undefined
+      : s.devServers.find(
+          (d) => d.id !== server.id && d.port === conflictPort && d.status !== "stopped",
+        )?.projectName,
+  );
 
   // 3-second-hover popover that lists every detected address (Local + LAN/Tailscale).
   const urlSpanRef = useRef<HTMLSpanElement>(null);
@@ -732,26 +848,42 @@ function DevServerRow({
 
       {/* Error message — solid surface, not a tinted wash (UI rules), and it
           WRAPS. It used to be one nowrap line with an ellipsis, which cut off
-          exactly the part of a startup failure worth reading. */}
+          exactly the part of a startup failure worth reading.
+
+          The clamp lives on the TEXT, not on this container: with the conflict
+          actions inside, clamping the whole block would cut the buttons off
+          along with the third line of the message. */}
       {hasError && (
         <div
-          data-tooltip={server.errorMessage}
           style={{
             margin: `1px 10px 5px ${indent}px`,
             padding: "4px 7px",
-            fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
-            lineHeight: 1.35,
-            color: "#fff",
             backgroundColor: "var(--ezy-red)",
             borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
-            overflowWrap: "anywhere",
-            display: "-webkit-box",
-            WebkitBoxOrient: "vertical",
-            WebkitLineClamp: 3,
-            overflow: "hidden",
           }}
         >
-          {server.errorMessage}
+          <div
+            data-tooltip={server.errorMessage}
+            style={{
+              fontSize: "calc(var(--ezy-font-scale, 1) * 10px)",
+              lineHeight: 1.35,
+              color: "#fff",
+              overflowWrap: "anywhere",
+              display: "-webkit-box",
+              WebkitBoxOrient: "vertical",
+              WebkitLineClamp: 3,
+              overflow: "hidden",
+            }}
+          >
+            {server.errorMessage}
+          </div>
+          {server.conflictPort !== undefined && (
+            <PortConflictActions
+              serverId={server.id}
+              port={server.conflictPort}
+              holder={portHolder}
+            />
+          )}
         </div>
       )}
 

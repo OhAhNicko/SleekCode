@@ -44,7 +44,7 @@ export function syncProjectServerCommands(workingDir: string, serverId?: string)
  */
 const TAURI_DETECT_TIMEOUT_MS = 3000;
 
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+export function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   return Promise.race([
     p.finally(() => clearTimeout(timer)),
