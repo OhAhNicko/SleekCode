@@ -69,6 +69,7 @@ import {
   DEFAULT_JIRA_HEADER_SHOW,
   DEFAULT_JIRA_RAIL_WIDTHS,
   DEFAULT_JIRA_ROW_META_SHOW,
+  DEFAULT_JIRA_ROW_TITLE_FIELDS,
   JIRA_RAIL_MAX_WIDTH,
   JIRA_RAIL_MIN_WIDTH,
   type DevServerTabIconMode,
@@ -2466,6 +2467,10 @@ export default function SettingsPane() {
     [jiraRowMetaShowRaw],
   );
   const setJiraRowMetaShow = useAppStore((s) => s.setJiraRowMetaShow);
+  const jiraRowTitleFields = useAppStore(
+    (s) => s.jiraRowTitleFields ?? DEFAULT_JIRA_ROW_TITLE_FIELDS,
+  );
+  const setJiraRowTitleFields = useAppStore((s) => s.setJiraRowTitleFields);
   const jiraStatusIndicator = useAppStore((s) => s.jiraStatusIndicator ?? "both");
   const setJiraStatusIndicator = useAppStore((s) => s.setJiraStatusIndicator);
   const jiraListGrouping = useAppStore((s) => s.jiraListGrouping ?? "flat");
@@ -2495,6 +2500,24 @@ export default function SettingsPane() {
     }
     return pickableFields([...byId.values()]);
   }, [jiraSiteFields, jiraDefaultSiteId]);
+  // Only facts that are actually shown can be placed on the title row —
+  // otherwise the two settings could disagree about a fact that isn't there.
+  const jiraTitlePlaceable = useMemo(() => {
+    const built: Array<{ id: string; label: string }> = [];
+    const labels: Array<[keyof typeof jiraRowMetaShow, string]> = [
+      ["organization", "Organization"],
+      ["requestType", "Request type"],
+      ["updated", "Last updated"],
+      ["created", "Created"],
+      ["priority", "Priority"],
+      ["reporter", "Reporter"],
+    ];
+    for (const [k, label] of labels) if (jiraRowMetaShow[k]) built.push({ id: k, label });
+    for (const id of jiraExtraFields.rows) {
+      built.push({ id, label: jiraPickableFields.find((f) => f.id === id)?.name ?? id });
+    }
+    return built;
+  }, [jiraRowMetaShow, jiraExtraFields.rows, jiraPickableFields]);
   const jiraRailWidths = useAppStore((s) => s.jiraRailWidths ?? DEFAULT_JIRA_RAIL_WIDTHS);
   const setJiraRailWidth = useAppStore((s) => s.setJiraRailWidth);
   const jiraAssignedTickets = useAppStore((s) => s.jiraAssignedTickets);
@@ -4562,6 +4585,51 @@ export default function SettingsPane() {
                       {label}
                     </label>
                   ))}
+                </div>
+              </SettingsRow>
+              {/* Placement, not visibility: only facts already switched on
+                  above can be moved up, so the two rows cannot contradict. */}
+              <SettingsRow
+                label="Show on the ticket row"
+                description="Beside the ticket key instead of the line below."
+              >
+                <div className="flex items-center gap-3" style={{ flexWrap: "wrap" }}>
+                  {jiraTitlePlaceable.length === 0 ? (
+                    <span
+                      style={{
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                        color: "var(--ezy-text-muted)",
+                      }}
+                    >
+                      Switch a detail on first.
+                    </span>
+                  ) : (
+                    jiraTitlePlaceable.map(({ id, label }) => (
+                      <label
+                        key={id}
+                        className="flex items-center gap-1.5"
+                        style={{
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                          color: "var(--ezy-text)",
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={jiraRowTitleFields.includes(id)}
+                          onChange={(e) =>
+                            setJiraRowTitleFields(
+                              e.target.checked
+                                ? [...jiraRowTitleFields, id]
+                                : jiraRowTitleFields.filter((x) => x !== id),
+                            )
+                          }
+                        />
+                        {label}
+                      </label>
+                    ))
+                  )}
                 </div>
               </SettingsRow>
               <JiraExtraFieldsRow

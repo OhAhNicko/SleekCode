@@ -327,7 +327,13 @@ export const DEFAULT_JIRA_HEADER_SHOW: JiraHeaderShow = {
   updated: false,
 };
 
-/** Which facts the rail rows' second line carries. */
+/** Facts that ride the TITLE line (beside the ticket key) instead of the
+ *  details line below it. Values are the JiraRowMetaShow keys, plus any picked
+ *  extra field id. `updated` by default: when a ticket last moved is the fact
+ *  you scan for, and it belongs beside the key. */
+export const DEFAULT_JIRA_ROW_TITLE_FIELDS: string[] = ["updated"];
+
+/** Which facts the rail rows carry at all (either line). */
 export interface JiraRowMetaShow {
   updated: boolean;
   created: boolean;
@@ -356,9 +362,13 @@ export type JiraSortList = "assigned" | "unassigned";
 
 /** Assigned wants "what moved", unassigned wants "what's new" — genuinely
  *  different natural orders, so the two lists sort independently. */
+/** Last updated, newest first — "what moved" is the default question for both
+ *  lists. Whatever the user picks instead REPLACES this and is persisted
+ *  (`jiraListSort` is in the store's partialize allowlist), so a choice
+ *  survives leaving the tab and survives app restarts. */
 export const DEFAULT_JIRA_SORT: Record<JiraSortList, { key: JiraSortKey; dir: JiraSortDir }> = {
   assigned: { key: "updated", dir: "desc" },
-  unassigned: { key: "created", dir: "desc" },
+  unassigned: { key: "updated", dir: "desc" },
 };
 
 /** Ticket-list width per rail tab. Assigned/Unassigned carry a meta line and a
@@ -723,6 +733,9 @@ export interface RecentProjectsSlice {
   /** Which facts the rail rows' second line carries. */
   jiraRowMetaShow: JiraRowMetaShow;
   setJiraRowMetaShow: (patch: Partial<JiraRowMetaShow>) => void;
+  /** Of the facts that are shown, which ride the ticket-key line. */
+  jiraRowTitleFields: string[];
+  setJiraRowTitleFields: (ids: string[]) => void;
   /** "auto" derives every status colour from its name; "manual" lets
    *  jiraStatusColors pin them. */
   jiraStatusColorMode: "auto" | "manual";
@@ -1121,6 +1134,8 @@ export const createRecentProjectsSlice: StateCreator<
         ...patch,
       },
     })),
+  jiraRowTitleFields: DEFAULT_JIRA_ROW_TITLE_FIELDS,
+  setJiraRowTitleFields: (ids) => set({ jiraRowTitleFields: ids }),
   jiraStatusColorMode: "auto",
   setJiraStatusColorMode: (value) => set({ jiraStatusColorMode: value }),
   jiraStatusColors: {},

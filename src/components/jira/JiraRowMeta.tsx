@@ -1,17 +1,19 @@
 /**
- * The muted line(s) under a ticket row: which customer, how it came in, when it
- * moved, when it was sent, how urgent, who filed it — plus any extra Jira field
- * the user added in Settings.
+ * The facts attached to a ticket row, split across its two lines.
  *
- * COLUMNS, NOT A SENTENCE. Every enabled fact gets a fixed-width cell in a
- * fixed order, so the same fact sits at the same x on every row and the list
- * can be read down a column instead of parsed per row. The last cell is the
- * flexible one and is the only thing allowed to ellipse; line 1 (key + status
- * badge) stays whole no matter what.
+ * TITLE line (with the ticket key): a short, right-aligned run sitting just
+ * before the status badge. Space is scarce there, so these render as bare
+ * values and lean on their tooltip for meaning — "2h ago", not "upd 2h ago".
+ * `updated` lives here by default: when a ticket last moved is the fact you
+ * scan for, and it belongs beside the key rather than a line below it.
  *
- * "sent 3d ago" rather than "created 3d ago": for a support queue the useful
- * question is when the customer sent the ticket in, and `sent` is both shorter
- * and closer to how the work is actually talked about.
+ * DETAILS line: fixed-width cells in a fixed order, so the same fact sits at
+ * the same x on every row and the list reads down a column. Only the last cell
+ * is flexible and allowed to ellipse.
+ *
+ * Which facts appear at all is `jiraRowMetaShow`; which of those ride the title
+ * line is `jiraRowTitleFields`. Cell ids are the SAME keys those settings use,
+ * so there is no mapping table to drift.
  */
 import type { JiraRowMetaShow } from "../../store/recentProjectsSlice";
 import { relativeShortIso } from "../../lib/relative-time";
@@ -45,44 +47,70 @@ export interface JiraRowMetaFacts {
 const W_TIME = 74;
 const W_PRIORITY = 56;
 
-export function buildRowMeta(
+export interface JiraRowCells {
+  /** Rides the ticket-key line, right-aligned before the status badge. */
+  title: JiraMetaCell[];
+  /** The details line under it. */
+  meta: JiraMetaCell[];
+}
+
+export function buildRowCells(
   facts: JiraRowMetaFacts,
   show: JiraRowMetaShow,
+  titleFields: string[] = [],
   extraIds: string[] = [],
   labelFor: (id: string) => string = (id) => id,
-): JiraMetaCell[] {
-  const cells: JiraMetaCell[] = [];
-  // Organization leads: in a support queue "which customer" is what the eye is
-  // actually hunting for, and the leading cell is the one that never ellipses.
+): JiraRowCells {
+  const onTitle = new Set(titleFields);
+  const all: JiraMetaCell[] = [];
+
+  // Organization leads the details line: in a support queue "which customer"
+  // is what the eye hunts for, and the leading cell never ellipses.
   if (show.organization && facts.organization) {
-    cells.push({ id: "org", text: facts.organization, width: 110, tooltip: "Organization" });
+    all.push({ id: "organization", text: facts.organization, width: 110, tooltip: "Organization" });
   }
   if (show.requestType && facts.requestType) {
-    cells.push({ id: "req", text: facts.requestType, width: 110, tooltip: "Request type" });
+    all.push({ id: "requestType", text: facts.requestType, width: 110, tooltip: "Request type" });
   }
-  if (show.updated) {
-    const t = relativeShortIso(facts.updatedIso);
-    if (t) cells.push({ id: "upd", text: `upd ${t}`, width: W_TIME, tooltip: "Last updated" });
+
+  const updated = show.updated ? relativeShortIso(facts.updatedIso) : "";
+  const created = show.created ? relativeShortIso(facts.createdIso) : "";
+  if (updated) {
+    all.push({ id: "updated", text: updated, width: W_TIME, tooltip: "Last updated" });
   }
-  if (show.created) {
-    const t = relativeShortIso(facts.createdIso);
-    if (t) cells.push({ id: "sent", text: `sent ${t}`, width: W_TIME, tooltip: "Created" });
+  if (created) {
+    // Two bare relative times on ONE line are indistinguishable, so the
+    // created one keeps a word — but only when it actually shares a line with
+    // `updated`. Alone (or once `updated` has moved to the title), it is bare
+    // like everything else and the tooltip carries the meaning.
+    const shareALine = !!updated && onTitle.has("updated") === onTitle.has("created");
+    all.push({
+      id: "created",
+      text: shareALine ? `sent ${created}` : created,
+      width: W_TIME,
+      tooltip: "Created",
+    });
   }
   if (show.priority && facts.priorityName) {
-    cells.push({ id: "pri", text: facts.priorityName, width: W_PRIORITY, tooltip: "Priority" });
+    all.push({ id: "priority", text: facts.priorityName, width: W_PRIORITY, tooltip: "Priority" });
   }
   if (show.reporter && facts.reporterName) {
-    cells.push({ id: "rep", text: facts.reporterName, width: 110, tooltip: "Reporter" });
+    all.push({ id: "reporter", text: facts.reporterName, width: 110, tooltip: "Reporter" });
   }
   for (const id of extraIds) {
     const text = facts.extra?.[id];
-    if (text) cells.push({ id, text, width: 110, tooltip: labelFor(id) });
+    if (text) all.push({ id, text, width: 110, tooltip: labelFor(id) });
   }
-  if (facts.siteName) cells.push({ id: "site", text: facts.siteName });
-  // The LAST cell gives up its fixed width and takes the remainder, so a row
-  // never ends in a hard gap and the flexible one is always the same column.
-  if (cells.length > 0) cells[cells.length - 1] = { ...cells[cells.length - 1], width: undefined };
-  return cells;
+  // The site is a details-line fact only — it is context, never identity.
+  if (facts.siteName) all.push({ id: "site", text: facts.siteName });
+
+  const title = all.filter((c) => onTitle.has(c.id)).map((c) => ({ ...c, width: undefined }));
+  const meta = all.filter((c) => !onTitle.has(c.id));
+  // The LAST details cell gives up its fixed width and takes the remainder, so
+  // a row never ends in a hard gap and the flexible one is always the same
+  // column.
+  if (meta.length > 0) meta[meta.length - 1] = { ...meta[meta.length - 1], width: undefined };
+  return { title, meta };
 }
 
 export default function JiraRowMeta({
@@ -119,6 +147,57 @@ export default function JiraRowMeta({
             // A fixed cell must not be squeezed by its neighbours or the
             // column stops being a column.
             flex: c.width === undefined ? "1 1 auto" : "0 0 auto",
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {c.text}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The title line's fact run. Sits between the ticket key and the status badge.
+ *
+ * SHRINKS FIRST, deliberately: the key carries `flexShrink: 0` and the badge a
+ * fixed width, so this run is what gives when the rail narrows. That keeps both
+ * invariants intact — the key is never truncated and the badge column stays on
+ * one x down the whole list.
+ */
+export function JiraTitleFacts({
+  cells,
+  fontPx = 10,
+  muted = true,
+}: {
+  cells: JiraMetaCell[];
+  fontPx?: number;
+  muted?: boolean;
+}) {
+  if (cells.length === 0) return null;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        flex: "0 1 auto",
+        minWidth: 0,
+        overflow: "hidden",
+        fontSize: `calc(var(--ezy-font-scale, 1) * ${fontPx}px)`,
+        fontVariantNumeric: "tabular-nums",
+        color: muted ? "var(--ezy-text-muted)" : undefined,
+        opacity: muted ? 1 : 0.75,
+      }}
+    >
+      {cells.map((c) => (
+        <span
+          key={c.id}
+          data-tooltip={c.tooltip}
+          style={{
             minWidth: 0,
             overflow: "hidden",
             textOverflow: "ellipsis",

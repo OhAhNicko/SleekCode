@@ -11,7 +11,11 @@ import { readSessionsIndex } from "../lib/sessions-index";
 import { jiraInstanceKey } from "../lib/jira-layout";
 import { parkedTicketName } from "../lib/jira-session";
 import { useJiraNotifyStore } from "../store/jiraNotifyStore";
-import { DEFAULT_JIRA_ROW_META_SHOW, DEFAULT_JIRA_SORT } from "../store/recentProjectsSlice";
+import {
+  DEFAULT_JIRA_ROW_META_SHOW,
+  DEFAULT_JIRA_ROW_TITLE_FIELDS,
+  DEFAULT_JIRA_SORT,
+} from "../store/recentProjectsSlice";
 import { groupIssues, sortIssues } from "../lib/jira-row-sort";
 import { buildStatusColorMap, resolveStatusColor } from "../lib/jira-status-colors";
 import { fieldLabel } from "../lib/jira-fields";
@@ -88,6 +92,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
   const listGrouping = useAppStore((s) => s.jiraListGrouping ?? "flat");
   const statusIndicator = useAppStore((s) => s.jiraStatusIndicator ?? "both");
   const rowMetaShow = useAppStore((s) => s.jiraRowMetaShow);
+  const rowTitleFieldsRaw = useAppStore((s) => s.jiraRowTitleFields);
   const statusColorMode = useAppStore((s) => s.jiraStatusColorMode ?? "auto");
   const statusColorOverrides = useAppStore((s) => s.jiraStatusColors);
   const ticketSnapshots = useAppStore((s) => s.jiraTicketSnapshots);
@@ -423,6 +428,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
   // MERGE the defaults, don't substitute them: a store persisted before a key
   // existed carries the object WITHOUT that key, so a plain `?? DEFAULT` would
   // leave the new column reading `undefined` and silently off forever.
+  const rowTitleFields = rowTitleFieldsRaw ?? DEFAULT_JIRA_ROW_TITLE_FIELDS;
   const metaShow = useMemo(
     () => ({ ...DEFAULT_JIRA_ROW_META_SHOW, ...(rowMetaShow ?? {}) }),
     [rowMetaShow],
@@ -566,6 +572,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     statusColorOf,
     statusIndicator,
     metaShow,
+    rowTitleFields,
     rowExtraFields,
     labelForField,
     tabSite,

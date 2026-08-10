@@ -19,7 +19,7 @@ import {
 } from "../hooks/useJiraTicketRows";
 import type { JiraListTicket } from "../store/recentProjectsSlice";
 import JiraStatusBadge, { statusBadgeWidth } from "./jira/JiraStatusBadge";
-import JiraRowMeta, { buildRowMeta } from "./jira/JiraRowMeta";
+import JiraRowMeta, { JiraTitleFacts, buildRowCells } from "./jira/JiraRowMeta";
 
 /**
  * A Jira project's tickets, nested under its row in the v2 vertical tab bar.
@@ -122,6 +122,7 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
     statusColorOf,
     statusIndicator,
     metaShow,
+    rowTitleFields,
     rowExtraFields,
     labelForField,
     assignedMode,
@@ -475,7 +476,7 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
     const showStripe = statusIndicator !== "badge";
     const showBadge = statusIndicator !== "stripe";
     const expanded = expandedRows.has(qk);
-    const metaCells = buildRowMeta(
+    const cells = buildRowCells(
       {
         updatedIso: t.updatedIso,
         createdIso: t.createdIso,
@@ -489,10 +490,11 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
         siteName: roomForBadge ? undefined : t.status || undefined,
       },
       metaShow,
+      rowTitleFields,
       rowExtraFields,
       labelForField,
     );
-    const hasMeta = metaCells.length > 0;
+    const hasMeta = cells.meta.length > 0;
     return (
       <div
         key={qk}
@@ -549,6 +551,7 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
           {t.summary && expandChevron(expanded, () => toggleRowExpanded(qk))}
           <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>{t.key}</span>
           <span style={{ flex: 1, minWidth: 0 }} />
+          <JiraTitleFacts cells={cells.title} fontPx={9} />
           {showBadge && t.status && color && (
             roomForBadge ? (
               <JiraStatusBadge status={t.status} color={color} width={badgeW} />
@@ -570,7 +573,7 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
           )}
           {hamburger(t.key)}
         </div>
-        {hasMeta && <JiraRowMeta cells={metaCells} fontPx={9} />}
+        {hasMeta && <JiraRowMeta cells={cells.meta} fontPx={9} />}
         {expanded && t.summary && (
           <div
             style={{

@@ -14,7 +14,7 @@ import { useOverlayMenu } from "../lib/useOverlayMenu";
 import { refreshJiraNow } from "../lib/jira-notify";
 import { relativeShort } from "../lib/relative-time";
 import JiraStatusBadge, { statusBadgeWidth } from "./jira/JiraStatusBadge";
-import JiraRowMeta, { buildRowMeta } from "./jira/JiraRowMeta";
+import JiraRowMeta, { JiraTitleFacts, buildRowCells } from "./jira/JiraRowMeta";
 import { askForTicket, openJiraTicket } from "../lib/jira-project";
 import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
 import {
@@ -136,6 +136,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     statusColorOf,
     statusIndicator,
     metaShow,
+    rowTitleFields,
     rowExtraFields,
     labelForField,
     listGrouping,
@@ -956,7 +957,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     // status is the organising principle, stripe and badge share one colour.
     const showBadge = statusIndicator !== "stripe";
     const expanded = expandedRows.has(row.session.id);
-    const metaCells = buildRowMeta(
+    const cells = buildRowCells(
       {
         updatedIso: snap?.updatedIso,
         createdIso: snap?.createdIso,
@@ -967,10 +968,11 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         extra: snap?.extra,
       },
       metaShow,
+      rowTitleFields,
       rowExtraFields,
       labelForField,
     );
-    const hasMeta = metaCells.length > 0;
+    const hasMeta = cells.meta.length > 0;
     return (
       <div
         data-ctx-surface="jira-ticket"
@@ -1044,6 +1046,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           {label}
         </span>
         <span style={{ flex: 1, minWidth: 0 }} />
+        <JiraTitleFacts cells={cells.title} muted={!paintFull} />
         {showBadge && snap?.statusName && statusColor && (
           <JiraStatusBadge
             status={snap.statusName}
@@ -1124,7 +1127,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           </svg>
         </div>
         </div>
-        {hasMeta && <JiraRowMeta cells={metaCells} muted={!paintFull} />}
+        {hasMeta && <JiraRowMeta cells={cells.meta} muted={!paintFull} />}
         {expanded && snap?.summary && (
           <div
             style={{
@@ -1331,7 +1334,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     const showStripe = statusIndicator !== "badge";
     const showBadge = statusIndicator !== "stripe";
     const expanded = expandedRows.has(qk);
-    const metaCells = buildRowMeta(
+    const cells = buildRowCells(
       {
         updatedIso: t.updatedIso,
         createdIso: t.createdIso,
@@ -1343,10 +1346,11 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         siteName: jiraSites.length > 1 ? (jiraSiteName(t.siteId) ?? t.siteId) : undefined,
       },
       metaShow,
+      rowTitleFields,
       rowExtraFields,
       labelForField,
     );
-    const hasMeta = metaCells.length > 0;
+    const hasMeta = cells.meta.length > 0;
     const height = expanded
       ? undefined
       : `calc(var(--ezy-font-scale, 1) * ${hasMeta ? ROW_HEIGHT_META : ROW_HEIGHT}px)`;
@@ -1402,12 +1406,13 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           {/* The elastic gap: this is what gives, so the key never does and the
               badge's left edge stays on one column down the whole list. */}
           <span style={{ flex: 1, minWidth: 0 }} />
+          <JiraTitleFacts cells={cells.title} />
           {showBadge && t.status && color && (
             <JiraStatusBadge status={t.status} color={color} width={badgeW} />
           )}
           {rowMenuButton(isActive)}
         </div>
-        {hasMeta && <JiraRowMeta cells={metaCells} />}
+        {hasMeta && <JiraRowMeta cells={cells.meta} />}
         {expanded && t.summary && (
           <div
             style={{

@@ -135,6 +135,7 @@ export const useAppStore = create<AppStore>()(
         jiraListGrouping: state.jiraListGrouping,
         jiraListSort: state.jiraListSort,
         jiraRowMetaShow: state.jiraRowMetaShow,
+        jiraRowTitleFields: state.jiraRowTitleFields,
         jiraStatusColorMode: state.jiraStatusColorMode,
         jiraStatusColors: state.jiraStatusColors,
         jiraSiteFields: state.jiraSiteFields,
