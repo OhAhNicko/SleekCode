@@ -12,6 +12,14 @@ const TICKET_RE = /^[A-Z][A-Z0-9_]*-\d+$/;
 /** Same shape, but findable inside a longer string (a pasted browse URL). */
 const TICKET_IN_TEXT_RE = /[A-Za-z][A-Za-z0-9_]*-\d+/;
 
+/** The Jira PROJECT key a ticket belongs to: `SUPPORT-24920` → `SUPPORT`.
+ *  Split on the LAST dash, because a project key may itself contain none but
+ *  the number never does. Uppercased — Jira project keys always are. */
+export function ticketProjectKey(ticket: string): string {
+  const dash = ticket.lastIndexOf("-");
+  return (dash === -1 ? ticket : ticket.slice(0, dash)).toUpperCase();
+}
+
 /**
  * Accepts what a person actually has on their clipboard: a bare key in any
  * case, or a full ticket URL. Returns the canonical upper-case key, or null if

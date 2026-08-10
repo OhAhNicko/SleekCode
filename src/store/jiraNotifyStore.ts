@@ -27,13 +27,39 @@ interface JiraNotifyStore {
   setLastPollAt: (at: number) => void;
   /** Which rail tab each Jira tab shows. Absent = "tickets". External to the
    *  rail component so a notification click can switch it. */
-  railTab: Record<string, "tickets" | "assigned">;
-  setRailTab: (tabId: string, tab: "tickets" | "assigned") => void;
+  railTab: Record<string, JiraRailTab>;
+  setRailTab: (tabId: string, tab: JiraRailTab) => void;
   /** QUALIFIED ticket key (`<origin>|<KEY>`) whose browser-only preview fills
-   *  the canvas while the Assigned tab is showing (per Jira tab). */
+   *  the canvas while the Assigned OR Unassigned tab is showing (per Jira tab).
+   *  One preview slot for both — a rail only ever shows one of them at a time. */
   assignedPreview: Record<string, string | undefined>;
   setAssignedPreview: (tabId: string, qkey: string | undefined) => void;
+  /** Which half of the Assigned tab a Jira tab is showing. Session-only, like
+   *  railTab — which sub-list you last glanced at is not workspace state. */
+  assignedScope: Record<string, "open" | "done">;
+  setAssignedScope: (tabId: string, scope: "open" | "done") => void;
+  /** Browse-only queues an expanded ticket TREE is showing, keyed
+   *  `<tabId>::<kind>`. The v2 tree has no tab strip, so `railTab` cannot
+   *  express this — and without it the poll cycle's visibility gate never sees
+   *  the tree at all, so its queues fetch once on expand (at best) and then go
+   *  stale, or never fill. Sparse: absent means not showing. */
+  treeQueues: Record<string, boolean>;
+  setTreeQueue: (tabId: string, kind: string, open: boolean) => void;
+  /** Per-site failure message for the browse-only QUEUE fetches (unassigned,
+   *  assigned-done). Kept apart from siteAuthErrors on purpose: a 403 here is
+   *  far more likely "no Browse permission on that project" than "bad
+   *  credentials", and pausing the whole site for it would silently kill the
+   *  watched-ticket notifications. */
+  unassignedErrors: Record<string, string>;
+  setUnassignedError: (siteId: string, msg: string | null) => void;
+  /** Epoch ms of the last unassigned fetch per site — the 180s sub-cadence
+   *  clock. Rides the existing 60s poll timer rather than a second interval;
+   *  a second setInterval would double the background-throttle problem. */
+  lastUnassignedAt: Record<string, number>;
+  markUnassignedPolled: (siteId: string) => void;
 }
+
+export type JiraRailTab = "tickets" | "assigned" | "unassigned";
 
 export const useJiraNotifyStore = create<JiraNotifyStore>((set) => ({
   siteAuthErrors: {},
@@ -61,4 +87,26 @@ export const useJiraNotifyStore = create<JiraNotifyStore>((set) => ({
   assignedPreview: {},
   setAssignedPreview: (tabId, qkey) =>
     set((s) => ({ assignedPreview: { ...s.assignedPreview, [tabId]: qkey } })),
+  assignedScope: {},
+  setAssignedScope: (tabId, scope) =>
+    set((s) => ({ assignedScope: { ...s.assignedScope, [tabId]: scope } })),
+  treeQueues: {},
+  setTreeQueue: (tabId, kind, open) =>
+    set((s) => {
+      const next = { ...s.treeQueues };
+      if (open) next[`${tabId}::${kind}`] = true;
+      else delete next[`${tabId}::${kind}`];
+      return { treeQueues: next };
+    }),
+  unassignedErrors: {},
+  setUnassignedError: (siteId, msg) =>
+    set((s) => {
+      const next = { ...s.unassignedErrors };
+      if (msg === null) delete next[siteId];
+      else next[siteId] = msg;
+      return { unassignedErrors: next };
+    }),
+  lastUnassignedAt: {},
+  markUnassignedPolled: (siteId) =>
+    set((s) => ({ lastUnassignedAt: { ...s.lastUnassignedAt, [siteId]: Date.now() } })),
 }));

@@ -19,8 +19,11 @@ import { useAppStore } from "../store";
 import { useJiraNotifyStore } from "../store/jiraNotifyStore";
 import {
   collectWatchedTicketsBySite,
+  refreshUnassignedNow,
   runJiraPollCycle,
+  visibleQueuePairs,
   type JiraApiError,
+  type JiraQueueKind,
 } from "../lib/jira-notify";
 import { jiraBaseTicket } from "../lib/jira-layout";
 import { defaultJiraSiteIn, jiraQK, siteForTabIn } from "../lib/jira-sites";
@@ -62,7 +65,10 @@ export default function JiraNotifyEngine() {
       const s = useAppStore.getState();
       if (!s.jiraApiEmail || !s.jiraApiToken || (s.jiraSites ?? []).length === 0) return;
       const groups = collectWatchedTicketsBySite();
-      let anyWork = s.jiraAssignedMode ?? false;
+      // Unassigned mode is work on its own: an unassigned-only user has no
+      // watched rows and no assigned mode, and without this the cycle would
+      // never fire for them at all.
+      let anyWork = (s.jiraAssignedMode ?? false) || (s.jiraUnassignedMode ?? false);
       for (const g of groups.values()) if (g.keys.length > 0) anyWork = true;
       if (!anyWork) return;
 
@@ -102,6 +108,38 @@ export default function JiraNotifyEngine() {
       stopped = true;
       window.clearInterval(timer);
     };
+  }, []);
+
+  // Opening the Unassigned tab fetches it immediately, bypassing the 180s
+  // sub-cadence so the list is never stale-looking on arrival. Lives HERE and
+  // not in the rail: the rail mounts once per Jira tab and would fire N times
+  // for one flip. Fires per SITE, and only for tabs that just switched.
+  useEffect(() => {
+    // Which queue each Jira tab was showing last time round. A queue only
+    // becomes visible by a deliberate click, so an edge here is exactly the
+    // moment to fetch — waiting for the next 60s tick would leave the user
+    // looking at an empty list they just asked for.
+    // Keyed by tab AND kind, not tab alone: the v2 tree can have both the
+    // Unassigned and the Resolved group expanded at once, which a single
+    // "which view is this tab on" string cannot represent.
+    let prev = new Set<string>();
+    const onChange = () => {
+      const s = useAppStore.getState();
+      const pairs = visibleQueuePairs();
+      const next = new Set(pairs.map((p) => `${p.tabId}::${p.kind}`));
+      const wanted: Array<{ site: string; kind: JiraQueueKind }> = [];
+      for (const p of pairs) {
+        if (prev.has(`${p.tabId}::${p.kind}`)) continue;
+        if (p.kind === "unassigned" && !(s.jiraUnassignedMode ?? false)) continue;
+        const tab = s.tabs.find((t) => t.id === p.tabId);
+        if (tab) wanted.push({ site: siteForTabIn(s, tab), kind: p.kind });
+      }
+      prev = next;
+      if (!s.jiraApiEmail || !s.jiraApiToken) return;
+      for (const w of wanted) void refreshUnassignedNow(w.site, w.kind);
+    };
+    onChange();
+    return useJiraNotifyStore.subscribe(onChange);
   }, []);
 
   return null;

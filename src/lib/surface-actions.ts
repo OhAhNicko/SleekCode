@@ -25,6 +25,8 @@ export type SurfaceRole =
   | "sidebar"
   | "jira-ticket"
   | "jira-assigned"
+  | "jira-unassigned"
+  | "jira-rail"
   | "game-sidebar"
   | "knowledge"
   | "knowledge-note";

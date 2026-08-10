@@ -45,6 +45,18 @@ export interface RecentProject {
    * `quickOpen` below, which is about the recent menu reopening a layout.
    */
   primaryServerCommand?: string;
+  /**
+   * The port each dev-server command last came up on, when that was NOT the
+   * port the project itself names. Keyed by command string, like
+   * `primaryServerCommand`, so removing or reordering a row can't re-point it.
+   *
+   * This is what keeps a URL stable: a project pushed off 5173 onto 5174 by a
+   * sibling comes back on 5174 next launch instead of re-probing from scratch —
+   * without ever editing the command text the user typed. An entry is DELETED
+   * (not overwritten) when a server lands on its natural port again, so a
+   * config change always wins over an old preference. See `rememberPort`.
+   */
+  serverPorts?: Record<string, number>;
   noDevServer?: boolean;
   /**
    * "Quick open" — clicking the project in the recent menu reopens its saved
@@ -233,6 +245,59 @@ export interface JiraTicketSnapshot {
   summary?: string;
   /** True while there are updates the user hasn't viewed — rail highlight. */
   unseen?: boolean;
+  /** Facts behind the Tickets tab's meta line. Those rows are SESSIONS, not
+   *  issues, so this snapshot is where their issue-side data lives. Absent on
+   *  every snapshot written before these fields existed; the next poll fills
+   *  them in. Deliberately NOT part of change detection — a "priority raised"
+   *  card would need its own classify() branch, added together or not at all. */
+  statusCategory?: JiraStatusCategoryKey;
+  createdIso?: string;
+  priorityName?: string;
+  priorityId?: string;
+  reporterName?: string;
+  /** JSM "Organizations" — the customer company that raised the ticket. */
+  organization?: string;
+  /** JSM "Request Type" — which request form the ticket came in on. */
+  requestType?: string;
+  /** User-picked extra fields, keyed by Jira field id. */
+  extra?: Record<string, string>;
+}
+
+/** Jira's coarse status bucket. Rides inside the issue's `status` object. */
+export type JiraStatusCategoryKey = "new" | "indeterminate" | "done";
+
+/** One field a Jira site exposes (wire shape of `jira_site_meta`). */
+export interface JiraFieldMeta {
+  id: string;
+  name: string;
+  custom: boolean;
+  /** `schema.custom` when present, else `schema.type`. */
+  kind?: string;
+}
+
+/**
+ * One row of the Assigned / Unassigned rail lists.
+ *
+ * Every field past the original five is OPTIONAL, and must stay that way:
+ * rows persisted by builds before this shape existed carry only
+ * key/summary/status/updatedIso/siteId, and they have to keep rendering (and
+ * sorting, undefined-last) without a store migration. Narrowing any of them to
+ * required later means writing a `merge` entry in store/index.ts.
+ */
+export interface JiraListTicket {
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory?: JiraStatusCategoryKey;
+  updatedIso: string;
+  createdIso?: string;
+  priorityName?: string;
+  priorityId?: string;
+  reporterName?: string;
+  organization?: string;
+  requestType?: string;
+  extra?: Record<string, string>;
+  siteId: string;
 }
 
 /** Which live-Jira elements a ticket's CLI pane header shows. */
@@ -240,8 +305,73 @@ export interface JiraHeaderShow {
   status: boolean;
   summary: boolean;
   assignee: boolean;
-  myTickets: boolean;
+  /** The customer company that raised the ticket (JSM Organizations). */
+  organization: boolean;
+  /** JSM Request type — which request form the ticket came in on. */
+  requestType: boolean;
+  priority: boolean;
+  reporter: boolean;
+  updated: boolean;
 }
+
+export const DEFAULT_JIRA_HEADER_SHOW: JiraHeaderShow = {
+  status: true,
+  summary: true,
+  assignee: false,
+  // On by default: in a support workflow "who is this for" is the first thing
+  // you want off a pane header, and it is absent on non-JSM sites anyway.
+  organization: true,
+  requestType: true,
+  priority: false,
+  reporter: false,
+  updated: false,
+};
+
+/** Which facts the rail rows' second line carries. */
+export interface JiraRowMetaShow {
+  updated: boolean;
+  created: boolean;
+  priority: boolean;
+  reporter: boolean;
+  organization: boolean;
+  requestType: boolean;
+}
+
+export const DEFAULT_JIRA_ROW_META_SHOW: JiraRowMetaShow = {
+  updated: true,
+  created: true,
+  priority: true,
+  reporter: false,
+  organization: true,
+  requestType: true,
+};
+
+/** Sortable columns of the Assigned / Unassigned lists. Mirrors the Rust
+ *  `order_clause` whitelist — the two must stay in step, since the sort is
+ *  applied server-side (the result page is truncated, so a client-only sort
+ *  would reorder the wrong 50 rows). */
+export type JiraSortKey = "updated" | "created" | "priority" | "status" | "key" | "summary";
+export type JiraSortDir = "asc" | "desc";
+export type JiraSortList = "assigned" | "unassigned";
+
+/** Assigned wants "what moved", unassigned wants "what's new" — genuinely
+ *  different natural orders, so the two lists sort independently. */
+export const DEFAULT_JIRA_SORT: Record<JiraSortList, { key: JiraSortKey; dir: JiraSortDir }> = {
+  assigned: { key: "updated", dir: "desc" },
+  unassigned: { key: "created", dir: "desc" },
+};
+
+/** Ticket-list width per rail tab. Assigned/Unassigned carry a meta line and a
+ *  status badge, so they need more room than the plain Tickets list — one
+ *  width for both of them, one for Tickets. */
+export interface JiraRailWidths {
+  tickets: number;
+  list: number;
+}
+
+export const DEFAULT_JIRA_RAIL_WIDTHS: JiraRailWidths = { tickets: 240, list: 360 };
+export const JIRA_RAIL_MIN_WIDTH = 200;
+export const JIRA_RAIL_MAX_WIDTH = 560;
 
 export interface CustomScaffold {
   id: string;
@@ -522,19 +652,101 @@ export interface RecentProjectsSlice {
   /** Last-known assignee=currentUser() list, ALL sites merged (sorted by
    *  updatedIso desc, each row tagged with its site) — persisted so the
    *  Assigned tab renders instantly on boot; polls refresh it per site. */
-  jiraAssignedTickets: Array<{
-    key: string;
-    summary: string;
-    status: string;
-    updatedIso: string;
-    siteId: string;
-  }>;
+  jiraAssignedTickets: JiraListTicket[];
   /** Replace ONE site's rows, keep every other site's — a per-site poll must
    *  never clobber the merged list. */
-  setJiraAssignedTicketsForSite: (
-    siteId: string,
-    value: Array<{ key: string; summary: string; status: string; updatedIso: string; siteId: string }>,
+  setJiraAssignedTicketsForSite: (siteId: string, value: JiraListTicket[]) => void;
+  /** "Unassigned queue" mode: adds an Unassigned tab listing open tickets in
+   *  the tab's own Jira project(s) that nobody has picked up.
+   *
+   *  ON by default. It is safe to be on because the query is gated on
+   *  VISIBILITY in jira-notify.ts — it only runs while a rail is actually
+   *  showing the tab, and then at most once per 180s. So an enabled but
+   *  unviewed Unassigned tab costs exactly zero extra requests.
+   *
+   *  Those gates are not optional. Ungated this is ~1440 background JQL
+   *  searches/day/site. Nothing is billed — Jira Cloud's REST API is not
+   *  metered — but it IS rate-limited, and JQL search draws down the per-app
+   *  budget faster than cheap calls, so it would surface as intermittent 429s
+   *  throttling the WHOLE integration, notifications included. */
+  jiraUnassignedMode: boolean;
+  setJiraUnassignedMode: (value: boolean) => void;
+  /** Last-known unassigned queue, ALL sites merged. Unlike the assigned list
+   *  these rows write NO snapshots and raise NO notifications — see
+   *  pollQueueForSite. */
+  jiraUnassignedTickets: JiraListTicket[];
+  setJiraUnassignedTicketsForSite: (siteId: string, value: JiraListTicket[]) => void;
+  /** Assigned to you AND resolved/closed — the Assigned tab's "Done" mini tab.
+   *  The open assigned query excludes statusCategory Done, so these would
+   *  otherwise be invisible. Browse-only: like the unassigned queue it writes
+   *  no snapshots and raises no notifications, and it is fetched only while
+   *  the mini tab is actually showing. */
+  jiraAssignedDoneTickets: JiraListTicket[];
+  setJiraAssignedDoneTicketsForSite: (siteId: string, value: JiraListTicket[]) => void;
+  /** Per-site project-key override for the unassigned query, e.g.
+   *  `{"https://x.atlassian.net": ["SUPPORT"]}`. Unioned with the keys derived
+   *  from the tab's own ticket rows — which is what covers a brand-new Jira tab
+   *  that has no rows yet and would otherwise get a permanently empty queue. */
+  jiraUnassignedProjects: Record<string, string[]>;
+  setJiraUnassignedProjects: (siteId: string, keys: string[]) => void;
+  /** Notify when a ticket appears in the unassigned queue. */
+  jiraUnassignedNotify: boolean;
+  setJiraUnassignedNotify: (value: boolean) => void;
+  /** QUALIFIED keys already seen in the unassigned queue, so a ticket announces
+   *  itself ONCE.
+   *
+   *  Deliberately its own set rather than reusing jiraTicketSnapshots: that map
+   *  is pruned every clean cycle to the keys `pollOneSite` returns, and an
+   *  unassigned key is never among them — so a snapshot written here would be
+   *  wiped and rewritten forever, re-announcing the same ticket every poll.
+   *  Bounded, because an untended queue is unbounded. */
+  jiraUnassignedSeen: string[];
+  markJiraUnassignedSeen: (qkeys: string[]) => void;
+  /** Ticket-rail width per tab (see JiraRailWidths). Clamped in the setter. */
+  jiraRailWidths: JiraRailWidths;
+  setJiraRailWidth: (which: keyof JiraRailWidths, px: number) => void;
+  /** Where a ticket's status colour shows on its row: the left stripe, the
+   *  badge, or both. */
+  jiraStatusIndicator: "both" | "stripe" | "badge";
+  setJiraStatusIndicator: (value: "both" | "stripe" | "badge") => void;
+  /** Collapsible grouping for the rail lists: one long list, one group per
+   *  status, or one group per coarse status category. */
+  jiraListGrouping: "flat" | "status" | "category";
+  setJiraListGrouping: (value: "flat" | "status" | "category") => void;
+  /** Sort key + direction per list. Applied SERVER-SIDE (it goes into the JQL)
+   *  because the result page is truncated — see JiraSortKey. */
+  jiraListSort: Record<JiraSortList, { key: JiraSortKey; dir: JiraSortDir }>;
+  setJiraListSort: (
+    list: JiraSortList,
+    patch: Partial<{ key: JiraSortKey; dir: JiraSortDir }>,
   ) => void;
+  /** Which facts the rail rows' second line carries. */
+  jiraRowMetaShow: JiraRowMetaShow;
+  setJiraRowMetaShow: (patch: Partial<JiraRowMetaShow>) => void;
+  /** "auto" derives every status colour from its name; "manual" lets
+   *  jiraStatusColors pin them. */
+  jiraStatusColorMode: "auto" | "manual";
+  setJiraStatusColorMode: (value: "auto" | "manual") => void;
+  /** Per-status colour overrides, keyed by NORMALIZED status name (see
+   *  lib/jira-status-colors.ts). Free-form hex, not a palette id — the Settings
+   *  picker offers a custom colour. Only consulted in "manual" mode. */
+  jiraStatusColors: Record<string, string>;
+  setJiraStatusColor: (status: string, hex: string | null) => void;
+  /** Per-site field catalogue from `jira_site_meta`, cached for the life of
+   *  the store. Locates Organizations / Request type by schema kind (their ids
+   *  differ per site) AND populates the Settings pickers. An empty array is a
+   *  valid cached answer — see lib/jira-fields.ts. */
+  jiraSiteFields: Record<string, JiraFieldMeta[]>;
+  setJiraSiteFields: (siteId: string, fields: JiraFieldMeta[]) => void;
+  /** Priority NAMES in the site's OWN order, most urgent first — Jira's
+   *  authoritative ranking, so the client sort stops guessing from names. */
+  jiraSitePriorities: Record<string, string[]>;
+  setJiraSitePriorities: (siteId: string, names: string[]) => void;
+  /** Extra Jira fields the user added as columns, by field id — separately
+   *  for the ticket LIST rows and the ticket PANE HEADER, because the two have
+   *  very different room. */
+  jiraExtraFields: { rows: string[]; header: string[] };
+  setJiraExtraFields: (where: "rows" | "header", ids: string[]) => void;
   /** Change-detection baseline per QUALIFIED ticket key
    *  (`<origin>|<KEY>`, lib/jira-sites.ts). `unseen` drives the rail
    *  highlight and survives restarts; a key with no entry notifies nothing on
@@ -609,6 +821,9 @@ export interface RecentProjectsSlice {
   removeCustomServerCommand: (command: string) => void;
   setProjectServerCommands: (path: string, serverId: string | undefined, commands: string[], primary?: string) => void;
   setPrimaryServerCommand: (path: string, serverId: string | undefined, command: string | undefined) => void;
+  /** Remember (or, with `port: undefined`, forget) the port one dev-server
+   *  command lands on. See `RecentProject.serverPorts`. */
+  setProjectServerPort: (path: string, serverId: string | undefined, command: string, port: number | undefined) => void;
   setBrowserFullColumn: (value: boolean) => void;
   setBrowserSpawnLeft: (value: boolean) => void;
   setCopyOnSelect: (value: boolean) => void;
@@ -828,6 +1043,115 @@ export const createRecentProjectsSlice: StateCreator<
         ...value,
       ].sort((a, b) => (a.updatedIso < b.updatedIso ? 1 : -1)),
     })),
+  jiraUnassignedMode: true,
+  setJiraUnassignedMode: (value) => set({ jiraUnassignedMode: value }),
+  jiraUnassignedTickets: [],
+  // Canonical persisted order is created-desc; the user's own sort is applied
+  // at render (and, authoritatively, in the JQL) rather than at write time, so
+  // changing the sort control never needs a re-poll to take visible effect.
+  setJiraUnassignedTicketsForSite: (siteId, value) =>
+    set((state) => ({
+      jiraUnassignedTickets: [
+        ...(state.jiraUnassignedTickets ?? []).filter((t) => t.siteId !== siteId),
+        ...value,
+      ].sort((a, b) => ((a.createdIso ?? "") < (b.createdIso ?? "") ? 1 : -1)),
+    })),
+  jiraAssignedDoneTickets: [],
+  setJiraAssignedDoneTicketsForSite: (siteId, value) =>
+    set((state) => ({
+      jiraAssignedDoneTickets: [
+        ...(state.jiraAssignedDoneTickets ?? []).filter((t) => t.siteId !== siteId),
+        ...value,
+      ].sort((a, b) => (a.updatedIso < b.updatedIso ? 1 : -1)),
+    })),
+  jiraUnassignedProjects: {},
+  setJiraUnassignedProjects: (siteId, keys) =>
+    set((state) => ({
+      jiraUnassignedProjects: { ...(state.jiraUnassignedProjects ?? {}), [siteId]: keys },
+    })),
+  jiraUnassignedNotify: true,
+  setJiraUnassignedNotify: (value) => set({ jiraUnassignedNotify: value }),
+  jiraUnassignedSeen: [],
+  markJiraUnassignedSeen: (qkeys) =>
+    set((state) => {
+      const cur = state.jiraUnassignedSeen ?? [];
+      const add = qkeys.filter((k) => !cur.includes(k));
+      if (add.length === 0) return {};
+      // Newest last, oldest trimmed. 500 is far above any real queue, and the
+      // trim is what stops a long-lived store growing without bound.
+      return { jiraUnassignedSeen: [...cur, ...add].slice(-500) };
+    }),
+  jiraRailWidths: DEFAULT_JIRA_RAIL_WIDTHS,
+  // Clamp in the SETTER, not at the read sites: a hand-edited persisted blob
+  // must not be able to make the rail unusable (layoutSlice's convention).
+  setJiraRailWidth: (which, px) =>
+    set((state) => ({
+      jiraRailWidths: {
+        ...DEFAULT_JIRA_RAIL_WIDTHS,
+        ...(state.jiraRailWidths ?? {}),
+        [which]: Math.min(JIRA_RAIL_MAX_WIDTH, Math.max(JIRA_RAIL_MIN_WIDTH, Math.round(px))),
+      },
+    })),
+  jiraStatusIndicator: "both",
+  setJiraStatusIndicator: (value) => set({ jiraStatusIndicator: value }),
+  jiraListGrouping: "flat",
+  setJiraListGrouping: (value) => set({ jiraListGrouping: value }),
+  jiraListSort: DEFAULT_JIRA_SORT,
+  // Nested object + a shallow persist merge means a persisted value wins
+  // wholesale, so defaults are re-applied HERE rather than trusting the blob
+  // to carry every list (same shape as setJiraHeaderShow below).
+  setJiraListSort: (list, patch) =>
+    set((state) => ({
+      jiraListSort: {
+        ...DEFAULT_JIRA_SORT,
+        ...(state.jiraListSort ?? {}),
+        [list]: {
+          ...DEFAULT_JIRA_SORT[list],
+          ...(state.jiraListSort?.[list] ?? {}),
+          ...patch,
+        },
+      },
+    })),
+  jiraRowMetaShow: DEFAULT_JIRA_ROW_META_SHOW,
+  setJiraRowMetaShow: (patch) =>
+    set((state) => ({
+      jiraRowMetaShow: {
+        ...DEFAULT_JIRA_ROW_META_SHOW,
+        ...(state.jiraRowMetaShow ?? {}),
+        ...patch,
+      },
+    })),
+  jiraStatusColorMode: "auto",
+  setJiraStatusColorMode: (value) => set({ jiraStatusColorMode: value }),
+  jiraStatusColors: {},
+  setJiraStatusColor: (status, hex) =>
+    set((state) => {
+      const next = { ...(state.jiraStatusColors ?? {}) };
+      // null = "back to automatic". Delete rather than store a sentinel, so
+      // the map only ever holds colours the user actually chose.
+      if (hex === null) delete next[status];
+      else next[status] = hex;
+      return { jiraStatusColors: next };
+    }),
+  jiraSiteFields: {},
+  setJiraSiteFields: (siteId, fields) =>
+    set((state) => ({
+      jiraSiteFields: { ...(state.jiraSiteFields ?? {}), [siteId]: fields },
+    })),
+  jiraSitePriorities: {},
+  setJiraSitePriorities: (siteId, names) =>
+    set((state) => ({
+      jiraSitePriorities: { ...(state.jiraSitePriorities ?? {}), [siteId]: names },
+    })),
+  jiraExtraFields: { rows: [], header: [] },
+  setJiraExtraFields: (where, ids) =>
+    set((state) => ({
+      jiraExtraFields: {
+        rows: state.jiraExtraFields?.rows ?? [],
+        header: state.jiraExtraFields?.header ?? [],
+        [where]: ids,
+      },
+    })),
   jiraTicketSnapshots: {},
   setJiraTicketSnapshot: (key, snap) =>
     set((state) => ({
@@ -854,16 +1178,15 @@ export const createRecentProjectsSlice: StateCreator<
       for (const k of stale) delete next[k];
       return { jiraTicketSnapshots: next };
     }),
-  jiraHeaderShow: { status: true, summary: true, assignee: false, myTickets: true },
+  jiraHeaderShow: DEFAULT_JIRA_HEADER_SHOW,
   setJiraHeaderShow: (patch) =>
     set((state) => ({
       jiraHeaderShow: {
-        ...(state.jiraHeaderShow ?? {
-          status: true,
-          summary: true,
-          assignee: false,
-          myTickets: true,
-        }),
+        // Defaults re-applied here, not just spread from the blob: a store
+        // written before these keys existed would otherwise leave the new
+        // ones undefined and every `!== false` read would silently flip on.
+        ...DEFAULT_JIRA_HEADER_SHOW,
+        ...(state.jiraHeaderShow ?? {}),
         ...patch,
       },
     })),
@@ -1252,13 +1575,33 @@ export const createRecentProjectsSlice: StateCreator<
         // kept: the fallback (first running row, then first row) always names
         // a live server, a dangling string never would.
         const nextPrimary = primary ?? p.primaryServerCommand;
+        // Same rule for the remembered ports: an edited or removed command
+        // leaves a key nothing will ever read again, and keeping it would send
+        // a future command that happens to reuse the string to a stale port.
+        const ports = p.serverPorts
+          ? Object.fromEntries(Object.entries(p.serverPorts).filter(([cmd]) => commands.includes(cmd)))
+          : undefined;
         return {
           ...p,
           serverCommands: commands.length > 0 ? commands : undefined,
           serverCommand: commands[0],
+          serverPorts: ports && Object.keys(ports).length > 0 ? ports : undefined,
           primaryServerCommand:
             nextPrimary && commands.includes(nextPrimary) ? nextPrimary : undefined,
         };
+      }),
+    }));
+  },
+
+  setProjectServerPort: (path, serverId, command, port) => {
+    const normalized = normalizePath(path);
+    set((state) => ({
+      recentProjects: state.recentProjects.map((p) => {
+        if (normalizePath(p.path) !== normalized || p.serverId !== serverId) return p;
+        const next = { ...(p.serverPorts ?? {}) };
+        if (port === undefined) delete next[command];
+        else next[command] = port;
+        return { ...p, serverPorts: Object.keys(next).length > 0 ? next : undefined };
       }),
     }));
   },

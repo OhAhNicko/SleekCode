@@ -18,7 +18,7 @@ import { useAppStore } from "../store";
 import { useJiraTicketToastStore } from "../store/jiraTicketToastStore";
 import type { DetectedTicketReason } from "../store/jiraTicketToastStore";
 import type { ProjectSession, Tab } from "../types";
-import { isTicketKey, normalizeTicketKey } from "./jira";
+import { isTicketKey, normalizeTicketKey, ticketProjectKey } from "./jira";
 import {
   JIRA_BROWSER_PANE_PREFIX,
   findJiraPair,
@@ -95,10 +95,7 @@ export function ticketFromOmniboxInput(
 function knownTicketPrefixes(projectKey: string, sourceTicket: string): Set<string> {
   const store = useAppStore.getState();
   const prefixes = new Set<string>();
-  const add = (key: string) => {
-    const dash = key.lastIndexOf("-");
-    prefixes.add((dash === -1 ? key : key.slice(0, dash)).toUpperCase());
-  };
+  const add = (key: string) => prefixes.add(ticketProjectKey(key));
   for (const a of store.jiraAcronyms ?? []) prefixes.add(a.toUpperCase());
   for (const s of store.projectSessions[projectKey] ?? []) if (s.ticket) add(s.ticket);
   add(sourceTicket);

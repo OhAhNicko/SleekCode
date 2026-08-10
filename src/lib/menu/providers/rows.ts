@@ -5,8 +5,14 @@ import { promptForInput, confirmAction } from "../../prompt-modal";
 import { openUnlockKeychain } from "../../unlock-keychain-modal";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getPtyWrite } from "../../../store/terminalSlice";
-import { PROJECT_COLOR_PRESETS } from "../../../store/recentProjectsSlice";
+import {
+  DEFAULT_JIRA_RAIL_WIDTHS,
+  PROJECT_COLOR_PRESETS,
+} from "../../../store/recentProjectsSlice";
+import { useJiraNotifyStore } from "../../../store/jiraNotifyStore";
+import { splitJiraQK } from "../../jira-sites";
 import { isSameProject } from "../../spawn-dev-server";
+import { getDevServerActions } from "../../dev-server-actions";
 import {
   getBrowserPageContext,
   safeExternalUrl,
@@ -365,6 +371,39 @@ function devServerRow(ctx: RowCtx): MenuGroup[] {
           label: "Restart",
           iconId: "restart",
         }),
+        // The banner's two buttons, reachable from the menu as well. Both are
+        // DISABLED rather than hidden when there is no conflict: they are always
+        // meaningful for a dev server, just not applicable right now, and the
+        // reason says which. `getDevServerActions` gates on the registry the
+        // same way the buttons do — a row whose host effect has not registered
+        // yet greys out instead of clicking into nothing.
+        {
+          id: "row.devserver.retryOtherPort",
+          label: "Retry on another port",
+          iconId: "restart",
+          unavailable:
+            server?.conflictPort === undefined
+              ? { reason: "No port conflict on this server" }
+              : !getDevServerActions(ctx.id)
+                ? { reason: "Server's terminal isn't ready" }
+                : undefined,
+          run: () => getDevServerActions(ctx.id)?.retryOtherPort(),
+        },
+        {
+          id: "row.devserver.killConflictPort",
+          label: server?.conflictPort
+            ? `Kill port ${server.conflictPort} and retry`
+            : "Kill the contested port and retry",
+          iconId: "trash",
+          danger: true,
+          unavailable:
+            server?.conflictPort === undefined
+              ? { reason: "No port conflict on this server" }
+              : !getDevServerActions(ctx.id)
+                ? { reason: "Server's terminal isn't ready" }
+                : undefined,
+          run: () => getDevServerActions(ctx.id)?.killConflictPort(),
+        },
         ...(siblings.length > 1
           ? [
               {
@@ -936,6 +975,134 @@ function jiraAssigned(ctx: RowCtx): MenuGroup[] {
   ];
 }
 
+/**
+ * Unassigned-queue rows.
+ *
+ * Same principle as `jiraAssigned`: these are Jira ISSUES, not MADE sessions,
+ * so rename / colour / sub-ticket / archive / delete / close-pane / send-prompt
+ * are HIDDEN rather than disabled — they can never apply here, and a permanent
+ * row of greyed-out items is just noise. What IS merely unavailable right now
+ * (no credentials, no account id yet, a paused site) gets disabled WITH a
+ * reason, because "greyed out and silent" reads as a broken app.
+ */
+function jiraUnassigned(ctx: RowCtx): MenuGroup[] {
+  const qkey = ctx.id;
+  const bare = (ctx.data.ctxTicket as string | undefined) ?? ctx.label;
+  const foreign = ctx.data.ctxForeign === "1";
+  const s = useAppStore.getState();
+  const { siteId } = splitJiraQK(qkey);
+  const noCreds = !s.jiraApiEmail || !s.jiraApiToken;
+  const siteAuthError = !!useJiraNotifyStore.getState().siteAuthErrors[siteId];
+  const assignBlocked = noCreds
+    ? { reason: "Add Jira credentials in Settings > Jira" }
+    : siteAuthError
+      ? { reason: "Jira rejected the credentials for this site" }
+      : undefined;
+  return [
+    {
+      id: "target",
+      items: [
+        actionItem("jira-unassigned", "assignToMe", qkey, {
+          id: "row.jiraUnassigned.assign",
+          // Ellipsis: it confirms before writing.
+          label: "Assign to me…",
+          unavailable: assignBlocked,
+        }),
+        actionItem("jira-unassigned", "investigate", qkey, {
+          id: "row.jiraUnassigned.investigate",
+          label: "Investigate ticket",
+          unavailable: foreign
+            ? { reason: "This ticket lives on another Jira site — open a project on that site first" }
+            : undefined,
+        }),
+        actionItem("jira-unassigned", "openInBrowser", qkey, {
+          id: "row.jiraUnassigned.browser",
+          label: "Open in Jira",
+          iconId: "external-link",
+        }),
+      ],
+    },
+    {
+      id: "edit",
+      items: [
+        {
+          id: "row.jiraUnassigned.copyKey",
+          label: "Copy ticket number",
+          iconId: "copy",
+          sublabel: bare || undefined,
+          run: () => copy(bare),
+        },
+      ],
+    },
+  ];
+}
+
+/**
+ * The ticket rail's own background, and its group headers.
+ *
+ * Exists partly to host the list's view controls, and partly because the rail
+ * has carried `data-ctx-surface="jira-rail"` for a long time without being in
+ * the runtime ROLES list — so right-clicking it fell through to the generic app
+ * menu and offered "New tab / DevTools" on top of a ticket list.
+ */
+function jiraRail(_ctx: RowCtx): MenuGroup[] {
+  const s = useAppStore.getState();
+  const grouping = s.jiraListGrouping ?? "flat";
+  const indicator = s.jiraStatusIndicator ?? "both";
+  return [
+    {
+      id: "view",
+      items: (
+        [
+          ["flat", "No grouping"],
+          ["status", "Group by status"],
+          ["category", "Group by category"],
+        ] as const
+      ).map(([value, label]) => ({
+        id: `row.jiraRail.group.${value}`,
+        label,
+        checked: grouping === value,
+        // Sticky: flipping a view mode and immediately trying another is the
+        // normal way to use these, and a closing menu makes that three trips.
+        sticky: true,
+        run: () => useAppStore.getState().setJiraListGrouping(value),
+      })),
+    },
+    {
+      // Group ids are a closed set, so the indicator rows ride "layout" —
+      // which is what they are: where the colour sits on the row.
+      id: "layout",
+      items: (
+        [
+          ["both", "Stripe and badge"],
+          ["stripe", "Left edge only"],
+          ["badge", "Badge only"],
+        ] as const
+      ).map(([value, label]) => ({
+        id: `row.jiraRail.indicator.${value}`,
+        label,
+        checked: indicator === value,
+        sticky: true,
+        run: () => useAppStore.getState().setJiraStatusIndicator(value),
+      })),
+    },
+    {
+      id: "edit",
+      items: [
+        {
+          id: "row.jiraRail.resetWidth",
+          label: "Reset list width",
+          run: () => {
+            const store = useAppStore.getState();
+            store.setJiraRailWidth("tickets", DEFAULT_JIRA_RAIL_WIDTHS.tickets);
+            store.setJiraRailWidth("list", DEFAULT_JIRA_RAIL_WIDTHS.list);
+          },
+        },
+      ],
+    },
+  ];
+}
+
 // ── NexusMind knowledge sidebar ─────────────────────────────────────────────
 //
 // Two surfaces: a note row and the panel background. Both resolve their project
@@ -1169,6 +1336,10 @@ const rowProvider: MenuProvider<"row"> = {
         return jiraTicket(ctx);
       case "jira-assigned":
         return jiraAssigned(ctx);
+      case "jira-unassigned":
+        return jiraUnassigned(ctx);
+      case "jira-rail":
+        return jiraRail(ctx);
       case "game-sidebar":
         return gameSidebar(ctx);
       case "knowledge-note":

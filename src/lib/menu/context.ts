@@ -131,6 +131,8 @@ export type SurfaceRoleName =
   | "sidebar"
   | "jira-ticket"
   | "jira-assigned"
+  | "jira-unassigned"
+  | "jira-rail"
   | "game-sidebar"
   | "knowledge"
   | "knowledge-note";
@@ -273,10 +275,17 @@ const resolveByCtxAttr: Resolver = (el, point) => {
     default: {
       // Generic list rows. `data-ctx-surface` carries the role directly, so a
       // new row surface needs an attribute and a provider case — no new type.
+      // NOTE: this list is the RUNTIME gate, and missing an entry here is
+      // silent — no type error, the surface just falls through to the generic
+      // app menu. ("jira-rail" shipped with its DOM attribute but not this
+      // entry, and right-clicking the rail offered "New tab / DevTools" for
+      // months.) Add every new role in all four places: SurfaceRole,
+      // SurfaceRoleName, HERE, and the provider switch.
       const ROLES = [
         "kanban-card", "kanban-col", "review-file", "server",
         "devserver", "editor-tab", "browser", "sidebar", "jira-ticket",
-        "jira-assigned", "game-sidebar", "knowledge", "knowledge-note",
+        "jira-assigned", "jira-unassigned", "jira-rail",
+        "game-sidebar", "knowledge", "knowledge-note",
       ] as const;
       if (!(ROLES as readonly string[]).includes(surface)) return null;
       const data: Record<string, string> = {};
