@@ -20,11 +20,10 @@
 # Order is deliberately least-notable FIRST: `git log` prints newest first, so
 # the last commit here is the top line of the changelog.
 
-fix(tabs): the v2 vertical strip's width handle showed an ew-resize cursor where every other vertical divider in the app — the pane splitters, the ticket rail — uses col-resize
+fix(launcher): on a fresh install the + button went straight to the Windows folder picker, so "New Jira Project" — which exists only inside the launcher menu — could not be reached until some other project had been opened first; the menu was gated on already having a recent project, a projects directory or a remote server, and that gate is gone, the startup screen's Open Project button now raises the same menu under itself rather than a bare picker, the v1 vertical strip gets the launcher menu it never had, and the Recent Projects heading is omitted while that list is empty
+  src/hooks/useTabLaunchMenu.tsx
+  src/components/TabBar.tsx
+  src/components/VerticalTabBar.tsx
   src/components/VerticalTabBarV2.tsx
-
-feat(jira): ticket rows in the rail can be dragged into whatever order you want, kept per project — a 4px threshold keeps a drag from swallowing the click, a 2px accent rule marks the landing spot (rather than a floating ghost, which would cover the narrow list it is being dropped into), a duplicated ticket's whole group moves as one, and the first drag freezes the automatic order you were looking at instead of reshuffling around the row you moved
-  src/components/JiraTicketRail.tsx
-  src/hooks/useJiraTicketRows.ts
-  src/store/recentProjectsSlice.ts
-  src/store/index.ts
+  src/overlay/OverlayRoot.tsx
+  src/App.tsx
