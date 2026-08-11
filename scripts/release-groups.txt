@@ -20,10 +20,102 @@
 # Order is deliberately least-notable FIRST: `git log` prints newest first, so
 # the last commit here is the top line of the changelog.
 
-fix(launcher): on a fresh install the + button went straight to the Windows folder picker, so "New Jira Project" — which exists only inside the launcher menu — could not be reached until some other project had been opened first; the menu was gated on already having a recent project, a projects directory or a remote server, and that gate is gone, the startup screen's Open Project button now raises the same menu under itself rather than a bare picker, the v1 vertical strip gets the launcher menu it never had, and the Recent Projects heading is omitted while that list is empty
-  src/hooks/useTabLaunchMenu.tsx
-  src/components/TabBar.tsx
-  src/components/VerticalTabBar.tsx
+chore: open the window centered, and write down the settings-description length rule that keeps SettingsPane rows from clipping under their own control
+  CLAUDE.md
+  src-tauri/tauri.conf.json
+  src/components/TooltipHost.tsx
+
+chore(icons): regenerate the desktop icon set from the current identity SVG, and teach generate-icons.py to run on Windows too — headless Edge or Chrome as the rasterizer, with the render sizes self-verified so a mis-sized viewport fails loudly instead of shipping clipped artwork
+  public/made-logo.svg
+  scripts/generate-icons.py
+  src-tauri/icons/128x128.png
+  src-tauri/icons/128x128@2x.png
+  src-tauri/icons/32x32.png
+  src-tauri/icons/64x64.png
+  src-tauri/icons/icon.icns
+  src-tauri/icons/icon.ico
+  src-tauri/icons/icon.png
+  src-tauri/icons/made-1024.png
+  src-tauri/installer-assets/header.bmp
+  src-tauri/installer-assets/sidebar.bmp
+
+fix(modals): a dialog taller than the window overflowed the centered backdrop EQUALLY in both directions, so its top was unreachable and a fixed backdrop cannot scroll — every modal now clamps to MODAL_MAX_HEIGHT and scrolls its own body
+  src/components/ClaudeTokenWizardModal.tsx
+  src/components/CliInstallModal.tsx
+  src/components/ConnectToGitHubModal.tsx
+  src/components/PromptModal.tsx
+  src/components/SshKeySetupWizardModal.tsx
+  src/components/TemplatePicker.tsx
+  src/components/UnlockKeychainModal.tsx
+
+fix(ui): the window's corner resize grips were a bare 6x6 px square — the classic "the corner won't grab" — and are now L-shaped zones clipped to the frame band, the vertical tab strip's resize drag drops pointer capture (a native pane HWND eating the release froze the strip and retargeted every later click to the handle), and the splash Open Project hover ring is feathered so it stops aliasing at fractional DPI
+  src/components/WindowResizeHandles.tsx
   src/components/VerticalTabBarV2.tsx
+  src/index.css
+
+fix(panes): a page reload while a browser preview or native pane existed orphaned its child HWND, which then painted over everything at stale bounds forever — the reap of orphans now also runs at boot instead of only inside the next surface create
+  src/main.tsx
+
+fix(wsl): distros registered by container tooling (docker-desktop, rancher, podman) are minimal busybox images with no login shell, yet any of them can end up as wsl.exe's default and hand you broken terminals — they are hidden from the Settings picker, never used as a spawn target, and a failed "Default" resolve falls back to the first real installed distro
+  src/lib/wsl-cache.ts
+
+feat(notifications): one notification surface instead of two — a card used to be presented twice (OS popup while away, in-app stack again on return), so cards now show at the work-area corner whether MADE is focused, unfocused or minimized, in a transparent always-on-top toast window that self-measures and clips its hit region to the card rects, leaving the gaps between stacked cards click-through
+  src-tauri/src/lib.rs
+  src-tauri/capabilities/default.json
+  toast.html
+  src/toast/ToastRoot.tsx
+  src/components/OsToastHost.tsx
+  src/components/PaneNotificationStack.tsx
+  src/overlay/NotifCardVisual.tsx
   src/overlay/OverlayRoot.tsx
+  src/store/paneNotificationsStore.ts
+
+feat(onboarding): the welcome wizard is gone — first boot on Windows detects whether WSL has any distro and picks the terminal backend silently instead of asking, once, with existing installs never second-guessed; debug builds gain a reset-to-fresh-install modal that preserves projects and credentials, plus a one-shot recovery seed import for state a reset destroyed
   src/App.tsx
+  src/components/WelcomeModal.tsx
+  src/components/DebugResetModal.tsx
+  src/lib/debug-reset-seed.ts
+  src/store/index.ts
+
+feat(jira): notifications learn per-site logins and each account's own id, so somebody else's comment is news and your own is not; the first diff after launch collapses into a single "while you were away" card instead of one per ticket, and cards carry the ticket's live status chip and who actually did the thing
+  src/lib/jira-notify.ts
+  src/lib/jira-sites.ts
+  src/lib/jira-session.ts
+  src/components/JiraNotifyEngine.tsx
+  src/store/jiraNotifyStore.ts
+
+feat(jira): ticket rows redesigned into reserved, aligned columns — which form it came in on, which customer, which person — with the status as a solid chip, summaries as one global on/off instead of a per-row fold that cost every row 16px of key alignment, and the rail's resize handle rebuilt on document listeners so a stolen mouse release can no longer freeze the sidebar
+  src/components/jira/JiraRowMeta.tsx
+  src/components/JiraTicketRail.tsx
+  src/components/VerticalTicketTree.tsx
+  src/components/VerticalTicketFlyout.tsx
+  src/hooks/useJiraTicketRows.ts
+  src/lib/jira-fields.ts
+  src/lib/jira-layout.ts
+  src/lib/jira-row-sort.ts
+  src/lib/jira-status-colors.ts
+
+feat(settings): Jira gains CLI folders (name a folder, link request types to it), per-site logins for accounts that differ from the main one, and ticket-summary and notification-popup rows — with a direct link into the Windows notification settings
+  src/components/SettingsPane.tsx
+
+feat(jira): ticket CLI panes spawn in named "CLI folder" groups — a request type can be linked to a group, the new-ticket dialog preselects the group that project's last ticket used, and a row's "Change group…" restarts the pane in another folder, honestly named because a transcript only resolves under the folder it spawned in
+  src/lib/jira-groups.ts
+  src/lib/jira-surface-actions.ts
+  src/lib/menu/providers/rows.ts
+  src/components/NewJiraTicketModal.tsx
+  src/components/TerminalHeader.tsx
+
+feat(jira): a project can now be created from a site plus a project key with no folder at all — the tab's identity is a virtual jira://<host>/<KEY> path that terminal spawns and transcript probes translate before it could ever reach the filesystem, the picker lists every project the account can see, and reopening a keyed recent focuses the tab that is already open instead of duplicating it
+  src/lib/jira-virtual-dir.ts
+  src/lib/jira-project.ts
+  src/lib/jira-mcp.ts
+  src-tauri/src/jira_poll.rs
+  src/components/JiraProjectModal.tsx
+  src/components/Workspace.tsx
+  src/components/BrowserPreview.tsx
+  src/components/TabBar.tsx
+  src/hooks/useTabLaunchMenu.tsx
+  src/store/tabSlice.ts
+  src/store/terminalSlice.ts
+  src/store/recentProjectsSlice.ts
+  src/types/index.ts
