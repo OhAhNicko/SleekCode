@@ -535,23 +535,34 @@ export default function VerticalTabBarV2() {
   const handleResizeDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (compact) return;
+      if (e.button !== 0) return;
       e.preventDefault();
       const el = rootRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const target = e.currentTarget;
-      target.setPointerCapture(e.pointerId);
-      const move = (ev: PointerEvent) => {
+      // DOCUMENT listeners and NO pointer capture, same reasoning as the
+      // ticket rail's handle: capture stuck whenever a native pane HWND ate
+      // the release mid-drag, freezing the strip with every later click
+      // retargeted to the handle. The `buttons` check makes any lost-release
+      // path self-heal on the first button-up mouse move.
+      function end() {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", end);
+        document.removeEventListener("pointercancel", end);
+        window.removeEventListener("blur", end);
+      }
+      function move(ev: PointerEvent) {
+        if ((ev.buttons & 1) === 0) {
+          end();
+          return;
+        }
         const next = dockedRight ? rect.right - ev.clientX : ev.clientX - rect.left;
         setWideWidth(next);
-      };
-      const up = () => {
-        target.releasePointerCapture(e.pointerId);
-        target.removeEventListener("pointermove", move);
-        target.removeEventListener("pointerup", up);
-      };
-      target.addEventListener("pointermove", move);
-      target.addEventListener("pointerup", up);
+      }
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", end);
+      document.addEventListener("pointercancel", end);
+      window.addEventListener("blur", end);
     },
     [compact, dockedRight, setWideWidth],
   );
@@ -1676,10 +1687,9 @@ export default function VerticalTabBarV2() {
             bottom: 0,
             ...(dockedRight ? { left: -2 } : { right: -2 }),
             width: 5,
-            // col-resize, matching the pane splitters (PaneGrid) and the
-            // ticket rail — every vertical divider in the app resizes with the
-            // same cursor.
-            cursor: "col-resize",
+            // Plain ↔ (the OS window-edge glyph), matching the ticket rail —
+            // the user's pick for MADE's resize affordances (2026-08).
+            cursor: "ew-resize",
             zIndex: 70,
           }}
         />

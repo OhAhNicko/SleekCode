@@ -766,6 +766,28 @@ body,
   animation: madeRise 0.7s ease both;
   animation-delay: 0.8s;
 }
+/* Splash "Open Project": the hover ring is a soft accent halo, not a hard
+   1px max-contrast border — a thin bright ring on a rounded edge aliases
+   visibly at fractional Windows DPI and reads jagged. Lives in a class
+   because inline border styles would beat a :hover rule. */
+.made-splash-open-btn {
+  border: 1px solid var(--ezy-border);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+.made-splash-open-btn:hover,
+.made-splash-open-btn:focus-visible {
+  /* The ring is deliberately not one crisp 1px line: at pill radii Chromium
+     facets a thin border's INNER arc, and at fractional DPI its width wobbles
+     around the curve. A slightly dimmer border plus half-blurred inset/outset
+     shadows feathers both edges, so there is no hard boundary to alias. */
+  border-color: color-mix(in srgb, var(--ezy-accent) 45%, var(--ezy-border));
+  box-shadow:
+    inset 0 0 1px color-mix(in srgb, var(--ezy-accent) 35%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--ezy-accent) 20%, transparent),
+    0 0 0 3px var(--ezy-accent-glow),
+    0 0 18px color-mix(in srgb, var(--ezy-accent) 22%, transparent);
+  outline: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .made-splash-letter,
   .made-splash-sub,
@@ -775,18 +797,19 @@ body,
   }
 }
 
-/* Jira rail: the row hamburger stays invisible until the row is hovered (or
-   focused via keyboard); the ACTIVE row pins it visible with an inline style. */
-.jira-row-menu {
-  opacity: 0;
-  transition: opacity 100ms ease;
-}
-/* Prefix match, not an exact one: the Assigned and Unassigned rows use the
-   same class but their own surfaces, so an exact "jira-ticket" selector left
-   their hamburgers stuck at opacity 0 for good. */
-[data-ctx-surface^="jira-"]:hover .jira-row-menu,
-.jira-row-menu:focus-visible {
-  opacity: 1;
+/* Jira rail row actions (hamburger, magnifier) are ALWAYS visible — muted at
+   rest, brightened by their own hover styles. They used to hide until row
+   hover with the active row pinning its hamburger via an inline style; that
+   left the magnifier missing from the active row and every control
+   undiscoverable elsewhere. Do not reintroduce the reveal. The class is now
+   just the marker these buttons share. */
+
+/* Hairline dividers on the ticket lists — two-line rows blur together without
+   them. Every row draws its TOP edge only: first row separates from whatever
+   sits above it (search header, group title), the rest separate from each
+   other, and a run ends open — a closing bottom edge read as heavy. */
+:is([data-ctx-surface="jira-ticket"], [data-ctx-surface="jira-assigned"], [data-ctx-surface="jira-unassigned"]) {
+  border-top: 1px solid var(--ezy-border-subtle);
 }
 
 /* Dev-server error-banner actions ("Another port" / "Kill 6180"). The banner
