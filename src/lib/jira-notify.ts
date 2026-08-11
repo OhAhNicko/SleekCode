@@ -17,7 +17,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
 import { usePaneNotificationsStore } from "../store/paneNotificationsStore";
-import { useJiraNotifyStore } from "../store/jiraNotifyStore";
+import { DEFAULT_JIRA_RAIL_TAB, useJiraNotifyStore } from "../store/jiraNotifyStore";
 import type {
   JiraListTicket,
   JiraStatusCategoryKey,
@@ -30,8 +30,9 @@ import { buildTicketUrl, jiraSiteName, ticketProjectKey } from "./jira";
 import { DEFAULT_JIRA_SORT } from "../store/recentProjectsSlice";
 import { jiraCliOfSession } from "./jira-mcp";
 import { openJiraTicket } from "./jira-project";
-import { defaultJiraSiteIn, jiraQK, siteForDirIn, siteForTabIn, splitJiraQK } from "./jira-sites";
+import { credsForSiteIn, defaultJiraSiteIn, jiraQK, siteForDirIn, siteForTabIn, splitJiraQK } from "./jira-sites";
 import { fieldSpecFor } from "./jira-fields";
+import { statusColorFromState } from "./jira-status-colors";
 
 /** Wire shape of one ticket from the Rust `jira_poll` command.
  *
@@ -153,13 +154,28 @@ export function collectWatchedTicketsBySite(): Map<string, SiteWatchGroup> {
 }
 
 /** Project keys to scope one site's unassigned query: whatever its ticket rows
- *  imply, plus the per-site override. The override is what covers a brand-new
- *  Jira tab with no rows yet — the user who most wants an unassigned queue and
- *  would otherwise get a permanently empty one. */
+ *  imply, plus the keys of KEYED Jira projects on this site, plus the per-site
+ *  override. The keyed union is what covers a brand-new keyed tab with no rows
+ *  yet — the user who most wants an unassigned queue and would otherwise get a
+ *  permanently empty one. Derived from LIVE tabs and recents rather than
+ *  written into `jiraUnassignedProjects` at creation, so closing/removing the
+ *  project stops the polling with no stale persisted key left behind. Tabs AND
+ *  recents both, because either can outlive the other (recents cap at 15). */
 export function unassignedProjectsFor(siteId: string, derived: string[]): string[] {
   const s = useAppStore.getState();
   const override = (s.jiraUnassignedProjects ?? {})[siteId] ?? [];
-  return [...new Set([...derived, ...override.map((k) => k.toUpperCase())])];
+  const keyed: string[] = [];
+  for (const t of s.tabs) {
+    if (t.isJiraProject && t.jiraProjectKey && siteForTabIn(s, t) === siteId) {
+      keyed.push(t.jiraProjectKey);
+    }
+  }
+  for (const p of s.recentProjects) {
+    if (p.isJira && p.jiraProjectKey && (p.jiraSiteId || defaultJiraSiteIn(s)) === siteId) {
+      keyed.push(p.jiraProjectKey);
+    }
+  }
+  return [...new Set([...derived, ...keyed, ...override.map((k) => k.toUpperCase())])];
 }
 
 /** The Jira tab ON THIS SITE whose project holds this ticket's sessions. */
@@ -189,6 +205,9 @@ function isViewing(key: string, siteId: string): boolean {
 interface UpdateFlavor {
   label: string;
   body: string;
+  /** Who did it — comment author, new assignee. Rendered emphasized on the
+   *  card ("Andreas · New comment"); that name is the news, not decoration. */
+  actor?: string;
 }
 
 /** Classify what changed, most newsworthy first. Returns null when the change
@@ -201,7 +220,7 @@ function classify(
   const c = t.lastComment;
   if (c && c.id && c.id !== snap.lastCommentId) {
     if (myAccountId && c.authorAccountId === myAccountId) return null;
-    return { label: `New comment · ${c.author || "someone"}`, body: c.snippet || "(no text)" };
+    return { label: "New comment", body: c.snippet || "(no text)", actor: c.author || "someone" };
   }
   if (snap.statusName !== undefined && t.status !== snap.statusName) {
     return { label: "Status changed", body: `Status: ${snap.statusName || "—"} → ${t.status || "—"}` };
@@ -210,9 +229,66 @@ function classify(
     return {
       label: "Assignee changed",
       body: `Assignee: ${snap.assigneeName ?? "Unassigned"} → ${t.assigneeName ?? "Unassigned"}`,
+      actor: t.assigneeName ?? undefined,
     };
   }
   return { label: "Ticket updated", body: t.summary || "Ticket updated" };
+}
+
+/** Sites whose first watched-ticket diff since app LAUNCH has completed.
+ * Snapshots persist across shutdowns, so that first diff replays everything
+ * that changed while MADE was closed — one card per ticket, all at once (the
+ * boot-time notification burst). Those collapse into ONE "while you were
+ * away" summary card instead; per-ticket unseen highlights still land.
+ * Session-scoped by design: a restart is exactly when it must re-arm. */
+const jiraCatchUpDone = new Set<string>();
+/** Same idea for the unassigned queue's first announcement after launch. */
+const unassignedCatchUpDone = new Set<string>();
+
+/** One catch-up summary card for a site's first cycle after launch, instead
+ * of a card per ticket that changed while MADE was closed. No clickAction:
+ * the card names no single ticket, and a click (focus verb) safely just
+ * dismisses + restores the app. `slot` keeps the watched and unassigned
+ * summaries from evicting each other through the one-card-per-terminal
+ * dedupe. */
+function emitSummaryNotification(
+  siteId: string,
+  slot: "watched" | "unassigned",
+  body: string,
+  dirOf: Map<string, string>,
+): void {
+  const s = useAppStore.getState();
+  if (!(s.notifEnabled ?? true) || !(s.jiraNotifEnabled ?? true)) return;
+
+  const siteName = jiraSiteName(siteId) ?? "Jira";
+  const now = new Date();
+  const timeHHMM = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  usePaneNotificationsStore.getState().add({
+    id: `jira-catchup:${slot}:${siteId}:${Date.now()}`,
+    terminalId: `jira-catchup:${slot}:${siteId}`,
+    tabId: "",
+    projectName: siteName,
+    paneLabel: "While you were away",
+    body,
+    kind: "jira",
+    timeHHMM,
+    addedAt: Date.now(),
+  });
+
+  if (s.windowMinimized && (s.notifSystemMinimized ?? true)) {
+    void sendOsToast(`${siteName} · While you were away`, body);
+  }
+
+  if (s.notifSoundEnabled ?? true) {
+    const dir =
+      dirOf.values().next().value ??
+      s.tabs.find((t) => t.isJiraProject)?.workingDir ??
+      "";
+    if (dir) {
+      const soundId = ensureProjectSound(dir);
+      if (soundId) playNotificationSound(soundId, "jira");
+    }
+  }
 }
 
 function emitNotification(
@@ -220,6 +296,7 @@ function emitNotification(
   siteId: string,
   flavor: UpdateFlavor,
   dirOf: Map<string, string>,
+  statusName?: string | null,
 ): void {
   const s = useAppStore.getState();
   if (!(s.notifEnabled ?? true) || !(s.jiraNotifEnabled ?? true)) return;
@@ -242,10 +319,19 @@ function emitNotification(
     timeHHMM,
     addedAt: Date.now(),
     clickAction: `jira-open:${qk}`,
+    // Status chip + actor, resolved HERE — the card is immutable after add,
+    // and the toast webview has no store to resolve the color in.
+    jiraStatus: statusName
+      ? { name: statusName, color: statusColorFromState(s, statusName) }
+      : undefined,
+    jiraActor: flavor.actor,
   });
 
   if (s.windowMinimized && (s.notifSystemMinimized ?? true)) {
-    void sendOsToast(`${key} · ${flavor.label}`, flavor.body);
+    void sendOsToast(
+      flavor.actor ? `${key} · ${flavor.label} · ${flavor.actor}` : `${key} · ${flavor.label}`,
+      flavor.body,
+    );
   }
 
   if (s.notifSoundEnabled ?? true) {
@@ -279,10 +365,11 @@ async function pollOneSite(
     if (snap) prevUpdated[k] = snap.updatedIso;
   }
 
+  const creds = credsForSiteIn(s, siteId);
   const result = await invoke<JiraPollResult>("jira_poll", {
     baseUrl: siteId,
-    email: s.jiraApiEmail,
-    token: s.jiraApiToken,
+    email: creds.email,
+    token: creds.token,
     keys: group.keys,
     prevUpdated,
     includeAssigned,
@@ -300,7 +387,13 @@ async function pollOneSite(
   }
 
   const fresh = useAppStore.getState();
-  const myAccountId = fresh.jiraMyAccountId ?? "";
+  // Per SITE: an overridden site's own-comment suppression must match THAT
+  // account, not the main one.
+  const myAccountId = credsForSiteIn(fresh, siteId).accountId;
+  // First diff since launch: changes accumulated while MADE was closed are
+  // summarized into one card below instead of one card each.
+  const firstCycle = !jiraCatchUpDone.has(siteId);
+  const pending: Array<{ key: string; flavor: UpdateFlavor; statusName?: string }> = [];
   for (const t of all) {
     const qk = jiraQK(siteId, t.key);
     const snap = (fresh.jiraTicketSnapshots ?? {})[qk];
@@ -316,7 +409,8 @@ async function pollOneSite(
       const flavor = classify(t, snap, myAccountId);
       if (flavor && !viewing) {
         unseen = true;
-        emitNotification(t.key, siteId, flavor, group.dirOf);
+        if (firstCycle) pending.push({ key: t.key, flavor, statusName: t.status });
+        else emitNotification(t.key, siteId, flavor, group.dirOf, t.status);
       } else if (viewing) {
         unseen = false;
       }
@@ -343,6 +437,16 @@ async function pollOneSite(
       requestType: t.requestType ?? snap?.requestType,
       extra: t.extra ?? snap?.extra,
     });
+  }
+
+  // Marked only after a poll that actually diffed — a site that failed its
+  // first cycle gets its catch-up on the next successful one.
+  jiraCatchUpDone.add(siteId);
+  if (pending.length === 1) {
+    // A single change needs no summarizing — the normal card says more.
+    emitNotification(pending[0].key, siteId, pending[0].flavor, group.dirOf, pending[0].statusName);
+  } else if (pending.length > 1) {
+    emitSummaryNotification(siteId, "watched", `${pending.length} tickets updated`, group.dirOf);
   }
 
   if (includeAssigned) {
@@ -373,10 +477,11 @@ async function pollQueueForSite(
   const s = useAppStore.getState();
   const sortFor = kind === "unassigned" ? "unassigned" : "assigned";
   const sort = (s.jiraListSort ?? DEFAULT_JIRA_SORT)[sortFor] ?? DEFAULT_JIRA_SORT[sortFor];
+  const queueCreds = credsForSiteIn(s, siteId);
   const rows = await invoke<JiraTicketState[]>("jira_search_queue", {
     baseUrl: siteId,
-    email: s.jiraApiEmail,
-    token: s.jiraApiToken,
+    email: queueCreds.email,
+    token: queueCreds.token,
     kind,
     projectKeys,
     sortKey: sort.key,
@@ -419,15 +524,28 @@ function announceUnassigned(siteId: string, rows: JiraTicketState[]): void {
     && (s.jiraUnassignedNotify ?? true);
 
   if (siteBaselined && notifyOn) {
-    for (const t of fresh) {
-      emitNotification(
-        t.key,
+    // First announcement since launch: arrivals that piled up while MADE was
+    // closed collapse into one summary card (mirror of the watched path).
+    if (!unassignedCatchUpDone.has(siteId) && fresh.length > 1) {
+      emitSummaryNotification(
         siteId,
-        { label: "Unassigned ticket", body: t.summary || "Nobody has picked this up yet." },
+        "unassigned",
+        `${fresh.length} new unassigned tickets`,
         new Map(),
       );
+    } else {
+      for (const t of fresh) {
+        emitNotification(
+          t.key,
+          siteId,
+          { label: "Unassigned ticket", body: t.summary || "Nobody has picked this up yet." },
+          new Map(),
+          t.status,
+        );
+      }
     }
   }
+  unassignedCatchUpDone.add(siteId);
   // Marked seen even when notifications are off, so switching them on later
   // announces what arrives NEXT rather than the whole standing queue.
   useAppStore.getState().markJiraUnassignedSeen(qkeys);
@@ -461,10 +579,14 @@ export function visibleQueuePairs(): Array<{ tabId: string; kind: JiraQueueKind 
   };
   for (const t of tabs) {
     if (!t.isJiraProject) continue;
-    if (railTab[t.id] === "unassigned") add(t.id, "unassigned");
+    // Absence resolves through the shared default — an entry only exists once
+    // the user has clicked a segment, and a tab sitting on the DEFAULT
+    // Assigned tab must still count as "Assigned on screen" here.
+    const rt = railTab[t.id] ?? DEFAULT_JIRA_RAIL_TAB;
+    if (rt === "unassigned") add(t.id, "unassigned");
     // The Done half only fetches while it is the one on screen — the open
     // Assigned list is already in the main cycle and costs nothing extra.
-    if (railTab[t.id] === "assigned" && assignedScope[t.id] === "done") {
+    if (rt === "assigned" && assignedScope[t.id] === "done") {
       add(t.id, "assignedDone");
     }
     if (treeQueues[`${t.id}::unassigned`]) add(t.id, "unassigned");
@@ -537,9 +659,9 @@ export async function refreshUnassignedNow(
 export async function runJiraPollCycle(): Promise<void> {
   const s = useAppStore.getState();
   const groups = collectWatchedTicketsBySite();
-  const includeAssigned = s.jiraAssignedMode ?? false;
-  // Three gates, cheapest first: the setting (default off, so the common
-  // configuration pays nothing), then "is anyone looking", then the cadence.
+  const includeAssigned = s.jiraAssignedMode ?? true;
+  // Three gates, cheapest first: the setting, then "is anyone looking",
+  // then the cadence.
   const queuesWanted = visibleQueues();
   if (!(s.jiraUnassignedMode ?? false)) queuesWanted.delete("unassigned");
   const sites = s.jiraSites ?? [];
@@ -627,12 +749,13 @@ export async function runJiraPollCycle(): Promise<void> {
  */
 export async function refreshJiraSnapshotSilently(siteId: string, key: string): Promise<void> {
   const s = useAppStore.getState();
-  if (!s.jiraApiEmail || !s.jiraApiToken) return;
+  const creds = credsForSiteIn(s, siteId);
+  if (!creds.email || !creds.token) return;
   try {
     const result = await invoke<JiraPollResult>("jira_poll", {
       baseUrl: siteId,
-      email: s.jiraApiEmail,
-      token: s.jiraApiToken,
+      email: creds.email,
+      token: creds.token,
       keys: [key],
       // Claim the current value as already-seen so no comment fetch is spent.
       prevUpdated: {},
@@ -704,7 +827,7 @@ export function openTicketFromNotification(qkey: string): void {
 
   const jiraTab = s.tabs.find((t) => t.isJiraProject && siteForTabIn(s, t) === siteId)
     ?? s.tabs.find((t) => t.isJiraProject);
-  if (jiraTab && (s.jiraAssignedMode ?? false)) {
+  if (jiraTab && (s.jiraAssignedMode ?? true)) {
     if (s.activeTabId !== jiraTab.id) s.setActiveTab(jiraTab.id);
     const notify = useJiraNotifyStore.getState();
     notify.setRailTab(jiraTab.id, "assigned");

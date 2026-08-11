@@ -26,7 +26,12 @@ import {
   type JiraQueueKind,
 } from "../lib/jira-notify";
 import { jiraBaseTicket } from "../lib/jira-layout";
-import { defaultJiraSiteIn, jiraQK, siteForTabIn } from "../lib/jira-sites";
+import {
+  defaultJiraSiteIn,
+  hasAnyJiraCreds,
+  jiraQK,
+  siteForTabIn,
+} from "../lib/jira-sites";
 
 const JIRA_POLL_MS = 60_000;
 
@@ -34,11 +39,18 @@ export default function JiraNotifyEngine() {
   const sitesKey = useAppStore((s) => (s.jiraSites ?? []).join("\n"));
   const jiraApiEmail = useAppStore((s) => s.jiraApiEmail);
   const jiraApiToken = useAppStore((s) => s.jiraApiToken);
+  // Per-site overrides count as credential edits too — editing one must
+  // un-pause the site it belongs to.
+  const siteAccountsKey = useAppStore((s) =>
+    Object.entries(s.jiraSiteAccounts ?? {})
+      .map(([k, a]) => `${k}:${a.email}:${a.token}`)
+      .join("\n"),
+  );
 
   // Credential/site edits clear previous auth failures and re-arm every site.
   useEffect(() => {
     useJiraNotifyStore.getState().clearSiteAuthErrors();
-  }, [sitesKey, jiraApiEmail, jiraApiToken]);
+  }, [sitesKey, jiraApiEmail, jiraApiToken, siteAccountsKey]);
 
   // Viewing IS acknowledging: selecting an unseen ticket (or restoring the
   // window onto one) clears its rail highlight. Store-subscription, not a
@@ -63,21 +75,22 @@ export default function JiraNotifyEngine() {
     const tick = async () => {
       if (stopped || inFlight) return;
       const s = useAppStore.getState();
-      if (!s.jiraApiEmail || !s.jiraApiToken || (s.jiraSites ?? []).length === 0) return;
+      if (!hasAnyJiraCreds(s) || (s.jiraSites ?? []).length === 0) return;
       const groups = collectWatchedTicketsBySite();
       // Unassigned mode is work on its own: an unassigned-only user has no
       // watched rows and no assigned mode, and without this the cycle would
       // never fire for them at all.
-      let anyWork = (s.jiraAssignedMode ?? false) || (s.jiraUnassignedMode ?? false);
+      let anyWork = (s.jiraAssignedMode ?? true) || (s.jiraUnassignedMode ?? false);
       for (const g of groups.values()) if (g.keys.length > 0) anyWork = true;
       if (!anyWork) return;
 
       inFlight = true;
       try {
-        // Own accountId filters own comments out of "new reply" cards; it is
-        // ACCOUNT-global (one Atlassian account spans every site), so one
-        // lazy fetch against the default site covers them all.
-        if (!s.jiraMyAccountId) {
+        // Own accountId filters own comments out of "new reply" cards. The
+        // MAIN pair's id is fetched lazily against the default site (one
+        // account spans every non-overridden site); per-site overrides get
+        // theirs captured by the jira_test_auth their save flows run.
+        if (!s.jiraMyAccountId && s.jiraApiEmail && s.jiraApiToken) {
           const site = defaultJiraSiteIn(s);
           try {
             const me = await invoke<{ displayName: string; accountId: string }>(
@@ -135,7 +148,7 @@ export default function JiraNotifyEngine() {
         if (tab) wanted.push({ site: siteForTabIn(s, tab), kind: p.kind });
       }
       prev = next;
-      if (!s.jiraApiEmail || !s.jiraApiToken) return;
+      if (!hasAnyJiraCreds(s)) return;
       for (const w of wanted) void refreshUnassignedNow(w.site, w.kind);
     };
     onChange();

@@ -25,8 +25,10 @@ interface JiraNotifyStore {
   /** Epoch ms of the last completed poll cycle (ok or failed) — Settings hint. */
   lastPollAt: number | null;
   setLastPollAt: (at: number) => void;
-  /** Which rail tab each Jira tab shows. Absent = "tickets". External to the
-   *  rail component so a notification click can switch it. */
+  /** Which rail tab each Jira tab shows. Absent = DEFAULT_JIRA_RAIL_TAB —
+   *  every read site must resolve absence through that constant, or the
+   *  visibility gate and the UI disagree about what is on screen. External to
+   *  the rail component so a notification click can switch it. */
   railTab: Record<string, JiraRailTab>;
   setRailTab: (tabId: string, tab: JiraRailTab) => void;
   /** QUALIFIED ticket key (`<origin>|<KEY>`) whose browser-only preview fills
@@ -60,6 +62,12 @@ interface JiraNotifyStore {
 }
 
 export type JiraRailTab = "tickets" | "assigned" | "unassigned";
+
+/** The rail tab a Jira tab opens on. Assigned is the primary list — a fresh
+ *  project has no CLI rows yet, so opening on CLI showed an empty list.
+ *  Read sites that coerce for disabled modes (assigned off → "tickets") keep
+ *  doing so AFTER applying this default. */
+export const DEFAULT_JIRA_RAIL_TAB: JiraRailTab = "assigned";
 
 export const useJiraNotifyStore = create<JiraNotifyStore>((set) => ({
   siteAuthErrors: {},

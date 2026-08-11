@@ -19,7 +19,7 @@
  */
 
 import { useAppStore } from "../store";
-import type { RecentProject } from "../store/recentProjectsSlice";
+import type { JiraSiteAccount, RecentProject } from "../store/recentProjectsSlice";
 import type { Tab } from "../types";
 
 export const jiraQK = (siteId: string, key: string) => `${siteId}|${key}`;
@@ -61,6 +61,50 @@ export function siteForTabIn(
 
 export function siteForTab(tab: Pick<Tab, "jiraSiteId" | "workingDir" | "serverId">): string {
   return siteForTabIn(useAppStore.getState(), tab);
+}
+
+type CredsState = {
+  jiraApiEmail?: string;
+  jiraApiToken?: string;
+  jiraMyAccountId?: string;
+  jiraSiteAccounts?: Record<string, JiraSiteAccount>;
+};
+
+export interface JiraSiteCreds {
+  email: string;
+  token: string;
+  /** The account's own id on this site — own-comment suppression. "" until
+   *  a jira_test_auth has captured it. */
+  accountId: string;
+}
+
+/**
+ * The credentials that talk to ONE site: the site's account override when a
+ * complete one exists, else the main jiraApiEmail/Token pair. EVERY Jira API
+ * call must resolve through here — a call built from the bare store fields
+ * silently uses the wrong account on an overridden site.
+ */
+export function credsForSiteIn(s: CredsState, siteId: string): JiraSiteCreds {
+  const o = (s.jiraSiteAccounts ?? {})[siteId];
+  if (o?.email && o?.token) {
+    return { email: o.email, token: o.token, accountId: o.accountId ?? "" };
+  }
+  return {
+    email: s.jiraApiEmail ?? "",
+    token: s.jiraApiToken ?? "",
+    accountId: s.jiraMyAccountId ?? "",
+  };
+}
+
+export function credsForSite(siteId: string): JiraSiteCreds {
+  return credsForSiteIn(useAppStore.getState(), siteId);
+}
+
+/** Any usable login at all — the poll engine's run gate. True when the main
+ *  pair is set OR any site carries a complete override. */
+export function hasAnyJiraCreds(s: CredsState): boolean {
+  if (s.jiraApiEmail && s.jiraApiToken) return true;
+  return Object.values(s.jiraSiteAccounts ?? {}).some((a) => !!a.email && !!a.token);
 }
 
 export function siteForDir(dir: string, serverId?: string): string {

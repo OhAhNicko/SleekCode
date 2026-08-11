@@ -39,6 +39,12 @@ export interface ParkedTicket {
    *  --session-id <new>` so the pane starts as an exact copy of the source
    *  conversation under a MADE-chosen fresh id. */
   fork?: { sourceSessionId: string; newSessionId: string };
+  /** The tab's workingDir at park time — the session-registry key. KEYED Jira
+   *  projects need this: their tab dir is the virtual `jira://…` identity while
+   *  the pane SPAWNS in a real fallback dir, and `nameTicketSession` receives
+   *  the spawn cwd. Absent (legacy folder projects) → the spawn cwd is the
+   *  registry key, exactly as before. */
+  projectDir?: string;
 }
 
 /** Display name for a parked ticket — what `--name` gets and what the rail
@@ -94,7 +100,11 @@ export function nameTicketSession(
 ): void {
   const parked = takeTicketForTerminal(terminalId);
   if (!parked) return;
-  useAppStore.getState().registerProjectSession(workingDir, {
+  // Keyed Jira projects: the row must file under the tab's virtual dir, not
+  // the real directory the pane happened to spawn in. That real directory is
+  // still recorded as the row's `cwd` — reopening must resume THERE, where
+  // the CLI wrote the transcript.
+  useAppStore.getState().registerProjectSession(parked.projectDir ?? workingDir, {
     id: sessionId,
     name: parkedTicketName(parked),
     type: parked.cli ?? "claude",
@@ -102,5 +112,6 @@ export function nameTicketSession(
     isRenamed: true,
     ticket: parked.ticket,
     ticketInstance: parked.instance,
+    cwd: workingDir,
   });
 }
