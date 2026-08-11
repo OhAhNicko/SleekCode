@@ -9,7 +9,7 @@ import * as knowledgeApi from "../lib/knowledge/api";
 import { MEMORY_DIR_NAME } from "../lib/knowledge/keys";
 import { usableKnowledgePath } from "../lib/knowledge/remote-mirror";
 import type { TerminalType } from "../types";
-import { MODAL_BACKDROP } from "../lib/modal-layout";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 import ModalCloseButton from "./ModalCloseButton";
 
 export type ExtraPaneType = "codereview" | "fileviewer" | "browser" | "kanban";
@@ -415,10 +415,15 @@ export default function TemplatePicker({
         style={{
           maxWidth: 560,
           width: "100%",
+          // Without a height clamp a tall panel overflows the centered
+          // backdrop EQUALLY in both directions and the top is unreachable
+          // (fixed backdrops don't scroll) — the picker only "fit" fullscreen.
+          maxHeight: MODAL_MAX_HEIGHT,
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
-          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "auto",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
         }}
         onClick={(e) => e.stopPropagation()}

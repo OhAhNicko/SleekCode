@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import LoadingDots from "./LoadingDots";
 import { useModal } from "../store/modalCoordinationSlice";
 import ModalCloseButton from "./ModalCloseButton";
-import { MODAL_BACKDROP } from "../lib/modal-layout";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 interface GhStatus {
   installed: boolean;
@@ -131,10 +131,12 @@ export default function ConnectToGitHubModal({
         style={{
           maxWidth: 480,
           width: "100%",
+          maxHeight: MODAL_MAX_HEIGHT,
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
-          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "auto",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
         }}
         onClick={(e) => e.stopPropagation()}

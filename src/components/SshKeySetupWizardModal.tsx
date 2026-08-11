@@ -4,7 +4,7 @@ import LoadingDots from "./LoadingDots";
 import { useModal } from "../store/modalCoordinationSlice";
 import { getSshInstallKeyCommand } from "../lib/terminal-config";
 import { cleanOutput } from "../lib/pty-text";
-import { MODAL_BACKDROP } from "../lib/modal-layout";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 /**
  * Step-by-step SSH key setup: generate a keypair locally, install the public
@@ -326,10 +326,12 @@ export default function SshKeySetupWizardModal({ server, onComplete, onClose }: 
         style={{
           maxWidth: 520,
           width: "100%",
+          maxHeight: MODAL_MAX_HEIGHT,
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
-          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "auto",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
         }}
         onClick={(e) => e.stopPropagation()}

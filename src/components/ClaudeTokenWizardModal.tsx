@@ -5,7 +5,7 @@ import { useModal } from "../store/modalCoordinationSlice";
 import { getClaudeSetupTokenCommand } from "../lib/terminal-config";
 import { cleanOutput } from "../lib/pty-text";
 import { probeCliShells } from "../lib/remote-cli-shells";
-import { MODAL_BACKDROP } from "../lib/modal-layout";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 
 interface ClaudeTokenWizardModalProps {
   /** Connection details for the server to run `claude setup-token` on. */
@@ -218,10 +218,12 @@ export default function ClaudeTokenWizardModal({ server, onToken, onClose }: Cla
         style={{
           maxWidth: 480,
           width: "100%",
+          maxHeight: MODAL_MAX_HEIGHT,
           backgroundColor: "var(--ezy-surface-raised)",
           border: "1px solid var(--ezy-border)",
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
-          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "auto",
           boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
         }}
         onClick={(e) => e.stopPropagation()}

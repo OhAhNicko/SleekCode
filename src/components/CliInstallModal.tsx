@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import LoadingDots from "./LoadingDots";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
-import { MODAL_BACKDROP } from "../lib/modal-layout";
+import { MODAL_BACKDROP, MODAL_MAX_HEIGHT } from "../lib/modal-layout";
 import {
   CLI_INSTALL_EVENT,
   type CliInstallRequest,
@@ -203,8 +203,10 @@ export default function CliInstallModal() {
         style={{
           width: 520,
           maxWidth: "calc(100vw - 32px)",
+          maxHeight: MODAL_MAX_HEIGHT,
           borderRadius: "calc(var(--ezy-radius-scale, 1) * 10px)",
-          overflow: "hidden",
+          overflowX: "hidden",
+          overflowY: "auto",
           background: "var(--ezy-surface-raised, #1c2128)",
           border: "1px solid var(--ezy-border, rgba(255,255,255,0.1))",
           boxShadow: "0 16px 48px rgba(0,0,0,0.55)",
