@@ -7,11 +7,13 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { useJiraNotifyStore } from "../store/jiraNotifyStore";
 import { confirmAction, promptForInput } from "../lib/prompt-modal";
-import { getCachedDistro, clearWslCliCache, resolveWslCliPaths } from "../lib/wsl-cache";
+import { getCachedDistro, clearWslCliCache, resolveWslCliPaths, isUtilityDistro } from "../lib/wsl-cache";
 import { getTerminalActions } from "../lib/terminal-actions";
 import { findAllTerminalIds } from "../lib/layout-utils";
 import { RELEASES_REPO } from "../lib/release-notes";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { sendOsToast } from "../lib/pane-notifications";
 import { KNOWN_TERM_PROGRAMS } from "../lib/terminal-config";
 import {
   setClaudeNotifChannel,
@@ -21,6 +23,7 @@ import {
 } from "../lib/sessions-index";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
+import { folderBasename } from "../lib/jira-groups";
 import type { AiTimeBurst } from "../store/aiTimeSlice";
 import { THEMES, getTheme, getEffectiveTerminalTheme, SEMANTIC_DIFF_ADD, SEMANTIC_DIFF_REMOVE } from "../lib/themes";
 import {
@@ -41,13 +44,18 @@ import { previewSound } from "../lib/notification-sounds";
 import {
   readJiraMcpStatus,
   installJiraMcp,
+  loginJiraMcp,
+  probeJiraMcpAuth,
   JIRA_MCP_AUTH_HINT,
   JIRA_CLI_LABEL,
   JIRA_CLIS,
   CODEX_MCP_SSH_AUTH,
   type JiraCli,
   type JiraMcpStatus,
+  type JiraMcpAuth,
 } from "../lib/jira-mcp";
+import { generateTerminalId } from "../lib/layout-utils";
+import { setPendingPrompt } from "../store/terminalSlice";
 import { pickExecShell } from "../lib/remote-cli-shells";
 import { jiraSiteName } from "../lib/jira";
 import {
@@ -75,12 +83,13 @@ import {
   type DevServerTabIconMode,
 } from "../store/recentProjectsSlice";
 import { buildStatusColorMap, normalizeStatus } from "../lib/jira-status-colors";
-import { pickableFields } from "../lib/jira-fields";
+import { ensureSiteRequestTypes, pickableFields } from "../lib/jira-fields";
 import { requestSettingsSection } from "../lib/settings-section";
 import type { JiraFieldMeta } from "../store/recentProjectsSlice";
 import { FaCheck } from "react-icons/fa";
 import { STATUSLINE_FEATURES, getStatuslineDefault } from "./TerminalHeader";
 import ClearDataModal from "./ClearDataModal";
+import DebugResetModal from "./DebugResetModal";
 import type { TerminalType, TerminalBackend, ComposerExpansion } from "../types";
 import type { VoiceLanguage, VoiceWhisperFormat, VoiceActivationMode } from "../store/voiceSlice";
 import { pingWhisper } from "../lib/voice/whisperClient";
@@ -566,6 +575,52 @@ function PathPicker({ value, onChange, directory, filters }: {
           ×
         </button>
       )}
+    </div>
+  );
+}
+
+// ─── Windows Action Center buttons ───────────────────────────────────────
+
+/** The one notification path Windows itself can block (per-app toggle, Focus
+ * Assist, unregistered AUMID): the WinRT toast MADE sends while minimized.
+ * "Send test" fires a real one through the normal pipeline so the user can
+ * SEE whether Windows delivers it; if nothing appears, "Windows settings"
+ * deep-links to the notifications page to switch MADE back on. The custom OS
+ * popup window needs no enabling and is deliberately not covered here. */
+function ActionCenterButtons() {
+  const [sent, setSent] = useState(false);
+  const buttonStyle: React.CSSProperties = {
+    padding: "4px 10px",
+    fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+    fontWeight: 500,
+    color: "var(--ezy-text-secondary)",
+    backgroundColor: "var(--ezy-surface)",
+    border: "1px solid var(--ezy-border)",
+    borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+    cursor: "pointer",
+    fontFamily: "inherit",
+  };
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+      <button
+        onClick={() => {
+          void sendOsToast(
+            "MADE test notification",
+            "If you can read this, Windows notifications for MADE are enabled.",
+          );
+          setSent(true);
+          window.setTimeout(() => setSent(false), 2500);
+        }}
+        style={buttonStyle}
+      >
+        {sent ? "Sent — check Action Center" : "Send test"}
+      </button>
+      <button
+        onClick={() => void openUrl("ms-settings:notifications").catch(() => {})}
+        style={buttonStyle}
+      >
+        Windows settings
+      </button>
     </div>
   );
 }
@@ -1404,13 +1459,46 @@ function TextInput({
 
 type PingState = { status: "idle" | "checking" | "ok" | "fail"; ms?: number; error?: string };
 
+const GEMINI_MCP_AUTH_PROMPT = "/mcp auth atlassian";
+
+/**
+ * Gemini's Atlassian sign-in is TUI-only (`/mcp auth`), so signing in means a
+ * Gemini pane that runs it as its first prompt — the exact pipeline Jira
+ * ticket panes use: park the prompt under a pre-minted terminal id, then ask
+ * the active Workspace to spawn that id. Returns false when no project tab is
+ * active, because then no Workspace is mounted and the event dies unheard.
+ */
+function openGeminiAuthPane(): boolean {
+  const { tabs, activeTabId, setSettingsPanelOpen } = useAppStore.getState();
+  const tab = tabs.find((t) => t.id === activeTabId);
+  const isProject =
+    !!tab?.workingDir &&
+    !tab.isDevServerTab &&
+    !tab.isServersTab &&
+    !tab.isKanbanTab &&
+    !tab.isSettingsTab;
+  if (!isProject) return false;
+  const terminalId = generateTerminalId();
+  setPendingPrompt(terminalId, GEMINI_MCP_AUTH_PROMPT);
+  window.dispatchEvent(
+    new CustomEvent("made:split-terminal", { detail: { type: "gemini", terminalId } }),
+  );
+  // The settings overlay covers the workspace — get out of the way so the
+  // sign-in pane is actually visible.
+  setSettingsPanelOpen(false);
+  return true;
+}
+
 /**
  * Atlassian MCP state for ONE CLI, in the Jira section.
  *
- * Three states, deliberately distinct: connected, not set up, and unknown. The
- * last one matters — if the config could not be read we must not tell someone to
- * install a server they already have. It is also how a CLI that isn't on this
- * machine reads: no config directory, nothing to claim.
+ * The states are deliberately distinct: connected, sign-in required,
+ * not set up, and unknown. The last one matters — if the config could not be
+ * read we must not tell someone to install a server they already have. It is
+ * also how a CLI that isn't on this machine reads: no config directory,
+ * nothing to claim. And "registered" alone must not render as green: until the
+ * auth probe answers, a row that LOOKS connected while every ticket pane fails
+ * is the exact lie this row exists to prevent.
  */
 function JiraPluginRow({ cli }: { cli: JiraCli }) {
   const terminalBackend = useAppStore((s) => s.terminalBackend);
@@ -1441,48 +1529,118 @@ function JiraPluginRow({ cli }: { cli: JiraCli }) {
   );
 
   const [status, setStatus] = useState<JiraMcpStatus | null>(null);
-  const [busy, setBusy] = useState(false);
+  // undefined = probe still running; null = could not tell (render as before).
+  const [auth, setAuth] = useState<JiraMcpAuth | undefined>(undefined);
+  const [busy, setBusy] = useState<null | "setup" | "login">(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     setStatus(null);
-    void readJiraMcpStatus(cli, backend, projectPath, target).then(setStatus);
+    setAuth(undefined);
+    void readJiraMcpStatus(cli, backend, projectPath, target).then((s) => {
+      setStatus(s);
+      // Registered is only half the answer — ask the CLI whether it is signed
+      // in. The probe answers null instantly where it cannot run (gemini, ssh)
+      // and is cached, so this does not respawn a CLI per render.
+      if (s.configured) {
+        void probeJiraMcpAuth(cli, backend, s.name || undefined).then(setAuth);
+      } else {
+        setAuth(null);
+      }
+    });
   }, [cli, backend, projectPath, target]);
 
   useEffect(refresh, [refresh]);
 
+  // The Set up click carries the user's whole intent — a working Jira — so a
+  // successful add chains straight into the CLI's own browser OAuth instead of
+  // stopping at "registered". SSH keeps the visible-hint handoff: the OAuth
+  // callback would bind the REMOTE host's localhost.
   const install = async () => {
-    setBusy(true);
+    setBusy("setup");
     setError(null);
     try {
       await installJiraMcp(cli, backend, target);
-      refresh();
+      if (backend !== "ssh") {
+        if (cli === "gemini") {
+          openGeminiAuthPane();
+        } else {
+          setBusy("login");
+          setStatus(null); // in flux until the sign-in answers
+          await loginJiraMcp(cli, backend);
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setBusy(null);
+      refresh();
+    }
+  };
+
+  // Sign in for an already-registered server: a pre-existing install, an
+  // abandoned browser tab, or a login that timed out.
+  const signIn = async () => {
+    setError(null);
+    if (cli === "gemini") {
+      openGeminiAuthPane();
+      return;
+    }
+    setBusy("login");
+    try {
+      await loginJiraMcp(cli, backend, status?.name || undefined);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+      refresh();
     }
   };
 
   const connected = !!status?.configured;
   const unknown = !!status && !status.checked;
   const remoteNoKey = backend === "ssh" && !target?.sshKeyPath?.trim();
-  const label = connected
-    ? status.scope === "user"
-      ? "Connected"
-      : `Connected (${status.scope})`
-    : unknown
-      ? "Unknown"
-      : "Not set up";
-  const dot = connected ? "#10b981" : unknown ? "var(--ezy-text-muted)" : "var(--ezy-red, #e55)";
+  const needsSignIn = connected && auth === false;
+  // Gemini cannot report auth, so its local rows keep a Sign in button that
+  // opens the auth pane — which needs an active project tab to land in.
+  const geminiSignIn = connected && cli === "gemini" && backend !== "ssh";
+  const projectTabActive =
+    !!activeTab?.workingDir &&
+    !activeTab.isDevServerTab &&
+    !activeTab.isServersTab &&
+    !activeTab.isKanbanTab &&
+    !activeTab.isSettingsTab;
+  const geminiNoProject = geminiSignIn && !projectTabActive;
+  const showButton = !connected || needsSignIn || geminiSignIn;
+  // "Registered" without an auth answer yet stays on "Checking" — never a
+  // green flash that then flips to "Sign in required".
+  const checking = status === null || (connected && auth === undefined);
+  const label = needsSignIn
+    ? "Sign in required"
+    : connected
+      ? status?.scope === "user"
+        ? "Connected"
+        : `Connected (${status?.scope})`
+      : unknown
+        ? "Unknown"
+        : "Not set up";
+  const dot = needsSignIn
+    ? "var(--ezy-cyan)"
+    : connected
+      ? "#10b981"
+      : unknown
+        ? "var(--ezy-text-muted)"
+        : "var(--ezy-red, #e55)";
   // Why a row can say nothing useful, rather than leaving "Unknown" bare.
   const description = remoteNoKey
-    ? `${target?.host ?? "This server"} uses password auth — MADE can only read it over an SSH key.`
-    : connected
-      ? backend === "ssh" && cli === "codex"
-        ? CODEX_MCP_SSH_AUTH
-        : JIRA_MCP_AUTH_HINT[cli]
-      : undefined;
+    ? "Needs an SSH key — password auth can't be read."
+    : needsSignIn
+      ? "Finish sign-in in your browser."
+      : connected && auth === null
+        ? backend === "ssh" && cli === "codex"
+          ? CODEX_MCP_SSH_AUTH
+          : JIRA_MCP_AUTH_HINT[cli]
+        : undefined;
 
   return (
     <SettingsRow label={JIRA_CLI_LABEL[cli]} description={description}>
@@ -1504,15 +1662,19 @@ function JiraPluginRow({ cli }: { cli: JiraCli }) {
         )}
         <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-secondary)" }}>
           <span style={{ width: 7, height: 7, borderRadius: "50%", backgroundColor: dot, flexShrink: 0 }} />
-          {status === null ? <LoadingDots>Checking</LoadingDots> : label}
+          {checking ? <LoadingDots>Checking</LoadingDots> : label}
         </span>
-        {!connected && (
+        {showButton && (
           <button
-            onClick={install}
-            disabled={busy || remoteNoKey}
+            onClick={connected ? signIn : install}
+            disabled={!!busy || remoteNoKey || geminiNoProject}
             // Disabled needs a reason, or the row is just a dead control.
             data-tooltip={
-              remoteNoKey ? "Needs SSH-key auth to configure this server" : undefined
+              remoteNoKey
+                ? "Needs SSH-key auth to configure this server"
+                : geminiNoProject
+                  ? "Open a project tab first"
+                  : undefined
             }
             style={{
               padding: "4px 10px",
@@ -1522,12 +1684,20 @@ function JiraPluginRow({ cli }: { cli: JiraCli }) {
               backgroundColor: "var(--ezy-surface)",
               border: "1px solid var(--ezy-border)",
               borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
-              cursor: busy || remoteNoKey ? "default" : "pointer",
-              opacity: remoteNoKey ? 0.5 : 1,
+              cursor: busy || remoteNoKey || geminiNoProject ? "default" : "pointer",
+              opacity: remoteNoKey || geminiNoProject ? 0.5 : 1,
               fontFamily: "inherit",
             }}
           >
-            {busy ? <LoadingDots>Setting up</LoadingDots> : "Set up"}
+            {busy === "setup" ? (
+              <LoadingDots>Setting up</LoadingDots>
+            ) : busy === "login" ? (
+              <LoadingDots>Waiting for browser sign-in</LoadingDots>
+            ) : connected ? (
+              "Sign in"
+            ) : (
+              "Set up"
+            )}
           </button>
         )}
       </div>
@@ -1772,7 +1942,7 @@ function VoiceAgentSection() {
         </SettingsRow>
         <SettingsRow
           label="Activation"
-          description="Toggle: click once to start, again to stop. Hold: speak while held, release to send."
+          description="Toggle clicks start/stop; Hold sends on release."
         >
           <SegmentedControl<VoiceActivationMode>
             options={[
@@ -1804,7 +1974,7 @@ function VoiceAgentSection() {
             onChange={setLanguage}
           />
         </SettingsRow>
-        <SettingsRow label="Confirm destructive actions" description="Voice commands ask first before closing tabs with content.">
+        <SettingsRow label="Confirm destructive actions" description="Asks before closing tabs with content.">
           <ToggleSwitch checked={confirmDestructive} onChange={setConfirmDestructive} />
         </SettingsRow>
       </SettingsSection>
@@ -2219,6 +2389,7 @@ export default function SettingsPane() {
     return () => window.removeEventListener("made:settings-section", onSection as EventListener);
   }, []);
   const [showClearModal, setShowClearModal] = useState(false);
+  const [showDebugResetModal, setShowDebugResetModal] = useState(false);
   const [wslShutdownBusy, setWslShutdownBusy] = useState(false);
   const [wslShutdownResult, setWslShutdownResult] = useState<string | null>(null);
   const handleWslShutdown = useCallback(async () => {
@@ -2268,11 +2439,18 @@ export default function SettingsPane() {
   // Installed WSL distros for the distribution picker. `wsl --list --quiet`
   // is registry-backed (no VM boot), so enumerating on mount is cheap.
   const [wslDistros, setWslDistros] = useState<string[]>([]);
+  // Which distro "Default" actually targets (`wsl -l -v`'s `*` row).
+  // Surfacing it in the picker is what makes a docker-desktop or stale
+  // default VISIBLE instead of a silent spawn failure.
+  const [wslDefaultDistro, setWslDefaultDistro] = useState<string | null>(null);
   useEffect(() => {
     if (!isWindows()) return;
     invoke<string[]>("wsl_list_distros")
       .then(setWslDistros)
       .catch(() => {}); // no wsl.exe / no distros — picker still offers Default
+    invoke<string | null>("wsl_default_distro")
+      .then(setWslDefaultDistro)
+      .catch(() => {}); // unknown default — plain "Default" label
   }, []);
   const handleWslDistroChange = useCallback((value: string) => {
     useAppStore.getState().setWslDistro(value || null);
@@ -2437,13 +2615,26 @@ export default function SettingsPane() {
   const addJiraSite = useAppStore((s) => s.addJiraSite);
   const removeJiraSite = useAppStore((s) => s.removeJiraSite);
   const setJiraDefaultSite = useAppStore((s) => s.setJiraDefaultSite);
+  const jiraCliGroupsList = useAppStore((s) => s.jiraCliGroups ?? []);
+  const addJiraCliGroup = useAppStore((s) => s.addJiraCliGroup);
+  const removeJiraCliGroup = useAppStore((s) => s.removeJiraCliGroup);
+  const renameJiraCliGroup = useAppStore((s) => s.renameJiraCliGroup);
+  const jiraRequestTypeGroups = useAppStore((s) => s.jiraRequestTypeGroups ?? {});
+  const setJiraRequestTypeGroup = useAppStore((s) => s.setJiraRequestTypeGroup);
+  const jiraSiteRequestTypes = useAppStore((s) => s.jiraSiteRequestTypes ?? {});
+  // Fetch each site's JSM request-type catalogue once (cached in the store —
+  // ensureSiteRequestTypes is a no-op after the first success per site).
+  useEffect(() => {
+    for (const site of jiraSitesList) void ensureSiteRequestTypes(site);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jiraSitesList.join("|")]);
   const jiraApiEmail = useAppStore((s) => s.jiraApiEmail ?? "");
   const setJiraApiEmail = useAppStore((s) => s.setJiraApiEmail);
   const jiraApiToken = useAppStore((s) => s.jiraApiToken ?? "");
   const setJiraApiToken = useAppStore((s) => s.setJiraApiToken);
   const jiraNotifEnabled = useAppStore((s) => s.jiraNotifEnabled ?? true);
   const setJiraNotifEnabled = useAppStore((s) => s.setJiraNotifEnabled);
-  const jiraAssignedMode = useAppStore((s) => s.jiraAssignedMode ?? false);
+  const jiraAssignedMode = useAppStore((s) => s.jiraAssignedMode ?? true);
   const setJiraAssignedMode = useAppStore((s) => s.setJiraAssignedMode);
   // Select the RAW slice and merge below. Building the object inside the
   // selector would return a fresh reference on every store change and
@@ -2523,6 +2714,22 @@ export default function SettingsPane() {
   const jiraAssignedTickets = useAppStore((s) => s.jiraAssignedTickets);
   const jiraUnassignedTickets = useAppStore((s) => s.jiraUnassignedTickets);
   const jiraTicketSnapshots = useAppStore((s) => s.jiraTicketSnapshots);
+  /** Settings list: the fetched catalogues ∪ types seen on tickets ∪ types
+   *  already linked — so a link never disappears just because the catalogue
+   *  fetch failed or the type was retired in Jira. */
+  const allRequestTypes = useMemo(() => {
+    const names = new Set<string>();
+    for (const list of Object.values(jiraSiteRequestTypes)) {
+      for (const n of list) names.add(n);
+    }
+    for (const t of jiraAssignedTickets ?? []) if (t.requestType) names.add(t.requestType);
+    for (const t of jiraUnassignedTickets ?? []) if (t.requestType) names.add(t.requestType);
+    for (const snap of Object.values(jiraTicketSnapshots ?? {})) {
+      if (snap?.requestType) names.add(snap.requestType);
+    }
+    for (const n of Object.keys(jiraRequestTypeGroups)) names.add(n);
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [jiraSiteRequestTypes, jiraAssignedTickets, jiraUnassignedTickets, jiraTicketSnapshots, jiraRequestTypeGroups]);
   // Every status the app has actually seen, with its automatic colour. Built
   // from the SAME union the rail uses, so a colour pinned here is guaranteed to
   // be the colour that renders there.
@@ -2545,6 +2752,46 @@ export default function SettingsPane() {
   const jiraSiteAuthErrors = useJiraNotifyStore((s) => s.siteAuthErrors);
   const [jiraCredPing, setJiraCredPing] = useState<PingState>({ status: "idle" });
   const [newJiraSite, setNewJiraSite] = useState("");
+  const jiraSiteAccounts = useAppStore((s) => s.jiraSiteAccounts);
+  const setJiraSiteAccount = useAppStore((s) => s.setJiraSiteAccount);
+  const jiraSiteAccountsList = useMemo(
+    () => Object.entries(jiraSiteAccounts ?? {}),
+    [jiraSiteAccounts],
+  );
+  const [siteAccountPings, setSiteAccountPings] = useState<Record<string, PingState>>({});
+  const [newSiteAccountSite, setNewSiteAccountSite] = useState("");
+  const testSiteAccount = async (site: string) => {
+    const account = (useAppStore.getState().jiraSiteAccounts ?? {})[site];
+    if (!account?.email || !account.token) {
+      setSiteAccountPings((p) => ({
+        ...p,
+        [site]: { status: "fail", error: "Enter the email and token first" },
+      }));
+      return;
+    }
+    setSiteAccountPings((p) => ({ ...p, [site]: { status: "checking" } }));
+    const t0 = performance.now();
+    try {
+      const me = await invoke<{ displayName: string; accountId: string }>("jira_test_auth", {
+        baseUrl: site,
+        email: account.email,
+        token: account.token,
+      });
+      // Capture THIS account's id — own-comment suppression on this site.
+      useAppStore.getState().setJiraSiteAccount(site, { ...account, accountId: me.accountId });
+      useJiraNotifyStore.getState().clearSiteAuthErrors();
+      setSiteAccountPings((p) => ({
+        ...p,
+        [site]: { status: "ok", ms: Math.round(performance.now() - t0) },
+      }));
+    } catch (err) {
+      const e = err as { message?: string };
+      setSiteAccountPings((p) => ({
+        ...p,
+        [site]: { status: "fail", error: e?.message ?? String(err) },
+      }));
+    }
+  };
   const testJiraCreds = async () => {
     setJiraCredPing({ status: "checking" });
     const t0 = performance.now();
@@ -2574,6 +2821,8 @@ export default function SettingsPane() {
   const setJiraClaudeSide = useAppStore((s) => s.setJiraClaudeSide);
   const jiraRowFullColor = useAppStore((s) => s.jiraRowFullColor ?? false);
   const setJiraRowFullColor = useAppStore((s) => s.setJiraRowFullColor);
+  const jiraRowShowSummary = useAppStore((s) => s.jiraRowShowSummary ?? false);
+  const setJiraRowShowSummary = useAppStore((s) => s.setJiraRowShowSummary);
   const jiraMode = useAppStore((s) => s.jiraMode ?? true);
   const setJiraMode = useAppStore((s) => s.setJiraMode);
   const jiraSubticketMode = useAppStore((s) => s.jiraSubticketMode ?? "default");
@@ -2830,7 +3079,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Auto-hibernate idle tabs"
-                description="Idle background tabs free their WSL processes; reopening the tab resumes them."
+                description="Frees WSL processes; reopening resumes them."
               >
                 <ToggleSwitch checked={autoHibernateEnabled} onChange={setAutoHibernateEnabled} />
               </SettingsRow>
@@ -2900,7 +3149,7 @@ export default function SettingsPane() {
               >
                 <ToggleSwitch checked={confirmReloadPanes} onChange={setConfirmReloadPanes} />
               </SettingsRow>
-              <SettingsRow label="Vertical tab bar" description="Auto swaps to the vertical strip when the window is taller than wide.">
+              <SettingsRow label="Vertical tab bar" description="Auto: vertical when taller than wide.">
                 <SegmentedControl<"auto" | "always" | "never">
                   options={[
                     { value: "auto", label: "Auto" },
@@ -2913,7 +3162,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Vertical tabbar v2"
-                description="Redesigned strip: a project-colour rail spanning each tab, an icon action grid instead of labelled rows, and Jira tickets nested under their project instead of in a separate rail."
+                description="Colour rail, icon actions, nested Jira tickets."
               >
                 <ToggleSwitch checked={verticalTabBarV2} onChange={setVerticalTabBarV2} />
               </SettingsRow>
@@ -2982,6 +3231,37 @@ export default function SettingsPane() {
                   Clear data...
                 </button>
               </div>
+              {import.meta.env.DEV && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderTop: "1px solid var(--ezy-border-subtle, rgba(255,255,255,0.06))" }}>
+                  <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", color: "var(--ezy-text-secondary)" }}>Reset all (debug build)</div>
+                    <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", marginTop: 2, lineHeight: 1.3 }}>
+                      Simulate a fresh install: wipes every setting and local state, but keeps your projects — including Jira — in the + menu with their saved pane layouts.
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowDebugResetModal(true)}
+                    style={{
+                      height: 30,
+                      padding: "0 14px",
+                      borderRadius: "calc(var(--ezy-radius-scale, 1) * 6px)",
+                      border: "none",
+                      backgroundColor: "var(--ezy-red, #e55)",
+                      color: "#fff",
+                      fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                      fontWeight: 600,
+                      fontFamily: "inherit",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                      transition: "opacity 120ms ease",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.opacity = "0.85"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.opacity = "1"; }}
+                  >
+                    Reset all...
+                  </button>
+                </div>
+              )}
               {isWindows() && (
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderTop: "1px solid var(--ezy-border-subtle, rgba(255,255,255,0.06))" }}>
                   <div style={{ minWidth: 0, flex: 1, marginRight: 16 }}>
@@ -3110,7 +3390,7 @@ export default function SettingsPane() {
               <SettingsRow label="Lighten active pane" description="Off: the pane header alone marks the active pane.">
                 <ToggleSwitch checked={activePaneLift} onChange={setActivePaneLift} />
               </SettingsRow>
-              <SettingsRow label="Slide-in header buttons" description="Off: the buttons always reserve their space and fade in on hover.">
+              <SettingsRow label="Slide-in header buttons" description="Off: buttons keep their space.">
                 <ToggleSwitch checked={headerButtonsSlide} onChange={setHeaderButtonsSlide} />
               </SettingsRow>
               {/* Shape, not color — so it sits after the color rows and before
@@ -3139,7 +3419,7 @@ export default function SettingsPane() {
                   font, so it lives beside it instead of as its own row. */}
               <SettingsRow
                 label="UI font"
-                description="Scales every label, menu and panel; terminal fonts live in the CLI tab."
+                description="Terminal fonts live in the CLI tab."
               >
                 <div
                   style={{
@@ -3637,7 +3917,7 @@ export default function SettingsPane() {
               <SettingsRow
                 vertical
                 label="Report terminal type to AI CLIs (TERM_PROGRAM)"
-                description="Claude enables extra features only for terminals it recognises. Applies to new panes."
+                description="Claude unlocks features for known terminals. New panes only."
               >
                 <div className="flex items-center gap-2">
                   <Dropdown<string>
@@ -3660,7 +3940,7 @@ export default function SettingsPane() {
               <SettingsRow
                 vertical
                 label="Claude notification channel"
-                description="MADE turns iTerm2, Kitty and Ghostty into in-app toasts. Applies to new sessions."
+                description="Escape codes become in-app toasts. New sessions only."
               >
                 <div className="flex items-center gap-2">
                   <Dropdown<ClaudeNotifChannel | "">
@@ -3714,7 +3994,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Gemini notifications"
-                description="Finished Gemini panes toast like Claude and Codex. Applies to new sessions."
+                description="Finished panes toast. New sessions only."
               >
                 <div className="flex items-center gap-2">
                   {geminiNotif === "unavailable" ? (
@@ -3799,13 +4079,13 @@ export default function SettingsPane() {
             <SettingsSection id="browser" title="Browser">
               <SettingsRow
                 label="Use the legacy preview for dev servers"
-                description="Only affects localhost — websites always use the native browser."
+                description="Websites always use the native browser."
               >
                 <ToggleSwitch checked={browserIframeForLocalhost} onChange={setBrowserIframeForLocalhost} />
               </SettingsRow>
               <SettingsRow
                 label="Ask before saving a download"
-                description="Approving re-requests the file, which some one-time download links will not allow."
+                description="Re-requests the file; one-time links may fail."
               >
                 <ToggleSwitch checked={browserAskBeforeDownload} onChange={setBrowserAskBeforeDownload} />
               </SettingsRow>
@@ -3834,14 +4114,22 @@ export default function SettingsPane() {
                       value={wslDistro ?? ""}
                       onChange={handleWslDistroChange}
                       options={[
-                        { value: "", label: "Default" },
+                        {
+                          value: "",
+                          label: wslDefaultDistro ? `Default (${wslDefaultDistro})` : "Default",
+                        },
                         // Keep a saved distro visible even if it was
                         // uninstalled — a blank control would hide that the
                         // override is still active.
                         ...(wslDistro && !wslDistros.includes(wslDistro)
                           ? [{ value: wslDistro, label: `${wslDistro} (not found)` }]
                           : []),
-                        ...wslDistros.map((d) => ({ value: d, label: d })),
+                        // Container utility distros (docker-desktop, …) are
+                        // never valid terminal targets; list one only while
+                        // it is the active override.
+                        ...wslDistros
+                          .filter((d) => !isUtilityDistro(d) || d === wslDistro)
+                          .map((d) => ({ value: d, label: d })),
                       ]}
                       width={200}
                     />
@@ -3850,12 +4138,12 @@ export default function SettingsPane() {
               </SettingsSection>
             )}
             <SettingsSection id="native-renderer" title="Native renderer">
-              <SettingsRow label="Native terminal renderer" description="GPU renderer instead of xterm panes. Open terminals reload.">
+              <SettingsRow label="Native terminal renderer" description="GPU renderer. Open terminals reload.">
                 <ToggleSwitch checked={useNativeTerminalRenderer} onChange={setUseNativeTerminalRenderer} />
               </SettingsRow>
               <SettingsRow
                 label="Share one GPU device"
-                description="Panes open ~4x faster; a driver reset then affects every shared pane at once."
+                description="~4x faster opens; a driver reset hits every pane."
               >
                 <ToggleSwitch checked={nativeSharedGpu} onChange={setNativeSharedGpu} />
               </SettingsRow>
@@ -3872,7 +4160,7 @@ export default function SettingsPane() {
               <SettingsRow label="Mouse wheel acceleration" description="Fullscreen CLIs do their own acceleration.">
                 <ToggleSwitch checked={wheelAcceleration} onChange={setWheelAcceleration} />
               </SettingsRow>
-              <SettingsRow label="Scroll thumb acceleration" description="Off is a strict 1:1 drag, so the top of the bar is the top of the buffer.">
+              <SettingsRow label="Scroll thumb acceleration" description="Off is a strict 1:1 drag.">
                 <ToggleSwitch checked={scrollThumbAcceleration} onChange={setScrollThumbAcceleration} />
               </SettingsRow>
             </SettingsSection>
@@ -3893,7 +4181,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Minimum contrast"
-                description="Nudges text color until it reads against its background."
+                description="Nudges text color until it reads."
               >
                 <SegmentedControl<"off" | "4.5" | "7">
                   options={[
@@ -3924,7 +4212,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Scrollback"
-                description="Dense layouts scale it down; applies when a pane is created."
+                description="Dense layouts scale it down. New panes only."
               >
                 <Dropdown<string>
                   value={String(scrollbackLines)}
@@ -3972,7 +4260,7 @@ export default function SettingsPane() {
               {notifEnabled && (
                 <SettingsRow
                   label="Notification sound"
-                  description="Each project gets its own sound — change it from the tab's right-click menu."
+                  description="Per project — set from the tab's right-click menu."
                 >
                   <ToggleSwitch checked={notifSoundEnabled} onChange={setNotifSoundEnabled} />
                 </SettingsRow>
@@ -4007,7 +4295,7 @@ export default function SettingsPane() {
               )}
               {notifEnabled && (
                 <SettingsRow
-                  label="Notification popups outside the app"
+                  label="Notification popups"
                   description="MADE's own cards, not Windows notifications."
                 >
                   <ToggleSwitch checked={notifOsPopupsEnabled} onChange={setNotifOsPopupsEnabled} />
@@ -4020,8 +4308,16 @@ export default function SettingsPane() {
               )}
               {notifEnabled && (
                 <SettingsRow
+                  label="Windows notifications (Action Center)"
+                  description="No test toast? Windows has MADE muted."
+                >
+                  <ActionCenterButtons />
+                </SettingsRow>
+              )}
+              {notifEnabled && (
+                <SettingsRow
                   label="Switch to notifying pane while minimized"
-                  description="Re-targets the tab and pane in the background — the window stays minimized."
+                  description="Re-targets in the background; stays minimized."
                 >
                   <ToggleSwitch checked={notifAutoSwitchMinimized} onChange={setNotifAutoSwitchMinimized} />
                 </SettingsRow>
@@ -4045,7 +4341,7 @@ export default function SettingsPane() {
             <SettingsRow label="Default GEMINI.md" description="Copied into new projects, for Gemini CLI.">
               <PathPicker value={defaultGeminiMdPath} onChange={setDefaultGeminiMdPath} filters={[{ name: "Markdown", extensions: ["md"] }]} />
             </SettingsRow>
-            <SettingsRow label="Single source + pointers by default" description="AGENTS.md holds the instructions; the others become pointers to it.">
+            <SettingsRow label="Single source + pointers by default" description="AGENTS.md holds the text; others point to it.">
               <ToggleSwitch checked={defaultUseSingleSourcePointers} onChange={setDefaultUseSingleSourcePointers} />
             </SettingsRow>
             <SettingsRow
@@ -4165,13 +4461,13 @@ export default function SettingsPane() {
             <SettingsSection id="texteditor" title="Text Editor">
               <SettingsRow
                 label="Wrap long lines"
-                description="The markdown preview always wraps, whatever this is set to."
+                description="The markdown preview always wraps."
               >
                 <ToggleSwitch checked={editorWordWrap} onChange={setEditorWordWrap} />
               </SettingsRow>
               <SettingsRow
                 label="Separate editor per project"
-                description="Off: one shared editor — closing it closes it everywhere."
+                description="Off: one shared editor for every project."
               >
                 <ToggleSwitch checked={perProjectEditor} onChange={setPerProjectEditor} />
               </SettingsRow>
@@ -4293,7 +4589,7 @@ export default function SettingsPane() {
         return (
           <>
             <SettingsSection id="ai" title="AI Sessions">
-              <SettingsRow label="Shadow AI provider" description="Subscription used for Promptifier and AI commit messages.">
+              <SettingsRow label="Shadow AI provider" description="Used by Promptifier and AI commits.">
                 <SegmentedControl
                   options={[
                     { value: "claude" as const, label: "Claude" },
@@ -4441,6 +4737,177 @@ export default function SettingsPane() {
                   </div>
                 </div>
               </SettingsRow>
+              {/* CLI folder "groups" — the folders keyed Jira projects' ticket
+                  panes spawn in. Global list; the new-ticket dialog offers
+                  these, the pane header shows the name. Name is edited inline;
+                  empty name falls back to the folder's basename. */}
+              <SettingsRow
+                vertical
+                label="CLI folders"
+                description="Folders ticket panes open in."
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, width: 380, maxWidth: "100%" }}>
+                  {jiraCliGroupsList.map((g) => (
+                    <div
+                      key={g.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "5px 8px",
+                        border: "1px solid var(--ezy-border)",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                        backgroundColor: "var(--ezy-surface)",
+                      }}
+                    >
+                      <div style={{ flex: "0 1 140px", minWidth: 0 }}>
+                        <TextInput
+                          value={g.name ?? ""}
+                          onChange={(v: string) => renameJiraCliGroup(g.id, v)}
+                          placeholder={folderBasename(g.path)}
+                        />
+                      </div>
+                      <span
+                        data-tooltip={g.path}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                          color: "var(--ezy-text-muted)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          direction: "rtl",
+                          textAlign: "left",
+                        }}
+                      >
+                        {g.path}
+                      </span>
+                      {/* Bare svg — a <button> inflates the 26px row. */}
+                      <svg
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Remove ${g.name ?? g.path}`}
+                        data-tooltip="Remove folder"
+                        onClick={() => removeJiraCliGroup(g.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            removeJiraCliGroup(g.id);
+                          }
+                        }}
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        style={{ color: "var(--ezy-text-muted)", cursor: "pointer", flexShrink: 0, outline: "none" }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-red)")}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ezy-text-muted)")}
+                      >
+                        <line x1="4" y1="4" x2="12" y2="12" />
+                        <line x1="12" y1="4" x2="4" y2="12" />
+                      </svg>
+                    </div>
+                  ))}
+                  <div>
+                    <button
+                      onClick={() => {
+                        void open({
+                          directory: true,
+                          multiple: false,
+                          title: "Select a folder for Jira CLI panes",
+                        }).then((picked) => {
+                          if (typeof picked === "string") addJiraCliGroup(picked);
+                        });
+                      }}
+                      style={{
+                        height: 24,
+                        padding: "0 10px",
+                        borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                        border: "none",
+                        background: "var(--ezy-accent-dim)",
+                        color: "#fff",
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                        fontWeight: 500,
+                        cursor: "pointer",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-hover)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-accent-dim)")}
+                    >
+                      Add folder
+                    </button>
+                  </div>
+                </div>
+              </SettingsRow>
+              {/* Request type → CLI folder links. A linked type auto-spawns
+                  its tickets' panes in the group's folder (overridable per row
+                  via the ticket hamburger) and rows show the GROUP name where
+                  the request type would appear. Catalogue fetched from JSM,
+                  unioned with types seen on tickets and existing links. */}
+              <SettingsRow
+                vertical
+                label="Request types"
+                description="Link each type to a CLI folder."
+              >
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, width: 380, maxWidth: "100%" }}>
+                  {allRequestTypes.length === 0 ? (
+                    <span
+                      style={{
+                        fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                        color: "var(--ezy-text-muted)",
+                      }}
+                    >
+                      No request types found yet — they load from Jira Service
+                      Management once credentials are set.
+                    </span>
+                  ) : (
+                    allRequestTypes.map((rt) => (
+                      <div
+                        key={rt}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "5px 8px",
+                          border: "1px solid var(--ezy-border)",
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                          backgroundColor: "var(--ezy-surface)",
+                        }}
+                      >
+                        <span
+                          data-tooltip={rt}
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                            color: "var(--ezy-text)",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {rt}
+                        </span>
+                        <Dropdown
+                          value={jiraRequestTypeGroups[rt] ?? ""}
+                          onChange={(v) => setJiraRequestTypeGroup(rt, v || undefined)}
+                          width={160}
+                          options={[
+                            { value: "", label: "Not linked" },
+                            ...jiraCliGroupsList.map((g) => ({
+                              value: g.id,
+                              label: g.name?.trim() || folderBasename(g.path),
+                            })),
+                          ]}
+                        />
+                      </div>
+                    ))
+                  )}
+                </div>
+              </SettingsRow>
               {/* Email and token are ONE row: neither works without the other,
                   and the API is either configured or it isn't. Vertical so the
                   two fields get the full width instead of fighting the label
@@ -4456,23 +4923,160 @@ export default function SettingsPane() {
                     alignItems: "center",
                     gap: 8,
                     width: "100%",
-                    flexWrap: "wrap",
                   }}
                 >
-                  <TextInput
-                    value={jiraApiEmail}
-                    onChange={setJiraApiEmail}
-                    placeholder="you@company.com"
-                  />
-                  <TextInput
-                    value={jiraApiToken}
-                    onChange={setJiraApiToken}
-                    placeholder="API token"
-                    password
-                  />
+                  {/* Grid, not a flex column: TextInput carries a horizontal
+                      flex-basis that a column container would read as HEIGHT.
+                      Test sits beside the pair, centered across both — one
+                      button tests the pair, not either field. */}
+                  <div style={{ display: "grid", gap: 8, flex: "0 1 260px", minWidth: 0 }}>
+                    <TextInput
+                      value={jiraApiEmail}
+                      onChange={setJiraApiEmail}
+                      placeholder="you@company.com"
+                    />
+                    <TextInput
+                      value={jiraApiToken}
+                      onChange={setJiraApiToken}
+                      placeholder="API token"
+                      password
+                    />
+                  </div>
                   <TestButton onClick={() => void testJiraCreds()} state={jiraCredPing} />
                 </div>
               </SettingsRow>
+              {/* Per-SITE logins. A site listed here talks to Jira with its own
+                  email + token instead of the main account — for projects on a
+                  second Jira instance under a different login. Per SITE, not
+                  per project: assigned/notification polling is one query per
+                  site under one account. Row appears once multi-site (or an
+                  override) exists. */}
+              {(jiraSiteAccountsList.length > 0 || jiraSitesList.length > 1) && (
+                <SettingsRow
+                  vertical
+                  label="Site accounts"
+                  description="Sites with their own login."
+                >
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, width: 380, maxWidth: "100%" }}>
+                    {jiraSiteAccountsList.map(([site, account]) => (
+                      <div
+                        key={site}
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 6,
+                          padding: "6px 8px",
+                          border: "1px solid var(--ezy-border)",
+                          borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                          backgroundColor: "var(--ezy-surface)",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span
+                            data-tooltip={site}
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                              fontWeight: 600,
+                              color: "var(--ezy-text)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {jiraSiteName(site) ?? site}
+                          </span>
+                          <TestButton
+                            onClick={() => void testSiteAccount(site)}
+                            state={siteAccountPings[site] ?? { status: "idle" }}
+                          />
+                          {/* Bare svg — a <button> inflates the row. */}
+                          <svg
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`Remove ${site} login`}
+                            data-tooltip="Remove — the site reverts to the main account"
+                            onClick={() => setJiraSiteAccount(site, undefined)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setJiraSiteAccount(site, undefined);
+                              }
+                            }}
+                            width="14"
+                            height="14"
+                            viewBox="0 0 16 16"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            style={{ color: "var(--ezy-text-muted)", cursor: "pointer", flexShrink: 0, outline: "none" }}
+                            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-red)")}
+                            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ezy-text-muted)")}
+                          >
+                            <line x1="4" y1="4" x2="12" y2="12" />
+                            <line x1="12" y1="4" x2="4" y2="12" />
+                          </svg>
+                        </div>
+                        <div style={{ display: "grid", gap: 6 }}>
+                          <TextInput
+                            value={account.email}
+                            onChange={(v: string) =>
+                              // Credential edits drop the captured accountId —
+                              // it belongs to the OLD pair; Test re-captures.
+                              setJiraSiteAccount(site, { email: v, token: account.token })
+                            }
+                            placeholder="email@company.com"
+                          />
+                          <TextInput
+                            value={account.token}
+                            onChange={(v: string) =>
+                              setJiraSiteAccount(site, { email: account.email, token: v })
+                            }
+                            placeholder="API token"
+                            password
+                          />
+                        </div>
+                      </div>
+                    ))}
+                    {jiraSitesList.some((s) => !(jiraSiteAccounts ?? {})[s]) && (
+                      <div className="flex items-center gap-2">
+                        <Dropdown
+                          value={newSiteAccountSite}
+                          onChange={setNewSiteAccountSite}
+                          width={220}
+                          placeholder="Choose a site…"
+                          options={jiraSitesList
+                            .filter((s) => !(jiraSiteAccounts ?? {})[s])
+                            .map((s) => ({ value: s, label: jiraSiteName(s) ?? s }))}
+                        />
+                        <button
+                          onClick={() => {
+                            if (!newSiteAccountSite) return;
+                            setJiraSiteAccount(newSiteAccountSite, { email: "", token: "" });
+                            setNewSiteAccountSite("");
+                          }}
+                          disabled={!newSiteAccountSite}
+                          style={{
+                            height: 24,
+                            padding: "0 10px",
+                            borderRadius: "calc(var(--ezy-radius-scale, 1) * 5px)",
+                            border: "none",
+                            background: newSiteAccountSite ? "var(--ezy-accent-dim)" : "var(--ezy-surface)",
+                            color: newSiteAccountSite ? "#fff" : "var(--ezy-text-muted)",
+                            fontSize: "calc(var(--ezy-font-scale, 1) * 12px)",
+                            fontWeight: 500,
+                            cursor: newSiteAccountSite ? "pointer" : "not-allowed",
+                          }}
+                        >
+                          Add login
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </SettingsRow>
+              )}
               {Object.entries(jiraSiteAuthErrors).map(([siteId, msg]) => (
                 <div
                   key={siteId}
@@ -4557,14 +5161,15 @@ export default function SettingsPane() {
                 description="Second line under the ticket key."
               >
                 <div className="flex items-center gap-3" style={{ flexWrap: "wrap" }}>
+                  {/* Same order as the columns render on the row. */}
                   {(
                     [
-                      ["organization", "Organization"],
                       ["requestType", "Request type"],
+                      ["organization", "Organization"],
+                      ["reporter", "Reporter"],
                       ["updated", "Updated"],
                       ["created", "Created"],
                       ["priority", "Priority"],
-                      ["reporter", "Reporter"],
                     ] as const
                   ).map(([k, label]) => (
                     <label
@@ -4803,7 +5408,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Sub-ticket mode"
-                description="Stacked shows a ticket and its sub-tickets at once, each foldable to its header."
+                description="Stacked shows all sub-tickets at once."
               >
                 <SegmentedControl<"default" | "stacked">
                   options={[
@@ -4816,7 +5421,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Detect pasted tickets"
-                description="A ticket link pasted into the address bar opens as its own ticket instead of replacing this one."
+                description="Pasted ticket links open as their own ticket."
               >
                 <ToggleSwitch
                   checked={jiraDetectPastedTickets}
@@ -4825,7 +5430,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Switch to detected ticket"
-                description="Manual opens it in the background and offers a Switch button."
+                description="Manual opens it in the background."
               >
                 <SegmentedControl<"auto" | "manual">
                   options={[
@@ -4838,7 +5443,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Detected ticket is archived"
-                description="Applies when every conversation of the detected ticket is archived."
+                description="When all its conversations are archived."
               >
                 <SegmentedControl<"resume" | "new">
                   options={[
@@ -4851,7 +5456,7 @@ export default function SettingsPane() {
               </SettingsRow>
               <SettingsRow
                 label="Default Jira CLAUDE.md"
-                description="Copied into new Jira projects unless the source folder already has one."
+                description="Copied into new Jira projects."
               >
                 <PathPicker
                   value={defaultJiraClaudeMdPath}
@@ -4896,6 +5501,12 @@ export default function SettingsPane() {
                 description="Off: only the left edge carries the ticket color."
               >
                 <ToggleSwitch checked={jiraRowFullColor} onChange={setJiraRowFullColor} />
+              </SettingsRow>
+              <SettingsRow
+                label="Ticket summaries"
+                description="Off: the summary is the row's hover tooltip."
+              >
+                <ToggleSwitch checked={jiraRowShowSummary} onChange={setJiraRowShowSummary} />
               </SettingsRow>
             </SettingsSection>
           </>
@@ -5211,6 +5822,7 @@ export default function SettingsPane() {
       </div>
 
       {showClearModal && <ClearDataModal onClose={() => setShowClearModal(false)} />}
+      {import.meta.env.DEV && showDebugResetModal && <DebugResetModal onClose={() => setShowDebugResetModal(false)} />}
 
       {/* Reload confirmation — same shape as TabBar's quit dialog so the two
           destructive confirmations look and behave identically. */}
