@@ -219,6 +219,7 @@ Expected last line:
 - **NEVER use `font-mono` at small font sizes** (text-[9px], text-[10px], etc.) — unreadable. Use default/system font with `tabular-nums` if alignment is needed.
 - **NEVER use amber/yellow/blue colors** (no `amber-*`, `yellow-*`, `blue-*` Tailwind classes) — use white, neutral, emerald, red, cyan, or other palette colors instead.
 - **UI compliance audit on every file edit** — when modifying ANY `.tsx` file, scan the ENTIRE file for banned patterns (tinted badges, emojis, banned colors, dashed borders, `animate-pulse/ping`, `font-mono` at small sizes) BEFORE finishing. Existing code in the same file can violate rules too.
+- **Settings descriptions: none by default, VERY short when needed** — a `SettingsRow` gets description text only when the label cannot carry the meaning, and it must stay under ~50 characters. Longer text clips under the row's control. Audit existing descriptions whenever touching SettingsPane.tsx.
 - **Tab switch must scroll to top**: Every `setView`/`setActiveTab` handler must include `window.scrollTo(0, 0)`.
 - **Pagination must scroll to top**: Every page-change handler in pagination controls must include `window.scrollTo(0, 0)`.
 

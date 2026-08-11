@@ -15,6 +15,7 @@
         "title": "MADE",
         "width": 1280,
         "height": 800,
+        "center": true,
         "decorations": false,
         "shadow": false,
         "resizable": false,

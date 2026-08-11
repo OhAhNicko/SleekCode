@@ -145,6 +145,12 @@ export default function TooltipHost() {
     // during the dwell, and a stale rect would point the arrow at nothing.
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) return;
+    // TEMP diagnostic (tooltip-overflow bug): remove once resolved.
+    void import("@tauri-apps/api/core").then(({ invoke }) =>
+      invoke("debug_log_line", {
+        line: `[tipdbg-main] text="${text.slice(0, 24)}" anchor=${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.right)},${Math.round(r.bottom)} vw=${window.innerWidth} vh=${window.innerHeight} dpr=${window.devicePixelRatio}`,
+      }).catch(() => {}),
+    );
     visibleRef.current = true;
     setTip({
       anchor: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
