@@ -1,54 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <!--
-    MADE app icon, in the Heads visual language.
-
-    Sampled from the same source as the Heads theme (src/lib/themes.ts): the
-    Heads POS app. Its grammar is three rules, and this file follows all three —
-      1. Tiles separate by FILL. No strokes, no glows, no drop shadows.
-      2. Colour is RATIONED. A few tiles carry a pastel; the rest sit inert grey.
-      3. Corners are pillowy — the same 2x radius scale the theme applies.
-    The chevron is not knocked out with a <mask>; it is a #131313 stroked path
-    drawn over the mint tile, on a #131313 canvas, which reads identically and
-    keeps the file renderable by every rasterizer.
-
-    Layout: a 3x3 tile grid on a lifted panel. The accent tile spans 2x2 and
-    carries the prompt mark, so the chevron still survives the 16px taskbar
-    size; the remaining cells run the rest of the palette — the three other
-    pastels, then the two inert greys that make the rationing legible.
-
-    Every grey step in the theme's surface ramp is present and separates by at
-    least one step from what it sits on: #131313 canvas, #1d1d1d panel, #323232
-    and #454545 tiles. Do NOT use #272727 for a tile here — it is one step off
-    the panel and disappears at icon sizes, which reads as a missing tile.
-
-    Authoring constraints (scripts/generate-icons.py renders this via headless
-    Chrome, but keep the fallback path viable):
-      - No 8-digit #RRGGBBAA hex. macOS `sips` renders it as opaque black.
-        Use fill-opacity / stop-opacity instead.
-      - No live <text>. Rasterizers disagree on glyph positions; convert to paths.
-    Regenerate every raster with:  npm run icons
+    MADE app icon, variant C: "Stacked panes" — the picker default.
+    Four pillowy cards stacked in depth: coral, pink, periwinkle receding
+    behind the mint pane that carries the prompt mark. Panes on panes,
+    which is what MADE is.
   -->
-
-  <!-- canvas -->
   <rect x="6" y="6" width="500" height="500" rx="112" fill="#131313"/>
-
-  <!-- panel: the lifted working area the tile grid sits on -->
-  <rect x="28" y="28" width="456" height="456" rx="100" fill="#1d1d1d"/>
-
-  <!-- grid: 3 cols x 3 rows, cell 118, gap 25, origin 54 -->
-
-  <!-- accent tile, spanning 2x2, carrying the prompt mark -->
-  <rect x="54" y="54" width="261" height="261" rx="58" fill="#80e2ad"/>
-  <path d="M 152 133 L 217 184.5 L 152 236"
-        fill="none" stroke="#131313" stroke-width="33"
-        stroke-linecap="round" stroke-linejoin="round"/>
-
-  <!-- right column -->
-  <rect x="340" y="54"  width="118" height="118" rx="35" fill="#92bcff"/>
-  <rect x="340" y="197" width="118" height="118" rx="35" fill="#f4b4d1"/>
-
-  <!-- bottom row: the last pastel, then the inert greys -->
-  <rect x="54"  y="340" width="118" height="118" rx="35" fill="#fd8183"/>
-  <rect x="197" y="340" width="118" height="118" rx="35" fill="#454545"/>
-  <rect x="340" y="340" width="118" height="118" rx="35" fill="#323232"/>
+  <rect x="158" y="76" width="300" height="300" rx="66" fill="#fd8183"/>
+  <rect x="124" y="110" width="300" height="300" rx="66" fill="#f4b4d1"/>
+  <rect x="90" y="144" width="300" height="300" rx="66" fill="#92bcff"/>
+  <rect x="56" y="178" width="300" height="300" rx="66" fill="#80e2ad"/>
+  <path d="M 168 269 L 243 328 L 168 387"
+        fill="none" stroke="#131313" stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

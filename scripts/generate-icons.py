@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Regenerate the MADE desktop icon set from src-tauri/icons/made-logo.svg.
+"""Regenerate the MADE desktop icon set from the current identity SVG
+(variants/icon-c.svg — see the --svg default's comment).
 
-macOS only. Zero third-party dependencies: uses Google Chrome (headless) as the
-SVG rasterizer and the Python standard library for PNG/ICO/ICNS packing.
+macOS or Windows. Zero third-party dependencies: uses a headless Chromium
+(Chrome on macOS, Edge/Chrome on Windows) as the SVG rasterizer and the
+Python standard library for PNG/ICO/ICNS packing. The render sizes are
+self-verified, so a rasterizer that mis-sizes the viewport fails loudly
+instead of shipping clipped artwork.
 
 Usage:  python3 scripts/generate-icons.py [--svg PATH] [--out DIR] [--check]
 """
@@ -15,6 +19,11 @@ CHROME_CANDIDATES = [
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    # Windows: Edge is Chromium and preinstalled everywhere; Chrome if present.
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 ]
 
 CHROME_FLAGS = [
