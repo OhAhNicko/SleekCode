@@ -21,6 +21,30 @@ let retriedEmptyResolve = false;
 let readyResolve: () => void;
 export const wslReady = new Promise<void>((resolve) => { readyResolve = resolve; });
 
+/**
+ * Distros registered by container tooling (Docker Desktop, Rancher Desktop,
+ * Podman). They are minimal busybox images — no bash login shell, no CLIs —
+ * and never a valid terminal target, yet any of them can end up as wsl.exe's
+ * DEFAULT distro (registered first, or left as a stale default after an
+ * Ubuntu reinstall). Hidden from the Settings picker and skipped by the
+ * default-distro fallback below.
+ */
+const UTILITY_DISTRO = /^(docker-desktop|rancher-desktop|podman-machine)/i;
+
+export function isUtilityDistro(name: string): boolean {
+  return UTILITY_DISTRO.test(name.trim());
+}
+
+/** First installed distro that is a real terminal target, or null. */
+async function firstRealDistro(): Promise<string | null> {
+  try {
+    const distros = await invoke<string[]>("wsl_list_distros");
+    return distros.find((d) => !isUtilityDistro(d)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function loadCache(): WslCliCache | null {
   if (cache) return cache;
   try {
@@ -51,10 +75,33 @@ export async function resolveWslCliPaths(): Promise<void> {
     // Resolve INSIDE the selected distro (Settings > Terminal > Backend) —
     // CLI install paths differ per distro. null = wsl.exe's default distro.
     const selectedDistro = useAppStore.getState().wslDistro;
-    const result = await invoke<Record<string, string>>("wsl_resolve_cli_env", {
-      cliNames: ["claude", "codex", "gemini"],
-      distro: selectedDistro,
-    });
+    let result: Record<string, string>;
+    try {
+      result = await invoke<Record<string, string>>("wsl_resolve_cli_env", {
+        cliNames: ["claude", "codex", "gemini"],
+        distro: selectedDistro,
+      });
+      // Landing in a container utility distro is the failure case even when
+      // bash happened to run — never pin spawns to docker-desktop.
+      if (!selectedDistro && isUtilityDistro(result["DISTRO"] || "")) {
+        throw new Error(`wsl.exe default distro "${result["DISTRO"]}" is a container utility distro`);
+      }
+    } catch (e) {
+      // "Default" mode and the resolve died: wsl.exe's default is typically a
+      // utility distro (docker-desktop has no bash) or a stale registration,
+      // and retrying it can never succeed. Resolve in the first real installed
+      // distro instead — caching its DISTRO below pins pane spawns and the
+      // pool warm to it for the TTL, so terminals keep working. An explicit
+      // Settings override never falls back; that would silently ignore the
+      // user's choice.
+      const fallback = selectedDistro ? null : await firstRealDistro();
+      if (!fallback) throw e;
+      console.warn(`[wsl-cache] default distro failed (${String(e)}) — retrying in "${fallback}"`);
+      result = await invoke<Record<string, string>>("wsl_resolve_cli_env", {
+        cliNames: ["claude", "codex", "gemini"],
+        distro: fallback,
+      });
+    }
     // Distro changed mid-flight (Settings clears the cache, then re-resolves):
     // these paths belong to the OLD distro — saving them would poison the fast
     // spawn path until the 24h TTL. Drop them and resolve again.
