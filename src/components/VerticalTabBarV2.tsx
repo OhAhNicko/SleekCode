@@ -264,7 +264,6 @@ export default function VerticalTabBarV2() {
     recentBtnRef,
     showRecentMenu,
     setShowRecentMenu,
-    canOpenRecent,
     handlePlusClick,
     launchModals,
   } = useTabLaunchMenu({
@@ -1464,7 +1463,7 @@ export default function VerticalTabBarV2() {
           onMouseEnter={(e) => {
             cancelLaunchHoverClose();
             // Same hover-to-open setting as the add-pane half next door.
-            if (hoverOpenMenus && !showRecentMenu && canOpenRecent) {
+            if (hoverOpenMenus && !showRecentMenu) {
               setShowAddPaneMenu(false);
               setShowRecentMenu(true);
               return;

@@ -71,10 +71,28 @@ export function useTabLaunchMenu(opts: UseTabLaunchMenuOptions) {
   const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
   const [showJiraProjectModal, setShowJiraProjectModal] = useState(false);
 
-  /** Same gate the "+" button's own click handler uses: with nothing to list,
-   *  the button is a plain "new tab" action and must not sprout a menu. */
-  const canOpenRecent =
-    recentProjects.length > 0 || !!projectsDir || servers.length > 0;
+  // The menu used to be gated on "is there anything to list" —
+  // `recentProjects.length || projectsDir || servers.length`. That predated the
+  // menu's contents: it has since grown a Create section (New Project, New Jira
+  // Project) and an Open section (Browse) that depend on none of those three.
+  // On a FRESH INSTALL all three were false, so "+" fell straight through to
+  // the folder picker and "New Jira Project…" — which lives only in this menu —
+  // was unreachable until a non-Jira project already existed. No gate now: the
+  // menu always has actionable rows, so "+" always raises it.
+
+  /** Anchor override: the startup screen's button raises this same menu, and it
+   *  must open at the button the user actually clicked rather than at the tab
+   *  bar's "+" across the window. Null anchors back to the "+". */
+  const splashAnchorRef = useRef<HTMLElement | null>(null);
+  const [anchorIsSplash, setAnchorIsSplash] = useState(false);
+
+  /** Every caller outside this hook opens the menu at the "+" — reset the
+   *  splash override so a stale anchor from an earlier splash click can't
+   *  misplace it (all consumers pass a plain boolean, never an updater). */
+  const setRecentMenuOpen = useCallback((next: boolean) => {
+    setAnchorIsSplash(false);
+    setShowRecentMenu(next);
+  }, []);
 
   const handleNewLocalTab = useCallback(() => {
     window.dispatchEvent(new Event("made:new-tab"));
@@ -149,7 +167,7 @@ export function useTabLaunchMenu(opts: UseTabLaunchMenuOptions) {
     id: "tabbar-recent-menu",
     kind: "recent-menu",
     open: showRecentMenu,
-    anchorRef: recentBtnRef,
+    anchorRef: anchorIsSplash ? splashAnchorRef : recentBtnRef,
     payload: showRecentMenu
       ? {
           projects: recentProjects.map((project) => {
@@ -307,12 +325,28 @@ export function useTabLaunchMenu(opts: UseTabLaunchMenuOptions) {
     return () => window.removeEventListener("made:open-recent", handler);
   }, [recentProjects, quickOpenProject, setPendingDir]);
 
-  /** Click handler for the "+" button: menu when there is something to list,
-   *  otherwise straight to a new tab. */
+  /** Click handler for the "+" button: always the menu. The folder picker is
+   *  still one click away inside it, under Open → "Browse folder…". */
   const handlePlusClick = useCallback(() => {
-    if (canOpenRecent) setShowRecentMenu((v) => !v);
-    else handleNewLocalTab();
-  }, [canOpenRecent, handleNewLocalTab]);
+    setAnchorIsSplash(false);
+    setShowRecentMenu((v) => !v);
+  }, []);
+
+  // The startup screen's button raises this menu too (there is no "+" to find
+  // before the first tab exists). It passes its own element as the anchor so the
+  // menu opens under the button that was clicked. Listener lives here, in the
+  // single mounted tab bar, so it exists in every bar mode — horizontal, v1
+  // strip and v2 strip all mount this hook.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const anchor = (e as CustomEvent).detail?.anchor as HTMLElement | undefined;
+      splashAnchorRef.current = anchor ?? null;
+      setAnchorIsSplash(!!anchor);
+      setShowRecentMenu((v) => !v);
+    };
+    window.addEventListener("made:open-launch-menu", handler);
+    return () => window.removeEventListener("made:open-launch-menu", handler);
+  }, []);
 
   const launchModals: ReactNode = (
     <>
@@ -341,8 +375,7 @@ export function useTabLaunchMenu(opts: UseTabLaunchMenuOptions) {
   return {
     recentBtnRef,
     showRecentMenu,
-    setShowRecentMenu,
-    canOpenRecent,
+    setShowRecentMenu: setRecentMenuOpen,
     handlePlusClick,
     quickOpenProject,
     launchModals,

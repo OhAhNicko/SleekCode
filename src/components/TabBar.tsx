@@ -92,7 +92,6 @@ export default function TabBar() {
     recentBtnRef,
     showRecentMenu,
     setShowRecentMenu,
-    canOpenRecent,
     handlePlusClick,
     launchModals,
   } = useTabLaunchMenu({
@@ -280,12 +279,9 @@ export default function TabBar() {
   // gets no moves at all — which is exactly right, since silence there means
   // "not over a button", and the overlay's own `__hoverin__` holds the menu
   // open in that case.
-  const hoverStateRef = useRef({ showRecentMenu, showNewTabMenu, canOpenRecent: false });
+  const hoverStateRef = useRef({ showRecentMenu, showNewTabMenu });
   hoverStateRef.current.showRecentMenu = showRecentMenu;
   hoverStateRef.current.showNewTabMenu = showNewTabMenu;
-  // Same gate the + button's own handler uses: with nothing to list, that
-  // button is a plain "new tab" action and must not sprout a menu on hover.
-  hoverStateRef.current.canOpenRecent = canOpenRecent;
   useEffect(() => {
     if (!hoverOpenAddPaneMenu) return;
     if (!showRecentMenu && !showNewTabMenu) return;
@@ -309,7 +305,7 @@ export default function TabBar() {
       if (onChevron && !st.showNewTabMenu) {
         setShowRecentMenu(false);
         setShowNewTabMenu(true);
-      } else if (onPlus && !st.showRecentMenu && st.canOpenRecent) {
+      } else if (onPlus && !st.showRecentMenu) {
         setShowNewTabMenu(false);
         setShowRecentMenu(true);
       }
@@ -1011,7 +1007,7 @@ export default function TabBar() {
               // Same hover-to-open setting as the add-pane chevron next door;
               // each button closes the other's menu, so moving the pointer
               // between the two is an instant switch.
-              if (hoverOpenAddPaneMenu && !showRecentMenu && canOpenRecent) {
+              if (hoverOpenAddPaneMenu && !showRecentMenu) {
                 setShowNewTabMenu(false);
                 setShowRecentMenu(true);
                 return;

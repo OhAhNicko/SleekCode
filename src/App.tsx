@@ -1530,9 +1530,21 @@ export default function App() {
                   </div>
                 </div>
               )}
+              {/* Raises the "+" launcher menu rather than jumping straight to
+                  the folder picker: on a fresh install this is the only visible
+                  entry point, and the picker alone hid every other way to start
+                  — New Project, New Jira Project, a remote server. Passes itself
+                  as the anchor so the menu opens under this button. The listener
+                  lives in useTabLaunchMenu, which every tab bar mode mounts. */}
               <button
                 className="made-splash-rise"
-                onClick={() => window.dispatchEvent(new Event("made:new-tab"))}
+                onClick={(e) =>
+                  window.dispatchEvent(
+                    new CustomEvent("made:open-launch-menu", {
+                      detail: { anchor: e.currentTarget },
+                    }),
+                  )
+                }
                 style={{
                   padding: "9px 22px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)", position: "relative",
                   border: "1px solid var(--ezy-border)",
@@ -1540,11 +1552,17 @@ export default function App() {
                   fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 500, cursor: "pointer",
                   letterSpacing: "0.02em",
                   fontFamily: '"Sora Variable", system-ui, sans-serif',
+                  display: "inline-flex", alignItems: "center", gap: 8,
                 }}
                 onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--ezy-accent)"}
                 onMouseLeave={(e) => e.currentTarget.style.borderColor = "var(--ezy-border)"}
               >
                 Open Project
+                {/* The one signal that this reveals choices instead of opening a
+                    dialog — without it the menu is a surprise. */}
+                <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                  <path d="M1.5 3.5L5 7L8.5 3.5" stroke="var(--ezy-text-muted)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
               </button>
             </div>
           )}

@@ -7,6 +7,7 @@ import { getQuickOpenServer } from "../lib/dev-server-lookup";
 import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
+import { useTabLaunchMenu } from "../hooks/useTabLaunchMenu";
 import ClipboardImageStrip from "./ClipboardImageStrip";
 import VoiceMicButton from "./VoiceMicButton";
 import { VOICE_ENABLED } from "../lib/voice/feature-flag";
@@ -51,6 +52,14 @@ export default function VerticalTabBar() {
   const setCompact = useAppStore((s) => s.setVerticalTabBarCompact);
   const dockedRight = useAppStore((s) => s.sidebarSide) === "right";
   const stripWidth = compact ? COMPACT_WIDTH : WIDE_WIDTH;
+
+  // The "+" launcher menu and its modals. Only one bar is mounted at a time
+  // (App renders either TabBar or one of the two strips), so this stays the
+  // single owner of the overlay popup id and the made:open-launch-menu listener
+  // the startup screen's button depends on. No hover-to-open here — this strip
+  // has no such setting, unlike TabBar and the v2 strip.
+  const { recentBtnRef, showRecentMenu, handlePlusClick, launchModals } =
+    useTabLaunchMenu({ hoverTracking: false });
 
   const [isMaximized, setIsMaximized] = useState(false);
   useEffect(() => {
@@ -183,6 +192,7 @@ export default function VerticalTabBar() {
     : false;
 
   return (
+    <>
     <div
       style={{
         width: stripWidth,
@@ -292,10 +302,17 @@ export default function VerticalTabBar() {
           {/* App-owned drag path; avoids Windows' native frame during restore drags. */}
           {!compact && <div onPointerDown={startCustomWindowDrag} onDoubleClick={toggleMaximizeOnDoubleClick} style={{ flex: 1 }} />}
 
-          {/* New tab (far right of controls row) */}
+          {/* New tab (far right of controls row) — raises the same launcher menu
+              as the horizontal bar and the v2 strip. This used to fire
+              made:new-tab straight to the folder picker, so this strip offered
+              no route to New Project / New Jira Project / a remote server at
+              all; the picker is still inside the menu under Open. */}
           <div
-            onClick={() => window.dispatchEvent(new Event("made:new-tab"))}
-           
+            ref={recentBtnRef}
+            onClick={handlePlusClick}
+            role="button"
+            aria-label="New tab"
+            aria-expanded={showRecentMenu}
             style={{
               width: compact ? 20 : 32,
               display: "flex",
@@ -304,11 +321,14 @@ export default function VerticalTabBar() {
               cursor: "pointer",
               transition: "background-color 120ms ease",
               flexShrink: 0,
+              backgroundColor: showRecentMenu ? "rgba(255,255,255,0.06)" : "transparent",
             }}
             onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)")}
-            onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
+            onMouseLeave={(e) => {
+              if (!showRecentMenu) e.currentTarget.style.backgroundColor = "transparent";
+            }}
           >
-            <FaPlus size={11} color="var(--ezy-text-muted)" />
+            <FaPlus size={11} color={showRecentMenu ? "var(--ezy-text)" : "var(--ezy-text-muted)"} />
           </div>
         </div>
 
@@ -912,5 +932,9 @@ export default function VerticalTabBar() {
         </div>
       </div>
     </div>
+    {/* Remote browser / New Project / New Jira Project modals — owned by
+        useTabLaunchMenu so every bar hosts the same ones. */}
+    {launchModals}
+    </>
   );
 }

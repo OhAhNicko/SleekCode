@@ -3190,7 +3190,9 @@ function RecentMenu({
         onMouseEnter={p.hoverTracking ? () => act("__hoverin__", false) : undefined}
         onMouseLeave={p.hoverTracking ? () => act("__hoverout__", false) : undefined}
       >
-        <div style={{ ...headerStyle, order: 30 }}>Recent Projects</div>
+        {(p.projects ?? []).length > 0 && (
+          <div style={{ ...headerStyle, order: 30 }}>Recent Projects</div>
+        )}
         {(p.projects ?? []).map((project) => (
           <div
             key={project.key}
@@ -3413,15 +3415,19 @@ function RecentMenu({
           </div>
         ))}
         {/* Divider ABOVE the recent list (order 29 puts it just before the
-            order-30 header at the menu's bottom). */}
-        <div
-          style={{
-            height: 1,
-            background: "var(--ezy-border, rgba(255,255,255,0.12))",
-            margin: "2px 0",
-            order: 29,
-          }}
-        />
+            order-30 header at the menu's bottom). Both it and the header are
+            omitted on a fresh install — an empty section would leave the menu
+            trailing off into a heading with nothing under it. */}
+        {(p.projects ?? []).length > 0 && (
+          <div
+            style={{
+              height: 1,
+              background: "var(--ezy-border, rgba(255,255,255,0.12))",
+              margin: "2px 0",
+              order: 29,
+            }}
+          />
+        )}
         {/* CREATE — new work, locally or on a server (the modals ask where). */}
         <div style={headerStyle}>Create</div>
         <div
