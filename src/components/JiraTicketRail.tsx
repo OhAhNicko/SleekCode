@@ -16,7 +16,11 @@ import { relativeShort } from "../lib/relative-time";
 import JiraStatusBadge, { statusBadgeWidth } from "./jira/JiraStatusBadge";
 import JiraRowMeta, { JiraTitleFacts, buildRowCells } from "./jira/JiraRowMeta";
 import { askForTicket, openJiraTicket } from "../lib/jira-project";
-import { registerSurfaceActions, unregisterSurfaceActions } from "../lib/surface-actions";
+import {
+  registerSurfaceActions,
+  runSurfaceAction,
+  unregisterSurfaceActions,
+} from "../lib/surface-actions";
 import {
   buildJiraTicketActions,
   buildJiraAssignedActions,
@@ -27,6 +31,7 @@ import { useJiraNotifyStore } from "../store/jiraNotifyStore";
 import { jiraQK, siteForTabIn } from "../lib/jira-sites";
 import { chooseOption } from "../lib/prompt-modal";
 import { resolveTicketColor, contrastTextFor } from "../lib/jira-colors";
+import { requestTypeDisplay } from "../lib/jira-groups";
 import { openCompactRowMenu } from "../lib/compact-row-menu";
 import {
   useJiraTicketRows,
@@ -72,6 +77,18 @@ const unseenDot = () => (
   />
 );
 
+/** Empty stand-in for an unseen dot (or other fixed affordance) the row
+ *  doesn't have. The slot is ALWAYS reserved so the ticket key starts at the
+ *  same x on every row — without this, rows without updates shifted left and
+ *  the key column drifted. */
+const slotSpacer = (w: number) => <span style={{ width: w, flexShrink: 0 }} />;
+
+/** Insets that align the details line with the title line: LEFT puts the
+ *  columns exactly under the KEY — dot slot (6) + gap (6); RIGHT ends the
+ *  "when" cluster under the badge's right edge — hamburger (22) + gap (6). */
+const META_LEFT_INSET = 12;
+const META_RIGHT_INSET = 28;
+
 /** The three list flavours the rail can render. "assignedDone" reuses the
  *  assigned surface for menus — a resolved ticket is still one of yours. */
 type JiraListKind = "assigned" | "assignedDone" | "unassigned";
@@ -88,9 +105,11 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
   const [refreshing, setRefreshing] = useState(false);
   const jiraTicketColors = useAppStore((s) => s.jiraTicketColors);
   const fullColor = useAppStore((s) => s.jiraRowFullColor ?? false);
+  const cliGroups = useAppStore((s) => s.jiraCliGroups ?? []);
+  const requestTypeGroups = useAppStore((s) => s.jiraRequestTypeGroups ?? {});
   // Assigned-tickets mode (Settings > Jira). The rail tab lives in the
   // session-only jiraNotifyStore so a notification click can switch it.
-  const assignedMode = useAppStore((s) => s.jiraAssignedMode ?? false);
+  const assignedMode = useAppStore((s) => s.jiraAssignedMode ?? true);
   const assignedTickets = useAppStore((s) => s.jiraAssignedTickets);
   const jiraSites = useAppStore((s) => s.jiraSites ?? []);
   const tabSite = useAppStore((s) => siteForTabIn(s, tab));
@@ -120,8 +139,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     toggleGroupCollapsed,
     collapsedBuckets,
     toggleBucketCollapsed,
-    expandedRows,
-    toggleRowExpanded,
+    showSummary,
     handleRowClick,
     handleRowClickRef,
     assignedGroups,
@@ -156,27 +174,45 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
   const sortFor = railTab === "unassigned" ? "unassigned" : "assigned";
   const activeSort = sort[sortFor] ?? DEFAULT_JIRA_SORT[sortFor];
 
-  // Drag-to-resize. Pointer capture on the handle, so a fast drag that leaves
-  // the 4px strip keeps resizing instead of dropping the gesture.
+  // Drag-to-resize. DOCUMENT-level listeners while armed, deliberately NO
+  // pointer capture: capture stuck on the handle whenever the OS mouse stream
+  // was stolen mid-drag (a native pane HWND eating the release), and a stuck
+  // capture retargets every later click to the handle — a frozen rail where
+  // nothing in the sidebar responds. Document listeners keep a fast drag that
+  // leaves the 4px strip resizing (the reorder mechanic below works the same
+  // way), and the `buttons` check makes ANY lost-release path self-heal: the
+  // first mouse move without the primary button held ends the drag.
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
   const onResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
     e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
     dragRef.current = { startX: e.clientX, startW: railWidth };
   };
-  const onResizePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    const d = dragRef.current;
-    if (!d) return;
-    // The rail is on the LEFT of the canvas, so rightward drag widens it.
-    setJiraRailWidth(widthKey, d.startW + (e.clientX - d.startX));
-  };
-  const endResize = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) return;
-    dragRef.current = null;
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-  };
+  useEffect(() => {
+    const end = () => {
+      dragRef.current = null;
+    };
+    const onMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if ((e.buttons & 1) === 0) {
+        end();
+        return;
+      }
+      // The rail is on the LEFT of the canvas, so rightward drag widens it.
+      setJiraRailWidth(widthKey, d.startW + (e.clientX - d.startX));
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", end);
+    document.addEventListener("pointercancel", end);
+    window.addEventListener("blur", end);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", end);
+      document.removeEventListener("pointercancel", end);
+      window.removeEventListener("blur", end);
+    };
+  }, [widthKey, setJiraRailWidth]);
 
   /**
    * Drag-to-reorder for the CLI ticket rows.
@@ -342,7 +378,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
 
 
   const handleNewTicket = async () => {
-    const answer = await askForTicket();
+    const answer = await askForTicket(tab);
     if (!answer) return;
     openJiraTicket(tab.id, {
       ticket: answer.ticket,
@@ -350,6 +386,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
       swedish: answer.swedish,
       english: answer.english,
       model: answer.model,
+      cwd: answer.cwd,
     });
   };
 
@@ -375,9 +412,6 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         role="separator"
         aria-label="Resize ticket list"
         onPointerDown={onResizePointerDown}
-        onPointerMove={onResizePointerMove}
-        onPointerUp={endResize}
-        onPointerCancel={endResize}
         onDoubleClick={() => setJiraRailWidth(widthKey, DEFAULT_JIRA_RAIL_WIDTHS[widthKey])}
         data-tooltip="Drag to resize · double-click to reset"
         style={{
@@ -386,7 +420,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           bottom: 0,
           right: -2,
           width: 4,
-          cursor: "col-resize",
+          // Plain ↔ (the OS window-edge glyph), not col-resize — the user's
+          // pick for MADE's resize affordances (2026-08).
+          cursor: "ew-resize",
           zIndex: 2,
         }}
       />
@@ -418,10 +454,12 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
             }}
           >
             {(
+              // Assigned leads and CLI sits last: Assigned is the primary
+              // list (and the default tab — a fresh project has no CLI rows).
               [
-                "tickets",
                 ...(assignedMode ? (["assigned"] as const) : []),
                 ...(unassignedMode ? (["unassigned"] as const) : []),
+                "tickets",
               ] as const
             ).map((seg) => {
               const active = railTab === seg;
@@ -592,9 +630,10 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
             }}
           />
         </div>
-        {/* Site name — which Jira this TAB's tickets live on. With more than
-            one site configured it is the per-project switcher. */}
-        {siteName && (
+        {/* Site SWITCHER — only with more than one site configured. As a mere
+            label the site now rides the tab title (useJiraTicketRows keeps it
+            in sync); a chip that switches nothing was header noise. */}
+        {siteName && jiraSites.length > 1 && (
           <span
             data-tooltip={jiraSites.length > 1 ? `Switch Jira site (now ${tabSite})` : tabSite}
             role={jiraSites.length > 1 ? "button" : undefined}
@@ -1038,7 +1077,8 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     // only the badge follows the status here. On Assigned/Unassigned, where
     // status is the organising principle, stripe and badge share one colour.
     const showBadge = statusIndicator !== "stripe";
-    const expanded = expandedRows.has(row.session.id);
+    // Global setting, not per-row state: summaries are all-or-nothing.
+    const expanded = showSummary && !!snap?.summary;
     const cells = buildRowCells(
       {
         updatedIso: snap?.updatedIso,
@@ -1046,7 +1086,8 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         priorityName: snap?.priorityName,
         reporterName: snap?.reporterName,
         organization: snap?.organization,
-        requestType: snap?.requestType,
+        // A request type linked to a CLI group shows the GROUP's name here.
+        requestType: requestTypeDisplay(cliGroups, requestTypeGroups, snap?.requestType),
         extra: snap?.extra,
       },
       metaShow,
@@ -1054,7 +1095,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
       rowExtraFields,
       labelForField,
     );
-    const hasMeta = cells.meta.length > 0;
+    // Reserved-but-empty columns don't count — no blank 42px rows.
+    const hasMeta =
+      cells.metaLeft.some((c) => c.text !== "") || cells.metaRight.length > 0;
     return (
       <div
         data-ctx-surface="jira-ticket"
@@ -1067,7 +1110,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         data-jira-row-ticket={ticket}
         onPointerDown={(e) => {
           // Left button only, and never from a nested control (the hamburger
-          // and the expand chevron own their own gestures).
+          // and the magnifier own their own gestures).
           if (e.button !== 0 || !ticket) return;
           if ((e.target as HTMLElement).closest("[role='button']")) return;
           dragTicketRef.current = { ticket, startY: e.clientY };
@@ -1082,7 +1125,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
             ? "This conversation's transcript is gone — it can't be reopened."
             : archived
               ? "Archived — unarchive from the right-click menu to reopen."
-              : undefined
+              : !expanded
+                ? snap?.summary || undefined
+                : undefined
         }
         style={{
           display: "flex",
@@ -1119,9 +1164,8 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           e.currentTarget.style.filter = restingFilter ?? "";
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        {snap?.summary && expandChevron(expanded, () => toggleRowExpanded(row.session.id))}
-        {snap?.unseen && unseenDot()}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+        {snap?.unseen ? unseenDot() : slotSpacer(6)}
         <span
           style={{
             // A renamed row can be arbitrarily long, so unlike the list tabs
@@ -1140,7 +1184,12 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           {label}
         </span>
         <span style={{ flex: 1, minWidth: 0 }} />
-        <JiraTitleFacts cells={cells.title} muted={!paintFull} />
+        <JiraTitleFacts
+          cells={cells.title}
+          muted={!paintFull}
+          dim={archived}
+          ring={paintFull ? contrastTextFor(color!) : undefined}
+        />
         {showBadge && snap?.statusName && statusColor && (
           <JiraStatusBadge
             status={snap.statusName}
@@ -1159,8 +1208,8 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
             items can never drift from the full menu's.
             Styled like the browser pane header's NavButton (rounded pill,
             bg transparent → var(--ezy-border) on hover); a div role=button
-            has no <button> line-height inflation. Revealed on row hover via
-            .jira-row-menu, pinned visible on the active row. */}
+            has no <button> line-height inflation. Always visible, muted at
+            rest — hidden-until-hover made the controls undiscoverable. */}
         <div
           className="jira-row-menu"
           role="button"
@@ -1198,12 +1247,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
             cursor: "pointer",
             color: paintFull ? undefined : "var(--ezy-text-muted)",
             backgroundColor: "transparent",
-            // Includes opacity — an inline transition list replaces the
-            // .jira-row-menu class's, which owns the hover fade-in.
-            transition: "background-color 0.15s, color 0.15s, opacity 100ms ease",
+            transition: "background-color 0.15s, color 0.15s",
             outline: "none",
             flexShrink: 0,
-            opacity: isActive ? 1 : undefined,
           }}
         >
           <svg
@@ -1221,7 +1267,17 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           </svg>
         </div>
         </div>
-        {hasMeta && <JiraRowMeta cells={cells.meta} muted={!paintFull} />}
+        {hasMeta && (
+          <JiraRowMeta
+            left={cells.metaLeft}
+            right={cells.metaRight}
+            muted={!paintFull}
+            leftInset={META_LEFT_INSET}
+            rightInset={META_RIGHT_INSET}
+            dim={archived}
+            ring={paintFull ? contrastTextFor(color!) : undefined}
+          />
+        )}
         {expanded && snap?.summary && (
           <div
             style={{
@@ -1413,8 +1469,11 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
    * very long key runs out of room the SPACER collapses and then the badge
    * clips — the key itself is the last thing to give.
    *
-   * Line 2 is context (updated / sent / priority / reporter), muted and free to
-   * ellipse. Line 3 is the full summary, only while the row is expanded.
+   * Line 2 mirrors it: muted "who" columns (request type / organization / …)
+   * under the key, and a "when" cluster (priority chip, sent time) pinned to
+   * the badge's right edge — see JiraRowMeta. Line 3 is the full summary, on
+   * every row at once or on none: the "Ticket summaries" setting; off, the
+   * summary is the row's hover tooltip.
    *
    * Clicking the row shows the browser-only preview. The only way one of these
    * grows a CLI pane is the menu's explicit Investigate.
@@ -1427,7 +1486,8 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     const color = t.status ? statusColorOf(t.status) : null;
     const showStripe = statusIndicator !== "badge";
     const showBadge = statusIndicator !== "stripe";
-    const expanded = expandedRows.has(qk);
+    // Global setting, not per-row state: summaries are all-or-nothing.
+    const expanded = showSummary && !!t.summary;
     const cells = buildRowCells(
       {
         updatedIso: t.updatedIso,
@@ -1435,7 +1495,8 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         priorityName: t.priorityName,
         reporterName: t.reporterName,
         organization: t.organization,
-        requestType: t.requestType,
+        // A request type linked to a CLI group shows the GROUP's name here.
+        requestType: requestTypeDisplay(cliGroups, requestTypeGroups, t.requestType),
         extra: t.extra,
         siteName: jiraSites.length > 1 ? (jiraSiteName(t.siteId) ?? t.siteId) : undefined,
       },
@@ -1444,7 +1505,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
       rowExtraFields,
       labelForField,
     );
-    const hasMeta = cells.meta.length > 0;
+    // Reserved-but-empty columns don't count — no blank 42px rows.
+    const hasMeta =
+      cells.metaLeft.some((c) => c.text !== "") || cells.metaRight.length > 0;
     const height = expanded
       ? undefined
       : `calc(var(--ezy-font-scale, 1) * ${hasMeta ? ROW_HEIGHT_META : ROW_HEIGHT}px)`;
@@ -1456,6 +1519,10 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         data-ctx-label={t.key}
         data-ctx-ticket={t.key}
         data-ctx-foreign={foreign ? "1" : undefined}
+        // Advertises the magnifier: the COMPACT (hamburger) menu drops its
+        // Investigate row only when the button is really on the row — a
+        // foreign or meta-less row keeps the menu path.
+        data-ctx-investigate-btn={hasMeta && !foreign ? "1" : undefined}
         onClick={() => {
           useJiraNotifyStore.getState().setAssignedPreview(tab.id, qk);
           useAppStore.getState().markJiraTicketSeen(qk);
@@ -1484,8 +1551,7 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-          {t.summary && expandChevron(expanded, () => toggleRowExpanded(qk))}
-          {unseen && unseenDot()}
+          {unseen ? unseenDot() : slotSpacer(6)}
           <span
             style={{
               flexShrink: 0,
@@ -1504,9 +1570,28 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           {showBadge && t.status && color && (
             <JiraStatusBadge status={t.status} color={color} width={badgeW} />
           )}
-          {rowMenuButton(isActive)}
+          {rowMenuButton()}
         </div>
-        {hasMeta && <JiraRowMeta cells={cells.meta} />}
+        {hasMeta && (
+          // The magnifier takes the meta line's right end — 22px + gap 6, the
+          // same recipe as [badge][gap][hamburger] above it, so the "when"
+          // cluster's right edge still lands exactly under the badge's.
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <JiraRowMeta
+                left={cells.metaLeft}
+                right={cells.metaRight}
+                leftInset={META_LEFT_INSET}
+                rightInset={0}
+              />
+            </div>
+            {foreign ? (
+              slotSpacer(22)
+            ) : (
+              investigateButton(kind === "unassigned" ? "jira-unassigned" : "jira-assigned", qk)
+            )}
+          </div>
+        )}
         {expanded && t.summary && (
           <div
             style={{
@@ -1524,65 +1609,10 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
     );
   }
 
-  /** Fold/unfold a row's summary. Deliberately its own hit target rather than
-   *  the row: clicking the row means "preview this ticket", and overloading
-   *  that would make one of the two actions unreachable. */
-  function expandChevron(expanded: boolean, toggle: () => void) {
-    return (
-      <span
-        role="button"
-        tabIndex={0}
-        aria-expanded={expanded}
-        aria-label={expanded ? "Hide summary" : "Show summary"}
-        data-tooltip={expanded ? "Hide summary" : "Show summary"}
-        onClick={(e) => {
-          e.stopPropagation();
-          toggle();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            e.stopPropagation();
-            toggle();
-          }
-        }}
-        onMouseEnter={(e) => (e.currentTarget.style.color = "var(--ezy-text)")}
-        onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ezy-text-muted)")}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-          width: 10,
-          color: "var(--ezy-text-muted)",
-          cursor: "pointer",
-          outline: "none",
-        }}
-      >
-        <svg
-          width="9"
-          height="9"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{
-            transform: expanded ? "rotate(90deg)" : undefined,
-            transition: "transform 0.15s ease, color 0.15s ease",
-          }}
-        >
-          <path d="m6 3.5 5 4.5-5 4.5" />
-        </svg>
-      </span>
-    );
-  }
-
   /** The row's hamburger. Same markup on every rail row — a div role=button so
-   *  it escapes <button>'s line-height inflation, revealed on row hover by
-   *  .jira-row-menu and pinned open on the active row. */
-  function rowMenuButton(pinned: boolean) {
+   *  it escapes <button>'s line-height inflation. Always visible, muted at
+   *  rest — hidden-until-hover made the controls undiscoverable. */
+  function rowMenuButton() {
     return (
       <div
         className="jira-row-menu"
@@ -1619,10 +1649,9 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           cursor: "pointer",
           color: "var(--ezy-text-muted)",
           backgroundColor: "transparent",
-          transition: "background-color 0.15s, color 0.15s, opacity 100ms ease",
+          transition: "background-color 0.15s, color 0.15s",
           outline: "none",
           flexShrink: 0,
-          opacity: pinned ? 1 : undefined,
         }}
       >
         <svg
@@ -1637,6 +1666,70 @@ export default function JiraTicketRail({ tab, onFocusTerminal }: JiraTicketRailP
           <line x1="3" y1="4.5" x2="13" y2="4.5" />
           <line x1="3" y1="8" x2="13" y2="8" />
           <line x1="3" y1="11.5" x2="13" y2="11.5" />
+        </svg>
+      </div>
+    );
+  }
+
+  /** Magnifier under the hamburger: the promotion path as its own affordance,
+   *  sitting at the details line's right end so the two icons stack. Runs the
+   *  SAME registered surface action the context menu's Investigate uses, so
+   *  the two can never drift — and the hamburger's COMPACT menu drops its
+   *  Investigate row when this button is present (see providers/rows.ts).
+   *  Always visible and muted at rest, like rowMenuButton. */
+  function investigateButton(surface: "jira-assigned" | "jira-unassigned", qk: string) {
+    return (
+      <div
+        className="jira-row-menu"
+        role="button"
+        tabIndex={0}
+        aria-label="Investigate ticket"
+        data-tooltip="Investigate ticket"
+        onClick={(e) => {
+          e.stopPropagation();
+          runSurfaceAction(surface, "investigate", qk);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            e.stopPropagation();
+            runSurfaceAction(surface, "investigate", qk);
+          }
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.backgroundColor = "var(--ezy-border)";
+          e.currentTarget.style.color = "var(--ezy-text)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.backgroundColor = "transparent";
+          e.currentTarget.style.color = "var(--ezy-text-muted)";
+        }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 22,
+          height: 22,
+          borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
+          cursor: "pointer",
+          color: "var(--ezy-text-muted)",
+          backgroundColor: "transparent",
+          transition: "background-color 0.15s, color 0.15s",
+          outline: "none",
+          flexShrink: 0,
+        }}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+        >
+          <circle cx="7" cy="7" r="4" />
+          <line x1="10" y1="10" x2="13.5" y2="13.5" />
         </svg>
       </div>
     );

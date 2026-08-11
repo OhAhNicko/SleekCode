@@ -145,7 +145,7 @@ export default function VerticalTicketFlyout({
         return;
       }
       if (actionId === "new") {
-        void askForTicket().then((answer) => {
+        void askForTicket(tab).then((answer) => {
           if (!answer) return;
           openJiraTicket(tab.id, {
             ticket: answer.ticket,
@@ -153,6 +153,7 @@ export default function VerticalTicketFlyout({
             swedish: answer.swedish,
             english: answer.english,
             model: answer.model,
+            cwd: answer.cwd,
           });
         });
         return;

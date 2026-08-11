@@ -5,20 +5,23 @@ import { findAllTerminalLeaves } from "../lib/layout-utils";
 import { sessionStillExists } from "../lib/session-exists";
 import { openJiraTicket } from "../lib/jira-project";
 import { jiraSiteName } from "../lib/jira";
-import { siteForTabIn } from "../lib/jira-sites";
+import { jiraQK, siteForTabIn } from "../lib/jira-sites";
+import { useJiraTreeOwnsTickets } from "../lib/use-vertical-tabbar";
 import { jiraCliOfSession } from "../lib/jira-mcp";
 import { readSessionsIndex } from "../lib/sessions-index";
 import { jiraInstanceKey } from "../lib/jira-layout";
 import { parkedTicketName } from "../lib/jira-session";
-import { useJiraNotifyStore } from "../store/jiraNotifyStore";
+import { DEFAULT_JIRA_RAIL_TAB, useJiraNotifyStore } from "../store/jiraNotifyStore";
 import {
   DEFAULT_JIRA_ROW_META_SHOW,
   DEFAULT_JIRA_ROW_TITLE_FIELDS,
   DEFAULT_JIRA_SORT,
+  type JiraListTicket,
 } from "../store/recentProjectsSlice";
 import { groupIssues, sortIssues } from "../lib/jira-row-sort";
 import { buildStatusColorMap, resolveStatusColor } from "../lib/jira-status-colors";
 import { fieldLabel } from "../lib/jira-fields";
+import { cachedHomeDir, isJiraVirtualDir } from "../lib/jira-virtual-dir";
 
 /**
  * The ticket rail's data layer, lifted out of JiraTicketRail so the vertical
@@ -76,14 +79,15 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
   // collapsedGroups: that one is keyed by ticket key, and a project literally
   // named DONE would otherwise collide with the Done bucket.
   const [collapsedBuckets, setCollapsedBuckets] = useState<Set<string>>(new Set());
-  // Rows whose summary is unfolded. Also session-local — an expanded row is a
-  // glance, not workspace state.
-  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  // ON: every row shows its summary, always. OFF: tooltip only. A global
+  // setting — the per-row fold this replaced was fiddly at 10px and its
+  // chevron cost every row 16px of key alignment.
+  const showSummary = useAppStore((s) => s.jiraRowShowSummary ?? false);
   /** Session ids whose conversation TEXT matches the query — null while the
    *  query is empty or the index is still loading. */
   const [contentMatches, setContentMatches] = useState<Set<string> | null>(null);
 
-  const assignedMode = useAppStore((s) => s.jiraAssignedMode ?? false);
+  const assignedMode = useAppStore((s) => s.jiraAssignedMode ?? true);
   const unassignedMode = useAppStore((s) => s.jiraUnassignedMode ?? false);
   const assignedTickets = useAppStore((s) => s.jiraAssignedTickets);
   const unassignedTickets = useAppStore((s) => s.jiraUnassignedTickets);
@@ -101,15 +105,46 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
   const sitePriorities = useAppStore((s) => s.jiraSitePriorities);
   const extraFields = useAppStore((s) => s.jiraExtraFields);
   const assignedScope = useJiraNotifyStore((s) => s.assignedScope[tab.id] ?? "open");
+  // The Assigned-first default is a RAIL concept — the v2 tree has no tab
+  // strip, drives previews from its own rows, and its tabs must keep landing
+  // on their ticket pairs.
+  const treeOwnsTickets = useJiraTreeOwnsTickets();
   const railTab = useJiraNotifyStore((s) => {
-    const t = s.railTab[tab.id] ?? "tickets";
+    const t = s.railTab[tab.id] ?? (treeOwnsTickets ? "tickets" : DEFAULT_JIRA_RAIL_TAB);
     // A mode turned off must not leave a tab stranded on a list with no source.
     if (t === "assigned" && !assignedMode) return "tickets";
     if (t === "unassigned" && !unassignedMode) return "tickets";
     return t;
   });
 
+  // The tab TITLE carries which Jira site the project talks to ("Jira ·
+  // SUPPORT · headsdev") — the rail header only keeps a site control when
+  // there is more than one site to switch between. Base names are always
+  // "Jira · <project>", so the title is rebuilt from its first two segments:
+  // idempotent, converges after a site switch or rename, catches tabs created
+  // before the suffix existed, and never touches a user's customName.
+  const siteTitleName = useAppStore((s) =>
+    (s.jiraSites?.length ?? 0) > 0 ? jiraSiteName(tabSite) : undefined,
+  );
+  useEffect(() => {
+    if (!siteTitleName) return;
+    const store = useAppStore.getState();
+    const cur = store.tabs.find((t) => t.id === tab.id);
+    if (!cur?.isJiraProject) return;
+    const wanted = `${cur.name.split(" · ").slice(0, 2).join(" · ")} · ${siteTitleName}`;
+    if (cur.name !== wanted) store.setTabName(tab.id, wanted);
+  }, [tab.id, siteTitleName]);
+
   const projectKey = tab.workingDir.replace(/\\/g, "/");
+  // Where this project's transcripts actually live ON DISK. Keyed Jira
+  // projects have a virtual `jira://…` workingDir; their panes spawn in the
+  // projects dir (or home) — terminalSlice's toSpawnDir, same fallback — so
+  // the disk probes below must look THERE. The registry keying (projectKey,
+  // rename/adopt calls) stays on the virtual dir.
+  const storeProjectsDir = useAppStore((s) => s.projectsDir);
+  const fsDir = isJiraVirtualDir(tab.workingDir)
+    ? (storeProjectsDir ?? "").trim() || cachedHomeDir()
+    : tab.workingDir;
   // Select the raw slice and derive below — filtering inside the selector
   // returns a new array every render and spins the store.
   const allSessions = useAppStore((s) => s.projectSessions[projectKey]);
@@ -204,16 +239,54 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     return { active, archived };
   }, [rows]);
 
+  // One haystack per ticket, shared by every list: the search reaches EVERY
+  // fact a row can carry (key, summary, reporter, organization, request type,
+  // status, priority, extra fields, site) — not just what happens to be
+  // visible. Newline-joined so a query can never match across two fields.
+  const listTicketHaystack = (t: JiraListTicket): string =>
+    [
+      t.key,
+      t.summary,
+      t.reporterName,
+      t.organization,
+      t.requestType,
+      t.status,
+      t.priorityName,
+      ...(t.extra ? Object.values(t.extra) : []),
+      jiraSiteName(t.siteId) ?? "",
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+
   const filtered = useMemo(() => {
-    const q = query.trim().toUpperCase();
+    const q = query.trim().toLowerCase();
     if (!q) return rows;
-    return rows.filter(
-      (r) =>
-        (r.session.ticket ?? "").includes(q) ||
-        (customNameOf(r.session) ?? "").toUpperCase().includes(q) ||
-        (contentMatches?.has(r.session.id) ?? false),
-    );
-  }, [rows, query, contentMatches]);
+    return rows.filter((r) => {
+      const ticket = r.session.ticket ?? "";
+      if (ticket.toLowerCase().includes(q)) return true;
+      if ((customNameOf(r.session) ?? "").toLowerCase().includes(q)) return true;
+      // The ticket's Jira-side facts, same reach as the Assigned/Unassigned
+      // lists — a CLI row is still a ticket.
+      const snap = ticket ? ticketSnapshots?.[jiraQK(tabSite, ticket)] : undefined;
+      if (snap) {
+        const hay = [
+          snap.summary,
+          snap.reporterName,
+          snap.organization,
+          snap.requestType,
+          snap.statusName,
+          snap.priorityName,
+          ...(snap.extra ? Object.values(snap.extra) : []),
+        ]
+          .filter(Boolean)
+          .join("\n")
+          .toLowerCase();
+        if (hay.includes(q)) return true;
+      }
+      return contentMatches?.has(r.session.id) ?? false;
+    });
+  }, [rows, query, contentMatches, ticketSnapshots, tabSite]);
 
   const activeRows = useMemo(() => filtered.filter((r) => !r.session.archived), [filtered]);
   const archivedRows = useMemo(() => filtered.filter((r) => !!r.session.archived), [filtered]);
@@ -238,7 +311,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     let cancelled = false;
     const t = setTimeout(async () => {
       try {
-        const entries = await readSessionsIndex(tab.workingDir, tab.backend ?? "wsl", tab.serverId);
+        const entries = await readSessionsIndex(fsDir, tab.backend ?? "wsl", tab.serverId);
         if (cancelled) return;
         const hits = new Set<string>();
         for (const e of entries) {
@@ -254,7 +327,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [query, tab.workingDir, tab.backend, tab.serverId]);
+  }, [query, fsDir, tab.backend, tab.serverId]);
 
   // A closed session can only be reopened if its transcript still exists.
   // sessionStillExists fails open, so a row is marked unavailable only when the
@@ -276,7 +349,9 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
           // report it gone and leave the row permanently unclickable.
           jiraCliOfSession(session.type),
           session.id,
-          tab.workingDir,
+          // The row's own spawn folder when known (CLI group) — its transcript
+          // lives under THAT slug, not the project fallback's.
+          session.cwd ?? fsDir,
           tab.backend ?? "wsl",
           tab.serverId,
         );
@@ -287,7 +362,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     return () => {
       cancelled = true;
     };
-  }, [rows, tab.workingDir, tab.backend, tab.serverId, enabled]);
+  }, [rows, fsDir, tab.backend, tab.serverId, enabled]);
 
   // Group collapse: when a duplicate group shrinks to ONE remaining row
   // (siblings deleted/forgotten — closing a pane keeps its row), the survivor
@@ -323,7 +398,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     const sync = async () => {
       if (useAppStore.getState().activeTabId !== tab.id) return;
       try {
-        const entries = await readSessionsIndex(tab.workingDir, tab.backend ?? "wsl", tab.serverId);
+        const entries = await readSessionsIndex(fsDir, tab.backend ?? "wsl", tab.serverId);
         if (cancelled) return;
         const titleById = new Map(entries.map((e) => [e.sessionId, e.customTitle]));
         const store = useAppStore.getState();
@@ -357,7 +432,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
       cancelled = true;
       clearInterval(iv);
     };
-  }, [tab.id, tab.workingDir, tab.backend, tab.serverId, projectKey, enabled]);
+  }, [tab.id, tab.workingDir, fsDir, tab.backend, tab.serverId, projectKey, enabled]);
 
   // Filtered unconditionally — the rail shows these only while its header tab
   // is on "Assigned", but the v2 tree has no header tab and reaches for them
@@ -365,36 +440,23 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
   const assignedFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return assignedTickets;
-    return assignedTickets.filter(
-      (t) =>
-        t.key.toLowerCase().includes(q) ||
-        t.summary.toLowerCase().includes(q) ||
-        (jiraSiteName(t.siteId) ?? "").toLowerCase().includes(q),
-    );
+    return assignedTickets.filter((t) => listTicketHaystack(t).includes(q));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assignedTickets, query]);
 
   const unassignedFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return unassignedTickets ?? [];
-    return (unassignedTickets ?? []).filter(
-      (t) =>
-        t.key.toLowerCase().includes(q) ||
-        t.summary.toLowerCase().includes(q) ||
-        (t.reporterName ?? "").toLowerCase().includes(q) ||
-        (jiraSiteName(t.siteId) ?? "").toLowerCase().includes(q),
-    );
+    return (unassignedTickets ?? []).filter((t) => listTicketHaystack(t).includes(q));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unassignedTickets, query]);
 
   const assignedDoneFiltered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const all = assignedDoneTickets ?? [];
     if (!q) return all;
-    return all.filter(
-      (t) =>
-        t.key.toLowerCase().includes(q) ||
-        t.summary.toLowerCase().includes(q) ||
-        (jiraSiteName(t.siteId) ?? "").toLowerCase().includes(q),
-    );
+    return all.filter((t) => listTicketHaystack(t).includes(q));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assignedDoneTickets, query]);
 
   const sort = listSort ?? DEFAULT_JIRA_SORT;
@@ -490,15 +552,6 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     });
   };
 
-  const toggleRowExpanded = (id: string) => {
-    setExpandedRows((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
   /**
    * Opening a Jira tab that has never had a ticket selected lands on the top
    * row instead of an empty canvas.
@@ -528,6 +581,42 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     if (!missing.has(target.session.id)) handleRowClickRef.current(target);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, isActiveTab, railTab, tab.selectedJiraTicket, activeRows, missing]);
+
+  /**
+   * "Always show a ticket": while the Assigned or Unassigned list is on
+   * screen with rows, the canvas previews the TOP row whenever nothing (or a
+   * row that has left the list) is selected. This is what covers the first
+   * open of a fresh project — the list lands a few seconds after the tab, and
+   * the preview follows it in. Continuous, not once-per-mount: the minimal
+   * preview chrome has no close button, so the only way the selection goes
+   * stale is the list itself changing under it. Rail mode only — the tree
+   * drives previews from its own row clicks.
+   */
+  useEffect(() => {
+    if (!enabled || !isActiveTab || treeOwnsTickets) return;
+    if (railTab !== "assigned" && railTab !== "unassigned") return;
+    const list =
+      railTab === "unassigned"
+        ? unassignedSorted
+        : assignedScope === "done"
+          ? assignedDoneSorted
+          : assignedSorted;
+    if (list.length === 0) return;
+    const notify = useJiraNotifyStore.getState();
+    const cur = notify.assignedPreview[tab.id];
+    if (cur && list.some((t) => jiraQK(t.siteId, t.key) === cur)) return;
+    notify.setAssignedPreview(tab.id, jiraQK(list[0].siteId, list[0].key));
+  }, [
+    enabled,
+    isActiveTab,
+    treeOwnsTickets,
+    railTab,
+    assignedScope,
+    assignedSorted,
+    assignedDoneSorted,
+    unassignedSorted,
+    tab.id,
+  ]);
 
   /** Ticket keys in their current visual order — the base a drag edits. */
   const orderedTicketKeys = useMemo(() => {
@@ -600,8 +689,7 @@ export function useJiraTicketRows(tab: Tab, opts: UseJiraTicketRowsOptions) {
     toggleGroupCollapsed,
     collapsedBuckets,
     toggleBucketCollapsed,
-    expandedRows,
-    toggleRowExpanded,
+    showSummary,
     handleRowClick,
     handleRowClickRef,
     assignedFiltered,

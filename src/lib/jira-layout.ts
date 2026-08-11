@@ -20,7 +20,12 @@ export const jiraBrowserPaneId = (ticket: string) => `${JIRA_BROWSER_PANE_PREFIX
  *  tab.layout). A DISTINCT prefix keeps it out of pair detection and out of
  *  the pasted-ticket logic, both of which key on the prefixes above. */
 export const JIRA_ASSIGNED_PANE_PREFIX = "pane-jira-assigned-";
-export const jiraAssignedPaneId = (ticket: string) => `${JIRA_ASSIGNED_PANE_PREFIX}${ticket}`;
+/** The Assigned/Unassigned list preview's synthetic browser pane, keyed by
+ *  TAB id — deliberately NOT by ticket key. One stable pane per tab means
+ *  switching tickets is a NAVIGATION of the live webview instead of a
+ *  destroy+create+cold-load of a fresh one (which took seconds per row click,
+ *  and made two tabs previewing the same ticket collide on one pane id). */
+export const jiraAssignedPaneId = (tabId: string) => `${JIRA_ASSIGNED_PANE_PREFIX}${tabId}`;
 
 const CONTAINER_ID_PREFIX = "pane-jira-root-";
 const TERM_GROUP_PREFIX = "pane-jira-terms-";
@@ -51,6 +56,9 @@ export function buildJiraTermLeaf(
   /** Which CLI carries this ticket. Persisted in the layout, so a restored
    *  session respawns the same CLI rather than silently reverting to Claude. */
   terminalType: "claude" | "codex" | "gemini" = "claude",
+  /** Real spawn folder (CLI group) when it differs from the tab's workingDir.
+   *  Persisted so respawn resumes where the transcript actually lives. */
+  cwd?: string,
 ): PaneLeaf {
   return {
     type: "terminal",
@@ -58,6 +66,7 @@ export function buildJiraTermLeaf(
     terminalId,
     terminalType,
     sessionResumeId,
+    ...(cwd ? { cwd } : {}),
   };
 }
 

@@ -14,6 +14,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
+import { credsForSiteIn } from "./jira-sites";
 import type { JiraFieldMeta } from "../store/recentProjectsSlice";
 
 /** Schema custom-types of the two fields worth auto-detecting. Matched by
@@ -73,10 +74,11 @@ export async function ensureSiteFields(siteId: string): Promise<JiraFieldMeta[]>
   const s = useAppStore.getState();
   const cached = (s.jiraSiteFields ?? {})[siteId];
   if (cached) return cached;
+  const creds = credsForSiteIn(s, siteId);
   try {
     const meta = await invoke<{ fields: JiraFieldMeta[]; priorities: string[] }>(
       "jira_site_meta",
-      { baseUrl: siteId, email: s.jiraApiEmail, token: s.jiraApiToken },
+      { baseUrl: siteId, email: creds.email, token: creds.token },
     );
     const fresh = useAppStore.getState();
     fresh.setJiraSiteFields(siteId, meta.fields ?? []);
@@ -85,6 +87,33 @@ export async function ensureSiteFields(siteId: string): Promise<JiraFieldMeta[]>
   } catch {
     // Do NOT cache a failure — a transient network error must not disable
     // every extra column for the rest of the session.
+    return [];
+  }
+}
+
+/** JSM request-type catalogue for a site, fetching it the first time — same
+ *  contract as ensureSiteFields: an empty array is a valid cached answer
+ *  (site without JSM), and a transient failure is NOT cached. */
+export async function ensureSiteRequestTypes(siteId: string): Promise<string[]> {
+  const s = useAppStore.getState();
+  const cached = (s.jiraSiteRequestTypes ?? {})[siteId];
+  if (cached) return cached;
+  const creds = credsForSiteIn(s, siteId);
+  try {
+    const names = await invoke<string[]>("jira_list_request_types", {
+      baseUrl: siteId,
+      email: creds.email,
+      token: creds.token,
+    });
+    useAppStore.getState().setJiraSiteRequestTypes(siteId, names ?? []);
+    return names ?? [];
+  } catch (e) {
+    // A site without JSM answers 404 on every request-type endpoint — that is
+    // a real "no types here", worth caching so Settings stops re-asking.
+    const kind = (e as { kind?: string } | null)?.kind;
+    if (kind === "http") {
+      useAppStore.getState().setJiraSiteRequestTypes(siteId, []);
+    }
     return [];
   }
 }

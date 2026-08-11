@@ -94,6 +94,38 @@ export function statusCategoryOf(key: string | undefined): JiraStatusCategoryKey
   return key === "done" || key === "indeterminate" || key === "new" ? key : "new";
 }
 
+/** Store-level mirror of useJiraTicketRows' `statusColorOf` for code that
+ *  runs outside React (the notification emitter). It must land on the SAME
+ *  hue the rail shows, and `buildStatusColorMap`'s probing depends on the
+ *  full name set — so the inputs replicate the hook's exactly: the three
+ *  queue lists plus every snapshot. Structurally typed to stay import-cycle
+ *  free of the store. */
+export function statusColorFromState(
+  s: {
+    jiraAssignedTickets?: Array<{ status?: string }> | null;
+    jiraUnassignedTickets?: Array<{ status?: string }> | null;
+    jiraAssignedDoneTickets?: Array<{ status?: string }> | null;
+    jiraTicketSnapshots?: Record<string, { statusName?: string } | undefined> | null;
+    jiraStatusColorMode?: "auto" | "manual" | null;
+    jiraStatusColors?: Record<string, string> | null;
+  },
+  status: string,
+): string {
+  const names: string[] = [];
+  for (const t of s.jiraAssignedTickets ?? []) if (t.status) names.push(t.status);
+  for (const t of s.jiraUnassignedTickets ?? []) if (t.status) names.push(t.status);
+  for (const t of s.jiraAssignedDoneTickets ?? []) if (t.status) names.push(t.status);
+  for (const snap of Object.values(s.jiraTicketSnapshots ?? {})) {
+    if (snap?.statusName) names.push(snap.statusName);
+  }
+  return resolveStatusColor(
+    status,
+    buildStatusColorMap(names),
+    s.jiraStatusColorMode ?? "auto",
+    s.jiraStatusColors ?? undefined,
+  );
+}
+
 export const STATUS_CATEGORY_LABEL: Record<JiraStatusCategoryKey, string> = {
   new: "To do",
   indeterminate: "In progress",

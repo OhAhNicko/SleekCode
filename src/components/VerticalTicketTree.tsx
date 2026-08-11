@@ -6,6 +6,7 @@ import { jiraSiteName } from "../lib/jira";
 import { jiraQK, siteForTabIn } from "../lib/jira-sites";
 import { chooseOption } from "../lib/prompt-modal";
 import { resolveTicketColor } from "../lib/jira-colors";
+import { requestTypeDisplay } from "../lib/jira-groups";
 import { openCompactRowMenu } from "../lib/compact-row-menu";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { refreshUnassignedNow } from "../lib/jira-notify";
@@ -90,6 +91,8 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
 
   const jiraTicketColors = useAppStore((s) => s.jiraTicketColors);
   const ticketSnapshots = useAppStore((s) => s.jiraTicketSnapshots);
+  const cliGroups = useAppStore((s) => s.jiraCliGroups ?? []);
+  const requestTypeGroups = useAppStore((s) => s.jiraRequestTypeGroups ?? {});
   const jiraSites = useAppStore((s) => s.jiraSites ?? []);
   const tabSite = useAppStore((s) => siteForTabIn(s, tab));
   const siteName = useMemo(() => jiraSiteName(tabSite), [tabSite]);
@@ -113,8 +116,7 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
     sectionCounts,
     collapsedGroups,
     toggleGroupCollapsed,
-    expandedRows,
-    toggleRowExpanded,
+    showSummary,
     handleRowClick: openRowInTab,
     assignedSorted,
     assignedDoneSorted,
@@ -188,7 +190,7 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
   }, [tab.id]);
 
   const handleNewTicket = async () => {
-    const answer = await askForTicket();
+    const answer = await askForTicket(tab);
     if (!answer) return;
     openJiraTicket(tab.id, {
       ticket: answer.ticket,
@@ -196,6 +198,7 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
       swedish: answer.swedish,
       english: answer.english,
       model: answer.model,
+      cwd: answer.cwd,
     });
   };
 
@@ -475,7 +478,8 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
     const color = t.status ? statusColorOf(t.status) : null;
     const showStripe = statusIndicator !== "badge";
     const showBadge = statusIndicator !== "stripe";
-    const expanded = expandedRows.has(qk);
+    // Global setting, not per-row state: summaries are all-or-nothing.
+    const expanded = showSummary && !!t.summary;
     const cells = buildRowCells(
       {
         updatedIso: t.updatedIso,
@@ -483,18 +487,23 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
         priorityName: t.priorityName,
         reporterName: t.reporterName,
         organization: t.organization,
-        requestType: t.requestType,
+        // A request type linked to a CLI group shows the GROUP's name here.
+        requestType: requestTypeDisplay(cliGroups, requestTypeGroups, t.requestType),
         extra: t.extra,
         // At tree width the status name only fits down here when the badge
-        // has been dropped for a dot.
-        siteName: roomForBadge ? undefined : t.status || undefined,
+        // has been dropped for a dot. It leads the meta line's right cluster,
+        // whose flexShrink:0 keeps it visible where the "who" phrase would
+        // have ellipsed it away.
+        statusText: roomForBadge ? undefined : t.status || undefined,
       },
       metaShow,
       rowTitleFields,
       rowExtraFields,
       labelForField,
     );
-    const hasMeta = cells.meta.length > 0;
+    // Reserved-but-empty columns don't count — no blank 42px rows.
+    const hasMeta =
+      cells.metaLeft.some((c) => c.text !== "") || cells.metaRight.length > 0;
     return (
       <div
         key={qk}
@@ -548,7 +557,11 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-          {t.summary && expandChevron(expanded, () => toggleRowExpanded(qk))}
+          {/* Before the key, rail-parity: parked after the badge it made the
+              badge column jump 12px on exactly the rows the dot marks. */}
+          {unseen && (
+            <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: "var(--ezy-accent)", flexShrink: 0 }} />
+          )}
           <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>{t.key}</span>
           <span style={{ flex: 1, minWidth: 0 }} />
           <JiraTitleFacts cells={cells.title} fontPx={9} />
@@ -568,12 +581,14 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
               />
             )
           )}
-          {unseen && (
-            <span style={{ width: 6, height: 6, borderRadius: "50%", backgroundColor: "var(--ezy-accent)", flexShrink: 0 }} />
-          )}
           {hamburger(t.key)}
         </div>
-        {hasMeta && <JiraRowMeta cells={cells.meta} fontPx={9} />}
+        {/* No reserved lead-in slots at tree width (every px is spoken for),
+            so no leftInset; rightInset ends the cluster under the hamburger's
+            left edge: 12px svg + gap 6. */}
+        {hasMeta && (
+          <JiraRowMeta left={cells.metaLeft} right={cells.metaRight} fontPx={9} rightInset={18} />
+        )}
         {expanded && t.summary && (
           <div
             style={{
@@ -590,56 +605,6 @@ export default function VerticalTicketTree({ tab, register }: VerticalTicketTree
       </div>
     );
   };
-
-  /** Fold/unfold a row's summary — its own hit target, because clicking the
-   *  row already means "preview this ticket". */
-  function expandChevron(expanded: boolean, toggle: () => void) {
-    return (
-      <span
-        role="button"
-        tabIndex={0}
-        aria-expanded={expanded}
-        aria-label={expanded ? "Hide summary" : "Show summary"}
-        onClick={(e) => {
-          e.stopPropagation();
-          toggle();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            e.stopPropagation();
-            toggle();
-          }
-        }}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          flexShrink: 0,
-          width: 9,
-          cursor: "pointer",
-          outline: "none",
-        }}
-      >
-        <svg
-          width="8"
-          height="8"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          style={{
-            transform: expanded ? "rotate(90deg)" : undefined,
-            transition: "transform 0.15s ease",
-          }}
-        >
-          <path d="m6 3.5 5 4.5-5 4.5" />
-        </svg>
-      </span>
-    );
-  }
 
   return (
     <div style={{ paddingBottom: 4 }}>

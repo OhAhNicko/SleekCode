@@ -59,6 +59,22 @@ const PRIORITY_RANK: Record<string, number> = {
   TRIVIAL: 4,
 };
 
+/**
+ * Display bucket for the ticket rows' priority chip. NAME table only — the
+ * site order and id fallback exist for SORTING, where every row must land
+ * somewhere; a chip that guessed from them would paint "Standard" red on one
+ * site and neutral on another. "default" (Medium/Normal) is what the rows
+ * hide: on a support queue it is nearly every ticket, and repeating it is
+ * what buries the exceptional ones.
+ */
+export function priorityBucket(name: string): "urgent" | "default" | "low" | "unknown" {
+  const rank = PRIORITY_RANK[name.trim().toUpperCase()];
+  if (rank === undefined) return "unknown";
+  if (rank <= 1) return "urgent";
+  if (rank === 2) return "default";
+  return "low";
+}
+
 export function priorityRank(name?: string, id?: string, siteOrder?: string[]): number {
   // The site's OWN order wins whenever we have it — that is Jira's ranking,
   // not an inference from the label.
