@@ -54,6 +54,13 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name: "made-storage",
+      // DELIBERATELY no `version`/`migrate`: a build that finds an envelope
+      // stamped with a version it doesn't know (i.e. any DOWNGRADE, since old
+      // builds have no migrate fn) discards the ENTIRE persisted store and
+      // overwrites it with defaults on the first write. One-shot migrations
+      // live inside `merge` instead — keyed on shape where the old shape
+      // vanishes, or on jiraRowMetaDefaultsRev where it doesn't. Unknown
+      // extra keys cost an old build nothing.
       partialize: (state) => ({
         tabs: state.tabs,
         activeTabId: state.activeTabId,
@@ -110,6 +117,10 @@ export const useAppStore = create<AppStore>()(
         jiraMode: state.jiraMode,
         jiraAcronyms: state.jiraAcronyms,
         jiraAcronymCounts: state.jiraAcronymCounts,
+        jiraCliGroups: state.jiraCliGroups,
+        jiraLastGroupByProject: state.jiraLastGroupByProject,
+        jiraRequestTypeGroups: state.jiraRequestTypeGroups,
+        jiraSiteRequestTypes: state.jiraSiteRequestTypes,
         jiraTicketColors: state.jiraTicketColors,
         jiraRowFullColor: state.jiraRowFullColor,
         jiraSubticketMode: state.jiraSubticketMode,
@@ -121,6 +132,7 @@ export const useAppStore = create<AppStore>()(
         jiraApiEmail: state.jiraApiEmail,
         jiraApiToken: state.jiraApiToken,
         jiraMyAccountId: state.jiraMyAccountId,
+        jiraSiteAccounts: state.jiraSiteAccounts,
         jiraNotifEnabled: state.jiraNotifEnabled,
         jiraAssignedMode: state.jiraAssignedMode,
         jiraAssignedTickets: state.jiraAssignedTickets,
@@ -135,7 +147,9 @@ export const useAppStore = create<AppStore>()(
         jiraListGrouping: state.jiraListGrouping,
         jiraListSort: state.jiraListSort,
         jiraRowMetaShow: state.jiraRowMetaShow,
+        jiraRowMetaDefaultsRev: state.jiraRowMetaDefaultsRev,
         jiraRowTitleFields: state.jiraRowTitleFields,
+        jiraRowShowSummary: state.jiraRowShowSummary,
         jiraTicketOrder: state.jiraTicketOrder,
         jiraStatusColorMode: state.jiraStatusColorMode,
         jiraStatusColors: state.jiraStatusColors,
@@ -209,6 +223,7 @@ export const useAppStore = create<AppStore>()(
         projectSessions: state.projectSessions,
         aiTimeBursts: state.aiTimeBursts,
         onboardingCompleted: state.onboardingCompleted,
+        backendAutoDetected: state.backendAutoDetected,
         showChangelogOnUpdate: state.showChangelogOnUpdate,
         lastSeenVersion: state.lastSeenVersion,
         pendingChangelog: state.pendingChangelog,
@@ -342,6 +357,23 @@ export const useAppStore = create<AppStore>()(
           );
         }
 
+        // Stepped migration (2026-08 row redesign): row-fact defaults changed
+        // for existing users, and a persisted value matching an OLD default
+        // is indistinguishable from a user choice — the rev key is what says
+        // "this envelope predates flip N". Each step below applies at most
+        // once: the next persist writes the current rev (it is in partialize)
+        // and any value the user sets afterwards sticks. See
+        // jiraRowMetaDefaultsRev in recentProjectsSlice.
+        if (state.jiraRowMetaShow) {
+          const rev = (persAny.jiraRowMetaDefaultsRev as number | undefined) ?? 0;
+          if (rev < 1) {
+            state.jiraRowMetaShow = { ...state.jiraRowMetaShow, created: false };
+          }
+          if (rev < 2) {
+            state.jiraRowMetaShow = { ...state.jiraRowMetaShow, reporter: true };
+          }
+        }
+
         // One-shot migration (2026-08): multi-site Jira. The legacy scalar
         // `jiraBaseUrl` becomes jiraSites[0] + the default. Legacy Jira
         // projects/tabs/assigned rows are stamped with that site NOW, while
@@ -456,6 +488,11 @@ export const useAppStore = create<AppStore>()(
         // Auto-complete onboarding for existing users who already have persisted state
         const onboardingCompleted = state.onboardingCompleted ?? true;
 
+        // Existing installs already run a chosen (or lived-with) backend —
+        // only a blob that explicitly says false (fresh debug reset) re-runs
+        // the first-boot backend detection in App.tsx.
+        const backendAutoDetected = state.backendAutoDetected ?? true;
+
         return {
           ...current,
           ...state,
@@ -469,6 +506,7 @@ export const useAppStore = create<AppStore>()(
           projectSessions,
           aiTimeBursts,
           onboardingCompleted,
+          backendAutoDetected,
           gameSidebarOpen,
           gameSidebarGame,
           // When session restore is off, reset all panel/sidebar state to defaults

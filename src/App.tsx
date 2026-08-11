@@ -27,6 +27,8 @@ import { NativePaneVisibilityCoordinator } from "./native-term/NativePaneVisibil
 import { OverlayDismissOwner } from "./native-term/OverlayDismissOwner";
 import { ensureFreshSession } from "./lib/native-term-bridge";
 import { applyAppIcon } from "./lib/app-icon";
+import { importDebugResetSeed } from "./lib/debug-reset-seed";
+import { isWindows } from "./lib/platform";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { resolveWslCliPaths } from "./lib/wsl-cache";
@@ -53,7 +55,6 @@ import { installAudioUnlock } from "./lib/notification-sounds";
 import SettingsPane from "./components/SettingsPane";
 import JiraMcpStartupCheck from "./components/JiraMcpStartupCheck";
 import KnowledgeMcpStartupCheck from "./components/KnowledgeMcpStartupCheck";
-import WelcomeModal from "./components/WelcomeModal";
 import GlobalContextMenu from "./components/GlobalContextMenu";
 import QuitConfirmModal from "./components/QuitConfirmModal";
 import { matchCommand, probeKeybinding, MIGRATED } from "./lib/keybindings";
@@ -99,6 +100,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { getActivePaneSearchOpener } from "./lib/pane-search-registry";
 import { emitOverlayTheme, listenOverlayFocus, listenOverlayReady } from "./lib/overlay-bridge";
 import { maybeOfferAgentFile } from "./lib/agent-file-backfill";
+import { jiraVirtualDirLabel } from "./lib/jira-virtual-dir";
 import { listen } from "@tauri-apps/api/event";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
@@ -145,8 +147,6 @@ export default function App() {
   const addRecentProject = useAppStore((s) => s.addRecentProject);
   const autoStartServerCommand = useAppStore((s) => s.autoStartServerCommand);
   const recentProjects = useAppStore((s) => s.recentProjects);
-  const onboardingCompleted = useAppStore((s) => s.onboardingCompleted);
-  const setOnboardingCompleted = useAppStore((s) => s.setOnboardingCompleted);
   const [changelogToShow, setChangelogToShow] = useState<{ version: string; notes: string } | null>(null);
 
   const projectTabs = useMemo(() => tabs.filter((t) => !t.isDevServerTab && !t.isServersTab && !t.isKanbanTab && !t.isSettingsTab), [tabs]);
@@ -194,6 +194,37 @@ export default function App() {
   // source of truth is localStorage) and rewrites the sidecar via the command.
   useEffect(() => {
     void applyAppIcon(useAppStore.getState().appIconVariant);
+  }, []);
+
+  // Debug builds: one-shot import of a recovery seed file, if present.
+  useEffect(() => {
+    if (import.meta.env.DEV) void importDebugResetSeed();
+  }, []);
+
+  // First boot on Windows: pick the terminal backend by detection instead of
+  // asking (the old WelcomeModal's job). The "wsl" default hands a machine
+  // with no WSL distros broken terminals — flip those to "windows" silently.
+  // One-shot: backendAutoDetected persists true afterwards, and the hydration
+  // merge defaults it true for existing installs so a backend the user chose
+  // (or has lived with) is never second-guessed. No flip on timeout: a slow
+  // WSL is not a missing one.
+  useEffect(() => {
+    if (!isWindows() || useAppStore.getState().backendAutoDetected) return;
+    useAppStore.setState({ backendAutoDetected: true });
+    void (async () => {
+      try {
+        const distros = await Promise.race([
+          invoke<string[]>("wsl_list_distros"),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+        ]);
+        if (Array.isArray(distros) && distros.length === 0) {
+          useAppStore.getState().setTerminalBackend("windows");
+        }
+      } catch {
+        // wsl.exe missing or errored — there is no WSL to talk to.
+        useAppStore.getState().setTerminalBackend("windows");
+      }
+    })();
   }, []);
 
   // Settings panel and sidebars are mutually exclusive
@@ -1034,9 +1065,6 @@ export default function App() {
   // Global keyboard shortcuts (capture phase — fires before xterm/composer handlers)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Block all shortcuts while WelcomeModal is showing
-      if (!useAppStore.getState().onboardingCompleted) return;
-
       const { ctrlKey, shiftKey, altKey, key } = e;
       // Helper: prevent default AND stop propagation (capture phase blocks xterm)
       const consume = () => { e.preventDefault(); e.stopPropagation(); };
@@ -1522,7 +1550,7 @@ export default function App() {
                             {project.name}
                           </div>
                           <div style={{ fontSize: "calc(var(--ezy-font-scale, 1) * 11px)", color: "var(--ezy-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {project.path}
+                            {jiraVirtualDirLabel(project.path)}
                           </div>
                         </div>
                       </button>
@@ -1537,7 +1565,7 @@ export default function App() {
                   as the anchor so the menu opens under this button. The listener
                   lives in useTabLaunchMenu, which every tab bar mode mounts. */}
               <button
-                className="made-splash-rise"
+                className="made-splash-rise made-splash-open-btn"
                 onClick={(e) =>
                   window.dispatchEvent(
                     new CustomEvent("made:open-launch-menu", {
@@ -1547,15 +1575,12 @@ export default function App() {
                 }
                 style={{
                   padding: "9px 22px", borderRadius: "calc(var(--ezy-radius-scale, 1) * 8px)", position: "relative",
-                  border: "1px solid var(--ezy-border)",
                   background: "var(--ezy-surface-raised)", color: "var(--ezy-text)",
                   fontSize: "calc(var(--ezy-font-scale, 1) * 13px)", fontWeight: 500, cursor: "pointer",
                   letterSpacing: "0.02em",
                   fontFamily: '"Sora Variable", system-ui, sans-serif',
                   display: "inline-flex", alignItems: "center", gap: 8,
                 }}
-                onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--ezy-accent)"}
-                onMouseLeave={(e) => e.currentTarget.style.borderColor = "var(--ezy-border)"}
               >
                 Open Project
                 {/* The one signal that this reveals choices instead of opening a
@@ -1650,13 +1675,7 @@ export default function App() {
       <PaneNotificationStack />
       <OsToastHost />
       <SoundPickerHost />
-      {!onboardingCompleted && (
-        <WelcomeModal
-          onComplete={() => setOnboardingCompleted(true)}
-          onSkip={() => setOnboardingCompleted(true)}
-        />
-      )}
-      {changelogToShow && onboardingCompleted && (
+      {changelogToShow && (
         <ChangelogModal
           version={changelogToShow.version}
           notes={changelogToShow.notes}
