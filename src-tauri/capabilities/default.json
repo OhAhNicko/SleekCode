@@ -16,6 +16,10 @@
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "ms-settings:notifications" }]
+    },
     "dialog:default",
     "os:default",
     "window-state:default",

@@ -1,38 +1,25 @@
 /**
- * PaneNotificationStack — main-webview owner of the bottom-right notification
- * stack. Publishes the card list to the overlay (kind "notif-stack", rendered
- * in OverlayRoot) and routes clicks back:
+ * PaneNotificationStack — RENDERLESS lifecycle manager for notification
+ * cards. The name is historical: it used to publish a second, in-app card
+ * stack to the overlay, but the OS popup (OsToastHost → the "toast" window)
+ * is now THE one notification surface (user decision 2026-08-11 — the
+ * two-surface model presented the same card twice). What remains here is
+ * everything about a card's LIFE, none of its rendering:
  *
- *   focus:<cardId>   → dismiss + switch to the pane's tab + focus the pane
- *   dismiss:<cardId> → dismiss that card
- *   __dismiss__      → IGNORED. useOverlayViewportPopup bounces this on every
- *                      outside pointerdown; a persistent stack must survive it.
- *
- * One popup id for the whole stack: payload updates overwrite in place, so
- * cards appearing/disappearing never close/reopen the popup, and there is a
- * single keepalive + ghost-sweep entry instead of one per card.
+ *   - master switch off → drop live cards
+ *   - seeing the pane = acknowledged → dismiss
+ *   - auto-dismiss timers
  */
 
 import { useEffect } from "react";
-import { useOverlayViewportPopup } from "../lib/useOverlayToast";
 import { usePaneNotificationsStore } from "../store/paneNotificationsStore";
-import { useAnyModalOpen } from "../store/modalCoordinationSlice";
 import { useAppStore } from "../store";
-import { handleNotifCardAction } from "../lib/notif-actions";
 
 export default function PaneNotificationStack() {
   const cards = usePaneNotificationsStore((s) => s.cards);
   const notifEnabled = useAppStore((s) => s.notifEnabled ?? true);
   const notifAutoDismiss = useAppStore((s) => s.notifAutoDismiss ?? false);
   const notifAutoDismissSeconds = useAppStore((s) => s.notifAutoDismissSeconds ?? 30);
-  // Hook order must be stable — called unconditionally (see useOverlayPopupAnchor).
-  const anyModalOpen = useAnyModalOpen();
-
-  // useOverlayViewportPopup has no modal suppression of its own; without this
-  // gate the stack would paint over fullscreen modals in the overlay window,
-  // where no main-webview z-index can cover it. Cards are kept — the stack
-  // returns when the modal closes.
-  const open = cards.length > 0 && !anyModalOpen;
 
   // Master switch off → drop any visible cards too (not just future ones), so
   // re-enabling later doesn't resurface a stale stack.
@@ -61,29 +48,6 @@ export default function PaneNotificationStack() {
     sweep();
     return useAppStore.subscribe(sweep);
   }, [cards]);
-
-  useOverlayViewportPopup({
-    id: "pane-notif-stack",
-    kind: "notif-stack",
-    open,
-    payload: {
-      cards: cards.map((c) => ({
-        id: c.id,
-        projectName: c.projectName,
-        paneLabel: c.paneLabel ?? "",
-        timeHHMM: c.timeHHMM,
-        body: c.body,
-        kind: c.kind,
-        hasAction: !!c.clickAction,
-      })),
-    },
-    onAction: (action) => {
-      // Outside-click "dismissal" — meaningless for a persistent stack.
-      if (action === "__dismiss__") return;
-      // Shared with the custom OS popup window (lib/notif-actions).
-      handleNotifCardAction(action);
-    },
-  });
 
   // Auto-dismiss (Settings > Terminal > Notifications). Deadlines derive from
   // addedAt, so enabling the toggle retroactively applies to visible cards.

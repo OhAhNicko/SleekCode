@@ -5,17 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MADE Notifications</title>
     <style>
-      /* Custom OS notification popup window. OPAQUE on purpose — transparent
-         WebView2 windows are a documented minefield here (see the overlay
-         saga); the window is sized to the card column, so the background IS
-         the app surface color and there is nothing to see through. */
+      /* Custom OS notification popup window. TRANSPARENT like the overlay:
+         the cards draw their own antialiased rounded corners into alpha (an
+         opaque window's SetWindowRgn shape is 1-bit and rendered jagged
+         corners). Survival against tao's black WM_PAINT blit lives in
+         toast_win32::prepare's guard subclass, same recipe as the overlay. */
       html,
       body,
       #toast-root {
         margin: 0;
         padding: 0;
         width: 100%;
-        background: var(--ezy-bg, #131313);
+        background: transparent;
         overflow: hidden;
       }
     </style>

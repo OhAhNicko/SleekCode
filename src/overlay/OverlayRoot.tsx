@@ -916,6 +916,10 @@ interface NotifStackCard {
   /** Card click routes through the main webview's clickAction (`open:` verb)
    *  instead of the pane-focus path. Jira update cards set this. */
   hasAction?: boolean;
+  /** Jira cards: status chip + actor (see NotifCardData — same fields, the
+   *  payload passes them straight through to the shared visual). */
+  jiraStatus?: { name: string; color: string };
+  jiraActor?: string;
 }
 
 /** Below the 38px tab bar plus a deliberate 12px gap. Never smaller: the
@@ -2362,9 +2366,24 @@ function TipChip({
     // its pixels belong to the overlay window, so hovering it would steal the
     // pointer from the pane below and oscillate open/closed. Anchoring to the
     // element rect (never the cursor) plus GAP guarantees clearance.
+    //
+    // Below is only taken when above CAN'T fit and below CAN — deciding by
+    // above-room alone let a below-placed chip overflow the window bottom,
+    // where the clamp then parked it over the anchor itself (row buttons near
+    // the rail's bottom edge hit exactly this). When neither side fits, above
+    // + clamp is the lesser evil: it slides down, never over the anchor.
     const totalH = ch + OUT;
-    const below = anchor.top - GAP < totalH + EDGE;
+    const fitsAbove = anchor.top - GAP - totalH >= EDGE;
+    const fitsBelow = anchor.bottom + GAP + totalH + SHADOW <= vh - EDGE;
+    const below = !fitsAbove && fitsBelow;
     const top = below ? anchor.bottom + GAP : anchor.top - GAP - totalH;
+
+    // TEMP diagnostic (tooltip-overflow bug): remove once resolved.
+    void import("@tauri-apps/api/core").then(({ invoke }) =>
+      invoke("debug_log_line", {
+        line: `[tipdbg-overlay] text="${text.slice(0, 24)}" anchor=${Math.round(anchor.left)},${Math.round(anchor.top)},${Math.round(anchor.right)},${Math.round(anchor.bottom)} chip=${cw}x${ch} vw=${vw} vh=${vh} dpr=${window.devicePixelRatio} below=${below} top=${Math.round(top)}`,
+      }).catch(() => {}),
+    );
 
     const centerX = (anchor.left + anchor.right) / 2;
     // Clamp against the chip plus its shadow, so the offset never falls off

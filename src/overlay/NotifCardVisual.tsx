@@ -8,6 +8,8 @@
  * stopPropagation before the wrapper's click).
  */
 
+import { badgeInkFor } from "../lib/jira-colors";
+
 export interface NotifCardData {
   id: string;
   projectName: string;
@@ -16,6 +18,13 @@ export interface NotifCardData {
   body: string;
   kind: "permission" | "finished" | "jira";
   hasAction?: boolean;
+  /** Jira cards: the ticket's CURRENT status chip. The color is resolved in
+   *  the main webview (statusColorFromState — the toast window has no store)
+   *  and carried on the card, so both surfaces show the rail's exact hue. */
+  jiraStatus?: { name: string; color: string };
+  /** Jira cards: who did the thing — comment author, new assignee. Rendered
+   *  emphasized before the flavor label ("Andreas · New comment"). */
+  jiraActor?: string;
 }
 
 export function NotifCardVisual({
@@ -88,42 +97,95 @@ export function NotifCardVisual({
         >
           {card.timeHHMM}
         </span>
-        <svg
+        {/* span+flex, not <button>: buttons inherit line-height and inflate
+            compact headers. Hover = the app's icon-button convention
+            (bg --ezy-border + ink brightens), via direct style mutation like
+            the rest of the overlay's popups. */}
+        <span
+          role="button"
+          aria-label="Dismiss notification"
           onClick={(e) => {
             e.stopPropagation();
             onDismiss();
           }}
-          role="button"
-          aria-label="Dismiss notification"
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
+          onMouseEnter={(e) => {
+            e.currentTarget.style.backgroundColor = "var(--ezy-border, rgba(255,255,255,0.12))";
+            e.currentTarget.style.color = "var(--ezy-text, #e6edf3)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.backgroundColor = "transparent";
+            e.currentTarget.style.color = "var(--ezy-text-muted, rgba(230,237,243,0.5))";
+          }}
           style={{
+            width: 18,
+            height: 18,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderRadius: "calc(var(--ezy-radius-scale, 1) * 4px)",
             cursor: "pointer",
             color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
             flexShrink: 0,
           }}
         >
-          <path
-            d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-          />
-        </svg>
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+            <path
+              d="M2.5 2.5L9.5 9.5M9.5 2.5L2.5 9.5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          </svg>
+        </span>
       </div>
-      {card.paneLabel && (
-        <div
-          style={{
-            fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
-            color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {card.paneLabel}
+      {(card.paneLabel || card.jiraStatus || card.jiraActor) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          {card.jiraStatus && (
+            // Same chip recipe as JiraStatusBadge (solid status color, WCAG
+            // ink) minus its fixed-width column mechanic — a card has no
+            // status column to align to, so natural width + ellipsis cap.
+            <span
+              style={{
+                padding: "1px 5px",
+                borderRadius: "calc(var(--ezy-radius-scale, 1) * 3px)",
+                backgroundColor: card.jiraStatus.color,
+                color: badgeInkFor(card.jiraStatus.color),
+                fontSize: "calc(var(--ezy-font-scale, 1) * 9px)",
+                fontWeight: 600,
+                lineHeight: 1.45,
+                maxWidth: 140,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+              }}
+            >
+              {card.jiraStatus.name}
+            </span>
+          )}
+          {(card.jiraActor || card.paneLabel) && (
+            <span
+              style={{
+                fontSize: "calc(var(--ezy-font-scale, 1) * 11px)",
+                color: "var(--ezy-text-muted, rgba(230,237,243,0.5))",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                minWidth: 0,
+              }}
+            >
+              {card.jiraActor ? (
+                <>
+                  <span style={{ color: "var(--ezy-text, #e6edf3)", fontWeight: 500 }}>
+                    {card.jiraActor}
+                  </span>
+                  {card.paneLabel ? ` · ${card.paneLabel}` : ""}
+                </>
+              ) : (
+                card.paneLabel
+              )}
+            </span>
+          )}
         </div>
       )}
       <div

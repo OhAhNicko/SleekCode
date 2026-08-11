@@ -20,19 +20,31 @@ import { invoke } from "@tauri-apps/api/core";
 import { listenOverlayTheme, emitOverlayReady } from "../lib/overlay-bridge";
 import { NotifCardVisual, type NotifCardData } from "../overlay/NotifCardVisual";
 
-/** Logical width of the popup window; matches the in-app stack's card width
- * plus the 12px gutter each side. */
-const TOAST_W = 344;
+/** Logical width of the popup window; identical to the in-app stack's card
+ * width. The window is transparent (cards draw their own antialiased
+ * corners) and clipped to the union of the card rects (SetWindowRgn, see
+ * toast_window_place) so the gaps between stacked cards are click-through —
+ * the same look and hit behavior as the in-app stack. */
+const TOAST_W = 320;
 
 export function ToastRoot() {
   const [cards, setCards] = useState<NotifCardData[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
 
+  // Breadcrumbs into %TEMP%\made-logs\made-<profile>.log: the whole show
+  // chain (cards event → measure → place) is otherwise fire-and-forget, and
+  // a failure anywhere reads as "toasts just don't appear".
+  useEffect(() => {
+    void invoke("debug_log_line", { line: "[toast] root mounted" }).catch(() => {});
+  }, []);
+
   useEffect(() => {
     let un: (() => void) | undefined;
     let disposed = false;
     listen<{ cards: NotifCardData[] }>("made:os-toast-cards", (e) => {
-      setCards(e.payload.cards ?? []);
+      const next = e.payload.cards ?? [];
+      void invoke("debug_log_line", { line: `[toast] cards=${next.length}` }).catch(() => {});
+      setCards(next);
     }).then((u) => {
       if (disposed) u();
       else un = u;
@@ -66,15 +78,36 @@ export function ToastRoot() {
     };
   }, []);
 
-  // Self-measure → window height. The main side decides WHEN the window
-  // shows; re-measuring on every cards change keeps the height exact while
-  // it is visible (the place command is idempotent).
+  // Self-measure → window size + clip region. The main side decides WHEN the
+  // window shows; re-measuring on every cards change keeps both exact while
+  // it is visible (the place command is idempotent and skips identical
+  // regions). Card rects are viewport coords, which ARE window-local logical
+  // px — this webview fills the toast window exactly.
   useLayoutEffect(() => {
     if (cards.length === 0) return;
-    const h = rootRef.current?.scrollHeight ?? 0;
-    if (h > 0) {
-      void invoke("toast_window_place", { width: TOAST_W, height: h }).catch(() => {});
-    }
+    const root = rootRef.current;
+    const h = root?.scrollHeight ?? 0;
+    if (!root || h <= 0) return;
+    // Same radius the cards draw with (NotifCardVisual: radius-scale * 8px),
+    // so the window clip and the painted corner coincide.
+    const radiusScale =
+      parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue("--ezy-radius-scale"),
+      ) || 1;
+    const rects = [...root.children].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x, y: r.y, width: r.width, height: r.height, radius: radiusScale * 8 };
+    });
+    void invoke("toast_window_place", { width: TOAST_W, height: h, rects })
+      .then(() =>
+        invoke("debug_log_line", {
+          line: `[toast] placed ${TOAST_W}x${h} rects=${rects.length}`,
+        }),
+      )
+      .catch((err) =>
+        invoke("debug_log_line", { line: `[toast] place FAILED: ${String(err)}` }),
+      )
+      .catch(() => {});
   }, [cards]);
 
   const act = (action: string) => {
@@ -88,9 +121,9 @@ export function ToastRoot() {
         display: "flex",
         flexDirection: "column",
         gap: 8,
-        padding: 12,
         fontFamily: "var(--ezy-font-ui, Inter, system-ui, sans-serif)",
-        backgroundColor: "var(--ezy-bg, #131313)",
+        // No background: the window is transparent, and the cards paint their
+        // own surface — the gaps between stacked cards show the desktop.
       }}
     >
       {cards.map((card) => (

@@ -1,13 +1,16 @@
 /**
  * OsToastHost — main-webview driver of the custom OS notification popup (the
- * "toast" window: opaque, always-on-top, ownerless, at the work-area corner).
+ * "toast" window: transparent, always-on-top, ownerless, at the work-area
+ * corner).
  *
- * Shows the SAME cards as the in-app stack, exactly when that stack is
- * invisible: main window minimized OR the app unfocused. The toast window
- * self-measures and places itself (toast_window_place); this side owns the
- * card feed and the HIDE edge, and routes card clicks back through the shared
- * handler after restoring the main window (the click is the user asking to
- * come back).
+ * THE one notification surface (user decision 2026-08-11): cards show at the
+ * work-area corner whether MADE is focused, unfocused or minimized, and there
+ * is no separate in-app stack — the old two-surface model presented the same
+ * card twice (OS popup while away, in-app again on return), which read as
+ * duplicate notifications. The toast window self-measures and places itself
+ * (toast_window_place); this side owns the card feed and the HIDE edge (cards
+ * emptying), and routes card clicks back through the shared handler after
+ * restoring the main window (a no-op when MADE is already foreground).
  *
  * A card click must never be lost to a race: restore-then-act, both
  * fire-and-forget — handleNotifCardAction reads live store state, which is
@@ -23,18 +26,18 @@ import { handleNotifCardAction } from "../lib/notif-actions";
 
 export default function OsToastHost() {
   const cards = usePaneNotificationsStore((s) => s.cards);
-  const windowMinimized = useAppStore((s) => s.windowMinimized);
-  const appWindowFocused = useAppStore((s) => s.appWindowFocused);
   const notifEnabled = useAppStore((s) => s.notifEnabled ?? true);
   const popupsEnabled = useAppStore((s) => s.notifOsPopupsEnabled ?? true);
 
-  const show =
-    notifEnabled &&
-    popupsEnabled &&
-    cards.length > 0 &&
-    (windowMinimized || !appWindowFocused);
+  const show = notifEnabled && popupsEnabled && cards.length > 0;
 
   useEffect(() => {
+    // Breadcrumb next to the toast webview's own lines in the debug log —
+    // together they say whether a missing toast died on THIS side (show
+    // gate) or inside the popup window (event → measure → place).
+    void invoke("debug_log_line", {
+      line: `[os-toast] show=${show} cards=${cards.length}`,
+    }).catch(() => {});
     if (show) {
       // The toast window measures the rendered column and places itself —
       // sending the cards IS the show command.
@@ -47,6 +50,8 @@ export default function OsToastHost() {
           body: c.body,
           kind: c.kind,
           hasAction: !!c.clickAction,
+          jiraStatus: c.jiraStatus,
+          jiraActor: c.jiraActor,
         })),
       });
     } else {

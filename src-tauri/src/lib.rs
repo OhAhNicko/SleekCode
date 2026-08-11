@@ -111,6 +111,7 @@ mod win32_border {
     const DWMWCP_DONOTROUND: u32 = 1;
     const DWMWCP_ROUND: u32 = 2;
     const DWMWA_BORDER_COLOR: u32 = 34;
+    const DWMWA_CAPTION_COLOR: u32 = 35;
     /// Special COLORREF telling DWM to draw NO window border at all (not just a
     /// matching color). This suppresses the Windows 11 accent border line on all
     /// four sides (border #1). The window is opaque and borderless with rounded
@@ -253,6 +254,8 @@ mod win32_border {
             timer_func: *const c_void,
         ) -> usize;
         fn KillTimer(hwnd: *mut c_void, id_event: usize) -> i32;
+        fn SetClassLongPtrW(hwnd: *mut c_void, index: i32, value: isize) -> isize;
+        fn CreateSolidBrush(color: u32) -> *mut c_void;
     }
 
     const WM_TIMER: u32 = 0x0113;
@@ -291,6 +294,20 @@ mod win32_border {
             hwnd,
             DWMWA_BORDER_COLOR,
             &no_border as *const u32 as *const c_void,
+            std::mem::size_of::<u32>() as u32,
+        );
+
+        // 3. `DWMWA_CAPTION_COLOR = #131313` — DWM anti-aliases the rounded
+        //    corner arc against the CAPTION color even on a frameless window
+        //    that draws no caption. Left unset it follows the system default
+        //    (WHITE outside Windows dark mode), which composites as permanent
+        //    white specks exactly on the corner arcs of an otherwise-dark app.
+        //    COLORREF is 0x00BBGGRR; #131313 is symmetric.
+        let caption: u32 = 0x0013_1313;
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CAPTION_COLOR,
+            &caption as *const u32 as *const c_void,
             std::mem::size_of::<u32>() as u32,
         );
     }
@@ -843,6 +860,27 @@ mod win32_border {
                 std::mem::size_of::<u32>() as u32,
             );
 
+            // 2.5) Darken every fallback layer that could ever show through.
+            //    The window class registers with a light background brush and
+            //    WebView2's factory default background is WHITE — so any pixel
+            //    the page hasn't painted yet (and the sub-pixel fringe DWM
+            //    blends at the rounded-corner arc) flashes or sticks as white
+            //    specks on an app that is #131313 everywhere. With both
+            //    fallbacks dark, an unpainted pixel is indistinguishable from
+            //    a painted one. COLORREF is 0x00BBGGRR; #131313 is symmetric.
+            const GCLP_HBRBACKGROUND: i32 = -10;
+            SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, CreateSolidBrush(0x0013_1313) as isize);
+            {
+                use webview2_com::Microsoft::Web::WebView2::Win32::{
+                    COREWEBVIEW2_COLOR, ICoreWebView2Controller2,
+                };
+                use windows_webview2::core::Interface;
+                if let Ok(c2) = controller.cast::<ICoreWebView2Controller2>() {
+                    let dark = COREWEBVIEW2_COLOR { A: 255, R: 0x13, G: 0x13, B: 0x13 };
+                    let _ = c2.SetDefaultBackgroundColor(dark);
+                }
+            }
+
             // 3) Subclass the window to intercept WM_NCCALCSIZE (claim the full
             //    client rect so the frame is invisible) and re-apply border
             //    suppression on every state transition. It also owns a WebView2
@@ -909,6 +947,17 @@ mod toast_win32 {
     const SW_HIDE: i32 = 0;
     const SW_RESTORE: i32 = 9;
     const HWND_TOPMOST: isize = -1;
+    const WM_NCCALCSIZE: u32 = 0x0083;
+    const WM_NCPAINT: u32 = 0x0085;
+    const WM_NCACTIVATE: u32 = 0x0086;
+    const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
+    const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
+    const WM_NCDESTROY: u32 = 0x0082;
+    const WM_ERASEBKGND: u32 = 0x0014;
+    const WM_PAINT: u32 = 0x000F;
+    const WM_MOUSEACTIVATE: u32 = 0x0021;
+    const MA_NOACTIVATE: isize = 3;
+    const SUBCLASS_ID: usize = 0x544F; // "TO" — Toast
 
     #[repr(C)]
     struct RECT {
@@ -934,16 +983,81 @@ mod toast_win32 {
         fn ShowWindow(hwnd: *mut c_void, cmd: i32) -> i32;
         fn IsIconic(hwnd: *mut c_void) -> i32;
         fn SetForegroundWindow(hwnd: *mut c_void) -> i32;
+        fn SetWindowSubclass(
+            hwnd: *mut c_void,
+            pfn_subclass: Option<
+                unsafe extern "system" fn(*mut c_void, u32, usize, isize, usize, usize) -> isize,
+            >,
+            uid_subclass: usize,
+            ref_data: usize,
+        ) -> i32;
+        fn RemoveWindowSubclass(
+            hwnd: *mut c_void,
+            pfn_subclass: Option<
+                unsafe extern "system" fn(*mut c_void, u32, usize, isize, usize, usize) -> isize,
+            >,
+            uid_subclass: usize,
+        ) -> i32;
+        fn DefSubclassProc(hwnd: *mut c_void, msg: u32, wparam: usize, lparam: isize) -> isize;
+        fn ValidateRect(hwnd: *mut c_void, rect: *const RECT) -> i32;
     }
 
-    /// WS_EX_NOACTIVATE — clicking a toast must never steal focus from the
-    /// app the user is working in (clicking a CARD deliberately does, via
-    /// main_window_restore_focus — an explicit user intent).
+    /// Transparent-window survival + activation guard — the minimal subset of
+    /// the overlay's NC guard (overlay::win32::install_nc_guard holds the full
+    /// forensic story). The two arms that matter here:
+    ///  - WM_PAINT / WM_ERASEBKGND: tauri-runtime-wry answers WM_PAINT on any
+    ///    `transparent(true)` window by BitBlt-ing a #000000 softbuffer over
+    ///    the whole client area; transparent DOM has nothing to repaint those
+    ///    pixels with, so the black STAYS — the exact black frame this window
+    ///    is trying to avoid. Validate the update region (NEVER skip that — an
+    ///    unvalidated WM_PAINT re-posts forever at 100% CPU) and swallow.
+    ///  - WM_MOUSEACTIVATE → MA_NOACTIVATE: WS_EX_NOACTIVATE does not stop the
+    ///    WebView2 CHILD from activating us on click; dismissing a card must
+    ///    not yank focus from whatever app the user is working in.
+    /// The NC arms are belt-and-suspenders: tao can rewrite GWL_STYLE from its
+    /// cached flags, and a SetWindowRgn'd window falls back to CLASSIC NC
+    /// rendering, so a restored caption would actually paint.
+    unsafe extern "system" fn toast_guard_proc(
+        hwnd: *mut c_void,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+        _uid: usize,
+        _ref_data: usize,
+    ) -> isize {
+        match msg {
+            WM_NCCALCSIZE => 0,
+            WM_NCPAINT | WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME => 0,
+            WM_NCACTIVATE => 1,
+            WM_ERASEBKGND => 1,
+            WM_PAINT => {
+                ValidateRect(hwnd, std::ptr::null());
+                0
+            }
+            WM_MOUSEACTIVATE => MA_NOACTIVATE,
+            WM_NCDESTROY => {
+                RemoveWindowSubclass(hwnd, Some(toast_guard_proc), SUBCLASS_ID);
+                DefSubclassProc(hwnd, msg, wparam, lparam)
+            }
+            _ => DefSubclassProc(hwnd, msg, wparam, lparam),
+        }
+    }
+
+    /// WS_EX_NOACTIVATE (clicking a toast must never steal focus from the
+    /// app the user is working in; clicking a CARD deliberately does, via
+    /// main_window_restore_focus — an explicit user intent) + the guard
+    /// subclass above.
+    ///
+    /// No DWM corner preference here: the visible shape is the cards' own
+    /// CSS corners composited into the transparent window; the SetWindowRgn
+    /// clip applied in toast_window_place only bounds hit-testing (gaps
+    /// between stacked cards stay click-through to whatever is beneath).
     pub fn prepare(hwnd: isize) {
         unsafe {
             let h = hwnd as *mut c_void;
             let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
             SetWindowLongPtrW(h, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE);
+            SetWindowSubclass(h, Some(toast_guard_proc), SUBCLASS_ID, 0);
         }
     }
 
@@ -987,18 +1101,65 @@ mod toast_win32 {
     }
 }
 
+/// Region tuples last applied to the toast window — skips identical re-applies
+/// (every cards change re-measures, and most re-sends carry the same rects).
+#[cfg(target_os = "windows")]
+static TOAST_LAST_REGION: std::sync::Mutex<Option<Vec<(i32, i32, i32, i32, i32)>>> =
+    std::sync::Mutex::new(None);
+
 /// Place + show the custom notification popup ("toast" window) at the
-/// work-area corner. `width`/`height` are LOGICAL px from the toast webview's
-/// self-measurement; scaled here by its monitor scale factor.
+/// work-area corner, clipped to its card rects. `width`/`height` are LOGICAL
+/// px from the toast webview's self-measurement; `rects` are the card
+/// rectangles in the same logical space, each rounded by its CSS radius.
+///
+/// The window is transparent (cards draw their own antialiased corners), so
+/// the SetWindowRgn clip exists for HIT-TESTING: without it the whole
+/// 320xH rect swallows clicks over other apps, gaps between stacked cards
+/// included. Same mechanism (and the same rounded-rect union builder) as the
+/// overlay's click-through region. The overlay's hard rule against regioning
+/// a visible window does not apply here: beneath the toast are OTHER apps'
+/// pixels, not MADE's own webview / wgpu children racing a DWM re-present —
+/// and the region is applied BEFORE the SetWindowPos that shows the window.
 #[cfg(target_os = "windows")]
 #[tauri::command]
-fn toast_window_place(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+fn toast_window_place(
+    app: tauri::AppHandle,
+    width: f64,
+    height: f64,
+    rects: Vec<overlay::Rect>,
+) -> Result<(), String> {
     use tauri::Manager;
     let Some(win) = app.get_webview_window("toast") else {
         return Err("toast window missing".into());
     };
     let scale = win.scale_factor().unwrap_or(1.0);
     let hwnd = win.hwnd().map_err(|e| e.to_string())?.0 as isize;
+    let px: Vec<(i32, i32, i32, i32, i32)> = rects
+        .iter()
+        .map(|r| {
+            let diam = if r.radius > 0.0 {
+                ((r.radius * scale).round() as i32 * 2).max(2)
+            } else {
+                0
+            };
+            (
+                (r.x * scale).round() as i32,
+                (r.y * scale).round() as i32,
+                ((r.x + r.width) * scale).round() as i32,
+                ((r.y + r.height) * scale).round() as i32,
+                diam,
+            )
+        })
+        .collect();
+    {
+        let mut last = TOAST_LAST_REGION
+            .lock()
+            .map_err(|_| "TOAST_LAST_REGION poisoned".to_string())?;
+        if last.as_ref() != Some(&px) {
+            overlay::win32::set_region(hwnd, &px)?;
+            *last = Some(px);
+        }
+    }
     toast_win32::place(
         hwnd,
         (width * scale).round() as i32,
@@ -1034,7 +1195,7 @@ fn main_window_restore_focus(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(not(target_os = "windows"))]
 #[tauri::command]
-fn toast_window_place(_width: f64, _height: f64) -> Result<(), String> {
+fn toast_window_place(_width: f64, _height: f64, _rects: Vec<overlay::Rect>) -> Result<(), String> {
     Ok(())
 }
 
@@ -1057,18 +1218,21 @@ fn main_window_restore_focus() -> Result<(), String> {
 /// lazily from disk, and app-local-data survives updates.
 #[cfg(target_os = "windows")]
 fn register_toast_aumid(app: &tauri::AppHandle) {
-    use tauri::Manager;
     let identifier = app.config().identifier.clone();
     let display_name = app
         .config()
         .product_name
         .clone()
         .unwrap_or_else(|| "MADE".into());
-    let icon_path = app
-        .path()
-        .app_local_data_dir()
-        .ok()
-        .map(|d| d.join("notif-icon.png"));
+    // Toasts follow the PICKED app-icon variant, not the compiled default —
+    // resolve the persisted pick the same way the boot-time window-icon apply
+    // does, and write that variant's PNG where IconUri points.
+    let variant = app_icon_sidecar_path(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| app_icon_variant_png(s).is_some())
+        .unwrap_or_else(|| "c".into());
+    let icon_path = write_toast_icon(app, &variant);
     std::thread::spawn(move || {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -1081,14 +1245,27 @@ fn register_toast_aumid(app: &tauri::AppHandle) {
         };
         reg_add("DisplayName", &display_name);
         if let Some(p) = icon_path {
-            if let Some(dir) = p.parent() {
-                let _ = std::fs::create_dir_all(dir);
-            }
-            if std::fs::write(&p, include_bytes!("../icons/128x128.png")).is_ok() {
-                reg_add("IconUri", &p.to_string_lossy());
-            }
+            reg_add("IconUri", &p.to_string_lossy());
         }
     });
+}
+
+/// The PNG the AUMID registration's IconUri points at — the icon Windows
+/// shows on MADE's toast notifications. Rewritten at boot from the persisted
+/// app-icon pick and again by `set_app_icon_variant`, so notifications match
+/// the taskbar instead of being pinned to the compiled default forever.
+/// Toasts resolve IconUri lazily from disk, so an overwrite is enough — the
+/// registry value never has to change.
+#[cfg(target_os = "windows")]
+fn write_toast_icon(app: &tauri::AppHandle, variant: &str) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let path = app.path().app_local_data_dir().ok()?.join("notif-icon.png");
+    let bytes = app_icon_variant_png(variant)?;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::write(&path, bytes).ok()?;
+    Some(path)
 }
 
 #[tauri::command]
@@ -4953,6 +5130,69 @@ async fn wsl_list_distros() -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// The distro `wsl.exe` runs when no `-d` is given — what the Settings picker
+/// calls "Default". Parsed from `wsl --list --verbose` because its `*` row
+/// marker is the only locale-independent signal (`wsl --status` prints a
+/// localized "Default Distribution:" label). Same UTF-16LE built-in caveat as
+/// `wsl_list_distros`. Errors when the default registration itself is broken
+/// (e.g. a stale GUID after a distro reinstall).
+#[tauri::command]
+async fn wsl_default_distro() -> Result<Option<String>, String> {
+    let output = wsl_command()
+        .args(["--list", "--verbose"])
+        .output()
+        .map_err(|e| format!("Failed to run wsl: {}", e))?;
+
+    if !output.status.success() {
+        return Err("wsl --list --verbose failed".to_string());
+    }
+
+    let units: Vec<u16> = output
+        .stdout
+        .chunks_exact(2)
+        .map(|b| u16::from_le_bytes([b[0], b[1]]))
+        .collect();
+    Ok(parse_default_distro(&String::from_utf16_lossy(&units)))
+}
+
+/// Find the `*`-marked row in `wsl --list --verbose` output. The column
+/// headers and STATE values are localized; the marker and the name are not,
+/// so those are all this may match on.
+fn parse_default_distro(listing: &str) -> Option<String> {
+    listing
+        .lines()
+        .map(|l| l.trim_matches(['\r', '\0', ' ']))
+        .find_map(|l| l.strip_prefix('*'))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod wsl_default_distro_tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_starred_row() {
+        let listing = "  NAME              STATE           VERSION\n* Ubuntu-24.04      Running         2\n  docker-desktop    Stopped         2\n";
+        assert_eq!(parse_default_distro(listing).as_deref(), Some("Ubuntu-24.04"));
+    }
+
+    #[test]
+    fn survives_localized_headers_and_reports_a_utility_default() {
+        // Non-English Windows localizes every column header; the `*` does not
+        // move. A utility distro as default is exactly what must be reported.
+        let listing = "  NAME              ZUSTAND         VERSION\n* docker-desktop    Beendet         2\n  Ubuntu            Beendet         2\n";
+        assert_eq!(parse_default_distro(listing).as_deref(), Some("docker-desktop"));
+    }
+
+    #[test]
+    fn none_without_a_marker() {
+        assert_eq!(parse_default_distro(""), None);
+        assert_eq!(parse_default_distro("  NAME   STATE   VERSION\n"), None);
+        assert_eq!(parse_default_distro("*"), None);
+    }
+}
+
 /// Find the most recent Claude Code session ID for a given project.
 /// Claude stores sessions at ~/.claude/projects/<encoded-path>/<uuid>.jsonl
 /// where <encoded-path> replaces '/' with '-' in the absolute project path.
@@ -6556,6 +6796,52 @@ fn app_icon_sidecar_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     }))
 }
 
+/// Persisted main-window geometry (physical pixels) for the boot-time restore
+/// in setup(). Same sidecar home and dev/live filename split as the app icon:
+/// a debug build's window habits never move the installed app, and vice versa.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq)]
+struct WindowStateSidecar {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    maximized: bool,
+}
+
+fn window_state_sidecar_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let dir = app.path().app_local_data_dir().ok()?;
+    Some(dir.join(if cfg!(debug_assertions) {
+        "window-state-dev.json"
+    } else {
+        "window-state.json"
+    }))
+}
+
+/// Latest observed geometry + a dirty flag, flushed by a 1s poll thread.
+/// Written continuously rather than at exit on purpose: an exit-time write is
+/// exactly what a hard kill (tauri:dev restart, taskkill) loses — see the
+/// 2026-08-11 localStorage learnings — and losing at most the last second of
+/// a drag is invisible.
+static WINDOW_STATE: std::sync::Mutex<Option<WindowStateSidecar>> = std::sync::Mutex::new(None);
+static WINDOW_STATE_DIRTY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True when the saved rect's top strip still lands on a connected monitor,
+/// so a detached external display can't strand the window off-screen.
+fn window_rect_on_some_monitor(window: &tauri::WebviewWindow, s: &WindowStateSidecar) -> bool {
+    let Ok(monitors) = window.available_monitors() else {
+        return false;
+    };
+    monitors.iter().any(|m| {
+        let mp = m.position();
+        let ms = m.size();
+        let (mx1, my1) = (mp.x + ms.width as i32, mp.y + ms.height as i32);
+        let (x1, y1) = (s.x + s.w as i32, s.y + s.h.min(50) as i32);
+        s.x < mx1 && x1 > mp.x && s.y < my1 && y1 > mp.y
+    })
+}
+
 /// Set the OS window icon (taskbar button, Alt-Tab) to a bundled variant.
 fn apply_app_icon_variant(window: &tauri::WebviewWindow, variant: &str) -> Result<(), String> {
     let bytes = app_icon_variant_png(variant)
@@ -6600,6 +6886,10 @@ async fn set_app_icon_variant(
             eprintln!("[made] app-icon sidecar write failed: {e}");
         }
     }
+    // Keep toast notifications on the same icon as the pick. Cosmetic —
+    // a failed write just leaves toasts on the previous variant.
+    #[cfg(target_os = "windows")]
+    let _ = write_toast_icon(&app, &variant);
     Ok(())
 }
 
@@ -9751,8 +10041,8 @@ fn mcp_add_timeout_error(cli: JiraCli) -> String {
 /// --oauth-resource). Claude and Gemini both write and exit.
 ///
 /// Killing it loses nothing, because the write happens BEFORE the flow starts,
-/// and signing in stays what it always was: a deliberate, visible step in a
-/// pane where a browser can actually open.
+/// and the frontend follows a successful add with `jira_mcp_login` — the same
+/// OAuth, but bounded, watched, and reported (see MCP_LOGIN_DEADLINE_SECS).
 ///
 /// The bound is applied INSIDE the distro rather than by killing the wsl.exe
 /// relay from the Windows side, which would not reliably reap the `codex`
@@ -9767,13 +10057,140 @@ fn jira_mcp_add_command(cli: JiraCli) -> String {
     format!("timeout {} {}", mcp_add_deadline_secs(cli), jira_mcp_add_call(cli))
 }
 
+/// How long `mcp login` may wait for the user to finish the browser OAuth.
+/// The child opens the browser itself and blocks on the localhost callback,
+/// so the clock here is a human reading a consent screen — minutes, not the
+/// seconds an `add` gets.
+const MCP_LOGIN_DEADLINE_SECS: u64 = 300;
+
+/// How long an auth probe (`claude mcp get` / `codex mcp list`) may run. Unlike
+/// the config-file status reads, a probe health-checks the server over the
+/// network, so it gets a real deadline of its own.
+const MCP_AUTH_PROBE_DEADLINE_SECS: u64 = 20;
+
+/// What a killed login reports. Unlike Codex's add-timeout this IS a failure
+/// for every CLI: the config entry already exists, the user just never finished
+/// in the browser (closed the tab, walked away, or the browser never opened).
+fn mcp_login_timeout_error(cli: JiraCli) -> String {
+    format!(
+        "{} sign-in was not completed in the browser within {} minutes — the server stays registered; use Sign in to retry.",
+        cli.binary(),
+        MCP_LOGIN_DEADLINE_SECS / 60,
+    )
+}
+
+/// Argv that starts a CLI's own OAuth flow for an already-registered server.
+/// Claude and Codex both ship `mcp login <name>`, which opens the system
+/// browser and blocks until the callback. Gemini has no such subcommand — its
+/// auth lives inside the TUI (`/mcp auth`), so it gets `None` and the frontend
+/// opens a pane instead.
+///
+/// `name` is the server as it appears in that CLI's config (the status read
+/// reports it), so a renamed registration still signs in.
+fn jira_mcp_login_args(cli: JiraCli, name: &str) -> Option<Vec<String>> {
+    match cli {
+        JiraCli::Claude | JiraCli::Codex => {
+            Some(vec!["mcp".to_string(), "login".to_string(), name.to_string()])
+        }
+        JiraCli::Gemini => None,
+    }
+}
+
+/// Same login as a shell command line, for the WSL `bash -lic` path. The bound
+/// lives INSIDE the distro for the same reason as `jira_mcp_add_command`:
+/// killing the wsl.exe relay would not reliably reap the CLI it started.
+/// `name` is the one caller-influenced token, so it is escaped.
+fn jira_mcp_login_command(cli: JiraCli, name: &str) -> Option<String> {
+    match cli {
+        JiraCli::Claude | JiraCli::Codex => Some(format!(
+            "timeout {} {} mcp login {}",
+            MCP_LOGIN_DEADLINE_SECS,
+            cli.binary(),
+            shell_escape(name),
+        )),
+        JiraCli::Gemini => None,
+    }
+}
+
+/// Argv that asks a CLI whether the server is signed in. Claude health-checks a
+/// single server (`mcp get <name>`); Codex only reports auth in its full table
+/// (`mcp list` — `codex mcp get` has no auth column). Gemini reports nothing.
+fn jira_mcp_auth_probe_args(cli: JiraCli, name: &str) -> Option<Vec<String>> {
+    match cli {
+        JiraCli::Claude => Some(vec!["mcp".to_string(), "get".to_string(), name.to_string()]),
+        JiraCli::Codex => Some(vec!["mcp".to_string(), "list".to_string()]),
+        JiraCli::Gemini => None,
+    }
+}
+
+/// Same probe as a shell command line, for the WSL `bash -lic` path.
+fn jira_mcp_auth_probe_command(cli: JiraCli, name: &str) -> Option<String> {
+    match cli {
+        JiraCli::Claude => Some(format!(
+            "timeout {} claude mcp get {}",
+            MCP_AUTH_PROBE_DEADLINE_SECS,
+            shell_escape(name),
+        )),
+        JiraCli::Codex => Some(format!("timeout {MCP_AUTH_PROBE_DEADLINE_SECS} codex mcp list")),
+        JiraCli::Gemini => None,
+    }
+}
+
+/// Whether `claude mcp get <name>` says the server is signed in.
+///
+/// Conservative on purpose. `Some(false)` needs the exact needs-auth marker
+/// ("Status: ! Needs authentication"), `Some(true)` needs "Connected" with no
+/// failure text ("✘ Failed to connect" is a network answer, not an auth one),
+/// and anything else — garbage, an error, a future rewording — is `None`
+/// ("could not tell"), which the UI renders as the old green-plus-hint, never
+/// as a false "Sign in required".
+fn parse_claude_mcp_auth(output: &str) -> Option<bool> {
+    if output.contains("Needs authentication") {
+        return Some(false);
+    }
+    if output.contains("Connected") && !output.contains("Failed to connect") {
+        return Some(true);
+    }
+    None
+}
+
+/// Whether `codex mcp list` says the `name` server is signed in. Only the row
+/// that STARTS with the name is read — another server's "Not logged in" must
+/// not indict this one.
+///
+/// Only the logged-OUT shape has been captured ("Not logged in" in the Auth
+/// column), so that is the only claim this makes; a signed-in codex reads as
+/// `None` until its real output is captured and a pinned `Some(true)` branch
+/// added alongside the fixture in the tests.
+fn parse_codex_mcp_list_auth(output: &str, name: &str) -> Option<bool> {
+    let row = output
+        .lines()
+        .find(|l| l.split_whitespace().next() == Some(name))?;
+    if row.contains("Not logged in") {
+        return Some(false);
+    }
+    None
+}
+
+/// Tri-state auth answer from a probe's output: `Some(true)` signed in,
+/// `Some(false)` definitely needs sign-in, `None` could not tell.
+fn parse_mcp_auth(cli: JiraCli, output: &str, name: &str) -> Option<bool> {
+    match cli {
+        JiraCli::Claude => parse_claude_mcp_auth(output),
+        JiraCli::Codex => parse_codex_mcp_list_auth(output, name),
+        JiraCli::Gemini => None,
+    }
+}
+
 /// Poll `try_wait` until exit or deadline, killing at the deadline. `Ok(None)`
 /// means the deadline fired. Mirrors `wsl_health::wait_with_deadline`; kept
 /// separate because there a timeout is a failure, and here it is the expected
 /// outcome of a command that deliberately never returns.
 ///
-/// Output is a few hundred bytes (a "server added" line and an OAuth URL), far
-/// below the pipe buffer, so polling without draining stdout cannot deadlock.
+/// Output is a few hundred bytes (a "server added" line and an OAuth URL, or a
+/// `login`/`mcp list` answer — this also bounds the login and auth-probe
+/// children), far below the pipe buffer, so polling without draining stdout
+/// cannot deadlock.
 pub(crate) fn wait_for_mcp_add(
     mut child: Child,
     deadline: std::time::Duration,
@@ -9799,9 +10216,10 @@ pub(crate) fn wait_for_mcp_add(
 
 /// Register the Atlassian MCP server with a CLI — WSL.
 ///
-/// This does NOT authenticate. The OAuth handoff is interactive (it opens a
-/// browser), so it stays where the user can see it: `/mcp` in a Claude or
-/// Gemini pane, `codex mcp login atlassian` for Codex.
+/// This does NOT authenticate by itself — but the frontend chains a successful
+/// add straight into `jira_mcp_login` (Claude/Codex, local backends), which
+/// runs the CLI's own browser OAuth. On SSH, and for Gemini (whose auth is
+/// TUI-only), the handoff stays visible to the user instead.
 #[cfg(target_os = "windows")]
 #[tauri::command]
 async fn jira_mcp_install(distro: Option<String>, cli: Option<String>) -> Result<String, String> {
@@ -9881,6 +10299,191 @@ async fn jira_mcp_install_direct(
     } else {
         Err(if err.is_empty() { format!("{program} mcp add failed") } else { err })
     }
+}
+
+/// The configured server name a login/probe should target: the status read's
+/// answer when it found one, the canonical name otherwise.
+fn jira_mcp_server_name(name: Option<String>) -> String {
+    name.map(|n| n.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| ATLASSIAN_MCP_NAME.to_string())
+}
+
+/// Run the CLI's own browser OAuth for the Atlassian server — WSL.
+///
+/// The child opens the system browser itself and blocks until the localhost
+/// callback, so this holds a thread for minutes: `spawn_blocking`, never inline
+/// on the async runtime like the (much shorter) install above.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn jira_mcp_login(
+    distro: Option<String>,
+    cli: Option<String>,
+    name: Option<String>,
+) -> Result<String, String> {
+    let kind = JiraCli::parse(cli.as_deref());
+    let server = jira_mcp_server_name(name);
+    let Some(call) = jira_mcp_login_command(kind, &server) else {
+        return Err(format!("{} has no headless MCP login", kind.binary()));
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let script = format!("{call} 2>&1");
+        let mut cmd = wsl_command();
+        if let Some(d) = distro.as_deref().filter(|d| !d.trim().is_empty()) {
+            cmd.arg("-d").arg(d);
+        }
+        let out = cmd
+            .arg("--")
+            .arg("bash")
+            .arg("-lic")
+            .arg(&script)
+            .output()
+            .map_err(|e| format!("could not run wsl.exe: {e}"))?;
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if out.status.success() {
+            Ok(text)
+        } else if out.status.code() == Some(124) {
+            Err(mcp_login_timeout_error(kind))
+        } else {
+            Err(if text.is_empty() { format!("{} mcp login failed", kind.binary()) } else { text })
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+async fn jira_mcp_login(
+    _distro: Option<String>,
+    _cli: Option<String>,
+    _name: Option<String>,
+) -> Result<String, String> {
+    Err("WSL is only available on Windows".to_string())
+}
+
+/// Run the CLI's own browser OAuth — Windows native / macOS / Linux.
+#[tauri::command]
+async fn jira_mcp_login_direct(
+    cli_path: Option<String>,
+    cli: Option<String>,
+    name: Option<String>,
+) -> Result<String, String> {
+    let kind = JiraCli::parse(cli.as_deref());
+    let server = jira_mcp_server_name(name);
+    let Some(args) = jira_mcp_login_args(kind, &server) else {
+        return Err(format!("{} has no headless MCP login", kind.binary()));
+    };
+    let program = cli_path
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| kind.binary().to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        // hidden_command, unlike the install's bare Command: a console window
+        // flashing up for the whole browser round-trip would be worse than the
+        // instant it flashes for an add. The browser is a separate GUI process
+        // the CLI launches, so CREATE_NO_WINDOW does not suppress it.
+        let child = hidden_command(&program)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("could not run {program}: {e}"))?;
+        let deadline = std::time::Duration::from_secs(MCP_LOGIN_DEADLINE_SECS);
+        let Some(out) = wait_for_mcp_add(child, deadline)? else {
+            return Err(mcp_login_timeout_error(kind));
+        };
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if out.status.success() {
+            Ok(if text.is_empty() { err } else { text })
+        } else {
+            Err(if err.is_empty() { format!("{program} mcp login failed") } else { err })
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Is the registered Atlassian server signed in? — WSL. Tri-state: the probe is
+/// advisory, so EVERY failure mode (no wsl.exe, killed at the deadline, output
+/// we don't recognise) is `Ok(None)` — "could not tell" — never an error that
+/// would paint a Settings row red over a health check.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn jira_mcp_auth_probe(
+    distro: Option<String>,
+    cli: Option<String>,
+    name: Option<String>,
+) -> Result<Option<bool>, String> {
+    let kind = JiraCli::parse(cli.as_deref());
+    let server = jira_mcp_server_name(name);
+    let Some(call) = jira_mcp_auth_probe_command(kind, &server) else {
+        return Ok(None);
+    };
+    Ok(tauri::async_runtime::spawn_blocking(move || {
+        let script = format!("{call} 2>&1");
+        let mut cmd = wsl_command();
+        if let Some(d) = distro.as_deref().filter(|d| !d.trim().is_empty()) {
+            cmd.arg("-d").arg(d);
+        }
+        let out = cmd.arg("--").arg("bash").arg("-lic").arg(&script).output().ok()?;
+        // 124 is `timeout`'s kill — nothing was answered. Any OTHER exit code
+        // still gets parsed: the markers decide, not the CLI's exit status.
+        if out.status.code() == Some(124) {
+            return None;
+        }
+        parse_mcp_auth(kind, &String::from_utf8_lossy(&out.stdout), &server)
+    })
+    .await
+    .unwrap_or(None))
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+async fn jira_mcp_auth_probe(
+    _distro: Option<String>,
+    _cli: Option<String>,
+    _name: Option<String>,
+) -> Result<Option<bool>, String> {
+    Ok(None)
+}
+
+/// Is the registered Atlassian server signed in? — Windows native / macOS /
+/// Linux. Same advisory tri-state as the WSL probe.
+#[tauri::command]
+async fn jira_mcp_auth_probe_direct(
+    cli_path: Option<String>,
+    cli: Option<String>,
+    name: Option<String>,
+) -> Result<Option<bool>, String> {
+    let kind = JiraCli::parse(cli.as_deref());
+    let server = jira_mcp_server_name(name);
+    let Some(args) = jira_mcp_auth_probe_args(kind, &server) else {
+        return Ok(None);
+    };
+    let program = cli_path
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| kind.binary().to_string());
+    Ok(tauri::async_runtime::spawn_blocking(move || {
+        let child = hidden_command(&program)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .ok()?;
+        let deadline = std::time::Duration::from_secs(MCP_AUTH_PROBE_DEADLINE_SECS);
+        let out = wait_for_mcp_add(child, deadline).ok()??;
+        let text = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        parse_mcp_auth(kind, &text, &server)
+    })
+    .await
+    .unwrap_or(None))
 }
 
 /// Set Claude's notification channel (`notifChannel`) — WSL.
@@ -10536,7 +11139,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_unlock_keychain, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_read_image_data_uri, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_overview, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, windows_resolve_cli_env, native_resolve_cli_env, cli_install::cli_probe, cli_install::cli_install_start, cli_install::cli_install_cancel, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, set_app_icon_variant, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, get_gemini_notifications, get_gemini_notifications_windows, get_gemini_notifications_native, set_gemini_notifications, set_gemini_notifications_windows, set_gemini_notifications_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_status_ssh, jira_mcp_install, jira_mcp_install_direct, jira_mcp_install_ssh, jira_poll::jira_poll, jira_poll::jira_test_auth, jira_poll::jira_search_queue, jira_poll::jira_assign_issue, jira_poll::jira_site_meta, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, toast_window_place, toast_window_hide, main_window_restore_focus, port_check, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_render_opts, native_term::native_term_list_mono_fonts, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown, knowledge::knowledge_status, knowledge::knowledge_open, knowledge::knowledge_close, knowledge::knowledge_remove, knowledge::knowledge_world, knowledge::knowledge_set_timezone, knowledge::knowledge_rescan, knowledge::knowledge_list_notes, knowledge::knowledge_get_note, knowledge::knowledge_create_note, knowledge::knowledge_update_note, knowledge::knowledge_archive_note, knowledge::knowledge_restore_note, knowledge::knowledge_rename_note, knowledge::knowledge_search, knowledge::knowledge_resolve_refs, knowledge::knowledge_history, knowledge::knowledge_get_revision, knowledge::knowledge_restore_revision, knowledge::knowledge_list_conflicts, knowledge::knowledge_get_conflict, knowledge::knowledge_resolve_conflict, knowledge::knowledge_update_state, knowledge::knowledge_add_decision, knowledge::knowledge_add_learning, knowledge::knowledge_create_handoff, knowledge::knowledge_list_handoffs, knowledge::knowledge_latest_handoff, knowledge::knowledge_consume_handoff, knowledge::knowledge_list_tasks, knowledge::knowledge_create_task, knowledge::knowledge_update_task, knowledge::knowledge_backlinks, knowledge::knowledge_link_entities, knowledge::knowledge_recent_changes, knowledge::knowledge_set_policy, knowledge::knowledge_append_gitignore, knowledge::knowledge_mark_own_edit, knowledge::knowledge_pane_update, knowledge::knowledge_mcp_connections, knowledge::knowledge_respond_approval, knowledge::knowledge_adapter_path, knowledge::knowledge_record_context, knowledge::knowledge_mcp_status, knowledge::knowledge_mcp_status_windows, knowledge::knowledge_mcp_status_native, knowledge::knowledge_mcp_install, knowledge::knowledge_mcp_install_direct, knowledge::knowledge_mcp_remove, knowledge::knowledge_mcp_remove_direct])
+        .invoke_handler(tauri::generate_handler![ssh_ls, ssh_mkdir, ssh_forward_port_start, ssh_forward_port_stop, ssh_test_connection, ssh_unlock_keychain, ssh_ensure_key, ssh_forget_host, ssh_detect_cli_shells, ssh_list_keys, ssh_read_file, ssh_read_image_data_uri, ssh_write_file, ssh_upload_file_bytes, ssh_grep, read_file, write_file, read_image_data_uri, create_project, list_dir, search_in_files, git_is_repo, git_status, git_diff, git_branches, git_diff_stats, git_switch_branch, git_create_branch, git_revert_hunk, git_discard_file, git_add, git_reset_files, git_commit, git_push, git_pull, git_fetch, git_ahead_behind, git_overview, git_is_repo_ssh, git_status_ssh, git_branches_ssh, git_diff_ssh, git_diff_stats_ssh, git_ahead_behind_ssh, git_run_typecheck, git_run_lint, git_run_tests, gh_status, gh_create_repo, gh_release_create, gh_pr_status, gh_pr_create, git_commits_between, git_remote_info, detect_manifests, is_tauri_project, release_bump, updater_install_version, wsl_resolve_cli_env, wsl_list_distros, wsl_default_distro, windows_resolve_cli_env, native_resolve_cli_env, cli_install::cli_probe, cli_install::cli_install_start, cli_install::cli_install_cancel, get_claude_session_id, get_codex_session_id, get_gemini_session_id, get_claude_session_id_windows, get_codex_session_id_windows, get_gemini_session_id_windows, get_claude_session_id_native, get_codex_session_id_native, get_gemini_session_id_native, get_claude_session_id_by_spawn, get_claude_session_id_by_spawn_windows, get_claude_session_id_by_spawn_native, read_session_context_windows, read_session_context_native, save_clipboard_image, save_annotated_image, cleanup_clipboard_images, poll_clipboard_image, launch_snipping_tool, reveal_in_explorer, open_folder, copy_image_to_clipboard, set_window_corners, set_app_icon_variant, install_statusline_wrapper, read_session_context, read_sessions_index, read_sessions_index_windows, read_sessions_index_native, read_cli_sessions_index, read_cli_sessions_index_windows, read_cli_sessions_index_native, cli_session_exists, cli_session_exists_windows, cli_session_exists_native, read_session_first_prompt, read_session_first_prompt_windows, read_session_first_prompt_native, claude_session_file_exists, claude_session_file_exists_windows, claude_session_file_exists_native, claude_session_ids, claude_session_ids_windows, claude_session_ids_native, read_session_prompts, read_session_prompts_windows, read_session_prompts_native, read_session_last_assistant_text, read_session_last_assistant_text_windows, read_session_last_assistant_text_native, set_claude_notif_channel, set_claude_notif_channel_windows, set_claude_notif_channel_native, get_gemini_notifications, get_gemini_notifications_windows, get_gemini_notifications_native, set_gemini_notifications, set_gemini_notifications_windows, set_gemini_notifications_native, jira_mcp_status, jira_mcp_status_windows, jira_mcp_status_native, jira_mcp_status_ssh, jira_mcp_install, jira_mcp_install_direct, jira_mcp_install_ssh, jira_mcp_login, jira_mcp_login_direct, jira_mcp_auth_probe, jira_mcp_auth_probe_direct, jira_poll::jira_poll, jira_poll::jira_test_auth, jira_poll::jira_search_queue, jira_poll::jira_assign_issue, jira_poll::jira_site_meta, jira_poll::jira_list_projects, jira_poll::jira_list_request_types, read_session_context_ssh, read_sessions_index_ssh, read_session_first_prompt_ssh, get_claude_session_id_ssh, get_codex_session_id_ssh, get_gemini_session_id_ssh, install_statusline_wrapper_ssh, minimize_from_maximized, toast_window_place, toast_window_hide, main_window_restore_focus, port_check, preview_proxy_port, preview_proxy_set_target, open_devtools, debug_log_line, pty::pty_spawn, pty::pty_spawn_pooled, pty::pty_pool_warm, pty::pty_write, pty::pty_resize, pty::pty_kill, native_term::native_term_create, native_term::native_term_destroy, native_term::native_term_reap_all, native_term::native_term_gpu_info, native_term::native_term_show, native_term::native_term_hide, native_term::native_term_resize, native_term::native_term_set_region, native_term::native_term_frame_sync, native_term::native_term_attach_pty, native_term::native_term_detach_pty, native_term::native_term_propose_dimensions, native_term::native_term_set_theme, native_term::native_term_set_font, native_term::native_term_set_render_opts, native_term::native_term_list_mono_fonts, native_term::native_term_set_cursor_style, native_term::native_term_set_focused, native_term::native_term_set_hover_link, native_term::native_term_get_metrics, native_term::native_term_set_copy_on_select, native_term::native_term_copy_selection, native_term::native_term_paste_clipboard, native_term::native_term_focus_keyboard, native_term::native_term_debug_inject_bytes, native_term::native_term_debug_stats, native_term::native_term_get_buffer_lines, native_term::native_term_get_viewport_state, native_term::native_term_get_selection, native_term::native_term_scroll_to_bottom, native_term::native_term_scroll_to_line, native_term::native_term_clear, native_term::native_term_reset, native_term::native_term_search, native_term::native_term_search_clear, native_term::native_term_set_search_highlights, native_term::native_term_tui_scroll, native_term::native_term_set_wheel_acceleration, native_term::native_term_set_prompt_nav, native_term::native_term_set_prompt_jump, browser_view::browser_view_create, browser_view::browser_view_destroy, browser_view::browser_view_reap_all, browser_view::browser_view_show, browser_view::browser_view_hide, browser_view::browser_view_set_bounds, browser_view::browser_view_navigate, browser_view::browser_view_back, browser_view::browser_view_forward, browser_view::browser_view_reload, browser_view::browser_view_hard_reload, browser_view::browser_view_focus, browser_view::browser_view_url, browser_view::browser_view_eval, browser_view::browser_view_enable_devtools, browser_view::browser_view_allow_download, browser_view::browser_view_deny_download, browser_view::browser_view_set_prompt_downloads, overlay::overlay_set_region, overlay::overlay_set_focusable, file_watch::watch_file, file_watch::unwatch_file, screenshots::screenshots_resolve_folder, screenshots::screenshots_list_recent, screenshots::screenshots_find_original, screenshots::screenshots_delete, screenshots::screenshots_watch_start, screenshots::screenshots_watch_stop, screenshots::screenshots_overwrite, fs_ops::fs_rename, fs_ops::fs_delete_to_trash, fs_ops::fs_create_file, fs_ops::fs_create_dir, wsl_health::wsl_ensure_memory_reclaim, wsl_health::wsl_pane_activity, wsl_health::claude_session_activity_mtime, wsl_health::wsl_shutdown, knowledge::knowledge_status, knowledge::knowledge_open, knowledge::knowledge_close, knowledge::knowledge_remove, knowledge::knowledge_world, knowledge::knowledge_set_timezone, knowledge::knowledge_rescan, knowledge::knowledge_list_notes, knowledge::knowledge_get_note, knowledge::knowledge_create_note, knowledge::knowledge_update_note, knowledge::knowledge_archive_note, knowledge::knowledge_restore_note, knowledge::knowledge_rename_note, knowledge::knowledge_search, knowledge::knowledge_resolve_refs, knowledge::knowledge_history, knowledge::knowledge_get_revision, knowledge::knowledge_restore_revision, knowledge::knowledge_list_conflicts, knowledge::knowledge_get_conflict, knowledge::knowledge_resolve_conflict, knowledge::knowledge_update_state, knowledge::knowledge_add_decision, knowledge::knowledge_add_learning, knowledge::knowledge_create_handoff, knowledge::knowledge_list_handoffs, knowledge::knowledge_latest_handoff, knowledge::knowledge_consume_handoff, knowledge::knowledge_list_tasks, knowledge::knowledge_create_task, knowledge::knowledge_update_task, knowledge::knowledge_backlinks, knowledge::knowledge_link_entities, knowledge::knowledge_recent_changes, knowledge::knowledge_set_policy, knowledge::knowledge_append_gitignore, knowledge::knowledge_mark_own_edit, knowledge::knowledge_pane_update, knowledge::knowledge_mcp_connections, knowledge::knowledge_respond_approval, knowledge::knowledge_adapter_path, knowledge::knowledge_record_context, knowledge::knowledge_mcp_status, knowledge::knowledge_mcp_status_windows, knowledge::knowledge_mcp_status_native, knowledge::knowledge_mcp_install, knowledge::knowledge_mcp_install_direct, knowledge::knowledge_mcp_remove, knowledge::knowledge_mcp_remove_direct])
         .setup(|app| {
             // A3: build the shared wgpu Instance+Adapter on a background thread
             // NOW, so the one-time driver/DXGI enumeration (~534ms measured on
@@ -10615,6 +11218,95 @@ pub fn run() {
                     // mistaken for the installed production app (which may hold
                     // live work — never kill it by name).
                     let _ = window.set_title("MADE_debug");
+                }
+            }
+
+            // Remember the main window's position and size across launches.
+            // Boot-restore from the per-world sidecar, then keep the sidecar
+            // fresh from Moved/Resized events via the debounced writer thread.
+            if let Some(window) = app.get_webview_window("main") {
+                let sidecar = window_state_sidecar_path(app.handle());
+
+                if let Some(saved) = sidecar
+                    .as_ref()
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .and_then(|txt| serde_json::from_str::<WindowStateSidecar>(&txt).ok())
+                {
+                    if window_rect_on_some_monitor(&window, &saved) {
+                        let _ = window.set_size(tauri::PhysicalSize::new(saved.w, saved.h));
+                        let _ =
+                            window.set_position(tauri::PhysicalPosition::new(saved.x, saved.y));
+                        if saved.maximized {
+                            let _ = window.maximize();
+                        }
+                        // Seed the writer with the restored rect so a maximize
+                        // before any move still has a normal rect to restore to.
+                        *WINDOW_STATE.lock().unwrap() = Some(saved);
+                    }
+                }
+
+                let win = window.clone();
+                window.on_window_event(move |ev| {
+                    if !matches!(
+                        ev,
+                        tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+                    ) {
+                        return;
+                    }
+                    // Minimized reports a -32000,-32000 parking rect — never a
+                    // position worth remembering.
+                    if win.is_minimized().unwrap_or(false) {
+                        return;
+                    }
+                    let mut state = WINDOW_STATE.lock().unwrap();
+                    if win.is_maximized().unwrap_or(false) {
+                        // Keep the last normal rect: restoring next launch
+                        // should un-maximize back to where the window was.
+                        if let Some(s) = state.as_mut() {
+                            if !s.maximized {
+                                s.maximized = true;
+                                WINDOW_STATE_DIRTY
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        return;
+                    }
+                    let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+                        return;
+                    };
+                    let next = WindowStateSidecar {
+                        x: pos.x,
+                        y: pos.y,
+                        w: size.width,
+                        h: size.height,
+                        maximized: false,
+                    };
+                    if (*state).map_or(true, |s| s != next) {
+                        *state = Some(next);
+                        WINDOW_STATE_DIRTY.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                });
+
+                if let Some(path) = sidecar {
+                    let _ = std::thread::Builder::new()
+                        .name("window-state-writer".into())
+                        .spawn(move || {
+                            if let Some(parent) = path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            loop {
+                                std::thread::sleep(std::time::Duration::from_millis(1000));
+                                if WINDOW_STATE_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed)
+                                {
+                                    let snapshot = *WINDOW_STATE.lock().unwrap();
+                                    if let Some(s) = snapshot {
+                                        if let Ok(json) = serde_json::to_string(&s) {
+                                            let _ = std::fs::write(&path, json);
+                                        }
+                                    }
+                                }
+                            }
+                        });
                 }
             }
 
@@ -10813,20 +11505,29 @@ pub fn run() {
                     }
                 }
 
-                // Custom OS notification popups: a tiny OPAQUE always-on-top
-                // window at the work-area corner that keeps showing the
-                // notification cards while the main window is minimized or
-                // unfocused. Deliberately OWNERLESS — an owned window hides
-                // with its owner's minimize, which is exactly the moment this
-                // one must appear. Opaque sidesteps the transparent-window
-                // minefield documented on the overlay above. Hidden until
-                // OsToastHost places it (toast_window_place).
+                // Custom OS notification popups: a tiny always-on-top window
+                // at the work-area corner that keeps showing the notification
+                // cards while the main window is minimized or unfocused.
+                // Deliberately OWNERLESS — an owned window hides with its
+                // owner's minimize, which is exactly the moment this one must
+                // appear (and ownerless also stays clear of the #12450
+                // transparent+owner black-composite bug documented on the
+                // overlay above). TRANSPARENT like the overlay: the cards draw
+                // their own antialiased rounded corners into alpha. The first
+                // iteration was opaque with a SetWindowRgn shape, but a window
+                // region is 1-bit clipping — the corners rendered visibly
+                // jagged against the desktop. Transparency needs the WM_PAINT
+                // /WM_ERASEBKGND swallow in toast_win32::prepare or tao blits
+                // black over the alpha (see overlay::win32::install_nc_guard
+                // for the forensic story). Hidden until OsToastHost places it
+                // (toast_window_place).
                 let toast_res = tauri::WebviewWindowBuilder::new(
                     app,
                     "toast",
                     tauri::WebviewUrl::App("toast.html".into()),
                 )
                 .title("MADE")
+                .transparent(true)
                 .decorations(false)
                 .shadow(false)
                 .resizable(false)
@@ -11000,6 +11701,90 @@ url = "https://mcp.atlassian.com/v1/mcp/authv2"
             assert!(jira_mcp_add_command(cli).starts_with("timeout "), "{} unbounded", cli.binary());
         }
         assert!(jira_mcp_add_command(JiraCli::Claude).contains("--scope user"));
+    }
+
+    /// Captured from a real `claude mcp get atlassian` before sign-in
+    /// (2026-08-11). The "Needs authentication" marker is the parser's
+    /// contract with the CLI.
+    const CLAUDE_MCP_GET_NEEDS_AUTH: &str = "atlassian:\n  Scope: User config (available in all your projects)\n  Status: ! Needs authentication\n  Type: http\n  URL: https://mcp.atlassian.com/v1/mcp/authv2\n\nTo remove this server, run: claude mcp remove atlassian -s user";
+
+    /// Status line captured verbatim from a real signed-in server's
+    /// `claude mcp get` (same CLI version as the fixture above).
+    const CLAUDE_MCP_GET_CONNECTED: &str = "atlassian:\n  Scope: User config (available in all your projects)\n  Status: ✔ Connected\n  Type: http\n  URL: https://mcp.atlassian.com/v1/mcp/authv2";
+
+    /// Captured from a real `codex mcp list` (2026-08-11): a stdio server with
+    /// Auth "Unsupported" first, then the HTTP table with the atlassian row.
+    /// The neighbour row is the decoy a naive contains() parser gets wrong.
+    const CODEX_MCP_LIST_NOT_LOGGED_IN: &str = "Name     Command  Args         Env                 Cwd  Status   Auth       \nblender  uvx      blender-mcp  BLENDER_HOST=*****  -    enabled  Unsupported\n\nName       Url                                      Bearer Token Env Var  Status   Auth         \natlassian  https://mcp.atlassian.com/v1/mcp/authv2  -                     enabled  Not logged in";
+
+    /// EVERY login is wrapped in a deadline for the same reason as the adds —
+    /// and only the CLIs that HAVE a headless login get a command at all;
+    /// Gemini's `None` is what routes it to the spawn-a-pane path instead.
+    #[test]
+    fn login_commands_are_bounded_and_exist_only_where_supported() {
+        assert_eq!(
+            jira_mcp_login_command(JiraCli::Claude, "atlassian").as_deref(),
+            Some("timeout 300 claude mcp login 'atlassian'"),
+        );
+        assert_eq!(
+            jira_mcp_login_command(JiraCli::Codex, "atlassian").as_deref(),
+            Some("timeout 300 codex mcp login 'atlassian'"),
+        );
+        assert!(jira_mcp_login_command(JiraCli::Gemini, "atlassian").is_none());
+        assert!(jira_mcp_login_args(JiraCli::Gemini, "atlassian").is_none());
+        // A renamed server signs in under ITS name, not the canonical one.
+        assert_eq!(
+            jira_mcp_login_args(JiraCli::Claude, "support"),
+            Some(vec!["mcp".to_string(), "login".to_string(), "support".to_string()]),
+        );
+    }
+
+    /// The probe is advisory: `Some(false)` may ONLY come from the exact
+    /// needs-auth marker, because "Sign in required" over a mis-parse would
+    /// send the user to re-authenticate a working setup. Anything the parser
+    /// does not recognise — including a network failure — is `None`.
+    #[test]
+    fn auth_probe_reports_false_only_on_an_exact_needs_auth_match() {
+        assert_eq!(parse_claude_mcp_auth(CLAUDE_MCP_GET_NEEDS_AUTH), Some(false));
+        assert_eq!(parse_claude_mcp_auth(CLAUDE_MCP_GET_CONNECTED), Some(true));
+        // A server that cannot be reached is a network answer, not an auth one.
+        assert_eq!(parse_claude_mcp_auth("atlassian:\n  Status: ✘ Failed to connect"), None);
+        assert_eq!(parse_claude_mcp_auth(""), None);
+        assert_eq!(parse_claude_mcp_auth("No MCP server found with name: atlassian"), None);
+        // Gemini never probes.
+        assert_eq!(parse_mcp_auth(JiraCli::Gemini, CLAUDE_MCP_GET_CONNECTED, "atlassian"), None);
+    }
+
+    /// Only the row that starts with the server's own name may answer —
+    /// another server's "Not logged in" must not indict this one. The
+    /// logged-IN codex shape is uncaptured, so it deliberately reads as `None`
+    /// (UI degrades to green-plus-hint) rather than a guessed `Some(true)`.
+    #[test]
+    fn codex_list_auth_reads_only_the_atlassian_row() {
+        assert_eq!(
+            parse_codex_mcp_list_auth(CODEX_MCP_LIST_NOT_LOGGED_IN, "atlassian"),
+            Some(false),
+        );
+        let other_server_logged_out =
+            "Name   Url                  Status   Auth\nother  https://x.test/mcp  enabled  Not logged in";
+        assert_eq!(parse_codex_mcp_list_auth(other_server_logged_out, "atlassian"), None);
+        assert_eq!(parse_codex_mcp_list_auth("", "atlassian"), None);
+        // Uncaptured logged-in shape: the atlassian row exists but says
+        // something we have not pinned — that is `None`, not `Some(true)`.
+        let unknown_auth =
+            "Name       Url                                      Status   Auth\natlassian  https://mcp.atlassian.com/v1/mcp/authv2  enabled  OAuth";
+        assert_eq!(parse_codex_mcp_list_auth(unknown_auth, "atlassian"), None);
+    }
+
+    /// The server name is the one caller-influenced token in the login and
+    /// probe command lines (it comes from a config file's server key).
+    #[test]
+    fn login_and_probe_commands_escape_the_server_name() {
+        let nasty = "atlassian'; rm -rf ~";
+        let probe = jira_mcp_auth_probe_command(JiraCli::Claude, nasty).unwrap();
+        assert!(probe.contains(r#"'atlassian'\''; rm -rf ~'"#), "{probe}");
+        let login = jira_mcp_login_command(JiraCli::Codex, nasty).unwrap();
+        assert!(login.contains(r#"'atlassian'\''; rm -rf ~'"#), "{login}");
     }
 
     /// The remote shell reaches an ssh command line, so anything that is not a

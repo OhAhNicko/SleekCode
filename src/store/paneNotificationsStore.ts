@@ -26,6 +26,12 @@ export interface PaneNotifCard {
    *  update cards, whose "pane" is synthetic). Resolved before `add`, like
    *  everything else on the card. */
   clickAction?: string;
+  /** Jira cards: the ticket's current status chip. Color resolved at emit
+   *  time (statusColorFromState) and carried on the card — the toast webview
+   *  has no store to resolve it in. */
+  jiraStatus?: { name: string; color: string };
+  /** Jira cards: who did the thing (comment author, new assignee). */
+  jiraActor?: string;
 }
 
 /** Backstop only — one card per pane already bounds the stack naturally. */
