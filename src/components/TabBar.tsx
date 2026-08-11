@@ -7,6 +7,7 @@ import { openDevServerUrl, wantsInAppOpen } from "../lib/open-dev-server-url";
 import { findAllTerminalIds, findAllBrowserPanes, addBrowserPaneRight, addBrowserPaneLeft, addPaneAsGrid, removePane, generatePaneId, findKanbanPaneId, addKanbanPane } from "../lib/layout-utils";
 import { TERMINAL_CONFIGS } from "../lib/terminal-config";
 import { getProjectColor } from "../store/recentProjectsSlice";
+import { jiraVirtualDirLabel } from "../lib/jira-virtual-dir";
 import { syncProjectColors } from "../lib/tab-colors";
 import { isTerminalActive } from "../lib/terminal-activity";
 import { startCustomWindowDrag, toggleMaximizeOnDoubleClick } from "../lib/window-chrome";
@@ -570,7 +571,11 @@ export default function TabBar() {
                     borderBottom: tabColor ? `2px solid ${tabColor}` : "2px solid transparent",
                     userSelect: "none",
                   }}
-                  data-tooltip={tab.workingDir || undefined}
+                  data-tooltip={
+                    // A Jira tab's virtual `jira://` identity reads as a URL
+                    // scheme in a tooltip — show the host/KEY display form.
+                    tab.workingDir ? jiraVirtualDirLabel(tab.workingDir) : undefined
+                  }
                   onMouseEnter={(e) => {
                     if (!isActive) {
                       e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.03)";

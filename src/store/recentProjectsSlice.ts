@@ -2,6 +2,7 @@ import type { StateCreator } from "zustand";
 import type { TerminalType, TerminalBackend, CommitMsgMode, ShadowAiCli, ComposerExpansion, PaneLayout, Tab } from "../types";
 import { getDefaultBackend, detectBackendForPath } from "../lib/platform";
 import { DEFAULT_JIRA_PROMPT, normalizeJiraBaseUrl } from "../lib/jira";
+import { normalizeGroupPath, type JiraCliGroup } from "../lib/jira-groups";
 
 export interface RecentProjectTemplate {
   templateId: string;
@@ -76,6 +77,11 @@ export interface RecentProject {
    *  site ID). Absent on legacy projects → resolvers fall back to the default
    *  site. One site per project by design. */
   jiraSiteId?: string;
+  /** KEYED Jira project: the Jira project key (SUPPORT, DEV, …). Present only
+   *  on projects created through the keyed flow, where `path` is the virtual
+   *  `jira://<host>/<KEY>` identity (lib/jira-virtual-dir.ts), not a folder.
+   *  Legacy folder-based Jira projects have neither. */
+  jiraProjectKey?: string;
   /** Sticky per-project terminal backend. Set on first add via path detection; user-overridable. */
   preferredBackend?: TerminalBackend;
   /**
@@ -284,6 +290,16 @@ export interface JiraFieldMeta {
  * sorting, undefined-last) without a store migration. Narrowing any of them to
  * required later means writing a `merge` entry in store/index.ts.
  */
+/** One site's login when it differs from the main account. Plaintext for the
+ *  same reasons (and with the same caveats) as jiraApiToken — see that field. */
+export interface JiraSiteAccount {
+  email: string;
+  token: string;
+  /** That account's own accountId on the site (captured at test time) — the
+   *  per-site "is this my own comment" identity. */
+  accountId?: string;
+}
+
 export interface JiraListTicket {
   key: string;
   summary: string;
@@ -345,9 +361,15 @@ export interface JiraRowMetaShow {
 
 export const DEFAULT_JIRA_ROW_META_SHOW: JiraRowMetaShow = {
   updated: true,
-  created: true,
+  // One time per row by default: `updated` rides the title line, and a second
+  // relative time under it was noise on every ticket. Switching `created` on
+  // renders it as "sent 4d ago". Flipped from true in the 2026-08 row
+  // redesign — persisted installs are caught up once by the merge's
+  // jiraRowMetaDefaultsRev check (store/index.ts).
+  created: false,
   priority: true,
-  reporter: false,
+  // On since defaults rev 2: "who sent it" earned the third who-column.
+  reporter: true,
   organization: true,
   requestType: true,
 };
@@ -524,6 +546,10 @@ export interface RecentProjectsSlice {
   setShowKanbanButton: (value: boolean) => void;
   onboardingCompleted: boolean;
   setOnboardingCompleted: (value: boolean) => void;
+  /** One-shot guard for the first-boot terminal-backend detection (App.tsx).
+   *  False only on a genuinely fresh install (or after a debug reset) — the
+   *  hydration merge defaults it true so existing installs never re-detect. */
+  backendAutoDetected: boolean;
   showChangelogOnUpdate: boolean;
   setShowChangelogOnUpdate: (value: boolean) => void;
   pullWithRebase: boolean;
@@ -597,6 +623,32 @@ export interface RecentProjectsSlice {
    *  needs typing. */
   jiraAcronyms: string[];
   addJiraAcronym: (acronym: string) => void;
+  /** GLOBAL list of CLI folder "groups" — the folders keyed Jira projects'
+   *  ticket panes spawn in (folder + optional in-app "Group name"). Managed in
+   *  Settings → Jira and addable from the New Jira Project / new-ticket
+   *  dialogs. Legacy folder-based projects ignore this list. */
+  jiraCliGroups: JiraCliGroup[];
+  /** Add (or re-find) a group by folder path — dedupes on the normalized path
+   *  and returns the group's id. A non-empty `name` also (re)names it. */
+  addJiraCliGroup: (path: string, name?: string) => string;
+  removeJiraCliGroup: (id: string) => void;
+  /** Set the group's in-app name; empty string clears back to the basename. */
+  renameJiraCliGroup: (id: string, name: string) => void;
+  /** Which group each Jira project's last ticket opened in — the new-ticket
+   *  dialog's preselection. Keyed by the project's workingDir (the keyed
+   *  `jira://…` identity), valued by group id. */
+  jiraLastGroupByProject: Record<string, string>;
+  setJiraLastGroup: (projectDir: string, groupId: string | undefined) => void;
+  /** JSM request type → CLI group id. A linked type makes tickets of that
+   *  type auto-spawn in the group's folder (overridable per row) and shows
+   *  the GROUP name where rows would show the request type. Keyed by the
+   *  request type's display NAME — that is what tickets carry. */
+  jiraRequestTypeGroups: Record<string, string>;
+  setJiraRequestTypeGroup: (requestType: string, groupId: string | undefined) => void;
+  /** Per-site JSM request-type catalogue (jira_list_request_types), cached
+   *  like jiraSiteFields so Settings doesn't re-walk service desks per open. */
+  jiraSiteRequestTypes: Record<string, string[]>;
+  setJiraSiteRequestTypes: (siteId: string, names: string[]) => void;
   /** How often each acronym was used — ranks the dialog's quick-pick tiles. */
   jiraAcronymCounts: Record<string, number>;
   /** Per-ticket color overrides (context menu). Absent = deterministic hash. */
@@ -651,6 +703,14 @@ export interface RecentProjectsSlice {
    *  comments out of the "new reply" notifications. */
   jiraMyAccountId: string;
   setJiraMyAccountId: (value: string) => void;
+  /** Per-SITE account overrides. Absent site → the main jiraApiEmail/Token
+   *  pair. Not per project: the poll model (assigned list, notifications,
+   *  watched dedupe) is one query per site under one account, so two accounts
+   *  on one site cannot coexist. `accountId` is captured by the jira_test_auth
+   *  every save flow runs, so own-comment suppression stays per-account. */
+  jiraSiteAccounts: Record<string, JiraSiteAccount>;
+  /** undefined clears the override — the site reverts to the main account. */
+  setJiraSiteAccount: (siteId: string, account: JiraSiteAccount | undefined) => void;
   /** Master switch for Jira ticket-update notifications (cards/toast/sound).
    *  Polling itself also serves the Assigned tab, so this gates EMISSION only. */
   jiraNotifEnabled: boolean;
@@ -733,9 +793,24 @@ export interface RecentProjectsSlice {
   /** Which facts the rail rows' second line carries. */
   jiraRowMetaShow: JiraRowMetaShow;
   setJiraRowMetaShow: (patch: Partial<JiraRowMetaShow>) => void;
+  /** Revision of DEFAULT_JIRA_ROW_META_SHOW this profile has been aligned to.
+   *  Persisted, and read ONLY by the store's merge: an envelope carrying an
+   *  older rev (or none) gets each newer revision's default flips applied
+   *  once — rev 1 (2026-08) turned `created` off, rev 2 (same redesign)
+   *  turned `reporter` on. A version-stamped zustand migrate would do the
+   *  same job, but a DOWNGRADED build seeing an unknown version with no
+   *  migrate fn discards the whole persisted store; an extra key is ignored
+   *  by old builds and costs nothing. Bump when a DEFAULT_JIRA_ROW_META_SHOW
+   *  value changes meaning for existing users. */
+  jiraRowMetaDefaultsRev: number;
   /** Of the facts that are shown, which ride the ticket-key line. */
   jiraRowTitleFields: string[];
   setJiraRowTitleFields: (ids: string[]) => void;
+  /** ON: every ticket row shows its summary in full, always — there is no
+   *  per-row fold. OFF (default): the summary lives in the row's hover
+   *  tooltip only. Replaced the per-row expand chevron (2026-08). */
+  jiraRowShowSummary: boolean;
+  setJiraRowShowSummary: (value: boolean) => void;
   /** Hand-dragged CLI ticket order per project dir, as ticket KEYS (not
    *  session ids — a ticket's duplicate instances move as one group).
    *
@@ -817,7 +892,7 @@ export interface RecentProjectsSlice {
   statuslineToggles: Partial<Record<TerminalType, Record<string, boolean>>>;
   setStatuslineToggle: (cliType: TerminalType, key: string, value: boolean) => void;
   setProjectColor: (workingDir: string, colorId: ProjectColorId) => void;
-  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string; noDevServer?: boolean; serverId?: string; isJira?: boolean; jiraSiteId?: string }) => void;
+  addRecentProject: (entry: { path: string; name: string; template?: RecentProjectTemplate; serverCommand?: string; noDevServer?: boolean; serverId?: string; isJira?: boolean; jiraSiteId?: string; jiraProjectKey?: string }) => void;
   removeRecentProject: (path: string, serverId?: string) => void;
   clearRecentProjects: () => void;
   setAlwaysShowTemplatePicker: (value: boolean) => void;
@@ -881,7 +956,7 @@ export const createRecentProjectsSlice: StateCreator<
   [],
   [],
   RecentProjectsSlice
-> = (set) => ({
+> = (set, get) => ({
   recentProjects: [],
   lastActiveProjectPath: "",
   alwaysShowTemplatePicker: false,
@@ -952,6 +1027,7 @@ export const createRecentProjectsSlice: StateCreator<
   setShowKanbanButton: (value) => set({ showKanbanButton: value }),
   onboardingCompleted: false,
   setOnboardingCompleted: (value) => set({ onboardingCompleted: value }),
+  backendAutoDetected: false,
   showChangelogOnUpdate: true,
   setShowChangelogOnUpdate: (value) => set({ showChangelogOnUpdate: value }),
   pullWithRebase: false,
@@ -978,10 +1054,14 @@ export const createRecentProjectsSlice: StateCreator<
   removeJiraSite: (siteId) =>
     set((state) => {
       const sites = (state.jiraSites ?? []).filter((s) => s !== siteId);
+      // A removed site takes its account override with it — a credential for
+      // a site the app no longer talks to is just a stale secret.
+      const { [siteId]: _dropped, ...accounts } = state.jiraSiteAccounts ?? {};
       return {
         jiraSites: sites,
         jiraDefaultSiteId:
           state.jiraDefaultSiteId === siteId ? (sites[0] ?? "") : state.jiraDefaultSiteId,
+        jiraSiteAccounts: accounts,
       };
     }),
   jiraDefaultSiteId: "",
@@ -1052,9 +1132,17 @@ export const createRecentProjectsSlice: StateCreator<
   setJiraApiToken: (value) => set({ jiraApiToken: value }),
   jiraMyAccountId: "",
   setJiraMyAccountId: (value) => set({ jiraMyAccountId: value }),
+  jiraSiteAccounts: {},
+  setJiraSiteAccount: (siteId, account) =>
+    set((state) => {
+      const next = { ...(state.jiraSiteAccounts ?? {}) };
+      if (account) next[siteId] = account;
+      else delete next[siteId];
+      return { jiraSiteAccounts: next };
+    }),
   jiraNotifEnabled: true,
   setJiraNotifEnabled: (value) => set({ jiraNotifEnabled: value }),
-  jiraAssignedMode: false,
+  jiraAssignedMode: true,
   setJiraAssignedMode: (value) => set({ jiraAssignedMode: value }),
   jiraAssignedTickets: [],
   setJiraAssignedTicketsForSite: (siteId, value) =>
@@ -1142,8 +1230,11 @@ export const createRecentProjectsSlice: StateCreator<
         ...patch,
       },
     })),
+  jiraRowMetaDefaultsRev: 2,
   jiraRowTitleFields: DEFAULT_JIRA_ROW_TITLE_FIELDS,
   setJiraRowTitleFields: (ids) => set({ jiraRowTitleFields: ids }),
+  jiraRowShowSummary: false,
+  setJiraRowShowSummary: (value) => set({ jiraRowShowSummary: value }),
   jiraTicketOrder: {},
   setJiraTicketOrder: (projectKey, ticketKeys) =>
     set((state) => ({
@@ -1228,6 +1319,71 @@ export const createRecentProjectsSlice: StateCreator<
         [acronym]: ((state.jiraAcronymCounts ?? {})[acronym] ?? 0) + 1,
       },
     })),
+  jiraCliGroups: [],
+  addJiraCliGroup: (path, name) => {
+    const key = normalizeGroupPath(path);
+    const existing = (get().jiraCliGroups ?? []).find(
+      (g) => normalizeGroupPath(g.path) === key,
+    );
+    if (existing) {
+      if (name?.trim()) get().renameJiraCliGroup(existing.id, name);
+      return existing.id;
+    }
+    const id = `jg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    set((state) => ({
+      jiraCliGroups: [
+        ...(state.jiraCliGroups ?? []),
+        { id, path, ...(name?.trim() ? { name: name.trim() } : {}) },
+      ],
+    }));
+    return id;
+  },
+  removeJiraCliGroup: (id) =>
+    set((state) => ({
+      jiraCliGroups: (state.jiraCliGroups ?? []).filter((g) => g.id !== id),
+      // Forget everything pointing at the removed group — a dangling id
+      // would silently fall back anyway, but why keep it.
+      jiraLastGroupByProject: Object.fromEntries(
+        Object.entries(state.jiraLastGroupByProject ?? {}).filter(([, gid]) => gid !== id),
+      ),
+      jiraRequestTypeGroups: Object.fromEntries(
+        Object.entries(state.jiraRequestTypeGroups ?? {}).filter(([, gid]) => gid !== id),
+      ),
+    })),
+  renameJiraCliGroup: (id, name) =>
+    set((state) => ({
+      jiraCliGroups: (state.jiraCliGroups ?? []).map((g) => {
+        if (g.id !== id) return g;
+        const trimmed = name.trim();
+        if (!trimmed) {
+          const { name: _drop, ...rest } = g;
+          return rest;
+        }
+        return { ...g, name: trimmed };
+      }),
+    })),
+  jiraLastGroupByProject: {},
+  setJiraLastGroup: (projectDir, groupId) =>
+    set((state) => {
+      const key = projectDir.replace(/\\/g, "/");
+      const next = { ...(state.jiraLastGroupByProject ?? {}) };
+      if (groupId) next[key] = groupId;
+      else delete next[key];
+      return { jiraLastGroupByProject: next };
+    }),
+  jiraRequestTypeGroups: {},
+  setJiraRequestTypeGroup: (requestType, groupId) =>
+    set((state) => {
+      const next = { ...(state.jiraRequestTypeGroups ?? {}) };
+      if (groupId) next[requestType] = groupId;
+      else delete next[requestType];
+      return { jiraRequestTypeGroups: next };
+    }),
+  jiraSiteRequestTypes: {},
+  setJiraSiteRequestTypes: (siteId, names) =>
+    set((state) => ({
+      jiraSiteRequestTypes: { ...(state.jiraSiteRequestTypes ?? {}), [siteId]: names },
+    })),
   projectsDir: "",
   defaultClaudeMdPath: "",
   defaultAgentsMdPath: "",
@@ -1294,7 +1450,7 @@ export const createRecentProjectsSlice: StateCreator<
     }));
   },
 
-  addRecentProject: ({ path, name, template, serverCommand, noDevServer, serverId, isJira, jiraSiteId }) => {
+  addRecentProject: ({ path, name, template, serverCommand, noDevServer, serverId, isJira, jiraSiteId, jiraProjectKey }) => {
     const normalized = normalizePath(path);
     const matches = (p: RecentProject) =>
       normalizePath(p.path) === normalized && p.serverId === serverId;
@@ -1325,6 +1481,7 @@ export const createRecentProjectsSlice: StateCreator<
             noDevServer: noDevServer ?? p.noDevServer,
             isJira: isJira ?? p.isJira,
             jiraSiteId: jiraSiteId ?? p.jiraSiteId,
+            jiraProjectKey: jiraProjectKey ?? p.jiraProjectKey,
           };
         });
       } else {
@@ -1347,6 +1504,7 @@ export const createRecentProjectsSlice: StateCreator<
           preferredBackend,
           isJira,
           jiraSiteId,
+          jiraProjectKey,
         };
         updated = [newEntry, ...state.recentProjects];
       }

@@ -14,7 +14,9 @@ import {
   stampTerminalTypes,
 } from "../lib/layout-utils";
 import { spawnDevServer } from "../lib/spawn-dev-server";
-import { createJiraProjectAt } from "../lib/jira-project";
+import { createJiraProjectAt, createKeyedJiraProject } from "../lib/jira-project";
+import { defaultJiraSiteIn } from "../lib/jira-sites";
+import { isJiraVirtualDir, jiraVirtualDirLabel } from "../lib/jira-virtual-dir";
 import RemoteFileBrowser from "../components/RemoteFileBrowser";
 import CreateProjectModal from "../components/CreateProjectModal";
 import JiraProjectModal from "../components/JiraProjectModal";
@@ -38,6 +40,26 @@ function truncatePath(fullPath: string): string {
   const parts = fullPath.replace(/\\/g, "/").split("/").filter(Boolean);
   if (parts.length <= 3) return fullPath;
   return ".../" + parts.slice(-2).join("/");
+}
+
+/** Reopen a Jira recent as a Jira tab. Keyed projects (site + project key,
+ *  virtual path) route through the keyed creator, which focuses an already-open
+ *  tab instead of duplicating it; legacy folder projects reopen exactly as
+ *  before. Never the template picker or layout restore — those would rebuild
+ *  Jira tabs as plain grids. */
+function reopenJiraRecent(project: RecentProject): void {
+  if (project.jiraProjectKey) {
+    createKeyedJiraProject({
+      siteId: project.jiraSiteId || defaultJiraSiteIn(useAppStore.getState()),
+      projectKey: project.jiraProjectKey,
+    });
+  } else {
+    void createJiraProjectAt({
+      path: project.path,
+      serverId: project.serverId,
+      siteId: project.jiraSiteId,
+    });
+  }
 }
 
 export interface UseTabLaunchMenuOptions {
@@ -188,15 +210,20 @@ export function useTabLaunchMenu(opts: UseTabLaunchMenuOptions) {
               if (effective !== "wsl" && effective !== "windows") return null;
               return effective === "wsl" ? "WSL" : "WIN";
             })();
+            // Keyed Jira rows show the site-host/KEY identity, not a
+            // truncated raw "jira://…" string.
+            const displayPath = isJiraVirtualDir(project.path)
+              ? jiraVirtualDirLabel(project.path)
+              : truncatePath(project.path);
             return {
               key: project.id,
               name: project.name,
-              subtitle: truncatePath(project.path),
+              subtitle: displayPath,
               tooltip: isOrphanRemote
                 ? `Server removed — re-add it in the Remote Servers panel to use this project. (${project.path})`
                 : linkedServer
                   ? `${linkedServer.name}: ${project.path}`
-                  : project.path,
+                  : jiraVirtualDirLabel(project.path),
               disabled: isOrphanRemote,
               badge: project.serverId
                 ? isOrphanRemote
@@ -246,11 +273,7 @@ export function useTabLaunchMenu(opts: UseTabLaunchMenuOptions) {
           // Jira projects reopen as Jira tabs — never through the template
           // picker or layout restore, which would recreate them as plain grids.
           if (project.isJira) {
-            void createJiraProjectAt({
-              path: project.path,
-              serverId: project.serverId,
-              siteId: project.jiraSiteId,
-            });
+            reopenJiraRecent(project);
             break;
           }
           if ((!!project.lastLayout || !!project.lastTemplate) && isQuickOpenEnabled(project)) {
@@ -315,6 +338,13 @@ export function useTabLaunchMenu(opts: UseTabLaunchMenuOptions) {
     const handler = (e: Event) => {
       const { path, name } = (e as CustomEvent).detail;
       const project = recentProjects.find((p) => p.path === path);
+      // Same Jira routing as the dropdown's "open" — without it a Jira recent
+      // clicked on the splash fell into the template-picker path and came back
+      // as a plain grid (keyed ones would have folder-picked a jira:// path).
+      if (project?.isJira) {
+        reopenJiraRecent(project);
+        return;
+      }
       if (project && (project.lastLayout || project.lastTemplate)) {
         quickOpenProject(project, false);
       } else {

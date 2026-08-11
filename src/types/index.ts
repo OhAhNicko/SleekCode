@@ -145,6 +145,12 @@ export interface PaneLeaf {
    * `useNativeTerminalRenderer` setting. Persisted with the layout, so a pane
    * opened as native comes back native. See TerminalPane.tsx for precedence. */
   renderer?: TerminalRenderer;
+  /** Real spawn directory when it differs from the tab's workingDir — a keyed
+   *  Jira pane opened in a chosen CLI folder "group". Persisted with the
+   *  layout so restart/hibernation respawn (`--resume`) happens in the SAME
+   *  folder the transcript lives under. Absent = the tab's workingDir
+   *  (translated for virtual dirs), exactly as before. */
+  cwd?: string;
 }
 
 export interface ProjectSession {
@@ -162,6 +168,12 @@ export interface ProjectSession {
    *  original; 2+ = duplicates ("SUPPORT-24920 #2"). Duplicates group under
    *  the original in the rail and share its browser pane. */
   ticketInstance?: number;
+  /** The REAL folder this conversation's pane spawned in (a CLI folder
+   *  "group", or the fallback dir for keyed projects). Reopening MUST resume
+   *  from here — the CLI's transcript lives under this path's slug — and the
+   *  transcript-exists probe checks here. Absent (legacy rows) = the
+   *  project's own folder / fallback, exactly as before. */
+  cwd?: string;
   /** Jira: the CLI-side session title (sessions-index `customTitle`) as of the
    *  last sync. Rail names adopt a CLI title only when it CHANGED since this
    *  snapshot — so a rename made in MADE is never clobbered by the stale CLI
@@ -277,6 +289,12 @@ export interface Tab {
    *  the site ID). Absent on legacy tabs → siteForTab falls back to the
    *  project's site, then the default site. One site per tab by design. */
   jiraSiteId?: string;
+  /** KEYED Jira project: the Jira project key (SUPPORT, DEV, …) this tab
+   *  points at. Present only on projects created through the keyed flow —
+   *  there `workingDir` is the virtual `jira://<host>/<KEY>` identity string
+   *  (see lib/jira-virtual-dir.ts), never a real path. Legacy folder-based
+   *  Jira tabs have neither. */
+  jiraProjectKey?: string;
   isPinned?: boolean;
   customName?: string;
   serverId?: string;

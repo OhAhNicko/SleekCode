@@ -1,6 +1,7 @@
 import type { StateCreator } from "zustand";
 import type { TerminalInstance, TerminalType, DevServer, TerminalBackend } from "../types";
 import { clearTerminalActivity } from "../lib/terminal-activity";
+import { cachedHomeDir, isJiraVirtualDir, jiraFsCwd } from "../lib/jira-virtual-dir";
 
 // PTY write callbacks — runtime only, not persisted.
 // Stored outside Zustand to avoid unnecessary re-renders.
@@ -225,6 +226,20 @@ function withPortConsistentStatus(
   return status === "running" && !(port > 0) ? "starting" : status;
 }
 
+/**
+ * The directory a terminal actually spawns in. Keyed Jira projects carry a
+ * virtual `jira://…` workingDir that must never reach a PTY; translate it to
+ * the projects dir (or home) HERE, the single funnel every terminal creator
+ * goes through — ticket open, boot restore, splits, hibernation wake, voice.
+ * The tab keeps the virtual dir; only the terminal record gets the real one.
+ */
+function toSpawnDir(workingDir: string, get: () => TerminalSlice): string {
+  if (!isJiraVirtualDir(workingDir)) return workingDir;
+  const projectsDir =
+    ((get() as unknown as { projectsDir?: string }).projectsDir ?? "").trim();
+  return jiraFsCwd(workingDir, projectsDir || cachedHomeDir());
+}
+
 export const createTerminalSlice: StateCreator<
   TerminalSlice,
   [],
@@ -236,10 +251,11 @@ export const createTerminalSlice: StateCreator<
   expandedDevServerId: null,
 
   addTerminal: (id, type, workingDir, serverId?) => {
+    const fsDir = toSpawnDir(workingDir, get);
     set((state) => ({
       terminals: {
         ...state.terminals,
-        [id]: { id, type, workingDir, isActive: false, serverId },
+        [id]: { id, type, workingDir: fsDir, isActive: false, serverId },
       },
     }));
   },
@@ -248,7 +264,7 @@ export const createTerminalSlice: StateCreator<
     set((state) => {
       const newTerminals = { ...state.terminals };
       for (const { id, type, workingDir, serverId } of batch) {
-        newTerminals[id] = { id, type, workingDir, isActive: false, serverId };
+        newTerminals[id] = { id, type, workingDir: toSpawnDir(workingDir, get), isActive: false, serverId };
       }
       return { terminals: newTerminals };
     });

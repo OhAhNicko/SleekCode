@@ -46,6 +46,12 @@ import {
 
 interface BrowserPreviewProps {
   initialUrl: string;
+  /** Follow LATER `initialUrl` changes as navigations. For a preview pane
+   *  whose URL is the caller's SELECTION (the Jira assigned/unassigned list),
+   *  a row click re-points this same live webview instead of remounting it.
+   *  Ordinary panes leave this off — their initialUrl is layout state, and
+   *  following it would yank the user's manual navigation. */
+  followInitialUrl?: boolean;
   onClose: () => void;
   /** When set, the pane mirrors the live dev-server URL of this tab. While the
    *  server isn't ready yet, the iframe area shows a "Waiting for dev server"
@@ -293,6 +299,7 @@ const statusColor = (status: number): string => {
 
 export default function BrowserPreview({
   initialUrl,
+  followInitialUrl = false,
   onClose,
   linkedTabId,
   chrome = "full",
@@ -589,6 +596,20 @@ export default function BrowserPreview({
     },
     [historyIndex, browserViewId],
   );
+
+  // Follow-mode (assigned preview): a changed initialUrl IS a navigation —
+  // the caller re-pointed this pane at another ticket. Through navigateTo so
+  // history and the imperative native navigate behave exactly like typing the
+  // URL (the imperative call matters: browsing inside Jira's SPA can leave
+  // `url` state already equal to the target, which would no-op the effect
+  // at :858). Ref-guarded so only real initialUrl CHANGES navigate.
+  const lastFollowedUrlRef = useRef(initialUrl);
+  useEffect(() => {
+    if (!followInitialUrl) return;
+    if (lastFollowedUrlRef.current === initialUrl) return;
+    lastFollowedUrlRef.current = initialUrl;
+    navigateTo(initialUrl);
+  }, [followInitialUrl, initialUrl, navigateTo]);
 
   // Native surface: history depth comes from the page's Navigation API
   // (made-navstate). `?? true` keeps the buttons live until the first report

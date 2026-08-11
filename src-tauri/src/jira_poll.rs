@@ -78,6 +78,14 @@ pub struct JiraMyself {
     pub account_id: String,
 }
 
+/// One row of the "pick a project" list when creating a keyed Jira project.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JiraProjectBrief {
+    pub key: String,
+    pub name: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JiraCommentBrief {
@@ -663,6 +671,206 @@ pub async fn jira_test_auth(
     })
 }
 
+/// One page of `/rest/api/3/project/search`: the rows plus "was this the last
+/// page". Pure so the filter is a unit test. Keys are RE-CHECKED through
+/// `is_valid_project_key` even though they come from Jira itself — a picked key
+/// is persisted and later interpolated into the unassigned queue's JQL, and
+/// defence in depth is cheaper than trusting a server response's shape.
+/// `isLast` defaults to true when absent so a malformed page can never loop.
+fn parse_project_page(v: &serde_json::Value) -> (Vec<JiraProjectBrief>, bool) {
+    let projects = v
+        .get("values")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    let key = p.get("key").and_then(|k| k.as_str())?;
+                    if !is_valid_project_key(key) {
+                        return None;
+                    }
+                    Some(JiraProjectBrief {
+                        key: key.to_string(),
+                        name: p
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .filter(|n| !n.is_empty())
+                            .unwrap_or(key)
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let is_last = v.get("isLast").and_then(|b| b.as_bool()).unwrap_or(true);
+    (projects, is_last)
+}
+
+/// One page of a JSM (`/rest/servicedeskapi/…`) list: the `values[].{field}`
+/// strings plus "was this the last page". JSM paginates with `isLastPage`
+/// (note: NOT the platform API's `isLast`), which defaults TRUE on a
+/// malformed page so a bad response can never loop the caller.
+fn parse_jsm_page(v: &serde_json::Value, field: &str) -> (Vec<String>, bool) {
+    let values = v
+        .get("values")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    item.get(field).map(|f| match f {
+                        // Service-desk ids arrive as strings, but tolerate
+                        // numbers — the shape is not contractual across
+                        // deployments.
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Number(n) => n.to_string(),
+                        _ => String::new(),
+                    })
+                })
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let is_last = v.get("isLastPage").and_then(|b| b.as_bool()).unwrap_or(true);
+    (values, is_last)
+}
+
+/// Walk one paginated JSM endpoint, collecting `values[].{field}` until
+/// `isLastPage` (or the defensive caps). `start` advances by the RAW page
+/// size so a page of unusable entries still makes progress.
+async fn collect_jsm_list(
+    client: &reqwest::Client,
+    email: &str,
+    token: &str,
+    url_base: &str,
+    field: &str,
+) -> Result<Vec<String>, JiraApiError> {
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    loop {
+        let sep = if url_base.contains('?') { '&' } else { '?' };
+        let url = format!("{url_base}{sep}start={start}&limit=100");
+        let v = get_json(client, &url, email, token).await?;
+        let (page, is_last) = parse_jsm_page(&v, field);
+        let raw_len = v
+            .get("values")
+            .and_then(|x| x.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        out.extend(page);
+        if is_last || raw_len == 0 || out.len() >= 500 {
+            break;
+        }
+        start += raw_len;
+    }
+    Ok(out)
+}
+
+/// Every JSM request-type NAME on a site — the Settings catalogue behind
+/// "link request types to CLI folders". Tries the aggregate endpoint first;
+/// instances that 400/404 it (older JSM, experimental flag off) fall back to
+/// walking each service desk. Deduped + sorted; a site without JSM yields an
+/// http-kind error from both paths, which the frontend renders as an empty
+/// catalogue rather than a hard failure.
+#[tauri::command]
+pub async fn jira_list_request_types(
+    base_url: String,
+    email: String,
+    token: String,
+) -> Result<Vec<String>, JiraApiError> {
+    let base = normalize_base(&base_url)?;
+    let client = client()?;
+    let names = match collect_jsm_list(
+        &client,
+        &email,
+        &token,
+        &format!("{base}/rest/servicedeskapi/requesttype"),
+        "name",
+    )
+    .await
+    {
+        Ok(n) => n,
+        // Aggregate endpoint missing on this instance — walk per desk. Auth
+        // and rate errors propagate: retrying them per-desk would just repeat
+        // the same failure several times over.
+        Err(e) if e.kind == "http" => {
+            let desks = collect_jsm_list(
+                &client,
+                &email,
+                &token,
+                &format!("{base}/rest/servicedeskapi/servicedesk"),
+                "id",
+            )
+            .await?;
+            let mut all: Vec<String> = Vec::new();
+            for desk in desks.iter().take(50) {
+                // Ids land in a URL path — digits only, same defence as
+                // is_valid_ticket_key's path-rewrite rule.
+                if !desk.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                let got = collect_jsm_list(
+                    &client,
+                    &email,
+                    &token,
+                    &format!("{base}/rest/servicedeskapi/servicedesk/{desk}/requesttype"),
+                    "name",
+                )
+                .await
+                .unwrap_or_default();
+                all.extend(got);
+                if all.len() >= 500 {
+                    break;
+                }
+            }
+            all
+        }
+        Err(e) => return Err(e),
+    };
+    let mut deduped: Vec<String> = names
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    deduped.truncate(500);
+    Ok(deduped)
+}
+
+/// The projects this account can see on a site — the picker behind the keyed
+/// "New Jira Project" flow. Paginated (`isLast`), capped at 500 rows / 5
+/// requests: typical sites have well under 100 projects and the picker filters
+/// client-side; a server-side `query=` search is the escape hatch if a
+/// monster site ever matters.
+#[tauri::command]
+pub async fn jira_list_projects(
+    base_url: String,
+    email: String,
+    token: String,
+) -> Result<Vec<JiraProjectBrief>, JiraApiError> {
+    let base = normalize_base(&base_url)?;
+    let client = client()?;
+    let mut out: Vec<JiraProjectBrief> = Vec::new();
+    let mut start_at = 0usize;
+    loop {
+        let url = format!(
+            "{base}/rest/api/3/project/search?startAt={start_at}&maxResults=100&orderBy=key"
+        );
+        let v = get_json(&client, &url, &email, &token).await?;
+        let (page, is_last) = parse_project_page(&v);
+        // `startAt` advances by the RAW page size, not the filtered one — a
+        // page where every key failed the filter must still make progress.
+        let raw_len = v
+            .get("values")
+            .and_then(|x| x.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        out.extend(page);
+        if is_last || raw_len == 0 || out.len() >= 500 {
+            break;
+        }
+        start_at += raw_len;
+    }
+    Ok(out)
+}
+
 /// One poll cycle. Steady-state cost is one search request (plus one when
 /// `include_assigned`); the per-ticket comment request is only spent on keys
 /// whose `updated` moved past the caller's snapshot.
@@ -945,6 +1153,64 @@ mod tests {
         assert_eq!(t.priority_name, None);
         assert_eq!(t.reporter_name, None);
         assert_eq!(t.created, "");
+    }
+
+    #[test]
+    fn jsm_page_parses_and_defaults() {
+        use serde_json::json;
+        let page = json!({
+            "isLastPage": false,
+            "values": [
+                { "name": "Report a problem" },
+                { "name": "COS TEST" },
+                { "id": 7, "noName": true },
+                { "name": "" }
+            ]
+        });
+        let (names, last) = parse_jsm_page(&page, "name");
+        assert!(!last);
+        assert_eq!(names, vec!["Report a problem", "COS TEST"]);
+
+        // Numeric ids stringify; absent isLastPage defaults TRUE (never loop).
+        let (ids, last) = parse_jsm_page(&json!({ "values": [{ "id": 12 }, { "id": "34" }] }), "id");
+        assert!(last);
+        assert_eq!(ids, vec!["12", "34"]);
+
+        let (none, last) = parse_jsm_page(&json!("garbage"), "name");
+        assert!(none.is_empty());
+        assert!(last);
+    }
+
+    #[test]
+    fn project_page_filters_and_defaults() {
+        use serde_json::json;
+        let page = json!({
+            "isLast": false,
+            "values": [
+                { "key": "SUPPORT", "name": "Customer Support" },
+                { "key": "DEV" },                                  // no name → key
+                { "key": "bad-key", "name": "dropped" },           // fails the RE
+                { "key": "X) OR (project in (Y", "name": "inj" },  // injection shape
+                { "name": "keyless dropped" }
+            ]
+        });
+        let (projects, is_last) = parse_project_page(&page);
+        assert!(!is_last);
+        assert_eq!(
+            projects.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(),
+            vec!["SUPPORT", "DEV"]
+        );
+        assert_eq!(projects[0].name, "Customer Support");
+        assert_eq!(projects[1].name, "DEV");
+
+        // Absent isLast defaults TRUE (never loop on a malformed page), and a
+        // shapeless body yields an empty last page rather than a panic.
+        let (none, last) = parse_project_page(&json!({ "values": [] }));
+        assert!(none.is_empty());
+        assert!(last);
+        let (none, last) = parse_project_page(&json!("garbage"));
+        assert!(none.is_empty());
+        assert!(last);
     }
 
     #[test]

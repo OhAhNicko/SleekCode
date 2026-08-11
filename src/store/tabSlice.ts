@@ -64,7 +64,7 @@ export interface TabSlice {
   tabs: Tab[];
   activeTabId: string;
   addTab: (name: string, workingDir: string, serverId?: string) => void;
-  addTabWithLayout: (name: string, workingDir: string, layout: PaneLayout | null, serverId?: string, options?: { isJiraProject?: boolean; jiraSiteId?: string }) => string;
+  addTabWithLayout: (name: string, workingDir: string, layout: PaneLayout | null, serverId?: string, options?: { isJiraProject?: boolean; jiraSiteId?: string; jiraProjectKey?: string }) => string;
   /** Jira project: re-point which site NEW tickets in this tab open on
    *  (rail-header switcher; open pairs keep their persisted URLs). */
   setTabJiraSite: (tabId: string, siteId: string) => void;
@@ -77,6 +77,9 @@ export interface TabSlice {
   updatePaneSessionResumeId: (tabId: string, terminalId: string, sessionResumeId: string | undefined) => void;
   togglePinTab: (tabId: string) => void;
   renameTab: (tabId: string, name: string) => void;
+  /** Replace the tab's BASE name (`name`), not the user's rename
+   *  (`customName`) — for derived titles like the Jira site suffix. */
+  setTabName: (tabId: string, name: string) => void;
   reorderTabs: (draggedId: string, insertBeforeId: string | null) => void;
   /** Kill the tab's PTYs but keep its layout (incl. sessionResumeIds); the WSL
    *  processes are freed. Refuses system/remote tabs, tabs with dev-server
@@ -184,7 +187,7 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
     set((state) => ({
       tabs: [
         ...state.tabs,
-        { id: tabId, name, workingDir, layout, serverId, backend, isJiraProject: options?.isJiraProject, jiraSiteId: options?.jiraSiteId } as Tab,
+        { id: tabId, name, workingDir, layout, serverId, backend, isJiraProject: options?.isJiraProject, jiraSiteId: options?.jiraSiteId, jiraProjectKey: options?.jiraProjectKey } as Tab,
       ],
       activeTabId: tabId,
       ...(workingDir ? { lastActiveProjectPath: workingDir } : {}),
@@ -290,6 +293,12 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
     }));
   },
 
+  setTabName: (tabId, name) => {
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, name } : t)),
+    }));
+  },
+
   reorderTabs: (draggedId, insertBeforeId) =>
     set((state) => {
       const tabs = [...state.tabs];
@@ -360,7 +369,9 @@ export const createTabSlice: StateCreator<TabSlice, [], [], TabSlice> = (
           missing.map((l) => ({
             id: l.terminalId,
             type: l.terminalType ?? "shell",
-            workingDir: tab.workingDir,
+            // Keyed Jira panes persist their CLI-group folder on the leaf —
+            // the resumed transcript lives under it (see PaneLeaf.cwd).
+            workingDir: l.cwd ?? tab.workingDir,
             serverId: tab.serverId,
           })),
         );

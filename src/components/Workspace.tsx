@@ -47,7 +47,7 @@ import { buildTicketUrl } from "../lib/jira";
 import { askForTicket, openJiraTicket } from "../lib/jira-project";
 import { useJiraTreeOwnsTickets } from "../lib/use-vertical-tabbar";
 import { siteForTabIn, splitJiraQK } from "../lib/jira-sites";
-import { useJiraNotifyStore } from "../store/jiraNotifyStore";
+import { DEFAULT_JIRA_RAIL_TAB, useJiraNotifyStore } from "../store/jiraNotifyStore";
 import JiraStackedPair from "./JiraStackedPair";
 import { resolveTicketColor } from "../lib/jira-colors";
 import { clearTicketForTerminal, nameTicketSession } from "../lib/jira-session";
@@ -130,11 +130,13 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // tickets"): a synthetic browser pane rendered OUTSIDE tab.layout — the
   // pair-layout invariant (isJiraPairLayout migration above) must never see
   // it, and an assigned ticket must not grow a CLI pane by being previewed.
-  const jiraAssignedMode = useAppStore((s) => s.jiraAssignedMode ?? false);
+  const jiraAssignedMode = useAppStore((s) => s.jiraAssignedMode ?? true);
   const jiraUnassignedMode = useAppStore((s) => s.jiraUnassignedMode ?? false);
   const tabSite = useAppStore((s) => (tab.isJiraProject ? siteForTabIn(s, tab) : ""));
   const railTab = useJiraNotifyStore((s) => {
-    const t = s.railTab[tab.id] ?? "tickets";
+    // Assigned-first is a RAIL default; the v2 tree has no tab strip, so its
+    // tabs keep landing on their ticket pairs (mirrors useJiraTicketRows).
+    const t = s.railTab[tab.id] ?? (jiraTreeOwnsTickets ? "tickets" : DEFAULT_JIRA_RAIL_TAB);
     // A tab can be parked on a list whose mode was since turned off — fall
     // back rather than render a list that no longer has a source.
     if (t === "assigned" && !jiraAssignedMode) return "tickets";
@@ -333,11 +335,12 @@ export default function Workspace({ tab }: WorkspaceProps) {
     const panes = tab.layout ? findAllBrowserPanes(tab.layout) : [];
     if (assignedActive && assignedPreview) {
       // assignedPreview is a QUALIFIED key — the row's own site builds the
-      // URL (a foreign-site row previews its own site). Pane id keeps the
-      // bare key: only one preview exists per tab at a time.
+      // URL (a foreign-site row previews its own site). Pane id is the TAB's:
+      // stable across ticket switches, so selecting another row NAVIGATES the
+      // live webview (followInitialUrl below) instead of remounting it.
       const { siteId, key } = splitJiraQK(assignedPreview);
       const url = buildTicketUrl(siteId || tabSite, key);
-      if (url) panes.push({ type: "browser", id: jiraAssignedPaneId(key), url });
+      if (url) panes.push({ type: "browser", id: jiraAssignedPaneId(tab.id), url });
     }
     return panes;
   }, [tab.layout, assignedActive, assignedPreview, tabSite]);
@@ -973,7 +976,9 @@ export default function Workspace({ tab }: WorkspaceProps) {
       toSpawn.map((leaf) => ({
         id: leaf.terminalId,
         type: leaf.terminalType ?? "shell",
-        workingDir: tab.workingDir,
+        // A keyed Jira pane opened in a CLI group folder persists that folder
+        // on its leaf — resume must happen THERE, where the transcript lives.
+        workingDir: leaf.cwd ?? tab.workingDir,
         serverId: tab.serverId,
       }))
     );
@@ -1036,7 +1041,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
             <button
               type="button"
               onClick={() => {
-                void askForTicket().then((answer) => {
+                void askForTicket(tab).then((answer) => {
                   if (!answer) return;
                   openJiraTicket(tab.id, {
                     ticket: answer.ticket,
@@ -1044,6 +1049,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
                     swedish: answer.swedish,
                     english: answer.english,
                     model: answer.model,
+                    cwd: answer.cwd,
                   });
                 });
               }}
@@ -1131,7 +1137,14 @@ export default function Workspace({ tab }: WorkspaceProps) {
   // Empty tab — render the launcher in place of the layout grid. Terminal
   // panes (if any) still need to render via portals so an in-flight close
   // animation isn't visible-then-gone, but with null layout there are none.
-  if (!tab.layout) {
+  //
+  // NEVER for Jira tabs: their no-layout + CLI-list case returned above with
+  // the rail, and no-layout + Assigned/Unassigned must fall through to the
+  // main return so the rail and the list preview render (a brand-new keyed
+  // project has no layout, and the generic launcher would spawn panes outside
+  // the rail's model — this was exactly the "This tab is empty" bug when
+  // clicking Assigned on a fresh keyed project).
+  if (!tab.layout && !tab.isJiraProject) {
     return <EmptyTabLauncher />;
   }
 
@@ -1144,7 +1157,7 @@ export default function Workspace({ tab }: WorkspaceProps) {
           <div
             className="h-full w-full"
             style={{ backgroundColor: "var(--ezy-bg)" }}
-            data-browser-pane-id={jiraAssignedPaneId(splitJiraQK(assignedPreview).key)}
+            data-browser-pane-id={jiraAssignedPaneId(tab.id)}
           />
         ) : (
           <div
@@ -1173,7 +1186,9 @@ export default function Workspace({ tab }: WorkspaceProps) {
         />
       ) : (
         <PaneGrid
-          layout={tab.isJiraProject ? displayJiraPair! : tab.layout}
+          // Same narrowing story as FloatingPanesLayer below: non-Jira tabs
+          // with a null layout returned at the empty-tab branch above.
+          layout={tab.isJiraProject ? displayJiraPair! : tab.layout!}
           tabId={tab.id}
           onLayoutChange={tab.isJiraProject ? handleJiraPairLayoutChange : handleLayoutChange}
           getTerminalSlot={getSlotEl}
@@ -1181,7 +1196,10 @@ export default function Workspace({ tab }: WorkspaceProps) {
       )}
       {!assignedActive && (
         <FloatingPanesLayer
-          layout={tab.isJiraProject ? displayJiraPair! : tab.layout}
+          // Non-Jira tabs cannot get here with a null layout (the empty-tab
+          // return above catches them); TS can't narrow through the compound
+          // guard, hence the assertion — same idiom as displayJiraPair.
+          layout={tab.isJiraProject ? displayJiraPair! : tab.layout!}
           callbacks={floatingCallbacks}
           paneTitleFor={paneTitleFor}
         />
@@ -1255,6 +1273,9 @@ export default function Workspace({ tab }: WorkspaceProps) {
         return createPortal(
           <BrowserPreview
             initialUrl={pane.url}
+            // The preview's URL IS the selection — a row click must navigate
+            // the live webview rather than remount it (pane id is per-tab).
+            followInitialUrl={isAssignedPreview}
             linkedTabId={pane.linkedTabId}
             onClose={() =>
               // The assigned preview lives outside tab.layout — closing it

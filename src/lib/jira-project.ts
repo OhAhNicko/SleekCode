@@ -11,7 +11,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../store";
-import type { PaneLayout, ProjectSession } from "../types";
+import type { PaneLayout, ProjectSession, Tab } from "../types";
 import { setPendingPrompt, clearPendingPrompt } from "../store/terminalSlice";
 import { rememberTicketForTerminal, clearTicketForTerminal, parkedTicketName } from "./jira-session";
 import { defaultJiraSiteIn, siteForTab } from "./jira-sites";
@@ -28,9 +28,15 @@ import {
   listJiraInstanceKeys,
   removeJiraInstanceTerm,
 } from "./jira-layout";
-import { requestJiraTicket } from "../components/NewJiraTicketModal";
+import {
+  requestJiraTicket,
+  type JiraTicketContext,
+  type JiraTicketResult,
+} from "../components/NewJiraTicketModal";
 import { buildJiraPrompt, buildTicketUrl, DEFAULT_JIRA_PROMPT } from "./jira";
 import { jiraCliOfSession, type JiraCli } from "./jira-mcp";
+import { makeJiraVirtualDir } from "./jira-virtual-dir";
+import { useJiraNotifyStore } from "../store/jiraNotifyStore";
 
 /** The remembered new-ticket model for a CLI. Claude's is a tier alias; the
  *  other two are literal slugs, because neither CLI has aliases. */
@@ -47,14 +53,20 @@ export function rememberedModel(
  * Ask for a ticket key. Also asks for the Jira base URL the first time, because
  * without it there is nowhere to point the browser and a dialog that silently
  * does half the job is worse than one extra field once.
+ *
+ * Pass the TAB so the dialog can offer the CLI-group (folder) picker on keyed
+ * projects and preselect the project's last-used group.
  */
-export async function askForTicket(): Promise<
-  { ticket: string; swedish: boolean; english: boolean; cli: JiraCli; model: string | null } | null
-> {
+export async function askForTicket(
+  tab?: Pick<Tab, "workingDir" | "jiraProjectKey">,
+): Promise<JiraTicketResult | null> {
   // The dialog itself (NewJiraTicketModal) owns the acronym/number split,
   // remembered acronyms, the Swedish toggle and the first-run Jira address —
   // including persisting all of them.
-  return requestJiraTicket();
+  const ctx: JiraTicketContext | undefined = tab
+    ? { projectDir: tab.workingDir, showGroups: !!tab.jiraProjectKey }
+    : undefined;
+  return requestJiraTicket(ctx);
 }
 
 /** Does `filename` already exist in `dir` (case-insensitive), locally or on a
@@ -151,6 +163,53 @@ export async function createJiraProjectAt(
   return { tabId, template };
 }
 
+/**
+ * Create (or focus) a KEYED Jira project: a tab bound to a site + project key
+ * (SUPPORT, DEV, …) instead of a folder. Its identity — Tab.workingDir and
+ * RecentProject.path — is the virtual `jira://<host>/<KEY>` string, so all the
+ * path-keyed machinery (session registry, recents, site resolution) works
+ * unchanged; panes spawn in a real fallback dir via terminalSlice's translation.
+ * Folder handling proper is the follow-up step.
+ *
+ * Same site+key twice focuses the existing tab: the virtual dir IS the
+ * dedupe key, and two tabs with one registry would show each other's rows.
+ */
+export function createKeyedJiraProject(opts: {
+  siteId: string;
+  projectKey: string;
+}): { tabId: string } {
+  const store = useAppStore.getState();
+  const dir = makeJiraVirtualDir(opts.siteId, opts.projectKey);
+  // The tab opens on its Assigned list — fetch NOW instead of waiting out the
+  // 60s poll cadence, so the first paint has rows for the top-ticket preview.
+  // Dynamic import: jira-notify statically imports this module (openJiraTicket).
+  void import("./jira-notify")
+    .then((m) => m.refreshJiraNow(opts.siteId))
+    .catch(() => {});
+  const existing = store.tabs.find((t) => t.isJiraProject && t.workingDir === dir);
+  const recent = {
+    path: dir,
+    name: opts.projectKey,
+    isJira: true,
+    jiraSiteId: opts.siteId,
+    jiraProjectKey: opts.projectKey,
+  };
+  if (existing) {
+    store.setActiveTab(existing.id);
+    store.addRecentProject(recent);
+    return { tabId: existing.id };
+  }
+  // Null layout for the same reason as createJiraProjectAt: the first ticket's
+  // pane must become the layout root.
+  const tabId = store.addTabWithLayout(`Jira · ${opts.projectKey}`, dir, null, undefined, {
+    isJiraProject: true,
+    jiraSiteId: opts.siteId,
+    jiraProjectKey: opts.projectKey,
+  });
+  store.addRecentProject(recent);
+  return { tabId };
+}
+
 interface OpenTicketOptions {
   ticket: string;
   /** Which CLI runs the ticket pane. Defaults to Claude — every ticket opened
@@ -175,6 +234,11 @@ interface OpenTicketOptions {
   forkFromSessionId?: string;
   /** Resume this session instead of starting a fresh conversation. */
   resumeId?: string;
+  /** Real folder the CLI pane spawns in — a CLI "group" folder chosen in the
+   *  new-ticket dialog (keyed projects only). Absent: fresh panes use the
+   *  tab's workingDir (virtual dirs translate to the fallback), and RESUMES
+   *  use the row's remembered `cwd` — the transcript lives under it. */
+  cwd?: string | null;
   /** Whether the canvas switches to the ticket being opened. Default true —
    *  every human-initiated open (rail click, new-ticket dialog, duplicate)
    *  means "show me this". Only the pasted-ticket detector in manual mode
@@ -200,6 +264,16 @@ export function openJiraTicket(tabId: string, opts: OpenTicketOptions): void {
   const fork = opts.forkFromSessionId
     ? { sourceSessionId: opts.forkFromSessionId, newSessionId: crypto.randomUUID() }
     : undefined;
+  const row = opts.resumeId
+    ? (store.projectSessions[tab.workingDir.replace(/\\/g, "/")] ?? []).find(
+        (s) => s.id === opts.resumeId,
+      )
+    : undefined;
+  // The pane's REAL spawn folder: an explicitly chosen group, else (resumes)
+  // wherever the conversation originally ran — `claude --resume` only finds
+  // the transcript under that folder's slug. Null/absent = tab's workingDir,
+  // which terminalSlice translates for virtual dirs.
+  const spawnCwd = opts.cwd ?? (resuming ? row?.cwd : undefined) ?? undefined;
 
   // Everything the spawn needs must be parked BEFORE the pane is asked for:
   // the spawn reads it, and it can begin as soon as the pane mounts.
@@ -225,20 +299,19 @@ export function openJiraTicket(tabId: string, opts: OpenTicketOptions): void {
       cli,
       model: opts.model ?? undefined,
       fork,
+      projectDir: tab.workingDir,
     });
   } else {
     // Resumes park too, but only the name-bearing fields: the spawn re-asserts
     // the row's (possibly user-edited) name via `--name`, which is how a MADE-
     // side rename reaches the CLI title. Fork/mint stay off because the pane's
     // leaf carries the resume id.
-    const rowName = (store.projectSessions[tab.workingDir.replace(/\\/g, "/")] ?? []).find(
-      (s) => s.id === opts.resumeId,
-    )?.name;
     rememberTicketForTerminal(terminalId, {
       ticket: opts.ticket,
       instance,
       cli,
-      name: rowName,
+      name: row?.name,
+      projectDir: tab.workingDir,
     });
   }
 
@@ -249,16 +322,30 @@ export function openJiraTicket(tabId: string, opts: OpenTicketOptions): void {
   const select = opts.select !== false;
   if (select && store.activeTabId !== tabId) store.setActiveTab(tabId);
 
+  // Selecting a ticket means SHOWING it: the canvas only renders pane pairs
+  // while the rail is on its CLI list (Assigned/Unassigned fill it with the
+  // list preview instead — and Assigned is the default). Without this, a
+  // ticket opened from the new-ticket dialog or a notification spawns its
+  // pane invisibly behind the preview.
+  const showPairCanvas = () => {
+    const notify = useJiraNotifyStore.getState();
+    notify.setRailTab(tabId, "tickets");
+    notify.setAssignedPreview(tabId, undefined);
+  };
+
   if (findJiraTermLeaf(tab.layout, instKey)) {
     // This instance is already open (e.g. rail double-fire) — just switch.
     clearPendingPrompt(terminalId);
     clearTicketForTerminal(terminalId);
-    if (select) store.setSelectedJiraTicket(tabId, instKey);
+    if (select) {
+      showPairCanvas();
+      store.setSelectedJiraTicket(tabId, instKey);
+    }
     return;
   }
 
-  store.addTerminal(terminalId, cli, tab.workingDir, tab.serverId);
-  const term = buildJiraTermLeaf(instKey, terminalId, opts.resumeId, cli);
+  store.addTerminal(terminalId, cli, spawnCwd ?? tab.workingDir, tab.serverId);
+  const term = buildJiraTermLeaf(instKey, terminalId, opts.resumeId, cli, spawnCwd);
   const basePair = findJiraPair(tab.layout, opts.ticket);
   if (basePair && tab.layout) {
     // The ticket is already on the canvas — nest this instance's pane next to
@@ -275,6 +362,10 @@ export function openJiraTicket(tabId: string, opts: OpenTicketOptions): void {
   }
   // `select: false` still selects when the tab has nothing selected: a canvas
   // with panes and no selection renders empty, which is worse than switching.
+  // The rail flip stays behind `select` alone though — the pasted-ticket
+  // detector's background opens must not yank the user off the list they're
+  // reading.
+  if (select) showPairCanvas();
   if (select || !tab.selectedJiraTicket) store.setSelectedJiraTicket(tabId, instKey);
 
   // A reopened ticket's session id is already known, so name it now. A fresh
@@ -291,6 +382,7 @@ export function openJiraTicket(tabId: string, opts: OpenTicketOptions): void {
       isRenamed: true,
       ticket: opts.ticket,
       ticketInstance: instance,
+      cwd: spawnCwd,
     });
   }
 }
@@ -348,6 +440,8 @@ export function duplicateJiraTicket(
     english: store.jiraReplyInEnglish,
     noPrompt: mode === "empty",
     forkFromSessionId: mode === "fork" ? source.id : undefined,
+    // A duplicate works the same ticket — same CLI group folder as its source.
+    cwd: source.cwd,
   });
 }
 

@@ -11,8 +11,14 @@
  * scope at all). Each CLI's own writer is invoked rather than MADE editing the
  * files — see the Rust side.
  *
- * MADE does not authenticate: that handoff is an interactive browser OAuth, so
- * it stays visible to the user (`/mcp` in a pane, or `codex mcp login`).
+ * Registration is only half the setup: the server still needs a browser OAuth,
+ * and MADE cannot mint that link itself (PKCE + a localhost callback owned by
+ * the CLI process). So on local backends the CLI is told to run its own flow —
+ * `claude|codex mcp login atlassian` opens the system browser and blocks until
+ * the callback (`loginJiraMcp`), and `probeJiraMcpAuth` asks the CLI afterwards
+ * whether it worked. Gemini's auth is TUI-only, so it gets a spawned pane
+ * instead; on SSH the callback would bind the REMOTE host's localhost, so
+ * remote projects keep the visible-hint handoff.
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -82,16 +88,20 @@ function withTimeout<T>(work: Promise<T>, ms: number, message: string): Promise<
 const STATUS_TIMEOUT_MS = 30_000;
 /** Must exceed the backend's own 45s add deadline, so its message wins. */
 const INSTALL_TIMEOUT_MS = 75_000;
+/** Must exceed the backend's 300s login deadline, so its message wins. */
+const LOGIN_TIMEOUT_MS = 330_000;
+/** Must exceed the backend's 20s probe deadline. */
+const AUTH_PROBE_TIMEOUT_MS = 30_000;
 
 /**
- * How each CLI finishes the OAuth handoff MADE deliberately does not perform.
- * Claude and Gemini both do it from inside the running CLI; Codex has a
- * dedicated subcommand instead (there is no `/mcp` in its TUI).
+ * How to finish the OAuth handoff where MADE cannot run it for you (SSH, or a
+ * probe that could not tell). Claude and Codex also have these as headless
+ * subcommands — `loginJiraMcp` runs exactly them on local backends.
  */
 export const JIRA_MCP_AUTH_HINT: Record<JiraCli, string> = {
-  claude: "Run /mcp in a Claude pane to sign in to Atlassian.",
+  claude: "Run claude mcp login atlassian to sign in.",
   codex: "Run codex mcp login atlassian to sign in.",
-  gemini: "Run /mcp auth atlassian in a Gemini pane to sign in.",
+  gemini: "Run /mcp auth atlassian in a Gemini pane.",
 };
 
 /**
@@ -100,8 +110,7 @@ export const JIRA_MCP_AUTH_HINT: Record<JiraCli, string> = {
  * HOST, which your browser cannot reach. Claude and Gemini both authenticate
  * from inside the running pane, so SSH costs them nothing.
  */
-export const CODEX_MCP_SSH_AUTH =
-  "Registered, but codex mcp login can't finish over SSH — its callback binds to the server's own localhost.";
+export const CODEX_MCP_SSH_AUTH = "codex mcp login can't finish over SSH.";
 
 /** SSH needs key auth: the remote calls run with BatchMode, so there is nobody
  *  to type a password to. */
@@ -191,11 +200,123 @@ export function installJiraMcp(
   backend: TerminalBackend,
   server?: JiraMcpServer | null,
 ): Promise<string> {
+  // Whatever the outcome, the auth answer for this CLI is stale now.
+  invalidateJiraMcpAuth(cli);
   return withTimeout(
     runInstall(cli, backend, server),
     INSTALL_TIMEOUT_MS,
     `${cli} mcp add never answered — try again, or run it in a pane to see why.`,
   );
+}
+
+/** Signed in / needs sign-in / could not tell. */
+export type JiraMcpAuth = boolean | null;
+
+/**
+ * Auth answers, keyed `${backend}:${cli}`. A probe spawns the CLI and
+ * health-checks Atlassian over the network — far too heavy to repeat on every
+ * settings render — so definitive answers stick until an install/login
+ * invalidates them, and "could not tell" retries after a short TTL so one
+ * transient failure doesn't pin the degraded state.
+ *
+ * Accepted staleness: a token that EXPIRES while a `true` is cached keeps its
+ * row green until the next install/login or app restart. The ticket pane
+ * itself is the real failure signal for that case.
+ */
+const authCache = new Map<string, { value: JiraMcpAuth; at: number }>();
+const AUTH_NULL_TTL_MS = 60_000;
+
+export function invalidateJiraMcpAuth(cli?: JiraCli): void {
+  if (!cli) {
+    authCache.clear();
+    return;
+  }
+  for (const key of authCache.keys()) {
+    if (key.endsWith(`:${cli}`)) authCache.delete(key);
+  }
+}
+
+/**
+ * Run the CLI's own browser OAuth for the registered Atlassian server. The
+ * system browser opens (the CLI launches it — no in-app webview: SSO providers
+ * block embedded browsers, and the user's sessions live in their real one) and
+ * the call stays pending until the user finishes or the backend's 5-minute
+ * deadline kills the child.
+ *
+ * Local backends only: on SSH the OAuth callback would bind the REMOTE host's
+ * localhost. Gemini has no headless login at all — its pane flow lives in the
+ * settings row.
+ */
+export function loginJiraMcp(
+  cli: JiraCli,
+  backend: TerminalBackend,
+  name?: string,
+): Promise<string> {
+  if (cli === "gemini") {
+    return Promise.reject(new Error("gemini has no headless MCP login"));
+  }
+  if (backend === "ssh") {
+    return Promise.reject(new Error("sign-in must run on the remote host"));
+  }
+  const work =
+    backend === "windows" || backend === "native"
+      ? invoke<string>("jira_mcp_login_direct", {
+          cliPath:
+            (backend === "windows"
+              ? getCachedWindowsCliPath(cli)
+              : getCachedNativeCliPath(cli)) ?? null,
+          cli,
+          name: name ?? null,
+        })
+      : invoke<string>("jira_mcp_login", {
+          distro: getCachedDistro() || null,
+          cli,
+          name: name ?? null,
+        });
+  return withTimeout(
+    work,
+    LOGIN_TIMEOUT_MS,
+    `${cli} mcp login never answered — try Sign in again.`,
+  ).finally(() => invalidateJiraMcpAuth(cli));
+}
+
+/**
+ * Is the registered server signed in? Advisory tri-state: `null` ("could not
+ * tell") is a first-class answer that the row must render as the old
+ * green-plus-hint — never as "Sign in required". Gemini and SSH answer `null`
+ * without asking (no probe exists / wrong machine to ask).
+ */
+export async function probeJiraMcpAuth(
+  cli: JiraCli,
+  backend: TerminalBackend,
+  name?: string,
+): Promise<JiraMcpAuth> {
+  if (cli === "gemini" || backend === "ssh") return null;
+  const key = `${backend}:${cli}`;
+  const cached = authCache.get(key);
+  if (cached && (cached.value !== null || Date.now() - cached.at < AUTH_NULL_TTL_MS)) {
+    return cached.value;
+  }
+  const work =
+    backend === "windows" || backend === "native"
+      ? invoke<JiraMcpAuth>("jira_mcp_auth_probe_direct", {
+          cliPath:
+            (backend === "windows"
+              ? getCachedWindowsCliPath(cli)
+              : getCachedNativeCliPath(cli)) ?? null,
+          cli,
+          name: name ?? null,
+        })
+      : invoke<JiraMcpAuth>("jira_mcp_auth_probe", {
+          distro: getCachedDistro() || null,
+          cli,
+          name: name ?? null,
+        });
+  const value = await withTimeout(work, AUTH_PROBE_TIMEOUT_MS, "timed out").catch(
+    () => null,
+  );
+  authCache.set(key, { value: value ?? null, at: Date.now() });
+  return value ?? null;
 }
 
 async function runInstall(
