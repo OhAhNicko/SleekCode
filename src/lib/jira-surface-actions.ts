@@ -11,15 +11,17 @@ import {
   duplicateJiraTicket,
   closeJiraInstanceInAllTabs,
   openJiraTicket,
+  rememberedModel,
   type JiraDuplicateMode,
 } from "./jira-project";
+import { folderBasename, groupForRequestType, normalizeGroupPath } from "./jira-groups";
 import { pasteTextToTerminal } from "./terminal-paste";
 import { buildJiraPrompt, buildTicketUrl, DEFAULT_JIRA_PROMPT } from "./jira";
 import { chooseOption, confirmAction, promptForInput } from "./prompt-modal";
 import { clearTicketForTerminal } from "./jira-session";
 import { jiraCliOfSession, JIRA_CLI_LABEL } from "./jira-mcp";
 import { useJiraNotifyStore } from "../store/jiraNotifyStore";
-import { jiraQK, splitJiraQK, siteForTabIn } from "./jira-sites";
+import { credsForSiteIn, jiraQK, splitJiraQK, siteForTabIn } from "./jira-sites";
 import {
   findJiraTermLeaf,
   removeJiraInstanceTerm,
@@ -47,6 +49,31 @@ export interface JiraTicketTarget {
   focusTerminal: (terminalId: string) => void;
   /** The row's primary action — same one a plain click runs. */
   openRow: (row: TicketRow) => void;
+}
+
+/**
+ * The folder a KEYED project's fresh ticket pane should spawn in, resolved in
+ * priority order: the group its REQUEST TYPE is linked to (Settings → Jira →
+ * Request types) → the project's last-used group → undefined (fallback dir).
+ * Legacy folder projects always answer undefined — their panes spawn in the
+ * project's own folder.
+ */
+function autoGroupCwd(tab: Tab, qkey: string): string | undefined {
+  const s = useAppStore.getState();
+  const groups = s.jiraCliGroups ?? [];
+  if (!tab.jiraProjectKey || groups.length === 0) return undefined;
+  const { siteId, key } = splitJiraQK(qkey);
+  const site = siteId || siteForTabIn(s, tab);
+  const qk = jiraQK(site, key);
+  const requestType =
+    s.jiraTicketSnapshots?.[qk]?.requestType ??
+    (s.jiraAssignedTickets ?? []).find((t) => t.key === key && t.siteId === site)?.requestType ??
+    (s.jiraUnassignedTickets ?? []).find((t) => t.key === key && t.siteId === site)?.requestType ??
+    (s.jiraAssignedDoneTickets ?? []).find((t) => t.key === key && t.siteId === site)?.requestType;
+  const linked = groupForRequestType(groups, s.jiraRequestTypeGroups ?? {}, requestType);
+  if (linked) return linked.path;
+  const lastId = (s.jiraLastGroupByProject ?? {})[tab.workingDir.replace(/\\/g, "/")];
+  return groups.find((g) => g.id === lastId)?.path;
 }
 
 /** Close ONE instance's pane if it is open. The ticket's shared browser goes
@@ -89,6 +116,56 @@ export function buildJiraTicketActions(
     closePane: (id) => {
       const t = resolve(id);
       if (t?.row.terminalId) closeTicketPair(t.tab, t.row);
+    },
+    // Override the auto-chosen CLI group: pick another GROUP (never a raw
+    // folder) and the pane RESTARTS there — a fresh conversation with the
+    // investigation prompt re-sent. A transcript lives under the folder it
+    // spawned in, so "move" honestly means restart; the old conversation row
+    // is removed with it. The chooser doubles as the confirm: its detail says
+    // exactly what picking does, and picking is the deliberate act.
+    changeGroup: (id) => {
+      const t = resolve(id);
+      const ticket = t?.row.session.ticket;
+      if (!t || !ticket) return;
+      const { tab, row } = t;
+      const store = useAppStore.getState();
+      const groups = store.jiraCliGroups ?? [];
+      if (groups.length === 0) return; // menu hides the row in this case
+      const currentCwd = normalizeGroupPath(row.session.cwd ?? "");
+      void chooseOption({
+        title: `Change group — ${ticket}`,
+        detail:
+          "Restarts the pane in the chosen group's folder as a FRESH conversation (investigation prompt re-sent). The current conversation is closed and removed.",
+        choices: groups.map((g) => ({
+          id: g.id,
+          label: g.name?.trim() || folderBasename(g.path),
+          detail: g.path,
+          unavailable:
+            normalizeGroupPath(g.path) === currentCwd
+              ? { reason: "Already in this group" }
+              : undefined,
+        })),
+      }).then((picked) => {
+        if (!picked) return;
+        const fresh = useAppStore.getState();
+        const group = (fresh.jiraCliGroups ?? []).find((g) => g.id === picked);
+        if (!group) return;
+        const instKey = instKeyOf(row.session);
+        const cli = jiraCliOfSession(row.session.type);
+        // Close the pane wherever it is open, drop the old row, then open
+        // fresh in the new folder — same ticket, same instance number.
+        closeJiraInstanceInAllTabs(tab.workingDir, instKey);
+        fresh.removeProjectSession(tab.workingDir, row.session.id);
+        openJiraTicket(tab.id, {
+          ticket,
+          instance: row.session.ticketInstance,
+          cli,
+          model: rememberedModel(fresh, cli),
+          swedish: fresh.jiraReplyInSwedish,
+          english: fresh.jiraReplyInEnglish,
+          cwd: group.path,
+        });
+      });
     },
     // The investigation prompt a fresh ticket is opened WITH. Panes that never
     // got one — an empty sub-ticket, a fork, a resumed conversation — can ask
@@ -244,6 +321,9 @@ export function buildJiraAssignedActions(
         cli: store.jiraCli ?? "claude",
         swedish: store.jiraReplyInSwedish,
         english: store.jiraReplyInEnglish,
+        // Linked request type → its group's folder; else last-used; else the
+        // fallback dir. Overridable afterwards via the row's "Change group…".
+        cwd: autoGroupCwd(tab, qkey),
       });
       store.markJiraTicketSeen(jiraQK(site, key));
       const notify = useJiraNotifyStore.getState();
@@ -261,20 +341,27 @@ export function buildJiraAssignedActions(
   };
 }
 
-/** The user's own Atlassian accountId, fetching it if this session has never
- *  needed it. It is only captured by the Settings "Test" button or lazily by
- *  the poll engine behind an any-work gate, so a user with credentials, one
- *  Jira tab and no ticket rows can legitimately reach an assign click with it
- *  still blank. */
+/** The acting account's OWN id on this site, fetching it if this session has
+ *  never needed it. Per-site: an overridden site answers with (and caches
+ *  onto) its override's account, everything else with the main account's. */
 async function ensureMyAccountId(siteId: string): Promise<string> {
   const store = useAppStore.getState();
-  if (store.jiraMyAccountId) return store.jiraMyAccountId;
+  const creds = credsForSiteIn(store, siteId);
+  if (creds.accountId) return creds.accountId;
   const me = await invoke<{ displayName: string; accountId: string }>("jira_test_auth", {
     baseUrl: siteId,
-    email: store.jiraApiEmail,
-    token: store.jiraApiToken,
+    email: creds.email,
+    token: creds.token,
   });
-  if (me.accountId) useAppStore.getState().setJiraMyAccountId(me.accountId);
+  if (me.accountId) {
+    const fresh = useAppStore.getState();
+    const override = (fresh.jiraSiteAccounts ?? {})[siteId];
+    if (override?.email && override?.token) {
+      fresh.setJiraSiteAccount(siteId, { ...override, accountId: me.accountId });
+    } else {
+      fresh.setJiraMyAccountId(me.accountId);
+    }
+  }
   return me.accountId;
 }
 
@@ -337,10 +424,11 @@ export function buildJiraUnassignedActions(
             });
             return;
           }
+          const siteCreds = credsForSiteIn(useAppStore.getState(), site);
           await invoke("jira_assign_issue", {
             baseUrl: site,
-            email: store.jiraApiEmail,
-            token: store.jiraApiToken,
+            email: siteCreds.email,
+            token: siteCreds.token,
             key,
             accountId,
           });

@@ -21,6 +21,7 @@ import { badgeInkFor } from "../lib/jira-colors";
 import { buildStatusColorMap, resolveStatusColor } from "../lib/jira-status-colors";
 import { fieldLabel } from "../lib/jira-fields";
 import { jiraQK, siteForTabIn } from "../lib/jira-sites";
+import { jiraGroupLabel } from "../lib/jira-groups";
 import { FaChevronDown } from "react-icons/fa";
 import { FaXmark, FaGripVertical } from "react-icons/fa6";
 import { BiRefresh } from "react-icons/bi";
@@ -646,6 +647,7 @@ export default function TerminalHeader({
     return undefined;
   }, [allTabs, terminalId]);
   const jiraTicket = jiraOwner?.ticket;
+  const jiraCliGroups = useAppStore((s) => s.jiraCliGroups ?? []);
   const jiraSnapshot = useAppStore((s) =>
     jiraOwner?.ticket
       ? (s.jiraTicketSnapshots ?? {})[jiraQK(siteForTabIn(s, jiraOwner.tab), jiraOwner.ticket)]
@@ -1025,7 +1027,10 @@ export default function TerminalHeader({
           onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = "var(--ezy-border)")}
           onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = "transparent")}
         >
-          · {truncatePath(workingDir)}
+          {/* Jira ticket panes show the folder's GROUP name (or its basename)
+              instead of the path — the full path stays in the tooltip, and
+              double-click still opens the folder. */}
+          · {jiraTicket ? jiraGroupLabel(jiraCliGroups, workingDir) : truncatePath(workingDir)}
         </span>
       )}
 

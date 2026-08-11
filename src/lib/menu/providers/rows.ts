@@ -10,7 +10,7 @@ import {
   PROJECT_COLOR_PRESETS,
 } from "../../../store/recentProjectsSlice";
 import { useJiraNotifyStore } from "../../../store/jiraNotifyStore";
-import { splitJiraQK } from "../../jira-sites";
+import { credsForSiteIn, splitJiraQK } from "../../jira-sites";
 import { isSameProject } from "../../spawn-dev-server";
 import { getDevServerActions } from "../../dev-server-actions";
 import {
@@ -831,6 +831,34 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
     label: archived ? "Unarchive" : "Archive ticket",
   });
 
+  // "Change group…" — restart the pane in another CLI-folder group. HIDDEN
+  // (not disabled) outside its world: legacy folder projects have no groups
+  // to change between, and with zero groups defined there is nothing to pick.
+  // The owning project is resolved from the registry: rows carry the session
+  // id, and a keyed tab's workingDir is the registry key.
+  const changeGroup = (() => {
+    const s = useAppStore.getState();
+    if ((s.jiraCliGroups ?? []).length === 0) return null;
+    const dir = Object.entries(s.projectSessions ?? {}).find(([, rows]) =>
+      (rows ?? []).some((r) => r.id === id),
+    )?.[0];
+    const keyed =
+      !!dir &&
+      s.tabs.some(
+        (t) =>
+          t.isJiraProject &&
+          !!t.jiraProjectKey &&
+          t.workingDir.replace(/\\/g, "/") === dir,
+      );
+    if (!keyed) return null;
+    // A gone transcript is NOT a blocker — the restart is fresh anyway.
+    return actionItem("jira-ticket", "changeGroup", id, {
+      id: "row.jira.changeGroup",
+      label: "Change group…",
+      unavailable: archived ? { reason: "Unarchive the ticket first" } : undefined,
+    });
+  })();
+
   if (compact) {
     // Just the actions a user reaches for in passing. No opener (a plain
     // click on the row already opens it), no Delete (destructive stays
@@ -838,7 +866,10 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
     return [
       { id: "edit", items: [rename] },
       { id: "target", items: [openInJira, subTicket] },
-      { id: "pane", items: [sendPrompt, closePane, archiveItem] },
+      {
+        id: "pane",
+        items: [sendPrompt, ...(changeGroup ? [changeGroup] : []), closePane, archiveItem],
+      },
     ];
   }
 
@@ -912,6 +943,7 @@ function jiraTicket(ctx: RowCtx): MenuGroup[] {
       id: "pane",
       items: [
         sendPrompt,
+        ...(changeGroup ? [changeGroup] : []),
         closePane,
         archiveItem,
         // ONE destructive row. "Remove from list" used to sit beside this
@@ -942,17 +974,28 @@ function jiraAssigned(ctx: RowCtx): MenuGroup[] {
   // One site per tab: a foreign-site row can only be investigated from a tab
   // on its own site (the row advertises it — see renderAssignedRow).
   const foreign = ctx.data.ctxForeign === "1";
+  // The rail rows carry a dedicated magnifier button for Investigate; their
+  // COMPACT (hamburger) menu drops the duplicate row. A real right-click, and
+  // any surface without the button (the tree's rows), keeps it.
+  const investigateOnRow = ctx.data.ctxCompact === "1" && ctx.data.ctxInvestigateBtn === "1";
   return [
     {
       id: "target",
       items: [
-        actionItem("jira-assigned", "investigate", qkey, {
-          id: "row.jiraAssigned.investigate",
-          label: "Investigate ticket",
-          unavailable: foreign
-            ? { reason: "This ticket lives on another Jira site — open a project on that site first" }
-            : undefined,
-        }),
+        ...(investigateOnRow
+          ? []
+          : [
+              actionItem("jira-assigned", "investigate", qkey, {
+                id: "row.jiraAssigned.investigate",
+                label: "Investigate ticket",
+                unavailable: foreign
+                  ? {
+                      reason:
+                        "This ticket lives on another Jira site — open a project on that site first",
+                    }
+                  : undefined,
+              }),
+            ]),
         actionItem("jira-assigned", "openInBrowser", qkey, {
           id: "row.jiraAssigned.browser",
           label: "Open in Jira",
@@ -991,7 +1034,9 @@ function jiraUnassigned(ctx: RowCtx): MenuGroup[] {
   const foreign = ctx.data.ctxForeign === "1";
   const s = useAppStore.getState();
   const { siteId } = splitJiraQK(qkey);
-  const noCreds = !s.jiraApiEmail || !s.jiraApiToken;
+  // Per-site: an overridden site is usable even while the MAIN pair is blank.
+  const rowCreds = credsForSiteIn(s, siteId);
+  const noCreds = !rowCreds.email || !rowCreds.token;
   const siteAuthError = !!useJiraNotifyStore.getState().siteAuthErrors[siteId];
   const assignBlocked = noCreds
     ? { reason: "Add Jira credentials in Settings > Jira" }
@@ -1008,13 +1053,21 @@ function jiraUnassigned(ctx: RowCtx): MenuGroup[] {
           label: "Assign to me…",
           unavailable: assignBlocked,
         }),
-        actionItem("jira-unassigned", "investigate", qkey, {
-          id: "row.jiraUnassigned.investigate",
-          label: "Investigate ticket",
-          unavailable: foreign
-            ? { reason: "This ticket lives on another Jira site — open a project on that site first" }
-            : undefined,
-        }),
+        // Same magnifier-button dedupe as jiraAssigned above.
+        ...(ctx.data.ctxCompact === "1" && ctx.data.ctxInvestigateBtn === "1"
+          ? []
+          : [
+              actionItem("jira-unassigned", "investigate", qkey, {
+                id: "row.jiraUnassigned.investigate",
+                label: "Investigate ticket",
+                unavailable: foreign
+                  ? {
+                      reason:
+                        "This ticket lives on another Jira site — open a project on that site first",
+                    }
+                  : undefined,
+              }),
+            ]),
         actionItem("jira-unassigned", "openInBrowser", qkey, {
           id: "row.jiraUnassigned.browser",
           label: "Open in Jira",

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../store";
 import { useModalWhen } from "../store/modalCoordinationSlice";
 import { isTicketKey, normalizeTicketKey } from "../lib/jira";
+import { folderBasename, type JiraCliGroup } from "../lib/jira-groups";
 import type { JiraCli } from "../lib/jira-mcp";
 import { MODAL_BACKDROP } from "../lib/modal-layout";
 
@@ -24,18 +26,31 @@ export interface JiraTicketResult {
    *  a tier alias (resolved to that tier's latest release); Codex and Gemini
    *  have no aliases, so theirs is a literal slug. */
   model: string | null;
+  /** CLI group folder the pane spawns in, or null for the project's fallback.
+   *  Only ever non-null when the request asked for the group picker. */
+  cwd: string | null;
+}
+
+/** Where the dialog was opened from — what the group picker needs. */
+export interface JiraTicketContext {
+  /** The Jira tab's workingDir — keys the per-project last-used group. */
+  projectDir?: string;
+  /** Show the CLI-group (folder) picker. Keyed projects only — legacy
+   *  folder-based projects always spawn in their own folder. */
+  showGroups?: boolean;
 }
 
 export interface JiraTicketRequest {
+  ctx?: JiraTicketContext;
   resolve: (value: JiraTicketResult | null) => void;
 }
 
 export const JIRA_TICKET_EVENT = "made:jira-ticket-dialog";
 
-export function requestJiraTicket(): Promise<JiraTicketResult | null> {
+export function requestJiraTicket(ctx?: JiraTicketContext): Promise<JiraTicketResult | null> {
   return new Promise((resolve) => {
     window.dispatchEvent(
-      new CustomEvent<JiraTicketRequest>(JIRA_TICKET_EVENT, { detail: { resolve } }),
+      new CustomEvent<JiraTicketRequest>(JIRA_TICKET_EVENT, { detail: { ctx, resolve } }),
     );
   });
 }
@@ -86,12 +101,18 @@ export default function NewJiraTicketModal() {
   });
   const [baseUrlValue, setBaseUrlValue] = useState("");
   const [acronymOpen, setAcronymOpen] = useState(false);
+  /** Selected CLI group id; "" = the project's fallback dir ("Default"). */
+  const [groupId, setGroupId] = useState("");
   const numberRef = useRef<HTMLInputElement>(null);
 
   const acronyms = useAppStore((s) => s.jiraAcronyms ?? []);
   const acronymCounts = useAppStore((s) => s.jiraAcronymCounts ?? {});
   const needsBaseUrl = useAppStore((s) => (s.jiraSites ?? []).length === 0);
+  const cliGroups = useAppStore((s) => s.jiraCliGroups ?? []);
   const acronymBoxRef = useRef<HTMLDivElement>(null);
+
+  const showGroups = !!req?.ctx?.showGroups;
+  const projectDir = req?.ctx?.projectDir?.replace(/\\/g, "/") ?? "";
 
   // Quick-pick tiles: the 4 MOST-USED acronyms, EXCLUDING the one already in
   // the field above (a tile repeating the dropdown is layer-on-layer noise).
@@ -130,6 +151,13 @@ export default function NewJiraTicketModal() {
       });
       setBaseUrlValue("");
       setAcronymOpen(false);
+      // Preselect the group this project's LAST ticket opened in — but only
+      // while that group still exists; a removed one falls back to Default.
+      const dir = detail.ctx?.projectDir?.replace(/\\/g, "/") ?? "";
+      const lastId = dir ? (store.jiraLastGroupByProject ?? {})[dir] : undefined;
+      setGroupId(
+        lastId && (store.jiraCliGroups ?? []).some((g) => g.id === lastId) ? lastId : "",
+      );
       setReq(detail);
       setTimeout(() => numberRef.current?.focus(), 0);
     };
@@ -173,7 +201,18 @@ export default function NewJiraTicketModal() {
       if (modelByCli.claude !== store.jiraClaudeModel) store.setJiraClaudeModel(modelByCli.claude);
       if (modelByCli.codex !== store.jiraCodexModel) store.setJiraCodexModel(modelByCli.codex);
       if (modelByCli.gemini !== store.jiraGeminiModel) store.setJiraGeminiModel(modelByCli.gemini);
-      req.resolve({ ticket, swedish, english, cli, model: modelByCli[cli] });
+      const group = showGroups ? cliGroups.find((g) => g.id === groupId) : undefined;
+      if (showGroups && projectDir) {
+        store.setJiraLastGroup(projectDir, group?.id);
+      }
+      req.resolve({
+        ticket,
+        swedish,
+        english,
+        cli,
+        model: modelByCli[cli],
+        cwd: group?.path ?? null,
+      });
     } else {
       req.resolve(null);
     }
@@ -514,6 +553,53 @@ export default function NewJiraTicketModal() {
               )}
             </div>
           </div>
+
+          {/* CLI group — which FOLDER the ticket pane spawns in. Keyed
+              projects only; "Default" = the project fallback dir. Tiles use
+              the group's name (or the folder's basename), full path in the
+              tooltip. Browse adds a folder to the GLOBAL group list. */}
+          {showGroups && (
+            <div style={{ marginTop: 12 }}>
+              <div style={labelStyle}>Group</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                <div
+                  onClick={() => setGroupId("")}
+                  data-tooltip="No folder — the pane opens in the projects dir (or home)"
+                  style={{ ...tileStyle(groupId === ""), padding: "0 10px" }}
+                >
+                  Default
+                </div>
+                {cliGroups.map((g: JiraCliGroup) => (
+                  <div
+                    key={g.id}
+                    onClick={() => setGroupId(g.id)}
+                    data-tooltip={g.path}
+                    style={{ ...tileStyle(groupId === g.id), padding: "0 10px", maxWidth: 140 }}
+                  >
+                    {g.name?.trim() || folderBasename(g.path)}
+                  </div>
+                ))}
+                <div
+                  onClick={() => {
+                    void openDialog({
+                      directory: true,
+                      multiple: false,
+                      title: "Select a folder for Jira CLI panes",
+                    }).then((picked) => {
+                      if (typeof picked !== "string") return;
+                      // Adds to (or re-finds in) the global list and selects it;
+                      // naming happens in Settings → Jira.
+                      setGroupId(useAppStore.getState().addJiraCliGroup(picked));
+                    });
+                  }}
+                  data-tooltip="Add a folder to the group list"
+                  style={{ ...tileStyle(false), padding: "0 10px" }}
+                >
+                  Add folder…
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Reply language — mutually exclusive; neither = template as-is. */}
           <div style={{ display: "flex", alignItems: "center", gap: 18, marginTop: 12 }}>
